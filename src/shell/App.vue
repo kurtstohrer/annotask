@@ -76,6 +76,7 @@ watch(interactionMode, (mode) => {
 })
 const showWarning = ref(false)
 const copied = ref(false)
+const showReportPanel = ref(false)
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('layout')
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true })
@@ -410,6 +411,8 @@ function copyReport() {
   setTimeout(() => (copied.value = false), 2000)
 }
 
+const reportJson = computed(() => report.value ? JSON.stringify(report.value, null, 2) : null)
+
 // ── Context Menu ──────────────────────────────────────
 const contextMenu = ref({ visible: false, x: 0, y: 0 })
 
@@ -568,6 +571,13 @@ function onSectionCommit(id: string) {
   if (sectionTaskIds.has(id)) return
   sectionTaskIds.add(id)
 
+  recordAnnotation({
+    file: section.nearFile || '',
+    line: String(section.nearLine || 0),
+    component: section.nearComponent || '',
+    intent: section.prompt.trim(),
+    action: 'section_request',
+  })
   createRouteTask({
     type: 'section_request',
     description: section.prompt.trim(),
@@ -639,6 +649,15 @@ function submitPendingArrowTask(id: string, description: string) {
   annotations.updateArrow(id, { label: description.trim() })
 
   const meta = pendingTaskCreation.value?.meta || {}
+  recordAnnotation({
+    file: arrow.fromFile || '',
+    line: String(arrow.fromLine || 0),
+    component: arrow.fromComponent || '',
+    intent: description.trim(),
+    action: 'relocate',
+    elementTag: (meta.fromTag as string) || '',
+    elementClasses: (meta.fromClasses as string) || '',
+  })
   createRouteTask({
     type: 'annotation', action: 'relocate',
     description: description.trim(),
@@ -752,6 +771,7 @@ function onShellKeyDown(e: KeyboardEvent) {
 
   // Escape: close shortcuts, cancel pending task, or clear selection
   if (key === 'Escape') {
+    if (showReportPanel.value) { showReportPanel.value = false; return }
     if (showShortcuts.value) { showShortcuts.value = false; return }
     if (pendingTaskCreation.value) { cancelPendingTask(); return }
     primarySelection.value = null
@@ -831,8 +851,8 @@ const appUrl = computed(() => {
           <button :class="['vis-btn', { off: !showMarkup.highlights }]" @click="showMarkup.highlights = !showMarkup.highlights" title="Toggle Highlights">H</button>
         </div>
         <span v-if="changes.length" class="change-count">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
-        <button class="tool-btn" :disabled="!report" @click="copyReport">
-          {{ copied ? 'Copied!' : 'Copy Report' }}
+        <button :class="['tool-btn', { active: showReportPanel }]" :disabled="!report" @click="showReportPanel = !showReportPanel">
+          View Report
         </button>
         <button v-if="changes.length" class="tool-btn danger" @click="doClearChanges">Clear</button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
@@ -937,7 +957,28 @@ const appUrl = computed(() => {
       </aside>
 
       <!-- Shortcuts Panel -->
-      <aside class="panel" v-if="shellView === 'editor' && showShortcuts">
+      <!-- Report Viewer Panel -->
+      <aside class="panel" v-if="shellView === 'editor' && showReportPanel">
+        <div class="panel-source">
+          <span class="source-path" style="color:var(--text)">Report</span>
+          <span v-if="changes.length" class="component-badge">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
+          <button class="component-badge" style="cursor:pointer;margin-left:auto" @click="showReportPanel = false">Esc to close</button>
+        </div>
+        <div class="report-panel">
+          <div v-if="reportJson" class="report-content">
+            <div class="report-actions">
+              <button class="submit-btn" @click="copyReport">{{ copied ? 'Copied!' : 'Copy JSON' }}</button>
+            </div>
+            <pre class="report-json"><code>{{ reportJson }}</code></pre>
+          </div>
+          <div v-else class="report-empty">
+            <p>No changes recorded yet.</p>
+            <p class="empty-hint">Pin elements, draw sections, or edit styles to generate a report.</p>
+          </div>
+        </div>
+      </aside>
+
+      <aside class="panel" v-else-if="shellView === 'editor' && showShortcuts">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Keyboard Shortcuts</span>
           <button class="component-badge" style="cursor:pointer;margin-left:auto" @click="showShortcuts = false">Esc to close</button>
@@ -1376,6 +1417,15 @@ details[open] > .changes-summary::before { content: '▾ '; }
 .pending-task-actions .cancel-btn:hover { background: var(--border); color: var(--text); }
 
 /* Shortcuts panel */
+/* Report panel */
+.report-panel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.report-content { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.report-actions { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+.report-json { flex: 1; overflow: auto; padding: 14px; margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-muted); background: var(--bg); white-space: pre; tab-size: 2; }
+.report-json code { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; }
+.report-empty { padding: 32px 14px; text-align: center; color: var(--text-muted); }
+.report-empty .empty-hint { font-size: 11px; margin-top: 8px; }
+
 .shortcuts-panel { padding: 14px; overflow-y: auto; flex: 1; }
 .shortcut-group { margin-bottom: 16px; }
 .shortcut-group-title {
