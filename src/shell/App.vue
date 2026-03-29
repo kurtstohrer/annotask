@@ -22,6 +22,7 @@ import NotesTab from './components/NotesTab.vue'
 import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
 import ThemePage from './components/ThemePage.vue'
+import ReportViewer from './components/ReportViewer.vue'
 import { useTasks } from './composables/useTasks'
 
 const styleEditor = useStyleEditor()
@@ -75,7 +76,6 @@ watch(interactionMode, (mode) => {
   }
 })
 const showWarning = ref(false)
-const copied = ref(false)
 const showReportPanel = ref(false)
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('layout')
 // Markup visibility toggles
@@ -404,14 +404,6 @@ async function applyClassChange() {
 }
 
 // ── Report ─────────────────────────────────────────────
-function copyReport() {
-  if (!report.value) return
-  navigator.clipboard.writeText(JSON.stringify(report.value, null, 2))
-  copied.value = true
-  setTimeout(() => (copied.value = false), 2000)
-}
-
-const reportJson = computed(() => report.value ? JSON.stringify(report.value, null, 2) : null)
 
 // ── Context Menu ──────────────────────────────────────
 const contextMenu = ref({ visible: false, x: 0, y: 0 })
@@ -957,28 +949,7 @@ const appUrl = computed(() => {
       </aside>
 
       <!-- Shortcuts Panel -->
-      <!-- Report Viewer Panel -->
-      <aside class="panel" v-if="shellView === 'editor' && showReportPanel">
-        <div class="panel-source">
-          <span class="source-path" style="color:var(--text)">Report</span>
-          <span v-if="changes.length" class="component-badge">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
-          <button class="component-badge" style="cursor:pointer;margin-left:auto" @click="showReportPanel = false">Esc to close</button>
-        </div>
-        <div class="report-panel">
-          <div v-if="reportJson" class="report-content">
-            <div class="report-actions">
-              <button class="submit-btn" @click="copyReport">{{ copied ? 'Copied!' : 'Copy JSON' }}</button>
-            </div>
-            <pre class="report-json"><code>{{ reportJson }}</code></pre>
-          </div>
-          <div v-else class="report-empty">
-            <p>No changes recorded yet.</p>
-            <p class="empty-hint">Pin elements, draw sections, or edit styles to generate a report.</p>
-          </div>
-        </div>
-      </aside>
-
-      <aside class="panel" v-else-if="shellView === 'editor' && showShortcuts">
+      <aside class="panel" v-if="shellView === 'editor' && showShortcuts">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Keyboard Shortcuts</span>
           <button class="component-badge" style="cursor:pointer;margin-left:auto" @click="showShortcuts = false">Esc to close</button>
@@ -1176,6 +1147,9 @@ const appUrl = computed(() => {
 
     <!-- Context menu -->
     <ContextMenu v-bind="contextMenu" @close="contextMenu.visible = false" />
+
+    <!-- Report viewer slide-out -->
+    <ReportViewer v-if="showReportPanel" :report="report" @close="showReportPanel = false" />
   </div>
 </template>
 
@@ -1417,15 +1391,6 @@ details[open] > .changes-summary::before { content: '▾ '; }
 .pending-task-actions .cancel-btn:hover { background: var(--border); color: var(--text); }
 
 /* Shortcuts panel */
-/* Report panel */
-.report-panel { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
-.report-content { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
-.report-actions { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
-.report-json { flex: 1; overflow: auto; padding: 14px; margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-muted); background: var(--bg); white-space: pre; tab-size: 2; }
-.report-json code { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; }
-.report-empty { padding: 32px 14px; text-align: center; color: var(--text-muted); }
-.report-empty .empty-hint { font-size: 11px; margin-top: 8px; }
-
 .shortcuts-panel { padding: 14px; overflow-y: auto; flex: 1; }
 .shortcut-group { margin-bottom: 16px; }
 .shortcut-group-title {
