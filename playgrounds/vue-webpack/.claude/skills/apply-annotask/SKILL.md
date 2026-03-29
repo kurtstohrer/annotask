@@ -50,10 +50,9 @@ Response:
       "id": "task-123",
       "type": "annotation",
       "status": "pending",
-      "description": "Change header color to blue",
+      "description": "Change the header background to match the new brand colors",
       "file": "src/components/Header.vue",
       "line": 5,
-      "intent": "Change the header background to match the new brand colors",
       "action": "text_edit",
       "context": { "element_tag": "header" }
     }
@@ -61,21 +60,21 @@ Response:
 }
 ```
 
+Each task has: `id`, `type`, `status`, `description` (what to do), `file`, `line`, `component`, and optionally `action` and `context` with element details.
+
 ### 2. Process each pending task
 
 Filter for `status: "pending"` tasks. For each:
 
-- **`annotation` with `action: "text_edit"`**: The `intent` field says what text to change. Find the text in the source file and apply the edit.
+- **`annotation` with `action: "text_edit"`**: The `description` field says what text to change. Find the text in the source file and apply the edit.
 
-- **`annotation` with `action: "relocate"`**: Move the referenced element to the location described in `intent`.
+- **`annotation` with other actions** (`add_column`, `add_row`, `wrap_container`, `delete`, `duplicate`, `move_up`, `move_down`): Apply the structural change described in `description`.
 
-- **`annotation` with other actions** (`add_column`, `add_row`, `wrap_container`, `delete`, `duplicate`, `move_up`, `move_down`): Apply the structural change described.
-
-- **`annotation` with no action** (just `intent`): This is a free-text note. Read the intent and apply your best judgment to the source code.
+- **`annotation` with no action**: This is a free-text note. Read `description` and apply your best judgment to the source code. If `context.to_element` is present, this is an arrow annotation referencing two elements.
 
 - **`style_update`**: Apply CSS property change. `property` and `after` values tell you what to set. Use scoped styles, inline styles, or Tailwind classes based on project patterns.
 
-- **`section_request`**: Create a new section in the template near the referenced element. The `prompt` field describes what content to create. The `dimensions` and `position` give spatial hints.
+- **`section_request`**: Create a new section in the template near the referenced element. The `description` field describes what content to create. `placement` gives spatial hints.
 
 - **`theme_update`**: A design token value change from the Theme page. The `context` object contains:
   - `category`: which token category (`colors`, `typography.families`, `typography.scale`, `spacing`, `borders.radius`)

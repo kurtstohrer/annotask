@@ -151,7 +151,7 @@ function submitDeny(taskId: string) {
 function submitNewTask() {
   const text = newTaskText.value.trim()
   if (!text) return
-  createRouteTask({ type: 'annotation', description: text, file: '', line: 0, intent: text })
+  createRouteTask({ type: 'annotation', description: text, file: '', line: 0 })
   newTaskText.value = ''
   showNewTaskForm.value = false
 }
@@ -440,16 +440,10 @@ async function onAddAnnotationNote(text: string) {
   createRouteTask({
     type: 'annotation', description: text,
     file: primary.file, line: parseInt(primary.line) || 0, component: primary.component,
-    intent: text,
     visual: pinPos ? { kind: 'pin', annotationId: pinForPrimary[0].id, x: pinPos.x, y: pinPos.y } : undefined,
     context: {
-      element: {
-        tag: primary.tag,
-        classes: primary.classes,
-        component: primary.component,
-        file: primary.file,
-        line: parseInt(primary.line) || 0,
-      },
+      element_tag: primary.tag,
+      element_classes: primary.classes,
       ...(targets.length > 1 ? {
         elements: targets.map(t => ({
           tag: t.tag, classes: t.classes, component: t.component,
@@ -474,12 +468,10 @@ function onAddAnnotationAction(action: string, label: string) {
   createRouteTask({
     type: 'annotation', description: label,
     file: primary.file, line: parseInt(primary.line) || 0, component: primary.component,
-    intent: label, action,
+    action,
     context: {
-      element: {
-        tag: primary.tag, classes: primary.classes, component: primary.component,
-        file: primary.file, line: parseInt(primary.line) || 0,
-      },
+      element_tag: primary.tag,
+      element_classes: primary.classes,
     },
   })
 }
@@ -538,12 +530,9 @@ function onSubmitHighlight(prompt: string) {
   })
   createRouteTask({
     type: 'annotation', description: intent, file: h.file, line: h.line,
-    component: h.component, intent, action: 'text_edit',
+    component: h.component, action: 'text_edit',
     context: {
-      element: {
-        tag: h.tag, component: h.component,
-        file: h.file, line: h.line,
-      },
+      element_tag: h.tag,
       selected_text: h.text,
     },
   })
@@ -576,17 +565,8 @@ function onSectionCommit(id: string) {
     file: section.nearFile || '',
     line: section.nearLine || 0,
     component: section.nearComponent || '',
-    prompt: section.prompt.trim(),
     placement: section.placement || '',
     visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height) },
-    context: {
-      near_element: {
-        component: section.nearComponent || '',
-        file: section.nearFile || '',
-        line: section.nearLine || 0,
-      },
-      placement: section.placement || '',
-    },
   })
 }
 
@@ -655,16 +635,10 @@ function submitPendingArrowTask(id: string, description: string) {
     file: arrow.fromFile || '',
     line: arrow.fromLine || 0,
     component: arrow.fromComponent || '',
-    intent: description.trim(),
     visual: { kind: 'arrow', annotationId: arrow.id, fromX: arrow.fromX, fromY: arrow.fromY, toX: arrow.toX, toY: arrow.toY, label: description.trim() },
     context: {
-      from_element: {
-        tag: (meta.fromTag as string) || '',
-        classes: (meta.fromClasses as string) || '',
-        component: (meta.fromComponent as string) || '',
-        file: arrow.fromFile || '',
-        line: arrow.fromLine || 0,
-      },
+      from_element_tag: (meta.fromTag as string) || '',
+      from_element_classes: (meta.fromClasses as string) || '',
       to_element: {
         tag: (meta.toTag as string) || '',
         classes: (meta.toClasses as string) || '',
@@ -693,16 +667,10 @@ function submitPendingTask() {
       type: 'annotation',
       description: pendingTaskText.value.trim(),
       file: ctx.file, line: parseInt(String(ctx.line)) || 0, component: ctx.component,
-      intent: pendingTaskText.value.trim(),
       visual: { kind: 'pin', annotationId: ctx.annotationId, x: meta.pinX, y: meta.pinY },
       context: {
-        element: {
-          tag: meta.elementTag,
-          classes: meta.elementClasses,
-          component: ctx.component,
-          file: ctx.file,
-          line: parseInt(String(ctx.line)) || 0,
-        },
+        element_tag: meta.elementTag,
+        element_classes: meta.elementClasses,
       },
     })
   } else if (ctx.kind === 'arrow') {
@@ -731,9 +699,6 @@ function onAddGeneralTask(text: string) {
     description: text,
     file: '',
     line: 0,
-    component: '',
-    intent: text,
-    context: {},
   })
 }
 
