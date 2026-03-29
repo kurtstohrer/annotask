@@ -6,7 +6,7 @@ import 'prismjs/components/prism-yaml'
 import yaml from 'js-yaml'
 
 const props = defineProps<{
-  report: Record<string, unknown> | null
+  tasks: Array<Record<string, unknown>>
 }>()
 
 const emit = defineEmits<{
@@ -16,12 +16,20 @@ const emit = defineEmits<{
 const format = ref<'json' | 'yaml'>('json')
 const copied = ref(false)
 
-const formatted = computed(() => {
-  if (!props.report) return ''
-  if (format.value === 'yaml') {
-    return yaml.dump(props.report, { indent: 2, lineWidth: 120, noRefs: true })
+const taskData = computed(() => {
+  if (!props.tasks.length) return null
+  return {
+    version: '1.0',
+    tasks: props.tasks,
   }
-  return JSON.stringify(props.report, null, 2)
+})
+
+const formatted = computed(() => {
+  if (!taskData.value) return ''
+  if (format.value === 'yaml') {
+    return yaml.dump(taskData.value, { indent: 2, lineWidth: 120, noRefs: true })
+  }
+  return JSON.stringify(taskData.value, null, 2)
 })
 
 const highlighted = ref('')
@@ -50,20 +58,20 @@ function onKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="report-overlay" @keydown="onKeydown" tabindex="-1" ref="el">
+  <div class="report-overlay" @keydown="onKeydown" tabindex="-1">
     <div class="report-backdrop" @click="emit('close')" />
     <aside class="report-drawer">
       <header class="report-header">
         <div class="report-title">
-          <span>Report</span>
-          <span v-if="report" class="report-badge">{{ (report as any).changes?.length || 0 }} change{{ (report as any).changes?.length === 1 ? '' : 's' }}</span>
+          <span>Tasks</span>
+          <span v-if="tasks.length" class="report-badge">{{ tasks.length }} task{{ tasks.length === 1 ? '' : 's' }}</span>
         </div>
         <div class="report-controls">
           <div class="format-toggle">
             <button :class="['fmt-btn', { active: format === 'json' }]" @click="format = 'json'">JSON</button>
             <button :class="['fmt-btn', { active: format === 'yaml' }]" @click="format = 'yaml'">YAML</button>
           </div>
-          <button class="copy-btn" @click="copy" :disabled="!report">
+          <button class="copy-btn" @click="copy" :disabled="!taskData">
             <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             {{ copied ? 'Copied!' : 'Copy' }}
           </button>
@@ -73,10 +81,10 @@ function onKeydown(e: KeyboardEvent) {
         </div>
       </header>
       <div class="report-body">
-        <pre v-if="report" class="report-code"><code v-html="highlighted" /></pre>
+        <pre v-if="taskData" class="report-code"><code v-html="highlighted" /></pre>
         <div v-else class="report-empty">
-          <p>No changes recorded yet.</p>
-          <p class="report-empty-hint">Pin elements, draw sections, or edit styles to generate a report.</p>
+          <p>No tasks yet.</p>
+          <p class="report-empty-hint">Pin elements, draw sections, or add annotations to create tasks for your coding agent.</p>
         </div>
       </div>
     </aside>
@@ -87,7 +95,7 @@ function onKeydown(e: KeyboardEvent) {
 .report-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 50000;
   display: flex;
   justify-content: flex-end;
 }

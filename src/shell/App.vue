@@ -843,8 +843,8 @@ const appUrl = computed(() => {
           <button :class="['vis-btn', { off: !showMarkup.highlights }]" @click="showMarkup.highlights = !showMarkup.highlights" title="Toggle Highlights">H</button>
         </div>
         <span v-if="changes.length" class="change-count">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
-        <button :class="['tool-btn', { active: showReportPanel }]" :disabled="!report" @click="showReportPanel = !showReportPanel">
-          View Report
+        <button :class="['tool-btn', { active: showReportPanel }]" @click="showReportPanel = !showReportPanel">
+          View Tasks
         </button>
         <button v-if="changes.length" class="tool-btn danger" @click="doClearChanges">Clear</button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
@@ -1149,7 +1149,7 @@ const appUrl = computed(() => {
     <ContextMenu v-bind="contextMenu" @close="contextMenu.visible = false" />
 
     <!-- Report viewer slide-out -->
-    <ReportViewer v-if="showReportPanel" :report="report" @close="showReportPanel = false" />
+    <ReportViewer v-if="showReportPanel" :tasks="taskSystem.tasks.value" @close="showReportPanel = false" />
   </div>
 </template>
 
