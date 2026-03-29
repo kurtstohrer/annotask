@@ -1,6 +1,61 @@
 # Annotask
 
-Visual UI design tool for web apps. Make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Supports Vue, React, and Svelte with Vite and Webpack.
+Visual markup tool for web apps. Annotate your UI in the browser — pins, arrows, drawn sections, notes — and Annotask generates structured tasks that AI coding agents apply to your source code. Supports Vue, React, and Svelte with Vite and Webpack.
+
+## Workflow
+
+```
+ You (in browser)                    Your coding agent
+ ─────────────────                   ──────────────────
+ Open Annotask shell
+ Annotate the UI:
+   pin elements, draw
+   sections, add notes,         ──>  /apply-annotask
+   describe what you want            Reads tasks from Annotask API
+                                     Edits source files
+                                     Marks tasks as "ready for review"
+ Review changes in                <──
+ Annotask shell:
+   Accept ✓  or  Deny ✗
+   (denied tasks return
+    with your feedback
+    for the agent to retry)
+```
+
+### How it works
+
+1. **You mark up the UI** — Use the Annotask shell to annotate elements: pin a component and describe what you want changed, draw a section where new content should go, highlight text that needs editing, or drop arrows showing where things should move.
+
+2. **Tasks are created** — Each annotation becomes a structured task with full context: source file, line number, component name, element tag, surrounding layout, and your intent in plain language.
+
+3. **Your coding agent applies the tasks** — Invoke `/apply-annotask` in Claude Code (or the equivalent skill in your agent). It fetches pending tasks from the Annotask API, edits the source files, and marks each task as ready for review.
+
+4. **You review** — Back in the Annotask shell, accept or deny each change. Denied tasks return to the queue with your feedback so the agent can retry with corrections.
+
+## Agent Setup
+
+Annotask ships skills for AI coding agents. Install them into your project:
+
+```bash
+npx annotask init-skills
+```
+
+This copies skill files to `.claude/skills/` and `.agents/skills/` so your agent can discover them.
+
+| Agent | Skill directory | Notes |
+|-------|----------------|-------|
+| Claude Code | `.claude/skills/` | Invoke with `/apply-annotask`, `/init-annotask`, `/watch-annotask` |
+| GitHub Copilot | `.agents/skills/` | Auto-discovered by Copilot agents |
+| OpenAI Codex | `.agents/skills/` | Uses the same `.agents/` convention |
+| Other agents | `.agents/skills/` | Any agent that reads `.agents/skills/` |
+
+### Skills
+
+| Skill | What it does |
+|-------|-------------|
+| `/init-annotask` | Scans your project and generates `.annotask/design-spec.json` with detected tokens, fonts, colors, and component library. Run once per project. |
+| `/apply-annotask` | Fetches pending tasks from the Annotask API, applies changes to source files, and marks them for review. |
+| `/watch-annotask` | Streams live changes from the Annotask WebSocket so your agent can narrate what you're doing in real time. |
 
 ## Quick Start
 
@@ -36,32 +91,32 @@ Start your dev server, then open:
 
 ## Features
 
+### Annotation tools (primary)
+- **Pins** — Pin an element and describe what you want changed
+- **Arrows** — Draw arrows to show where elements should move
+- **Drawn sections** — Draw a rectangle where new content should go, with a prompt
+- **Text highlights** — Select text to mark it for editing
+- **Notes** — Attach free-text design notes to any element
+
+### Visual editing (experimental)
 - **Element inspection** — Click any element to see its source file, line, component, and computed styles
 - **Live style editing** — Modify layout, spacing, size, colors, and typography with immediate preview
 - **Class editing** — Add, remove, or modify CSS classes on elements
-- **Annotation tools** — Pins, arrows, drawn sections, and text highlights to communicate design intent
 - **Theme token editing** — Edit design tokens (colors, typography, spacing, borders) from a detected design spec
-- **Change reports** — Structured JSON reports of all visual changes, ready for AI agents to consume
-- **CLI tool** — `annotask watch` for live streaming, `annotask report` for current state
+
+### Infrastructure
+- **Change reports** — Structured JSON of all changes, ready for agents to consume
 - **Task pipeline** — Create, review, accept, or deny design change tasks
-
-## How It Works
-
-Annotask runs entirely in your dev server (never in production builds):
-
-1. A **build plugin** transforms source files (Vue SFCs, React JSX/TSX, Svelte) to inject source-mapping attributes (`data-annotask-file`, `data-annotask-line`, `data-annotask-component`)
-2. A **shell UI** loads your app in an iframe and provides design tools
-3. Changes are tracked and broadcast via **WebSocket** and served via **HTTP API**
-4. AI agents or the CLI can consume the change report to patch source files
+- **CLI** — `annotask watch` for live streaming, `annotask report` for current state
+- **API** — HTTP and WebSocket endpoints for programmatic access
 
 ## CLI
 
 ```bash
 annotask watch              # Live stream of changes
-annotask watch --port=3000  # Custom port
 annotask report             # Fetch current report JSON
-annotask report | jq        # Pipe to jq
 annotask status             # Check connection
+annotask init-skills        # Install agent skills into your project
 ```
 
 ## API
@@ -94,7 +149,7 @@ pnpm install
 pnpm build                   # Build shell + plugin + CLI
 pnpm dev:vue-vite             # Start Vue test app with Annotask
 pnpm test                     # Run tests
-pnpm test:watch               # Watch mode
+pnpm test:e2e                 # Run E2E tests (all frameworks)
 ```
 
 ## Project Structure
@@ -106,6 +161,7 @@ pnpm test:watch               # Watch mode
 - `src/shared/` — Shared types (postMessage bridge protocol)
 - `src/schema.ts` — TypeScript types for change reports
 - `src/cli/` — CLI tool for terminal interaction
+- `skills/` — Agent skill definitions (shipped with the npm package)
 - `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite)
 
 ## Troubleshooting
