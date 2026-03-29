@@ -134,7 +134,7 @@ skills/                      # AI agent skills (shipped in npm package)
 
 1. Define the type in `src/schema.ts` (extend the `AnnotaskChange` union)
 2. Emit the change in the relevant shell composable (usually `useStyleEditor`)
-3. Update the `/apply-annotask` skill in `.claude/skills/apply-annotask/SKILL.md` to handle it
+3. Update the `/annotask-apply` skill in `.claude/skills/annotask-apply/SKILL.md` to handle it
 4. Add a test covering the new type
 
 ## Feature freeze

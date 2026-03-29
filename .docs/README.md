@@ -5,7 +5,7 @@
 - **[Setup](setup.md)** — Install, configure Vite, verify it works
 - **[API Reference](api.md)** — HTTP endpoints, WebSocket events, change types
 - **[CLI Reference](cli.md)** — `annotask watch`, `report`, `status`
-- **[Skills](skills.md)** — Claude Code skills: `/init-annotask`, `/watch-annotask`, `/apply-annotask`
+- **[Skills](skills.md)** — Claude Code skills: `/annotask-init`, `/annotask-watch`, `/annotask-apply`
 
 ## For contributors
 

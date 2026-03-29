@@ -1,4 +1,4 @@
-# watch-annotask
+# annotask-watch
 
 Watch for Annotask design changes in real-time and describe what the user is doing.
 
@@ -8,7 +8,7 @@ Use this skill when the user says things like:
 - "watch my Annotask changes"
 - "monitor Annotask"
 - "what am I changing in Annotask?"
-- `/watch-annotask`
+- `/annotask-watch`
 
 ## How it works
 
@@ -36,7 +36,7 @@ Connect to the Annotask WebSocket and stream changes as the user makes them visu
    - "You increased the font size of the header title to 28px"
    - "You adjusted the gap between flex items in the nav to 16px"
 
-3. **Suggest next steps** — after the user seems done (they say "apply these" or "looks good"), use the `/apply-annotask` skill to apply the changes to source code.
+3. **Suggest next steps** — after the user seems done (they say "apply these" or "looks good"), use the `/annotask-apply` skill to apply the changes to source code.
 
 ## Notes
 

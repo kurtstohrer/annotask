@@ -1,4 +1,4 @@
-# init-annotask
+# annotask-init
 
 Initialize Annotask for this project by scanning the codebase and generating `.annotask/design-spec.json`.
 
@@ -8,7 +8,7 @@ Use this skill when the user says any of:
 - "initialize Annotask" / "init Annotask"
 - "set up Annotask" / "configure Annotask"
 - "scan my project for Annotask"
-- `/init-annotask`
+- `/annotask-init`
 
 ## What it does
 
@@ -219,7 +219,7 @@ Check if `.gitignore` contains `.annotask/`. If not, append:
 Tell the user:
 - What was detected (framework, number of color/typography/spacing tokens, libraries)
 - That they can open the **Theme** page in Annotask to view and edit tokens
-- That they can re-run `/init-annotask` to rescan
+- That they can re-run `/annotask-init` to rescan
 
 ## Notes
 

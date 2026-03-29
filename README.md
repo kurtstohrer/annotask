@@ -10,7 +10,7 @@ Visual markup tool for web apps. Annotate your UI in the browser — pins, arrow
  Open Annotask shell
  Annotate the UI:
    pin elements, draw
-   sections, add notes,         ──>  /apply-annotask
+   sections, add notes,         ──>  /annotask-apply
    describe what you want            Reads tasks from Annotask API
                                      Edits source files
                                      Marks tasks as "ready for review"
@@ -28,7 +28,7 @@ Visual markup tool for web apps. Annotate your UI in the browser — pins, arrow
 
 2. **Tasks are created** — Each annotation becomes a structured task with full context: source file, line number, component name, element tag, surrounding layout, and your intent in plain language.
 
-3. **Your coding agent applies the tasks** — Invoke `/apply-annotask` in Claude Code (or the equivalent skill in your agent). It fetches pending tasks from the Annotask API, edits the source files, and marks each task as ready for review.
+3. **Your coding agent applies the tasks** — Invoke `/annotask-apply` in Claude Code (or the equivalent skill in your agent). It fetches pending tasks from the Annotask API, edits the source files, and marks each task as ready for review.
 
 4. **You review** — Back in the Annotask shell, accept or deny each change. Denied tasks return to the queue with your feedback so the agent can retry with corrections.
 
@@ -44,7 +44,7 @@ This copies skill files to `.claude/skills/` and `.agents/skills/` so your agent
 
 | Agent | Skill directory | Notes |
 |-------|----------------|-------|
-| Claude Code | `.claude/skills/` | Invoke with `/apply-annotask`, `/init-annotask`, `/watch-annotask` |
+| Claude Code | `.claude/skills/` | Invoke with `/annotask-apply`, `/annotask-init`, `/annotask-watch` |
 | GitHub Copilot | `.agents/skills/` | Auto-discovered by Copilot agents |
 | OpenAI Codex | `.agents/skills/` | Uses the same `.agents/` convention |
 | Other agents | `.agents/skills/` | Any agent that reads `.agents/skills/` |
@@ -53,9 +53,9 @@ This copies skill files to `.claude/skills/` and `.agents/skills/` so your agent
 
 | Skill | What it does |
 |-------|-------------|
-| `/init-annotask` | Scans your project and generates `.annotask/design-spec.json` with detected tokens, fonts, colors, and component library. Run once per project. |
-| `/apply-annotask` | Fetches pending tasks from the Annotask API, applies changes to source files, and marks them for review. |
-| `/watch-annotask` | Streams live changes from the Annotask WebSocket so your agent can narrate what you're doing in real time. |
+| `/annotask-init` | Scans your project and generates `.annotask/design-spec.json` with detected tokens, fonts, colors, and component library. Run once per project. |
+| `/annotask-apply` | Fetches pending tasks from the Annotask API, applies changes to source files, and marks them for review. |
+| `/annotask-watch` | Streams live changes from the Annotask WebSocket so your agent can narrate what you're doing in real time. |
 
 ## Quick Start
 

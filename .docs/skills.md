@@ -6,11 +6,11 @@ Annotask ships three Claude Code skills that let AI agents interact with the des
 
 | Skill | Trigger | Purpose |
 |-------|---------|---------|
-| `/init-annotask` | "initialize Annotask", "set up Annotask" | Scan project, generate `.annotask/design-spec.json` |
-| `/watch-annotask` | "watch my changes", "monitor Annotask" | Stream changes in real-time, describe what the user is doing |
-| `/apply-annotask` | "apply the changes", "sync Annotask" | Fetch pending tasks, apply to source code, mark for review |
+| `/annotask-init` | "initialize Annotask", "set up Annotask" | Scan project, generate `.annotask/design-spec.json` |
+| `/annotask-watch` | "watch my changes", "monitor Annotask" | Stream changes in real-time, describe what the user is doing |
+| `/annotask-apply` | "apply the changes", "sync Annotask" | Fetch pending tasks, apply to source code, mark for review |
 
-## /init-annotask
+## /annotask-init
 
 Scans the project to detect:
 - Framework (Vue, React, Svelte)
@@ -25,16 +25,16 @@ Output: `.annotask/design-spec.json` — populates the Theme page in Annotask.
 
 Idempotent. Re-running overwrites with fresh data.
 
-## /watch-annotask
+## /annotask-watch
 
 Passive monitoring mode. Connects to the WebSocket and describes changes as the user makes them:
 
 - "You changed the background color of table cells in PlanetTable.vue to #2a1a1a"
 - "You increased the header font size to 28px"
 
-Does not modify any files. Suggests `/apply-annotask` when the user seems done.
+Does not modify any files. Suggests `/annotask-apply` when the user seems done.
 
-## /apply-annotask
+## /annotask-apply
 
 The main automation skill. Workflow:
 
@@ -62,9 +62,9 @@ Skills are defined in `.claude/skills/`:
 
 ```
 .claude/skills/
-├── apply-annotask/SKILL.md
-├── init-annotask/SKILL.md
-└── watch-annotask/SKILL.md
+├── annotask-apply/SKILL.md
+├── annotask-init/SKILL.md
+└── annotask-watch/SKILL.md
 ```
 
 These are project-scoped — they work when Claude Code is running from the Annotask project directory or any project that has these files checked in.

@@ -821,7 +821,7 @@ const appUrl = computed(() => {
       Source mapping unavailable — add <code>annotask()</code> to your Vite plugins.
     </div>
     <div v-if="!configInitialized" class="setup-banner">
-      Annotask not initialized — run <code>/init-annotask</code> in your AI assistant to set up project tokens and component detection.
+      Annotask not initialized — run <code>/annotask-init</code> in your AI assistant to set up project tokens and component detection.
     </div>
 
     <!-- Main -->

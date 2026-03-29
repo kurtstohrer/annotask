@@ -105,10 +105,10 @@ npx annotask init-skills --target=claude,agents,copilot  # All three
 
 ## Initialize design tokens (optional)
 
-If you use Claude Code, run the `/init-annotask` skill to scan your project and generate a design spec:
+If you use Claude Code, run the `/annotask-init` skill to scan your project and generate a design spec:
 
 ```
-/init-annotask
+/annotask-init
 ```
 
 This creates `.annotask/design-spec.json` with detected colors, typography, spacing, and borders. The Theme page in Annotask reads this file.

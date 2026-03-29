@@ -1,4 +1,4 @@
-# apply-annotask
+# annotask-apply
 
 Apply pending Annotask design tasks to the source code.
 
@@ -8,7 +8,7 @@ Use this skill when the user says:
 - "apply the Annotask changes"
 - "apply my design changes"
 - "sync Annotask"
-- `/apply-annotask`
+- `/annotask-apply`
 
 ## How it works
 

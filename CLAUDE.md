@@ -23,7 +23,7 @@ When the Annotask design tool is running, you can interact with it:
 - **WebSocket**: `ws://localhost:5173/__annotask/ws` — live change stream
 - **CLI**: `annotask watch` / `annotask report` — terminal tools
 
-Use `/apply-annotask` to fetch and apply pending visual changes to source code.
+Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 
 ## Structure
 

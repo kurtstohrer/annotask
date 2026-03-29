@@ -253,7 +253,7 @@ function discardChanges() {
         <circle cx="12" cy="12" r="10"/><path d="M12 8v4l2 2"/>
       </svg>
       <p>No design spec found</p>
-      <p class="theme-empty-hint">Run <code>/init-annotask</code> in your AI assistant to scan your project's design system</p>
+      <p class="theme-empty-hint">Run <code>/annotask-init</code> in your AI assistant to scan your project's design system</p>
     </div>
 
     <template v-else>
