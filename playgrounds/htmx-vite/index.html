@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Solar System Explorer — htmx</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <h1 class="logo">Solar System Explorer</h1>
+      <nav class="nav">
+        <a href="#planets" class="nav-link">Planets</a>
+        <a href="#search" class="nav-link">Search</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="content">
+    <section class="hero">
+      <h2 class="hero-title">Explore Our Solar System</h2>
+      <p class="hero-subtitle">An htmx playground for Annotask — hypermedia-driven UI with no framework.</p>
+    </section>
+
+    <section id="search" class="section">
+      <h2 class="section-title">Search Planets</h2>
+      <div class="search-box">
+        <input
+          type="search"
+          name="q"
+          placeholder="Type to filter planets..."
+          class="search-input"
+          hx-post="/search"
+          hx-trigger="input changed delay:200ms, search"
+          hx-target="#search-results"
+          hx-swap="innerHTML"
+        />
+      </div>
+      <div id="search-results" class="card-grid">
+        <div class="card">
+          <div class="card-icon">☿</div>
+          <h3 class="card-title">Mercury</h3>
+          <p class="card-text">The smallest planet, closest to the Sun.</p>
+          <div class="card-meta"><span class="tag">Terrestrial</span><span class="tag">0 moons</span></div>
+        </div>
+        <div class="card">
+          <div class="card-icon">♀</div>
+          <h3 class="card-title">Venus</h3>
+          <p class="card-text">The hottest planet due to its thick atmosphere.</p>
+          <div class="card-meta"><span class="tag">Terrestrial</span><span class="tag">0 moons</span></div>
+        </div>
+        <div class="card">
+          <div class="card-icon">🜨</div>
+          <h3 class="card-title">Earth</h3>
+          <p class="card-text">Our home world with liquid water and life.</p>
+          <div class="card-meta"><span class="tag">Terrestrial</span><span class="tag">1 moon</span></div>
+        </div>
+        <div class="card">
+          <div class="card-icon">♂</div>
+          <h3 class="card-title">Mars</h3>
+          <p class="card-text">The Red Planet with Olympus Mons.</p>
+          <div class="card-meta"><span class="tag">Terrestrial</span><span class="tag">2 moons</span></div>
+        </div>
+        <div class="card">
+          <div class="card-icon">♃</div>
+          <h3 class="card-title">Jupiter</h3>
+          <p class="card-text">The largest planet with the Great Red Spot.</p>
+          <div class="card-meta"><span class="tag">Gas Giant</span><span class="tag">95 moons</span></div>
+        </div>
+        <div class="card">
+          <div class="card-icon">♄</div>
+          <h3 class="card-title">Saturn</h3>
+          <p class="card-text">Famous for its spectacular ring system.</p>
+          <div class="card-meta"><span class="tag">Gas Giant</span><span class="tag">146 moons</span></div>
+        </div>
+        <div class="card">
+          <div class="card-icon">♅</div>
+          <h3 class="card-title">Uranus</h3>
+          <p class="card-text">An ice giant that rotates on its side.</p>
+          <div class="card-meta"><span class="tag">Ice Giant</span><span class="tag">27 moons</span></div>
+        </div>
+        <div class="card">
+          <div class="card-icon">♆</div>
+          <h3 class="card-title">Neptune</h3>
+          <p class="card-text">The windiest planet, a deep blue ice giant.</p>
+          <div class="card-meta"><span class="tag">Ice Giant</span><span class="tag">16 moons</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Quick Stats</h2>
+      <div class="stats-grid">
+        <div class="stat-card" hx-get="/stat/planets" hx-trigger="load" hx-swap="innerHTML">
+          <div class="stat-value">8</div>
+          <div class="stat-label">Planets</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">5</div>
+          <div class="stat-label">Dwarf Planets</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">290+</div>
+          <div class="stat-label">Known Moons</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">4.6B</div>
+          <div class="stat-label">Years Old</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Annotask htmx Playground</p>
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

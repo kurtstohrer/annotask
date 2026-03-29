@@ -34,6 +34,9 @@
     "dev:vue-webpack": "pnpm --filter @annotask/playground-vue-webpack dev",
     "dev:react-vite": "pnpm --filter @annotask/playground-react-vite dev",
     "dev:svelte-vite": "pnpm --filter @annotask/playground-svelte-vite dev",
+    "dev:html-vite": "pnpm --filter @annotask/playground-html-vite dev",
+    "dev:astro": "pnpm --filter @annotask/playground-astro dev",
+    "dev:htmx-vite": "pnpm --filter @annotask/playground-htmx-vite dev",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"

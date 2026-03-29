@@ -1,6 +1,6 @@
 # Annotask
 
-Visual markup tool for web apps. Annotate your UI in the browser — pins, arrows, drawn sections, notes — and Annotask generates structured tasks that AI coding agents apply to your source code. Supports Vue, React, and Svelte with Vite and Webpack.
+Visual markup tool for web apps. Annotate your UI in the browser — pins, arrows, drawn sections, notes — and Annotask generates structured tasks that AI coding agents apply to your source code. Supports Vue, React, Svelte, Astro, and plain HTML/htmx with Vite and Webpack.
 
 ## Workflow
 
@@ -63,18 +63,33 @@ This copies skill files to `.claude/skills/` and `.agents/skills/` so your agent
 npm install -D annotask
 ```
 
-### Vite (Vue, React, or Svelte)
+### Vite (Vue, React, Svelte, or plain HTML)
 
 ```ts
 import { annotask } from 'annotask'
 
 export default defineConfig({
   plugins: [
-    vue(),    // or react() or svelte()
+    vue(),    // or react() or svelte() — omit for plain HTML/htmx
     annotask(),
   ],
 })
 ```
+
+### Astro
+
+```js
+import { defineConfig } from 'astro/config'
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  vite: {
+    plugins: [annotask()],
+  },
+})
+```
+
+Astro source mapping uses Astro's native `data-astro-source-*` attributes — no extra configuration needed.
 
 ### Webpack
 
@@ -135,12 +150,15 @@ annotask init-skills        # Install agent skills into your project
 | Vue 3     | Yes  | Yes     |
 | React     | Yes  | Yes     |
 | Svelte    | Yes  | Yes     |
+| Astro     | Yes  | —       |
+| Plain HTML| Yes  | —       |
+| htmx      | Yes  | —       |
 
 ## Limitations
 
 - **Dev mode only** — Annotask only runs in dev servers (Vite or Webpack), never in production builds
 - **Local only** — API and WebSocket endpoints are unauthenticated (same model as Vite HMR)
-- **Source mapping** — Works best with component files (`.vue`, `.tsx`, `.svelte`); dynamic components and render functions may not map correctly
+- **Source mapping** — Works best with component files (`.vue`, `.tsx`, `.svelte`, `.astro`, `.html`); dynamic components and render functions may not map correctly
 
 ## Development
 
@@ -162,11 +180,11 @@ pnpm test:e2e                 # Run E2E tests (all frameworks)
 - `src/schema.ts` — TypeScript types for change reports
 - `src/cli/` — CLI tool for terminal interaction
 - `skills/` — Agent skill definitions (shipped with the npm package)
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite)
+- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite)
 
 ## Troubleshooting
 
-**Elements don't show source info**: Make sure your framework plugin (Vue, React, or Svelte) is installed and the Annotask plugin is listed after it in your Vite config. The transform needs to run before the framework compiler processes the source.
+**Elements don't show source info**: Make sure your framework plugin (Vue, React, or Svelte) is installed and the Annotask plugin is listed after it in your Vite config. The transform needs to run before the framework compiler processes the source. For Astro, source mapping is automatic via Astro's native attributes. For plain HTML/htmx, source mapping is injected via `transformIndexHtml`.
 
 **WebSocket not connecting**: Ensure the dev server is running. The CLI and shell connect to `/__annotask/ws` on the same port as your dev server.
 

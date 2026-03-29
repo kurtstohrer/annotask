@@ -1,0 +1,52 @@
+---
+interface Props {
+  icon: string
+  name: string
+  description: string
+  type: string
+  moons: number
+}
+const { icon, name, description, type, moons } = Astro.props
+---
+
+<div class="card">
+  <div class="card-icon">{icon}</div>
+  <h3 class="card-title">{name}</h3>
+  <p class="card-text">{description}</p>
+  <div class="card-meta">
+    <span class="tag">{type}</span>
+    <span class="tag">{moons} {moons === 1 ? 'moon' : 'moons'}</span>
+  </div>
+</div>
+
+<style>
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    transition: border-color 0.15s, background 0.15s;
+    cursor: pointer;
+  }
+  .card:hover {
+    border-color: var(--text-muted);
+    background: var(--surface-alt);
+  }
+  .card-icon { font-size: 28px; margin-bottom: 12px; }
+  .card-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .card-text {
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+  .card-meta { display: flex; gap: 8px; }
+  .tag {
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+</style>

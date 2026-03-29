@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Solar System Explorer</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <h1 class="logo">Solar System Explorer</h1>
+      <nav class="nav">
+        <a href="#planets" class="nav-link">Planets</a>
+        <a href="#stats" class="nav-link">Stats</a>
+        <a href="#about" class="nav-link">About</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="content">
+    <section class="hero">
+      <h2 class="hero-title">Explore Our Solar System</h2>
+      <p class="hero-subtitle">A plain HTML playground for Annotask — no frameworks, just markup.</p>
+    </section>
+
+    <section id="planets" class="section">
+      <h2 class="section-title">The Planets</h2>
+      <div class="card-grid">
+        <div class="card" data-planet="mercury">
+          <div class="card-icon">☿</div>
+          <h3 class="card-title">Mercury</h3>
+          <p class="card-text">The smallest planet, closest to the Sun. Surface temperatures swing from -180 to 430 C.</p>
+          <div class="card-meta">
+            <span class="tag">Terrestrial</span>
+            <span class="tag">0 moons</span>
+          </div>
+        </div>
+        <div class="card" data-planet="venus">
+          <div class="card-icon">♀</div>
+          <h3 class="card-title">Venus</h3>
+          <p class="card-text">The hottest planet due to its thick atmosphere. It rotates backwards compared to most planets.</p>
+          <div class="card-meta">
+            <span class="tag">Terrestrial</span>
+            <span class="tag">0 moons</span>
+          </div>
+        </div>
+        <div class="card" data-planet="earth">
+          <div class="card-icon">🜨</div>
+          <h3 class="card-title">Earth</h3>
+          <p class="card-text">Our home world. The only known planet with liquid water on its surface and life.</p>
+          <div class="card-meta">
+            <span class="tag">Terrestrial</span>
+            <span class="tag">1 moon</span>
+          </div>
+        </div>
+        <div class="card" data-planet="mars">
+          <div class="card-icon">♂</div>
+          <h3 class="card-title">Mars</h3>
+          <p class="card-text">The Red Planet. Home to Olympus Mons, the tallest volcano in the solar system.</p>
+          <div class="card-meta">
+            <span class="tag">Terrestrial</span>
+            <span class="tag">2 moons</span>
+          </div>
+        </div>
+        <div class="card" data-planet="jupiter">
+          <div class="card-icon">♃</div>
+          <h3 class="card-title">Jupiter</h3>
+          <p class="card-text">The largest planet. Its Great Red Spot is a storm larger than Earth.</p>
+          <div class="card-meta">
+            <span class="tag">Gas Giant</span>
+            <span class="tag">95 moons</span>
+          </div>
+        </div>
+        <div class="card" data-planet="saturn">
+          <div class="card-icon">♄</div>
+          <h3 class="card-title">Saturn</h3>
+          <p class="card-text">Famous for its spectacular ring system made of ice and rock particles.</p>
+          <div class="card-meta">
+            <span class="tag">Gas Giant</span>
+            <span class="tag">146 moons</span>
+          </div>
+        </div>
+        <div class="card" data-planet="uranus">
+          <div class="card-icon">♅</div>
+          <h3 class="card-title">Uranus</h3>
+          <p class="card-text">An ice giant that rotates on its side. Has faint rings and 27 known moons.</p>
+          <div class="card-meta">
+            <span class="tag">Ice Giant</span>
+            <span class="tag">27 moons</span>
+          </div>
+        </div>
+        <div class="card" data-planet="neptune">
+          <div class="card-icon">♆</div>
+          <h3 class="card-title">Neptune</h3>
+          <p class="card-text">The windiest planet with speeds up to 2,100 km/h. A deep blue ice giant.</p>
+          <div class="card-meta">
+            <span class="tag">Ice Giant</span>
+            <span class="tag">16 moons</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="stats" class="section">
+      <h2 class="section-title">Quick Stats</h2>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value">8</div>
+          <div class="stat-label">Planets</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">5</div>
+          <div class="stat-label">Dwarf Planets</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">290+</div>
+          <div class="stat-label">Known Moons</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">4.6B</div>
+          <div class="stat-label">Years Old</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="about" class="section">
+      <h2 class="section-title">About This Playground</h2>
+      <div class="about-card">
+        <p>This is a <strong>plain HTML</strong> playground for Annotask. No frameworks — just HTML, CSS, and a bit of vanilla JavaScript.</p>
+        <p>Annotask injects <code>data-annotask-*</code> attributes on elements during development, enabling the design tool to map visual changes back to source files.</p>
+        <ul class="feature-list">
+          <li>Element inspection and selection</li>
+          <li>Live style editing</li>
+          <li>Source file mapping</li>
+          <li>Change report generation</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Annotask HTML Playground</p>
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

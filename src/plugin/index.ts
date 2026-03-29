@@ -1,5 +1,5 @@
 import type { Plugin, ViteDevServer } from 'vite'
-import { transformFile } from './transform.js'
+import { transformFile, transformHTML } from './transform.js'
 import { toggleButtonScript } from './toggle-button.js'
 import { bridgeClientScript } from './bridge-client.js'
 import { createAnnotaskServer } from '../server/index.js'
@@ -39,6 +39,9 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       }
 
       // Transform source files to inject data-annotask-* attributes
+      // Note: .astro files are excluded because Astro's compiler runs before
+      // our transform (even with enforce: 'pre'). Astro source mapping is
+      // handled via data-astro-source-* attributes in the bridge client.
       if (!id.endsWith('.vue') && !id.endsWith('.svelte') && !/\.[jt]sx$/.test(id)) return null
 
       const result = transformFile(code, id, projectRoot)
@@ -68,9 +71,10 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       return { code: output, map: null }
     },
 
-    transformIndexHtml(html) {
+    transformIndexHtml(html, ctx) {
+      const transformed = transformHTML(html, ctx.filename, projectRoot)
       return {
-        html,
+        html: transformed ?? html,
         tags: [
           {
             tag: 'script',
@@ -115,6 +119,61 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       console.log('[Annotask] Design tool available at /__annotask/')
       console.log('[Annotask] WebSocket: ws://localhost:<port>/__annotask/ws')
       console.log('[Annotask] API: http://localhost:<port>/__annotask/api/report')
+
+      // Inject bridge scripts into SSR HTML responses (Astro, etc.)
+      // Sniffs content-type from writeHead, buffers only HTML responses,
+      // and injects scripts before </body>.
+      server.middlewares.use((req: any, res: any, next: any) => {
+        if (req.url?.startsWith('/__annotask')) return next()
+
+        const _end = res.end
+        const _write = res.write
+        const _writeHead = res.writeHead
+        const chunks: string[] = []
+        let isHtml = false
+        let decided = false
+
+        res.writeHead = function (statusCode: any, ...rest: any[]) {
+          if (!decided) {
+            decided = true
+            const headers = rest.find((a: any) => typeof a === 'object' && a !== null)
+            if (headers) {
+              const ct = headers['content-type'] || headers['Content-Type']
+              if (typeof ct === 'string') isHtml = ct.includes('text/html')
+            }
+            if (!isHtml) {
+              const ct = res.getHeader('content-type')
+              if (typeof ct === 'string') isHtml = ct.includes('text/html')
+            }
+          }
+          return _writeHead.apply(res, [statusCode, ...rest])
+        }
+
+        res.write = function (chunk: any, ...args: any[]) {
+          if (isHtml) {
+            if (chunk != null) chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString())
+            return true
+          }
+          return _write.apply(res, [chunk, ...args] as any)
+        }
+
+        res.end = function (chunk: any, ...args: any[]) {
+          if (isHtml) {
+            if (chunk != null && chunk !== '') chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString())
+            if (chunks.length > 0) {
+              let body = chunks.join('')
+              if (body.includes('</body>') && !body.includes('__ANNOTASK_BRIDGE__')) {
+                const scripts = `<script type="module">${toggleButtonScript()}</script>\n<script>${bridgeClientScript()}</script>\n`
+                body = body.replace('</body>', scripts + '</body>')
+              }
+              return _end.call(res, body)
+            }
+          }
+          return _end.apply(res, [chunk, ...args] as any)
+        }
+
+        next()
+      })
     },
   }
 

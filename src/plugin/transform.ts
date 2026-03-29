@@ -1,7 +1,8 @@
 /**
  * Source file transform — injects data-annotask-* attributes on HTML elements.
  *
- * Supports Vue SFC (.vue), React JSX (.jsx/.tsx), and Svelte (.svelte).
+ * Supports Vue SFC (.vue), React JSX (.jsx/.tsx), Svelte (.svelte),
+ * Astro (.astro), Lit/Web Components (html`` in .ts/.js), and plain HTML.
  * The core HTML scanner (injectAttributes + findTagEnd) is shared across
  * all frameworks. Each framework has its own extraction logic to locate
  * the markup regions within a source file.
@@ -19,6 +20,8 @@ export function transformFile(
   if (filePath.endsWith('.vue')) return transformVueSFC(code, filePath, projectRoot)
   if (filePath.endsWith('.svelte')) return transformSvelte(code, filePath, projectRoot)
   if (/\.[jt]sx$/.test(filePath)) return transformJSX(code, filePath, projectRoot)
+  if (filePath.endsWith('.html')) return transformHTML(code, filePath, projectRoot)
+  if (filePath.endsWith('.astro')) return transformAstro(code, filePath, projectRoot)
   return null
 }
 
@@ -147,6 +150,109 @@ export function transformJSX(
 /** Tags to skip in JSX mode. Fragments have empty tag names and are handled separately. */
 const JSX_SKIP_TAGS = new Set(['script', 'style'])
 
+// ── HTML ───────────────────────────────────────────────
+
+/**
+ * Transform a plain HTML file. Injects data-annotask-* attributes on
+ * every element inside the <body> block.
+ */
+export function transformHTML(
+  code: string,
+  filePath: string,
+  projectRoot: string
+): string | null {
+  const bodyMatch = code.match(/<body(\s[^>]*)?>/)
+  if (!bodyMatch) return null
+
+  const bodyStart = code.indexOf(bodyMatch[0])
+  const bodyEnd = code.lastIndexOf('</body>')
+  if (bodyEnd === -1) return null
+
+  const bodyOpenTagEnd = bodyStart + bodyMatch[0].length
+  const bodyContent = code.slice(bodyOpenTagEnd, bodyEnd)
+
+  const relativeFile = relativePath(filePath, projectRoot)
+  const componentName = extractComponentName(filePath)
+  const bodyStartLine = code.slice(0, bodyOpenTagEnd).split('\n').length
+
+  const injected = injectAttributes(bodyContent, relativeFile, componentName, bodyStartLine, {
+    skipTags: HTML_SKIP_TAGS,
+  })
+  if (!injected) return null
+
+  return code.slice(0, bodyOpenTagEnd) + injected + code.slice(bodyEnd)
+}
+
+const HTML_SKIP_TAGS = new Set(['script', 'style'])
+
+// ── Astro ──────────────────────────────────────────────
+
+/**
+ * Transform an Astro component. Markup is everything NOT inside the
+ * --- frontmatter ---, <script>, or <style> blocks. Astro uses JSX-like
+ * {expressions} in its template, so we enable jsxMode.
+ */
+export function transformAstro(
+  code: string,
+  filePath: string,
+  projectRoot: string
+): string | null {
+  const relativeFile = relativePath(filePath, projectRoot)
+  const componentName = extractComponentName(filePath)
+
+  // Find frontmatter block (--- ... ---)
+  const frontmatterRanges: Range[] = []
+  const fmStart = code.indexOf('---')
+  if (fmStart !== -1) {
+    const fmEnd = code.indexOf('---', fmStart + 3)
+    if (fmEnd !== -1) {
+      frontmatterRanges.push({ start: fmStart, end: fmEnd + 3 })
+    }
+  }
+
+  const blockRanges = [
+    ...frontmatterRanges,
+    ...findBlockRanges(code, ['script', 'style']),
+  ]
+  blockRanges.sort((a, b) => a.start - b.start)
+
+  const markupRegions = getMarkupRegions(code, blockRanges)
+  if (markupRegions.length === 0) return null
+
+  let result = ''
+  let lastIndex = 0
+  let changed = false
+
+  for (const region of markupRegions) {
+    result += code.slice(lastIndex, region.start)
+
+    const regionContent = code.slice(region.start, region.end)
+    const regionStartLine = code.slice(0, region.start).split('\n').length
+
+    const injected = injectAttributes(regionContent, relativeFile, componentName, regionStartLine, {
+      jsxMode: true,
+      skipTags: ASTRO_SKIP_TAGS,
+    })
+
+    if (injected) {
+      result += injected
+      changed = true
+    } else {
+      result += regionContent
+    }
+
+    lastIndex = region.end
+  }
+
+  if (!changed) return null
+  result += code.slice(lastIndex)
+  return result
+}
+
+const ASTRO_SKIP_TAGS = new Set([
+  'script', 'style', 'Fragment',
+])
+
 /**
  * Known TypeScript/JS generic type names that should NOT be treated as JSX tags.
  * When the scanner sees `<Array` or `<Promise` etc., it skips them.
@@ -165,7 +271,7 @@ const TS_GENERIC_NAMES = new Set([
 
 export function extractComponentName(filePath: string): string {
   const fileName = filePath.split('/').pop() || ''
-  return fileName.replace(/\.(vue|svelte|[jt]sx?)$/, '')
+  return fileName.replace(/\.(vue|svelte|astro|html|[jt]sx?)$/, '')
 }
 
 function relativePath(filePath: string, projectRoot: string): string {

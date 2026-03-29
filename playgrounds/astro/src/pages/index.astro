@@ -1,0 +1,104 @@
+---
+import Layout from '../layouts/Layout.astro'
+import Header from '../components/Header.astro'
+import PlanetCard from '../components/PlanetCard.astro'
+import StatCard from '../components/StatCard.astro'
+
+const planets = [
+  { icon: '☿', name: 'Mercury', description: 'The smallest planet, closest to the Sun. Surface temperatures swing from -180 to 430°C.', type: 'Terrestrial', moons: 0 },
+  { icon: '♀', name: 'Venus', description: 'The hottest planet due to its thick atmosphere. It rotates backwards compared to most planets.', type: 'Terrestrial', moons: 0 },
+  { icon: '🜨', name: 'Earth', description: 'Our home world. The only known planet with liquid water on its surface and life.', type: 'Terrestrial', moons: 1 },
+  { icon: '♂', name: 'Mars', description: 'The Red Planet. Home to Olympus Mons, the tallest volcano in the solar system.', type: 'Terrestrial', moons: 2 },
+  { icon: '♃', name: 'Jupiter', description: 'The largest planet. Its Great Red Spot is a storm larger than Earth.', type: 'Gas Giant', moons: 95 },
+  { icon: '♄', name: 'Saturn', description: 'Famous for its spectacular ring system made of ice and rock particles.', type: 'Gas Giant', moons: 146 },
+  { icon: '♅', name: 'Uranus', description: 'An ice giant that rotates on its side. Has faint rings and 27 known moons.', type: 'Ice Giant', moons: 27 },
+  { icon: '♆', name: 'Neptune', description: 'The windiest planet with speeds up to 2,100 km/h. A deep blue ice giant.', type: 'Ice Giant', moons: 16 },
+]
+---
+
+<Layout title="Solar System Explorer — Astro">
+  <Header title="Solar System Explorer" />
+
+  <main class="content">
+    <section class="hero">
+      <h2 class="hero-title">Explore Our Solar System</h2>
+      <p class="hero-subtitle">An Astro playground for Annotask — components with scoped styles.</p>
+    </section>
+
+    <section id="planets" class="section">
+      <h2 class="section-title">The Planets</h2>
+      <div class="card-grid">
+        {planets.map((p) => (
+          <PlanetCard
+            icon={p.icon}
+            name={p.name}
+            description={p.description}
+            type={p.type}
+            moons={p.moons}
+          />
+        ))}
+      </div>
+    </section>
+
+    <section id="stats" class="section">
+      <h2 class="section-title">Quick Stats</h2>
+      <div class="stats-grid">
+        <StatCard value="8" label="Planets" />
+        <StatCard value="5" label="Dwarf Planets" />
+        <StatCard value="290+" label="Known Moons" />
+        <StatCard value="4.6B" label="Years Old" />
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Annotask Astro Playground</p>
+  </footer>
+</Layout>
+
+<style>
+  .content {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+  }
+  .hero {
+    text-align: center;
+    padding: 60px 20px;
+  }
+  .hero-title {
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+  .hero-subtitle {
+    font-size: 16px;
+    color: var(--text-muted);
+    max-width: 480px;
+    margin: 0 auto;
+  }
+  .section { margin-bottom: 48px; }
+  .section-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 20px;
+  }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 16px;
+  }
+  .footer {
+    border-top: 1px solid var(--border);
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+</style>

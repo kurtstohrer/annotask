@@ -4,3 +4,6 @@ dist
 .DS_Store
 test-results
 __pycache__
+
+# Annotask (generated)
+.annotask/

@@ -1,6 +1,6 @@
 # Annotask
 
-Visual UI design tool for web apps (Vue, React, Svelte). Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
+Visual UI design tool for web apps (Vue, React, Svelte, Astro, plain HTML/htmx). Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
 
 ## Development
 
@@ -34,4 +34,4 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/shared/` — Shared types (postMessage bridge protocol)
 - `src/schema.ts` — TypeScript types for change reports
 - `src/cli/` — CLI tool for terminal interaction
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite)
+- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite)

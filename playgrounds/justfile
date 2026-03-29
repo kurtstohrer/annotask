@@ -39,6 +39,18 @@ react: ensure-api
 svelte: ensure-api
     cd svelte-vite && pnpm dev
 
+# Start HTML + Vite playground (port 5176)
+html: ensure-api
+    cd html-vite && pnpm dev
+
+# Start Astro playground (port 5177)
+astro: ensure-api
+    cd astro && pnpm dev
+
+# Start htmx + Vite playground (port 5178)
+htmx: ensure-api
+    cd htmx-vite && pnpm dev
+
 # Install dependencies for all playgrounds
 install:
     cd .. && pnpm install
@@ -62,6 +74,9 @@ list:
     @echo "  just vue-webpack  — Vue + Webpack        (port 8090)"
     @echo "  just react        — React + Vite         (port 5174)"
     @echo "  just svelte       — Svelte + Vite        (port 5175)"
+    @echo "  just html         — HTML + Vite          (port 5176)"
+    @echo "  just astro        — Astro                (port 5177)"
+    @echo "  just htmx         — htmx + Vite          (port 5178)"
     @echo "  just stop-api     — Stop background API"
     @echo ""
     @echo "The API auto-starts in the background when you run a playground."

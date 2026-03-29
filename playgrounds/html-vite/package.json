@@ -1,0 +1,13 @@
+{
+  "name": "@annotask/playground-html-vite",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "devDependencies": {
+    "annotask": "workspace:*",
+    "vite": "^6.0.0"
+  }
+}

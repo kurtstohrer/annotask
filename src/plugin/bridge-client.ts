@@ -51,21 +51,43 @@ export function bridgeClientScript(): string {
   }
 
   // ── Source Element Resolution ─────────────────────────
+  function hasSourceAttr(el) {
+    return el.hasAttribute && (el.hasAttribute('data-annotask-file') || el.hasAttribute('data-astro-source-file'));
+  }
+
   function findSourceElement(el) {
     var c = el;
     while (c) {
-      if (c.hasAttribute && c.hasAttribute('data-annotask-file')) return { sourceEl: c, targetEl: el };
+      if (hasSourceAttr(c)) return { sourceEl: c, targetEl: el };
       c = c.parentElement;
     }
     return { sourceEl: el, targetEl: el };
   }
 
   function getSourceData(el) {
-    return {
-      file: el.getAttribute('data-annotask-file') || '',
-      line: el.getAttribute('data-annotask-line') || '',
-      component: el.getAttribute('data-annotask-component') || ''
-    };
+    // Prefer data-annotask-* attributes, fall back to data-astro-source-* (Astro framework)
+    var file = el.getAttribute('data-annotask-file') || '';
+    var line = el.getAttribute('data-annotask-line') || '';
+    var component = el.getAttribute('data-annotask-component') || '';
+
+    if (!file && el.getAttribute('data-astro-source-file')) {
+      var astroFile = el.getAttribute('data-astro-source-file') || '';
+      // Convert absolute path to project-relative by finding src/ prefix
+      var srcIdx = astroFile.indexOf('/src/');
+      file = srcIdx !== -1 ? astroFile.slice(srcIdx + 1) : astroFile;
+    }
+    if ((!line || line === '0') && el.getAttribute('data-astro-source-loc')) {
+      // data-astro-source-loc format: "line:col"
+      line = (el.getAttribute('data-astro-source-loc') || '').split(':')[0];
+    }
+    if (!component && file) {
+      // Derive component name from file path
+      var parts = file.split('/');
+      var fileName = parts[parts.length - 1] || '';
+      component = fileName.replace(/\.[^.]+$/, '');
+    }
+
+    return { file: file, line: line, component: component };
   }
 
   function getRect(el) {
@@ -276,6 +298,18 @@ export function bridgeClientScript(): string {
       var all = document.querySelectorAll(
         '[data-annotask-file="' + payload.file + '"][data-annotask-line="' + payload.line + '"]'
       );
+      // Also check Astro source attributes
+      if (all.length === 0 && payload.file && payload.line) {
+        // Try matching by astro source attributes (absolute path ends with file, loc starts with line)
+        var astroAll = document.querySelectorAll('[data-astro-source-file]');
+        var matched = [];
+        for (var ai = 0; ai < astroAll.length; ai++) {
+          var af = astroAll[ai].getAttribute('data-astro-source-file') || '';
+          var al = (astroAll[ai].getAttribute('data-astro-source-loc') || '').split(':')[0];
+          if (af.endsWith('/' + payload.file) && al === payload.line) matched.push(astroAll[ai]);
+        }
+        if (matched.length > 0) all = matched;
+      }
       var eids = [];
       var rects = [];
       for (var i = 0; i < all.length; i++) {
@@ -541,7 +575,7 @@ export function bridgeClientScript(): string {
 
     // ── Source Mapping Check ──
     if (type === 'check:source-mapping') {
-      respond(id, { hasMapping: !!document.querySelector('[data-annotask-file]') });
+      respond(id, { hasMapping: !!(document.querySelector('[data-annotask-file]') || document.querySelector('[data-astro-source-file]')) });
       return;
     }
 

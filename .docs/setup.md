@@ -4,7 +4,7 @@
 
 - Node.js >= 18
 - A Vite (v4+) or Webpack (v5+) project
-- Vue 3, React, or Svelte
+- Vue 3, React, Svelte, Astro, or plain HTML/htmx
 
 ## Install
 
@@ -71,6 +71,38 @@ export default defineConfig({
   plugins: [svelte(), annotask()],
 })
 ```
+
+## Configure Astro
+
+Add Annotask via Astro's Vite config passthrough in `astro.config.mjs`:
+
+```js
+import { defineConfig } from 'astro/config'
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  vite: {
+    plugins: [annotask()],
+  },
+})
+```
+
+Astro source mapping uses Astro's native `data-astro-source-*` attributes automatically.
+
+## Configure plain HTML / htmx (Vite)
+
+No framework plugin needed — just add Annotask:
+
+```ts
+import { defineConfig } from 'vite'
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  plugins: [annotask()],
+})
+```
+
+Source mapping is injected into `<body>` elements via Vite's `transformIndexHtml` hook.
 
 ## Start
 
