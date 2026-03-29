@@ -31,11 +31,11 @@ vue: ensure-api
 vue-webpack: ensure-api
     cd vue-webpack && pnpm dev
 
-# Start React + Vite playground (port 5173)
+# Start React + Vite playground (port 5174)
 react: ensure-api
     cd react-vite && pnpm dev
 
-# Start Svelte + Vite playground (port 5173)
+# Start Svelte + Vite playground (port 5175)
 svelte: ensure-api
     cd svelte-vite && pnpm dev
 
@@ -60,8 +60,8 @@ list:
     @echo "  just api          — Planet Explorer API  (port 8888, foreground)"
     @echo "  just vue          — Vue + Vite           (port 5173)"
     @echo "  just vue-webpack  — Vue + Webpack        (port 8090)"
-    @echo "  just react        — React + Vite         (port 5173)"
-    @echo "  just svelte       — Svelte + Vite        (port 5173)"
+    @echo "  just react        — React + Vite         (port 5174)"
+    @echo "  just svelte       — Svelte + Vite        (port 5175)"
     @echo "  just stop-api     — Stop background API"
     @echo ""
     @echo "The API auto-starts in the background when you run a playground."
