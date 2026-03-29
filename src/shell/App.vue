@@ -646,12 +646,11 @@ function submitPendingArrowTask(id: string, description: string) {
     line: String(arrow.fromLine || 0),
     component: arrow.fromComponent || '',
     intent: description.trim(),
-    action: 'relocate',
     elementTag: (meta.fromTag as string) || '',
     elementClasses: (meta.fromClasses as string) || '',
   })
   createRouteTask({
-    type: 'annotation', action: 'relocate',
+    type: 'annotation',
     description: description.trim(),
     file: arrow.fromFile || '',
     line: arrow.fromLine || 0,
