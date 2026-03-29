@@ -1,0 +1,65 @@
+{
+  "name": "@annotask/vite-plugin",
+  "version": "0.0.1",
+  "type": "module",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./webpack": {
+      "types": "./dist/webpack.d.ts",
+      "import": "./dist/webpack.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  },
+  "bin": {
+    "annotask": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills"
+  ],
+  "scripts": {
+    "build": "pnpm build:shell && pnpm build:plugin",
+    "build:shell": "vite build --config vite.config.shell.ts",
+    "build:plugin": "tsup",
+    "dev:shell": "vite --config vite.config.shell.ts",
+    "dev:playground": "pnpm --filter @annotask/playground dev",
+    "dev:playground-webpack": "pnpm --filter @annotask/playground-webpack dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "vite": ">=4.0.0",
+    "webpack": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": { "optional": true },
+    "webpack": { "optional": true }
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^25.5.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "jsdom": "^29.0.1",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.2",
+    "vue": "^3.5.0"
+  }
+}

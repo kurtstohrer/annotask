@@ -1,0 +1,21 @@
+{
+  "name": "@annotask/playground",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@primevue/themes": "^4.5.4",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.5.4",
+    "vue": "^3.5.0",
+    "vue-router": "^5.0.4"
+  },
+  "devDependencies": {
+    "@annotask/vite-plugin": "workspace:*",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "vite": "^6.0.0"
+  }
+}
