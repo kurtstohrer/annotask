@@ -6,7 +6,7 @@ Annotask has six main modules:
 
 | Module | Purpose |
 |--------|---------|
-| `src/plugin/` | Vite plugin: SFC transform, toggle button, bridge client |
+| `src/plugin/` | Vite integration, SFC transform, toggle button, bridge client |
 | `src/server/` | HTTP API middleware, WebSocket server, shell serving, project state |
 | `src/webpack/` | Webpack plugin and SFC transform loader |
 | `src/shell/` | Design tool UI: Vue 3 app served at `/__annotask/` |

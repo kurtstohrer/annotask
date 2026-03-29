@@ -1,17 +1,17 @@
 # Annotask
 
-Visual UI design tool that runs as a Vite plugin. Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code.
+Visual UI design tool for Vue 3 apps. Make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
 
 ## Quick Start
 
 ```bash
-npm install -D @annotask/vite-plugin
+npm install -D annotask
 ```
 
 ### Vite
 
 ```ts
-import { annotask } from '@annotask/vite-plugin'
+import { annotask } from 'annotask'
 
 export default defineConfig({
   plugins: [vue(), annotask()],
@@ -21,7 +21,7 @@ export default defineConfig({
 ### Webpack
 
 ```ts
-import { AnnotaskWebpackPlugin } from '@annotask/vite-plugin/webpack'
+import { AnnotaskWebpackPlugin } from 'annotask/webpack'
 
 // Add to your webpack config plugins (dev only):
 plugins: [new AnnotaskWebpackPlugin()]
@@ -44,9 +44,9 @@ Start your dev server, then open:
 
 ## How It Works
 
-Annotask runs entirely in Vite's dev server (never in production builds):
+Annotask runs entirely in your dev server (never in production builds):
 
-1. A **Vite plugin** transforms Vue SFC templates to inject source-mapping attributes (`data-annotask-file`, `data-annotask-line`, `data-annotask-component`)
+1. A **build plugin** transforms Vue SFC templates to inject source-mapping attributes (`data-annotask-file`, `data-annotask-line`, `data-annotask-component`)
 2. A **shell UI** loads your app in an iframe and provides design tools
 3. Changes are tracked and broadcast via **WebSocket** and served via **HTTP API**
 4. AI agents or the CLI can consume the change report to patch source files

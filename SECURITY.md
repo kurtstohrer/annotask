@@ -21,5 +21,5 @@ Annotask assumes a **trusted local environment**: the developer's machine, runni
 ## Recommendations
 
 - Do not expose the dev server to untrusted networks.
-- Do not include `@annotask/vite-plugin` in production dependencies — it should be a `devDependency` only.
+- Do not include `annotask` in production dependencies — it should be a `devDependency` only.
 - If you need to share a running dev environment, use a VPN or SSH tunnel rather than binding to `0.0.0.0`.

@@ -9,9 +9,9 @@
 ## Install
 
 ```bash
-npm install -D @annotask/vite-plugin
+npm install -D annotask
 # or
-pnpm add -D @annotask/vite-plugin
+pnpm add -D annotask
 ```
 
 ## Configure Vite
@@ -21,7 +21,7 @@ Add Annotask to your `vite.config.ts`. It must come **after** the Vue plugin:
 ```ts
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { annotask } from '@annotask/vite-plugin'
+import { annotask } from 'annotask'
 
 export default defineConfig({
   plugins: [vue(), annotask()],
@@ -35,7 +35,7 @@ Annotask only runs in dev mode (`vite dev`). Production builds (`vite build`) ar
 Add the Webpack plugin to your `webpack.config.js`:
 
 ```ts
-import { AnnotaskWebpackPlugin } from '@annotask/vite-plugin/webpack'
+import { AnnotaskWebpackPlugin } from 'annotask/webpack'
 
 export default {
   // ... your config

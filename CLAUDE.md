@@ -1,6 +1,6 @@
 # Annotask
 
-Visual UI design tool that runs as a Vite plugin. Developers make visual changes in the browser and this tool generates structured reports that AI agents can apply to source code.
+Visual UI design tool for Vue 3 apps. Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
 
 ## Development
 

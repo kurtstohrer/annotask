@@ -12,7 +12,7 @@ A Vite plugin that adds a visual UI design tool to any Vue/React project. Run `n
 |---|---|---|
 | Primary user | Developer running local dev server | Not designers, not staging URLs |
 | **Architecture** | **Single Vite plugin** | Serves shell UI + transforms SFCs + handles file ops — all from one package on the same Vite server |
-| Distribution | `npm install -D @annotask/vite-plugin` + one line in vite config | No separate server, no extra process |
+| Distribution | `npm install -D annotask` + one line in vite config | No separate server, no extra process |
 | Access model | Same-origin iframe | Shell at `/__annotask/` embeds user's app at `/` — same port, direct `iframe.contentDocument` DOM access |
 | Framework priority | **Vue first**, then React | Vue is priority; React second |
 | Repo scanner scope | Explicit tokens only (Tailwind config, CSS vars, theme objects) | No implicit pattern inference in v1 |
@@ -60,7 +60,7 @@ This is the same pattern used by [Vue DevTools Vite plugin](https://devtools.vue
 User's vite.config.ts                        Browser
 ┌──────────────────────────┐                ┌───────────────────────────────────┐
 │ import { annotask } from   │                │ localhost:5173/__annotask/          │
-│   '@annotask/vite-plugin'  │                │                                   │
+│   'annotask'  │                │                                   │
 │                          │                │ ┌───────────────────────────────┐ │
 │ export default {         │   serves both  │ │ Annotask Shell (pre-built app)  │ │
 │   plugins: [             │ ──────────────►│ │                               │ │
@@ -245,7 +245,7 @@ annotask://preview-screenshot      → visual state capture
 
 ## System Components
 
-Everything lives in one npm package (`@annotask/vite-plugin`) with two distinct runtime contexts:
+Everything lives in one npm package (`annotask`) with two distinct runtime contexts:
 
 ### Browser-side: Shell App (pre-built, served at `/__annotask/`)
 The design tool UI. Pre-built into static assets during Annotask's own build, bundled into the npm package, served by the plugin via Vite's `configureServer` middleware.

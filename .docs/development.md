@@ -129,7 +129,7 @@ skills/                      # AI agent skills (shipped in npm package)
 - **Vue 3 Composition API** — shell uses `<script setup>` and composables.
 - **Vitest** for unit tests, **Playwright** for E2E.
 - **tsup** bundles the plugin and CLI. **Vite** builds the shell.
-- **pnpm workspaces** — the playground is a workspace package that depends on `@annotask/vite-plugin` via `workspace:*`.
+- **pnpm workspaces** — the playground is a workspace package that depends on `annotask` via `workspace:*`.
 
 ## Adding a new API endpoint
 

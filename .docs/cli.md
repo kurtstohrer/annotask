@@ -4,16 +4,16 @@ The `annotask` CLI connects to a running dev server (Vite or Webpack) with the A
 
 ## Install
 
-The CLI is included in the `@annotask/vite-plugin` package:
+The CLI is included in the `annotask` package:
 
 ```bash
-npm install -D @annotask/vite-plugin
+npm install -D annotask
 npx annotask help
 ```
 
 Or run directly:
 ```bash
-npx @annotask/vite-plugin annotask help
+npx annotask help
 ```
 
 ## Commands

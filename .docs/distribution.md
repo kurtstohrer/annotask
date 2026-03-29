@@ -34,7 +34,7 @@ skills/
 
 ```json
 {
-  "name": "@annotask/vite-plugin",
+  "name": "annotask",
   "version": "0.0.1",
   "type": "module",
   "exports": {
@@ -67,7 +67,7 @@ skills/
 
 Users import the plugin:
 ```ts
-import { annotask } from '@annotask/vite-plugin'
+import { annotask } from 'annotask'
 ```
 
 And get the CLI binary:
@@ -101,22 +101,21 @@ npx annotask watch
    ```
    The `@annotask` scope needs to be public for first publish.
 
-### npm scope setup
-
-If you haven't created the `@annotask` npm org yet:
+### npm publish setup
 
 ```bash
 npm login
-npm org create annotask
-npm publish --access public
+npm publish
 ```
+
+If a scoped package is needed later (e.g. `@annotask/cli`), create the org first with `npm org create annotask`.
 
 ### Future: separate CLI package
 
-Right now the CLI is bundled inside `@annotask/vite-plugin`. If the CLI grows or needs to be used without the Vite plugin, consider splitting it:
+Right now the CLI is bundled inside `annotask`. If the CLI grows or needs to be used without the Vite plugin, consider splitting it:
 
 ```
-@annotask/vite-plugin   # Plugin only
+annotask   # Plugin only
 @annotask/cli           # CLI only (annotask command)
 ```
 

@@ -1,5 +1,5 @@
 {
-  "name": "@annotask/vite-plugin",
+  "name": "annotask",
   "version": "0.0.1",
   "type": "module",
   "module": "./dist/index.js",

@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { annotask } from '@annotask/vite-plugin'
+import { annotask } from 'annotask'
 
 export default defineConfig({
   plugins: [vue(), annotask()],

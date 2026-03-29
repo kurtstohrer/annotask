@@ -13,7 +13,7 @@ export default async (env, argv) => {
   ]
 
   if (isDev) {
-    const { AnnotaskWebpackPlugin } = await import('@annotask/vite-plugin/webpack')
+    const { AnnotaskWebpackPlugin } = await import('annotask/webpack')
     plugins.push(new AnnotaskWebpackPlugin())
   }
 
