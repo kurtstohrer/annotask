@@ -598,7 +598,7 @@ export function bridgeClientScript(): string {
       return;
     }
 
-    if (type === 'insert:vue-component') {
+    if (type === 'insert:vue-component' || type === 'insert:component') {
       var vcTarget = getEl(payload.targetEid);
       if (!vcTarget) { respond(id, { eid: '', mounted: false }); return; }
       var vcContainer = document.createElement('div');
@@ -712,6 +712,25 @@ export function bridgeClientScript(): string {
   }
 
   function tryMountComponent(container, componentName, props) {
+    // Try Vue
+    if (window.__ANNOTASK_VUE__) {
+      var mounted = tryMountVueComponent(container, componentName, props);
+      if (mounted) return true;
+    }
+    // Try React
+    if (window.__ANNOTASK_REACT__) {
+      var mounted = tryMountReactComponent(container, componentName, props);
+      if (mounted) return true;
+    }
+    // Try Svelte
+    if (window.__ANNOTASK_SVELTE__) {
+      var mounted = tryMountSvelteComponent(container, componentName, props);
+      if (mounted) return true;
+    }
+    return false;
+  }
+
+  function tryMountVueComponent(container, componentName, props) {
     try {
       var appEl = document.querySelector('#app');
       var vueApp = appEl && appEl.__vue_app__;
@@ -727,8 +746,43 @@ export function bridgeClientScript(): string {
       });
       miniApp._context = vueApp._context;
       miniApp.mount(mountPoint);
-      container.setAttribute('data-annotask-vue-mounted', 'true');
+      container.setAttribute('data-annotask-mounted', 'true');
       container.__annotask_unmount = function() { try { miniApp.unmount(); } catch(e) {} };
+      return true;
+    } catch(e) { return false; }
+  }
+
+  function tryMountReactComponent(container, componentName, props) {
+    try {
+      var annotaskReact = window.__ANNOTASK_REACT__;
+      if (!annotaskReact || !annotaskReact.createElement || !annotaskReact.createRoot) return false;
+      var component = window.__ANNOTASK_COMPONENTS__ && window.__ANNOTASK_COMPONENTS__[componentName];
+      if (!component) return false;
+      var mountPoint = document.createElement('div');
+      container.appendChild(mountPoint);
+      var root = annotaskReact.createRoot(mountPoint);
+      root.render(annotaskReact.createElement(component, props || {}));
+      container.setAttribute('data-annotask-mounted', 'true');
+      container.__annotask_unmount = function() { try { root.unmount(); } catch(e) {} };
+      return true;
+    } catch(e) { return false; }
+  }
+
+  function tryMountSvelteComponent(container, componentName, props) {
+    try {
+      var annotaskSvelte = window.__ANNOTASK_SVELTE__;
+      if (!annotaskSvelte || !annotaskSvelte.mount) return false;
+      var component = window.__ANNOTASK_COMPONENTS__ && window.__ANNOTASK_COMPONENTS__[componentName];
+      if (!component) return false;
+      var mountPoint = document.createElement('div');
+      container.appendChild(mountPoint);
+      var instance = annotaskSvelte.mount(component, { target: mountPoint, props: props || {} });
+      container.setAttribute('data-annotask-mounted', 'true');
+      container.__annotask_unmount = function() {
+        try {
+          if (annotaskSvelte.unmount) annotaskSvelte.unmount(instance);
+        } catch(e) {}
+      };
       return true;
     } catch(e) { return false; }
   }

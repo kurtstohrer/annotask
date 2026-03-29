@@ -1,6 +1,6 @@
 # Annotask
 
-Visual UI design tool for Vue 3 apps. Make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
+Visual UI design tool for web apps. Make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Supports Vue, React, and Svelte with Vite and Webpack.
 
 ## Quick Start
 
@@ -8,13 +8,16 @@ Visual UI design tool for Vue 3 apps. Make visual changes in the browser and Ann
 npm install -D annotask
 ```
 
-### Vite
+### Vite (Vue, React, or Svelte)
 
 ```ts
 import { annotask } from 'annotask'
 
 export default defineConfig({
-  plugins: [vue(), annotask()],
+  plugins: [
+    vue(),    // or react() or svelte()
+    annotask(),
+  ],
 })
 ```
 
@@ -46,7 +49,7 @@ Start your dev server, then open:
 
 Annotask runs entirely in your dev server (never in production builds):
 
-1. A **build plugin** transforms Vue SFC templates to inject source-mapping attributes (`data-annotask-file`, `data-annotask-line`, `data-annotask-component`)
+1. A **build plugin** transforms source files (Vue SFCs, React JSX/TSX, Svelte) to inject source-mapping attributes (`data-annotask-file`, `data-annotask-line`, `data-annotask-component`)
 2. A **shell UI** loads your app in an iframe and provides design tools
 3. Changes are tracked and broadcast via **WebSocket** and served via **HTTP API**
 4. AI agents or the CLI can consume the change report to patch source files
@@ -70,38 +73,44 @@ annotask status             # Check connection
 - `GET /__annotask/api/status` — Health check
 - `ws://localhost:5173/__annotask/ws` — Live WebSocket stream
 
+## Supported Frameworks
+
+| Framework | Vite | Webpack |
+|-----------|------|---------|
+| Vue 3     | Yes  | Yes     |
+| React     | Yes  | Yes     |
+| Svelte    | Yes  | Yes     |
+
 ## Limitations
 
-- **Vue 3 only** — React and Svelte support are planned but not yet implemented
 - **Dev mode only** — Annotask only runs in dev servers (Vite or Webpack), never in production builds
 - **Local only** — API and WebSocket endpoints are unauthenticated (same model as Vite HMR)
-- **Source mapping** — Works best with single-file components; dynamic components may not map correctly
+- **Source mapping** — Works best with component files (`.vue`, `.tsx`, `.svelte`); dynamic components and render functions may not map correctly
 
 ## Development
 
 ```bash
 pnpm install
 pnpm build                   # Build shell + plugin + CLI
-pnpm dev:playground           # Start test app with Annotask
+pnpm dev:vue-vite             # Start Vue test app with Annotask
 pnpm test                     # Run tests
 pnpm test:watch               # Watch mode
 ```
 
 ## Project Structure
 
-- `src/plugin/` — Vite plugin (SFC transform, toggle button, bridge client)
+- `src/plugin/` — Vite plugin (multi-framework transform, toggle button, bridge client)
 - `src/server/` — HTTP API, WebSocket server, shell serving, project state
-- `src/webpack/` — Webpack plugin and SFC transform loader
+- `src/webpack/` — Webpack plugin and transform loader
 - `src/shell/` — Design tool UI (Vue 3 app, pre-built into dist/shell/)
 - `src/shared/` — Shared types (postMessage bridge protocol)
 - `src/schema.ts` — TypeScript types for change reports
 - `src/cli/` — CLI tool for terminal interaction
-- `playground/` — Vite test app for development
-- `playground-webpack/` — Webpack test app for development
+- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite)
 
 ## Troubleshooting
 
-**Elements don't show source info**: Make sure `@vitejs/plugin-vue` is installed and the Annotask plugin is listed after it in your Vite config. The transform needs to run before Vue compiles the SFC.
+**Elements don't show source info**: Make sure your framework plugin (Vue, React, or Svelte) is installed and the Annotask plugin is listed after it in your Vite config. The transform needs to run before the framework compiler processes the source.
 
 **WebSocket not connecting**: Ensure the dev server is running. The CLI and shell connect to `/__annotask/ws` on the same port as your dev server.
 

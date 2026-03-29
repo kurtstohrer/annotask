@@ -1,0 +1,68 @@
+# Playground development commands
+# Run from the playgrounds/ directory or use: just -f playgrounds/justfile <command>
+
+# Ensure the Planet Explorer API is running (starts it in background if not)
+[private]
+ensure-api:
+    #!/usr/bin/env bash
+    if curl -s http://localhost:8888/api/stats > /dev/null 2>&1; then
+        echo "[API] Already running on port 8888"
+    else
+        echo "[API] Starting Planet Explorer API on port 8888..."
+        cd api && nohup uvicorn main:app --port 8888 > /tmp/annotask-api.log 2>&1 &
+        for i in {1..10}; do
+            if curl -s http://localhost:8888/api/stats > /dev/null 2>&1; then
+                echo "[API] Ready"
+                break
+            fi
+            sleep 0.5
+        done
+    fi
+
+# Start the shared Planet Explorer API (foreground, with reload)
+api:
+    cd api && uvicorn main:app --reload --port 8888
+
+# Start Vue + Vite playground (port 5173)
+vue: ensure-api
+    cd vue-vite && pnpm dev
+
+# Start Vue + Webpack playground (port 8090)
+vue-webpack: ensure-api
+    cd vue-webpack && pnpm dev
+
+# Start React + Vite playground (port 5173)
+react: ensure-api
+    cd react-vite && pnpm dev
+
+# Start Svelte + Vite playground (port 5173)
+svelte: ensure-api
+    cd svelte-vite && pnpm dev
+
+# Install dependencies for all playgrounds
+install:
+    cd .. && pnpm install
+
+# Stop the background API if running
+stop-api:
+    #!/usr/bin/env bash
+    pid=$(lsof -ti :8888 2>/dev/null)
+    if [ -n "$pid" ]; then
+        kill $pid
+        echo "[API] Stopped"
+    else
+        echo "[API] Not running"
+    fi
+
+# List available playgrounds
+list:
+    @echo "Playgrounds:"
+    @echo "  just api          — Planet Explorer API  (port 8888, foreground)"
+    @echo "  just vue          — Vue + Vite           (port 5173)"
+    @echo "  just vue-webpack  — Vue + Webpack        (port 8090)"
+    @echo "  just react        — React + Vite         (port 5173)"
+    @echo "  just svelte       — Svelte + Vite        (port 5173)"
+    @echo "  just stop-api     — Stop background API"
+    @echo ""
+    @echo "The API auto-starts in the background when you run a playground."
+    @echo "Use 'just api' to run it in the foreground with hot reload."

@@ -1,5 +1,5 @@
 import type { Plugin, ViteDevServer } from 'vite'
-import { transformSFC } from './transform.js'
+import { transformFile } from './transform.js'
 import { toggleButtonScript } from './toggle-button.js'
 import { bridgeClientScript } from './bridge-client.js'
 import { createAnnotaskServer } from '../server/index.js'
@@ -23,18 +23,28 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
     },
 
     transform(code, id) {
-      // Expose Vue runtime for Annotask component rendering
-      if ((id.endsWith('/main.ts') || id.endsWith('/main.js')) && code.includes('from \'vue\'')) {
-        const exposed = code + `\n;import { createApp as __uf_createApp, h as __uf_h } from 'vue';\nwindow.__ANNOTASK_VUE__ = { createApp: __uf_createApp, h: __uf_h };\n`
-        return { code: exposed, map: null }
+      // Expose framework runtime for Annotask component rendering
+      if (id.endsWith('/main.ts') || id.endsWith('/main.js') || id.endsWith('/main.tsx') || id.endsWith('/main.jsx')) {
+        let injection = ''
+        if (code.includes("from 'vue'") || code.includes('from "vue"')) {
+          injection = `\n;import { createApp as __uf_createApp, h as __uf_h } from 'vue';\nwindow.__ANNOTASK_VUE__ = { createApp: __uf_createApp, h: __uf_h };\n`
+        } else if (code.includes("from 'react'") || code.includes('from "react"')) {
+          injection = `\n;import { createElement as __uf_createElement } from 'react';\nimport { createRoot as __uf_createRoot } from 'react-dom/client';\nwindow.__ANNOTASK_REACT__ = { createElement: __uf_createElement, createRoot: __uf_createRoot };\n`
+        } else if (code.includes("from 'svelte'") || code.includes('from "svelte"')) {
+          injection = `\n;import { mount as __uf_mount, unmount as __uf_unmount } from 'svelte';\nwindow.__ANNOTASK_SVELTE__ = { mount: __uf_mount, unmount: __uf_unmount };\n`
+        }
+        if (injection) {
+          return { code: code + injection, map: null }
+        }
       }
 
-      if (!id.endsWith('.vue')) return null
+      // Transform source files to inject data-annotask-* attributes
+      if (!id.endsWith('.vue') && !id.endsWith('.svelte') && !/\.[jt]sx$/.test(id)) return null
 
-      const result = transformSFC(code, id, projectRoot)
+      const result = transformFile(code, id, projectRoot)
       if (!result) return null
 
-      // Register imported components globally
+      // Register imported PascalCase components globally
       let output = result
       const importRegex = /import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g
       let match
@@ -47,7 +57,12 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       }
       if (registrations.length > 0) {
         const regCode = `\nif (typeof window !== 'undefined') { window.__ANNOTASK_COMPONENTS__ = window.__ANNOTASK_COMPONENTS__ || {}; ${registrations.join('; ')} }\n`
-        output = output.replace(/<\/script>/, regCode + '</script>')
+        // Vue SFCs: inject before </script>. JSX/Svelte: append to end of file.
+        if (id.endsWith('.vue') && output.includes('</script>')) {
+          output = output.replace(/<\/script>/, regCode + '</script>')
+        } else {
+          output += regCode
+        }
       }
 
       return { code: output, map: null }

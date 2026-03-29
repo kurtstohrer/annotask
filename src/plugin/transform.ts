@@ -1,56 +1,40 @@
 /**
- * Vue SFC template transform.
+ * Source file transform — injects data-annotask-* attributes on HTML elements.
  *
- * Injects data-annotask-file, data-annotask-line, and data-annotask-component
- * attributes on every element in Vue SFC templates at compile time.
- *
- * Strategy: We use Vite's `transform` hook on .vue files. After
- * @vitejs/plugin-vue compiles the SFC, the template is turned into
- * render function calls like `_createElementVNode("div", { ... })`.
- *
- * Instead of post-processing compiled output (fragile), we use
- * @vue/compiler-sfc to parse the raw SFC, walk the template AST,
- * and inject attributes directly into the template source before
- * the Vue plugin compiles it. We do this via Vite's `enforce: 'pre'`
- * so our transform runs BEFORE @vitejs/plugin-vue.
+ * Supports Vue SFC (.vue), React JSX (.jsx/.tsx), and Svelte (.svelte).
+ * The core HTML scanner (injectAttributes + findTagEnd) is shared across
+ * all frameworks. Each framework has its own extraction logic to locate
+ * the markup regions within a source file.
  */
-
-import type { NodeTypes } from '@vue/compiler-core'
-
-interface TemplateNode {
-  type: number
-  tag?: string
-  props: Array<{
-    type: number
-    name: string
-    value?: { content: string }
-    loc: { start: { offset: number }; end: { offset: number } }
-  }>
-  children?: TemplateNode[]
-  loc: {
-    start: { offset: number; line: number; column: number }
-    end: { offset: number; line: number; column: number }
-    source: string
-  }
-}
-
-// Node types from @vue/compiler-core
-const ELEMENT = 1
-const ATTRIBUTE = 6
 
 /**
- * Transform an SFC's raw source to inject data-annotask-* attributes
- * on every element in the <template> block.
+ * Top-level dispatcher. Detects framework by file extension and delegates
+ * to the appropriate transform function.
  */
-export function transformSFC(
+export function transformFile(
   code: string,
   filePath: string,
   projectRoot: string
 ): string | null {
-  // Quick bail: not a Vue SFC with a template
+  if (filePath.endsWith('.vue')) return transformVueSFC(code, filePath, projectRoot)
+  if (filePath.endsWith('.svelte')) return transformSvelte(code, filePath, projectRoot)
+  if (/\.[jt]sx$/.test(filePath)) return transformJSX(code, filePath, projectRoot)
+  return null
+}
+
+// ── Vue SFC ─────────────────────────────────────────────
+
+/**
+ * Transform a Vue SFC's raw source to inject data-annotask-* attributes
+ * on every element in the <template> block.
+ */
+export function transformVueSFC(
+  code: string,
+  filePath: string,
+  projectRoot: string
+): string | null {
   if (!code.includes('<template')) return null
 
-  // Find the template block boundaries
   const templateMatch = code.match(/<template(\s[^>]*)?>/)
   if (!templateMatch) return null
 
@@ -58,52 +42,162 @@ export function transformSFC(
   const templateEnd = code.lastIndexOf('</template>')
   if (templateEnd === -1) return null
 
-  // The content between <template> and </template>
   const templateOpenTagEnd = templateStart + templateMatch[0].length
   const templateContent = code.slice(templateOpenTagEnd, templateEnd)
 
-  // Calculate relative file path
-  const relativeFile = filePath.startsWith(projectRoot)
-    ? filePath.slice(projectRoot.length).replace(/^\//, '')
-    : filePath
-
-  // Extract the component name from the file path
+  const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
-
-  // Calculate the 1-based line number where template content begins in the file
   const templateStartLine = code.slice(0, templateOpenTagEnd).split('\n').length
 
-  // Parse the template to find all element open tags and inject attributes.
-  // We work on the raw template string to avoid needing the full Vue compiler
-  // as a runtime dependency. We find every opening tag and inject attributes
-  // right before the closing `>`.
   const injected = injectAttributes(templateContent, relativeFile, componentName, templateStartLine)
-
   if (!injected) return null
 
   return code.slice(0, templateOpenTagEnd) + injected + code.slice(templateEnd)
 }
 
-function extractComponentName(filePath: string): string {
+/** @deprecated Use transformVueSFC instead */
+export const transformSFC = transformVueSFC
+
+// ── Svelte ──────────────────────────────────────────────
+
+/**
+ * Transform a Svelte component. Markup in .svelte files is everything
+ * NOT inside <script> or <style> blocks.
+ */
+export function transformSvelte(
+  code: string,
+  filePath: string,
+  projectRoot: string
+): string | null {
+  const relativeFile = relativePath(filePath, projectRoot)
+  const componentName = extractComponentName(filePath)
+
+  // Find all <script> and <style> block ranges (including their tags)
+  const blockRanges = findBlockRanges(code, ['script', 'style'])
+
+  // Collect markup regions (gaps between blocks)
+  const markupRegions = getMarkupRegions(code, blockRanges)
+
+  if (markupRegions.length === 0) return null
+
+  let result = ''
+  let lastIndex = 0
+  let changed = false
+
+  for (const region of markupRegions) {
+    // Add everything before this region (script/style blocks)
+    result += code.slice(lastIndex, region.start)
+
+    const regionContent = code.slice(region.start, region.end)
+    const regionStartLine = code.slice(0, region.start).split('\n').length
+
+    const injected = injectAttributes(
+      regionContent,
+      relativeFile,
+      componentName,
+      regionStartLine,
+      { skipTags: SVELTE_SKIP_TAGS }
+    )
+
+    if (injected) {
+      result += injected
+      changed = true
+    } else {
+      result += regionContent
+    }
+
+    lastIndex = region.end
+  }
+
+  if (!changed) return null
+
+  result += code.slice(lastIndex)
+  return result
+}
+
+const SVELTE_SKIP_TAGS = new Set([
+  'script', 'style',
+  'svelte:head', 'svelte:window', 'svelte:document', 'svelte:body',
+  'svelte:options', 'svelte:fragment', 'svelte:self', 'svelte:component',
+  'svelte:element', 'svelte:boundary',
+])
+
+// ── React JSX ───────────────────────────────────────────
+
+/**
+ * Transform a React JSX/TSX file. JSX is interleaved with JavaScript,
+ * so we scan the full file with brace-depth tracking enabled.
+ */
+export function transformJSX(
+  code: string,
+  filePath: string,
+  projectRoot: string
+): string | null {
+  const relativeFile = relativePath(filePath, projectRoot)
+  const componentName = extractComponentName(filePath)
+
+  const injected = injectAttributes(code, relativeFile, componentName, 1, {
+    jsxMode: true,
+    skipTags: JSX_SKIP_TAGS,
+  })
+
+  return injected
+}
+
+/** Tags to skip in JSX mode. Fragments have empty tag names and are handled separately. */
+const JSX_SKIP_TAGS = new Set(['script', 'style'])
+
+/**
+ * Known TypeScript/JS generic type names that should NOT be treated as JSX tags.
+ * When the scanner sees `<Array` or `<Promise` etc., it skips them.
+ */
+const TS_GENERIC_NAMES = new Set([
+  'Array', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Generator',
+  'AsyncGenerator', 'Iterable', 'AsyncIterable', 'Iterator',
+  'Record', 'Partial', 'Required', 'Readonly', 'Pick', 'Omit',
+  'Exclude', 'Extract', 'NonNullable', 'ReturnType', 'Parameters',
+  'InstanceType', 'ConstructorParameters', 'Awaited',
+  'ReadonlyArray', 'ReadonlyMap', 'ReadonlySet',
+  'Uppercase', 'Lowercase', 'Capitalize', 'Uncapitalize',
+])
+
+// ── Shared Utilities ────────────────────────────────────
+
+export function extractComponentName(filePath: string): string {
   const fileName = filePath.split('/').pop() || ''
-  return fileName.replace(/\.vue$/, '')
+  return fileName.replace(/\.(vue|svelte|[jt]sx?)$/, '')
+}
+
+function relativePath(filePath: string, projectRoot: string): string {
+  return filePath.startsWith(projectRoot)
+    ? filePath.slice(projectRoot.length).replace(/^\//, '')
+    : filePath
+}
+
+interface InjectOptions {
+  /** Enable JSX mode: track {} brace depth, skip TS generics */
+  jsxMode?: boolean
+  /** Tags to skip (won't have attributes injected) */
+  skipTags?: Set<string>
 }
 
 /**
- * Walk through template HTML and inject data-annotask-* attributes on every
- * element's opening tag.
+ * Walk through HTML/JSX markup and inject data-annotask-* attributes on
+ * every element's opening tag.
  *
  * Uses a character-level scanner that is quote-aware, so `>` inside
- * attribute values (e.g., `:class="{ hot: x > 100 }"`) does not
- * prematurely close the tag.
+ * attribute values does not prematurely close the tag.
  */
-function injectAttributes(
+export function injectAttributes(
   template: string,
   file: string,
   componentName: string,
-  templateStartLine: number
+  templateStartLine: number,
+  options?: InjectOptions,
 ): string | null {
-  const skipTags = new Set(['script', 'style', 'template', 'slot'])
+  const skipTags = options?.skipTags ?? DEFAULT_SKIP_TAGS
+  const jsxMode = options?.jsxMode ?? false
+
   let result = ''
   let lastIndex = 0
   let changed = false
@@ -129,23 +223,36 @@ function injectAttributes(
       const tagStart = i
       i++ // past '<'
 
-      // Read tag name
+      // Read tag name (including namespaced tags like svelte:head)
       const nameStart = i
-      while (i < template.length && /[a-zA-Z0-9-]/.test(template[i])) i++
+      while (i < template.length && /[a-zA-Z0-9\-:]/.test(template[i])) i++
       const tagName = template.slice(nameStart, i)
 
+      // In JSX mode, skip React fragments (empty tag name won't reach here,
+      // but <> starts with < followed by > which isn't [a-zA-Z])
+      // Skip known TypeScript generics
+      if (jsxMode && TS_GENERIC_NAMES.has(tagName)) {
+        // This is a TS generic like Array<string>, not a JSX tag
+        // Find the closing > accounting for nested generics
+        i = skipGeneric(template, i)
+        continue
+      }
+
+      // In JSX mode, check if this looks like a type context
+      // (preceded by : or as or extends or implements)
+      if (jsxMode && isTypeContext(template, tagStart)) {
+        i = skipGeneric(template, i)
+        continue
+      }
+
       // Skip tags we don't want to instrument
-      if (skipTags.has(tagName.toLowerCase())) {
-        // Advance past this tag's closing >
-        i = findTagEnd(template, i)
+      if (skipTags.has(tagName) || skipTags.has(tagName.toLowerCase())) {
+        i = findTagEnd(template, i, jsxMode)
         continue
       }
 
       // Scan past attributes to find the closing > or />
-      // This is quote-aware: we track when we're inside " or ' strings
-      const attrsStart = i
-      i = findTagEnd(template, i)
-      const tagEndIndex = i // points one past the '>'
+      const tagEndIndex = findTagEnd(template, i, jsxMode)
 
       const tagSource = template.slice(tagStart, tagEndIndex)
 
@@ -169,6 +276,7 @@ function injectAttributes(
       result += template.slice(insertAt, tagEndIndex)
       lastIndex = tagEndIndex
       changed = true
+      i = tagEndIndex
 
       continue
     }
@@ -182,14 +290,17 @@ function injectAttributes(
   return result
 }
 
+const DEFAULT_SKIP_TAGS = new Set(['script', 'style', 'template', 'slot'])
+
 /**
  * Starting from position `i` (after the tag name), scan forward past
  * all attributes and find the closing `>`. Handles quoted strings
  * so that `>` inside `"..."`, `'...'`, or `` `...` `` doesn't end the tag.
- * Backtick template literals track `${...}` interpolation depth.
- * Returns the index one past the closing `>`.
+ *
+ * In JSX mode, also tracks `{}` brace depth so that `>` inside
+ * JSX expression attributes (e.g., `{x > 5}`) doesn't end the tag.
  */
-function findTagEnd(template: string, i: number): number {
+export function findTagEnd(template: string, i: number, jsxMode = false): number {
   let inQuote: string | null = null
   let braceDepth = 0
 
@@ -210,12 +321,143 @@ function findTagEnd(template: string, i: number): number {
     } else {
       if (ch === '"' || ch === "'" || ch === '`') {
         inQuote = ch
-      } else if (ch === '>') {
+      } else if (jsxMode && ch === '{') {
+        braceDepth++
+      } else if (jsxMode && ch === '}' && braceDepth > 0) {
+        braceDepth--
+      } else if (ch === '>' && braceDepth === 0) {
         return i + 1
       }
     }
     i++
   }
 
+  return i
+}
+
+// ── Svelte helpers ──────────────────────────────────────
+
+interface Range { start: number; end: number }
+
+/**
+ * Find all ranges of the given block-level tags (e.g., script, style)
+ * including their opening and closing tags.
+ */
+function findBlockRanges(code: string, tagNames: string[]): Range[] {
+  const ranges: Range[] = []
+  for (const tag of tagNames) {
+    // Match opening tags like <script>, <script context="module">, <style lang="scss">
+    const openRegex = new RegExp(`<${tag}(\\s[^>]*)?>`, 'gi')
+    let match
+    while ((match = openRegex.exec(code)) !== null) {
+      const start = match.index
+      const closeTag = `</${tag}>`
+      const closeIndex = code.indexOf(closeTag, start + match[0].length)
+      if (closeIndex !== -1) {
+        ranges.push({ start, end: closeIndex + closeTag.length })
+      }
+    }
+  }
+  // Sort by start position
+  ranges.sort((a, b) => a.start - b.start)
+  return ranges
+}
+
+/**
+ * Given sorted block ranges, return the markup regions (gaps between blocks).
+ */
+function getMarkupRegions(code: string, blockRanges: Range[]): Range[] {
+  const regions: Range[] = []
+  let cursor = 0
+
+  for (const block of blockRanges) {
+    if (block.start > cursor) {
+      const region = code.slice(cursor, block.start)
+      // Only include regions that have actual markup (not just whitespace)
+      if (region.trim().length > 0) {
+        regions.push({ start: cursor, end: block.start })
+      }
+    }
+    cursor = block.end
+  }
+
+  // Region after the last block
+  if (cursor < code.length) {
+    const region = code.slice(cursor)
+    if (region.trim().length > 0) {
+      regions.push({ start: cursor, end: code.length })
+    }
+  }
+
+  return regions
+}
+
+// ── JSX helpers ─────────────────────────────────────────
+
+/**
+ * Check if the `<` at position `tagStart` is in a TypeScript type/generic
+ * context rather than JSX.
+ *
+ * Key insight: In JSX, `<` is always preceded by whitespace, an operator,
+ * punctuation, or a JSX-context keyword (return, yield, etc.).
+ * In generics, `<` immediately follows an identifier: `Array<string>`,
+ * `foo<T>()`, `Promise<void>`.
+ */
+function isTypeContext(code: string, tagStart: number): boolean {
+  // Walk backward past whitespace to find the preceding token
+  let j = tagStart - 1
+  while (j >= 0 && (code[j] === ' ' || code[j] === '\t' || code[j] === '\n' || code[j] === '\r')) j--
+  if (j < 0) return false
+
+  const ch = code[j]
+
+  // Preceded by : (type annotation), < (nested generic), . (member access in type)
+  if (ch === ':' || ch === '<' || ch === '.') return true
+
+  // If preceded by an identifier character, it's likely a generic: Array<T>, foo<T>
+  // Exception: JSX-context keywords like return, yield, case, etc.
+  if (/[a-zA-Z0-9_$]/.test(ch)) {
+    // Read the full preceding word
+    let wordEnd = j + 1
+    while (j >= 0 && /[a-zA-Z0-9_$]/.test(code[j])) j--
+    const word = code.slice(j + 1, wordEnd)
+
+    // These keywords can precede JSX: return <div>, yield <X />, etc.
+    const jsxKeywords = new Set(['return', 'yield', 'case', 'default', 'throw', 'new', 'in', 'of', 'else'])
+    if (jsxKeywords.has(word)) return false
+
+    // Any other identifier before < means it's a generic
+    return true
+  }
+
+  // Check for keyword tokens that signal type context
+  // (already handled above via identifier check, but keep for safety)
+  const typeKeywords = ['as', 'extends', 'implements', 'typeof', 'keyof', 'infer', 'type']
+  for (const kw of typeKeywords) {
+    if (j >= kw.length - 1) {
+      const slice = code.slice(j - kw.length + 1, j + 1)
+      if (slice === kw) {
+        const before = j - kw.length
+        if (before < 0 || /\s|[,;({[<>|&=!?+\-*/]/.test(code[before])) {
+          return true
+        }
+      }
+    }
+  }
+
+  return false
+}
+
+/**
+ * Skip past a TypeScript generic expression like `<string>` or `<T extends U>`.
+ * Tracks nested `<>` depth.
+ */
+function skipGeneric(code: string, i: number): number {
+  let depth = 1
+  while (i < code.length && depth > 0) {
+    if (code[i] === '<') depth++
+    else if (code[i] === '>') depth--
+    i++
+  }
   return i
 }

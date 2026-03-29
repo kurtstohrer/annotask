@@ -51,7 +51,7 @@ Schema-only types (not yet emitted at runtime):
 
 ## Framework Support
 
-Annotask currently supports **Vue 3 only**. The schema defines `framework: 'vue' | 'react' | 'svelte'` for forward compatibility, but only `'vue'` is implemented.
+Annotask supports **Vue 3**, **React**, and **Svelte**. The transform layer (`src/plugin/transform.ts`) has per-framework extraction logic that feeds into a shared HTML/JSX attribute injection scanner. The bridge client detects the active framework at runtime for component mounting.
 
 ## Feature Freeze
 

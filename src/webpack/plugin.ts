@@ -32,7 +32,7 @@ export class AnnotaskWebpackPlugin {
 
     // Add the SFC transform loader (enforce: pre, before vue-loader)
     compiler.options.module.rules.unshift({
-      test: /\.(vue|ts|js)$/,
+      test: /\.(vue|svelte|[jt]sx?|ts|js)$/,
       enforce: 'pre',
       exclude: /node_modules/,
       use: [{

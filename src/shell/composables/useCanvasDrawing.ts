@@ -3,7 +3,7 @@ import type { useAnnotations } from './useAnnotations'
 
 type Annotations = ReturnType<typeof useAnnotations>
 type ResolvedCtx = {
-  file: string; line: string; component: string; tag: string
+  file: string; line: string; component: string; tag: string; classes?: string
   rect: { x: number; y: number; width: number; height: number }
 } | null
 type ResolveElementAt = (x: number, y: number) => Promise<ResolvedCtx>
@@ -12,6 +12,7 @@ export function useCanvasDrawing(
   annotations: Annotations,
   resolveElementAt: ResolveElementAt,
   getInteractionMode: () => string,
+  onArrowCreated?: (arrowId: string, fromCtx: ResolvedCtx, toCtx: ResolvedCtx) => void,
 ) {
   const drawingArrow = ref<{
     fromX: number; fromY: number; toX: number; toY: number
@@ -85,6 +86,7 @@ export function useCanvasDrawing(
           })
         }
         annotations.updateArrow(arrow.id, { label: '' })
+        onArrowCreated?.(arrow.id, fromCtx, toCtx)
       }
       drawingArrow.value = null
     } else if (mode === 'draw' && drawingRect.value) {

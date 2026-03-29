@@ -1,5 +1,5 @@
 {
-  "name": "@annotask/playground-webpack",
+  "name": "@annotask/playground-vue-webpack",
   "private": true,
   "version": "0.0.0",
   "type": "module",

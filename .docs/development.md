@@ -18,13 +18,16 @@ pnpm build
 
 ## Day-to-day development
 
-### Run the playground
+### Run a playground
 
 ```bash
-pnpm dev:playground
+pnpm dev:vue-vite           # Vue + Vite (port 5173)
+pnpm dev:vue-webpack        # Vue + Webpack (port 8090)
+pnpm dev:react-vite         # React + Vite
+pnpm dev:svelte-vite        # Svelte + Vite
 ```
 
-Opens the playground Vue app at `http://localhost:5173/` with Annotask enabled. The playground is a PrimeVue app with planets/moons data tables — enough UI surface to test editing features.
+Opens the playground app with Annotask enabled.
 
 Annotask shell: `http://localhost:5173/__annotask/`
 
@@ -99,22 +102,11 @@ src/
 │   └── index.ts            # CLI entry (annotask command)
 └── schema.ts               # Canonical TypeScript types
 
-playground/                  # Vite test app (pnpm workspace package)
-├── src/
-│   ├── components/
-│   ├── pages/
-│   └── router.ts
-├── api/                     # FastAPI backend (Python)
-├── package.json
-└── vite.config.ts
-
-playground-webpack/          # Webpack test app (pnpm workspace package)
-├── src/
-│   ├── components/
-│   ├── pages/
-│   └── router.ts
-├── package.json
-└── webpack.config.mjs
+playgrounds/
+├── vue-vite/                # Vue + Vite test app
+├── vue-webpack/             # Vue + Webpack test app
+├── react-vite/              # React + Vite test app
+└── svelte-vite/             # Svelte + Vite test app
 
 e2e/                         # Playwright browser tests
 plan/                        # Roadmap and improvement notes

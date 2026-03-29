@@ -104,7 +104,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   async function getElementRects(eids: string[]): Promise<(BridgeRect | null)[]> {
     if (eids.length === 0) return []
     try {
-      const result = await bridge.request<{ rects: (BridgeRect | null)[] }>('resolve:rects', { eids })
+      const result = await bridge.request<{ rects: (BridgeRect | null)[] }>('resolve:rects', { eids: [...eids] })
       return result.rects.map(r => r ? (toShellRect(r) || r) : null)
     } catch { return eids.map(() => null) }
   }
@@ -125,7 +125,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   async function applyStyleBatch(eids: string[], property: string, value: string): Promise<string[]> {
     try {
-      const result = await bridge.request<{ befores: string[] }>('style:apply-batch', { eids, property, value })
+      const result = await bridge.request<{ befores: string[] }>('style:apply-batch', { eids: [...eids], property, value })
       return result.befores
     } catch { return eids.map(() => '') }
   }
@@ -139,7 +139,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   async function setClassBatch(eids: string[], classes: string): Promise<string[]> {
     try {
-      const result = await bridge.request<{ befores: string[] }>('class:set-batch', { eids, classes })
+      const result = await bridge.request<{ befores: string[] }>('class:set-batch', { eids: [...eids], classes })
       return result.befores
     } catch { return eids.map(() => '') }
   }
@@ -231,15 +231,18 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     try { await bridge.request('move:element', { eid, targetEid, position }) } catch {}
   }
 
-  async function insertVueComponent(
+  async function insertComponent(
     targetEid: string, position: string, componentName: string, props?: Record<string, unknown>
   ): Promise<InsertVueComponentResult> {
     try {
-      return await bridge.request<InsertVueComponentResult>('insert:vue-component', {
+      return await bridge.request<InsertVueComponentResult>('insert:component', {
         targetEid, position, componentName, props
       })
     } catch { return { eid: '', mounted: false } }
   }
+
+  /** @deprecated Use insertComponent */
+  const insertVueComponent = insertComponent
 
   function setMode(mode: InteractionMode) {
     bridge.send('mode:set', { mode })
@@ -287,6 +290,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     insertPlaceholder,
     removePlaceholder,
     moveElement,
+    insertComponent,
     insertVueComponent,
     // Mode
     setMode,

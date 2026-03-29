@@ -53,11 +53,14 @@ const taskSystem = useTasks()
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const { mode: interactionMode } = useInteractionMode()
 const { isInitialized: configInitialized } = useDesignSpec()
-const shellView = ref<'editor' | 'theme'>('editor')
+const shellView = ref<'editor' | 'theme'>(
+  localStorage.getItem('annotask:shellView') === 'theme' ? 'theme' : 'editor'
+)
+watch(shellView, (v) => localStorage.setItem('annotask:shellView', v))
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
-const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value)
+const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, onArrowCreated)
 const { drawingArrow, drawingRect, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
 // Sync mode to bridge + clear selection on interact
@@ -76,11 +79,30 @@ const copied = ref(false)
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('layout')
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true })
-const showTaskPanel = ref(false)
+const showTaskPanel = ref(localStorage.getItem('annotask:showTaskPanel') === 'true')
+watch(showTaskPanel, (v) => localStorage.setItem('annotask:showTaskPanel', String(v)))
 const showNewTaskForm = ref(false)
 const newTaskText = ref('')
 const denyingTaskId = ref<string | null>(null)
 const denyFeedbackText = ref('')
+const showShortcuts = ref(localStorage.getItem('annotask:showShortcuts') === 'true')
+watch(showShortcuts, (v) => localStorage.setItem('annotask:showShortcuts', String(v)))
+
+// ── Pending Task Creation (sidebar panel after pin/arrow placement) ──
+interface PendingTaskContext {
+  kind: 'pin' | 'arrow'
+  /** Colored icon label, e.g. "Pin on <div>" or "Arrow from Header → Footer" */
+  label: string
+  file: string
+  line: string | number
+  component: string
+  /** For pin: pin id. For arrow: arrow id */
+  annotationId: string
+  /** Extra data for task creation */
+  meta: Record<string, unknown>
+}
+const pendingTaskCreation = ref<PendingTaskContext | null>(null)
+const pendingTaskText = ref('')
 
 // All tasks show in list (visual annotations are route-filtered separately)
 const routeTasks = computed(() => taskSystem.tasks.value)
@@ -153,10 +175,14 @@ const editTargetEids = computed<string[]>(() => {
 // Async-refreshed rects (updated on selection change)
 const selectionRects = ref<BridgeRect[]>([])
 const groupRects = ref<BridgeRect[]>([])
+let rectsGeneration = 0
 
 async function refreshRects() {
+  const gen = ++rectsGeneration
+
   if (selectedEids.value.length > 0) {
     const rects = await iframe.getElementRects(selectedEids.value)
+    if (gen !== rectsGeneration) return // stale
     selectionRects.value = rects.filter((r): r is BridgeRect => r !== null)
   } else {
     selectionRects.value = []
@@ -165,6 +191,7 @@ async function refreshRects() {
   if (applyToGroup.value && selectedEids.value.length <= 1 && templateGroupEids.value.length > 0) {
     const otherEids = templateGroupEids.value.filter(eid => !selectedEids.value.includes(eid))
     const rects = await iframe.getElementRects(otherEids)
+    if (gen !== rectsGeneration) return // stale
     groupRects.value = rects.filter((r): r is BridgeRect => r !== null)
   } else {
     groupRects.value = []
@@ -248,11 +275,11 @@ function setupBridgeEvents() {
     const { file, line, component, tag: tagName, classes, eid, shiftKey, clientX, clientY } = data
     const shellRect = iframe.toShellRect(data.rect)
 
-    // Pin mode: create pin
+    // Pin mode: create pin → open task creation panel
     if (interactionMode.value === 'pin') {
       const pinX = shellRect ? shellRect.x + shellRect.width / 2 : clientX
       const pinY = shellRect ? shellRect.y : clientY
-      annotations.addPin(
+      const pin = annotations.addPin(
         { file, line, component, elementTag: tagName, elementClasses: classes },
         pinX, pinY
       )
@@ -260,7 +287,14 @@ function setupBridgeEvents() {
       selectedEids.value = [eid]
       await readLiveStyles()
       await refreshElementRole()
-      activeTab.value = 'notes'
+      pendingTaskCreation.value = {
+        kind: 'pin',
+        label: `Pin on ${describeElement({ file, line, component, tag: tagName, classes })}`,
+        file, line, component,
+        annotationId: pin.id,
+        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY },
+      }
+      pendingTaskText.value = ''
       return
     }
 
@@ -271,22 +305,24 @@ function setupBridgeEvents() {
         if (selectedEids.value.length === 0) {
           primarySelection.value = null
           templateGroupEids.value = []
+        }
+      } else {
+        selectedEids.value.push(eid)
       }
+      await refreshRects()
     } else {
-      selectedEids.value.push(eid)
+      primarySelection.value = { file, line, component, tagName, classes, eid }
+      selectedEids.value = [eid]
+      const group = await iframe.findTemplateGroup(file, line, tagName)
+      templateGroupEids.value = group.eids
+      applyToGroup.value = group.eids.length > 1
+      editingClasses.value = classes
+      await readLiveStyles()
+      await refreshElementRole()
+      await refreshRects()
     }
-  } else {
-    primarySelection.value = { file, line, component, tagName, classes, eid }
-    selectedEids.value = [eid]
-    const group = await iframe.findTemplateGroup(file, line, tagName)
-    templateGroupEids.value = group.eids
-    applyToGroup.value = group.eids.length > 1
-    editingClasses.value = classes
-    await readLiveStyles()
-    await refreshElementRole()
-  }
 
-  hoverRect.value = null
+    hoverRect.value = null
   })
 
   iframe.onBridgeEvent('contextmenu:element', async (data: ClickElementEvent) => {
@@ -412,8 +448,19 @@ async function onAddAnnotationNote(text: string) {
     intent: text,
     visual: pinPos ? { kind: 'pin', annotationId: pinForPrimary[0].id, x: pinPos.x, y: pinPos.y } : undefined,
     context: {
-      element_tag: primary.tag, element_classes: primary.classes,
-      elements: targets.map(t => ({ file: t.file, line: parseInt(t.line) || 0, tag: t.tag })),
+      element: {
+        tag: primary.tag,
+        classes: primary.classes,
+        component: primary.component,
+        file: primary.file,
+        line: parseInt(primary.line) || 0,
+      },
+      ...(targets.length > 1 ? {
+        elements: targets.map(t => ({
+          tag: t.tag, classes: t.classes, component: t.component,
+          file: t.file, line: parseInt(t.line) || 0,
+        })),
+      } : {}),
     },
   })
 }
@@ -434,8 +481,10 @@ function onAddAnnotationAction(action: string, label: string) {
     file: primary.file, line: parseInt(primary.line) || 0, component: primary.component,
     intent: label, action,
     context: {
-      element_tag: primary.tag, element_classes: primary.classes,
-      elements: targets.map(t => ({ file: t.file, line: parseInt(t.line) || 0, tag: t.tag })),
+      element: {
+        tag: primary.tag, classes: primary.classes, component: primary.component,
+        file: primary.file, line: parseInt(primary.line) || 0,
+      },
     },
   })
 }
@@ -495,7 +544,13 @@ function onSubmitHighlight(prompt: string) {
   createRouteTask({
     type: 'annotation', description: intent, file: h.file, line: h.line,
     component: h.component, intent, action: 'text_edit',
-    context: { element_tag: h.tag, selected_text: h.text },
+    context: {
+      element: {
+        tag: h.tag, component: h.component,
+        file: h.file, line: h.line,
+      },
+      selected_text: h.text,
+    },
   })
   pendingHighlight.value = null
 }
@@ -522,36 +577,141 @@ function onSectionCommit(id: string) {
     prompt: section.prompt.trim(),
     placement: section.placement || '',
     visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height) },
+    context: {
+      near_element: {
+        component: section.nearComponent || '',
+        file: section.nearFile || '',
+        line: section.nearLine || 0,
+      },
+      placement: section.placement || '',
+    },
   })
 }
 
 // ── Arrow → Task ─────────────────────────────────────
 const arrowTaskIds = new Set<string>()
 
-async function onArrowCommit(id: string) {
+function describeElement(ctx: { file: string; line: string; component: string; tag: string; classes?: string } | null): string {
+  if (!ctx) return 'element'
+  const tag = ctx.tag || 'element'
+  // Use first meaningful class if available
+  const cls = ctx.classes?.split(' ').find(c => c && !c.startsWith('data-'))
+  if (ctx.component && cls) return `<${tag}.${cls}> in ${ctx.component}`
+  if (ctx.component && ctx.tag !== ctx.component.toLowerCase()) return `<${tag}> in ${ctx.component}`
+  if (cls) return `<${tag}.${cls}>`
+  return `<${tag}>`
+}
+
+function onArrowCreated(arrowId: string, fromCtx: { file: string; line: string; component: string; tag: string; classes?: string } | null, toCtx: { file: string; line: string; component: string; tag: string; classes?: string } | null) {
+  const arrow = annotations.arrows.value.find(a => a.id === arrowId)
+  if (!arrow) return
+
+  const fromDesc = describeElement(fromCtx)
+  const toDesc = describeElement(toCtx)
+
+  pendingTaskCreation.value = {
+    kind: 'arrow',
+    label: `Arrow from ${fromDesc} → ${toDesc}`,
+    file: arrow.fromFile || fromCtx?.file || '',
+    line: arrow.fromLine || fromCtx?.line || '',
+    component: arrow.fromComponent || fromCtx?.component || '',
+    annotationId: arrowId,
+    meta: {
+      fromTag: fromCtx?.tag || '',
+      fromClasses: fromCtx?.classes || '',
+      fromComponent: fromCtx?.component || '',
+      toFile: arrow.toFile || toCtx?.file || '',
+      toLine: arrow.toLine || toCtx?.line || 0,
+      toTag: toCtx?.tag || '',
+      toClasses: toCtx?.classes || '',
+      toComponent: toCtx?.component || '',
+    },
+  }
+  pendingTaskText.value = ''
+}
+
+function submitPendingArrowTask(id: string, description: string) {
   const arrow = annotations.arrows.value.find(a => a.id === id)
-  if (!arrow || !arrow.label.trim()) return
+  if (!arrow || !description.trim()) return
   if (arrowTaskIds.has(id)) return
   arrowTaskIds.add(id)
 
-  const fromCtx = await iframe.resolveElementAt(arrow.fromX, arrow.fromY)
-  const toCtx = await iframe.resolveElementAt(arrow.toX, arrow.toY)
+  annotations.updateArrow(id, { label: description.trim() })
 
+  const meta = pendingTaskCreation.value?.meta || {}
   createRouteTask({
     type: 'annotation', action: 'relocate',
-    description: arrow.label.trim(),
+    description: description.trim(),
     file: arrow.fromFile || '',
     line: arrow.fromLine || 0,
     component: arrow.fromComponent || '',
-    intent: arrow.label.trim(),
-    visual: { kind: 'arrow', annotationId: arrow.id, fromX: arrow.fromX, fromY: arrow.fromY, toX: arrow.toX, toY: arrow.toY, label: arrow.label },
+    intent: description.trim(),
+    visual: { kind: 'arrow', annotationId: arrow.id, fromX: arrow.fromX, fromY: arrow.fromY, toX: arrow.toX, toY: arrow.toY, label: description.trim() },
     context: {
-      element_tag: fromCtx?.tag || '',
-      reference_file: arrow.toFile || '',
-      reference_line: arrow.toLine || 0,
-      reference_tag: toCtx?.tag || '',
+      from_element: {
+        tag: (meta.fromTag as string) || '',
+        classes: (meta.fromClasses as string) || '',
+        component: (meta.fromComponent as string) || '',
+        file: arrow.fromFile || '',
+        line: arrow.fromLine || 0,
+      },
+      to_element: {
+        tag: (meta.toTag as string) || '',
+        classes: (meta.toClasses as string) || '',
+        component: (meta.toComponent as string) || '',
+        file: arrow.toFile || '',
+        line: arrow.toLine || 0,
+      },
     },
   })
+}
+
+// ── Pending Task Submission (sidebar panel) ─────────
+function submitPendingTask() {
+  const ctx = pendingTaskCreation.value
+  if (!ctx || !pendingTaskText.value.trim()) return
+
+  if (ctx.kind === 'pin') {
+    const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number }
+    annotations.updatePinNote(ctx.annotationId, pendingTaskText.value.trim())
+    recordAnnotation({
+      file: ctx.file, line: String(ctx.line), component: ctx.component,
+      intent: pendingTaskText.value.trim(),
+      elementTag: meta.elementTag, elementClasses: meta.elementClasses,
+    })
+    createRouteTask({
+      type: 'annotation',
+      description: pendingTaskText.value.trim(),
+      file: ctx.file, line: parseInt(String(ctx.line)) || 0, component: ctx.component,
+      intent: pendingTaskText.value.trim(),
+      visual: { kind: 'pin', annotationId: ctx.annotationId, x: meta.pinX, y: meta.pinY },
+      context: {
+        element: {
+          tag: meta.elementTag,
+          classes: meta.elementClasses,
+          component: ctx.component,
+          file: ctx.file,
+          line: parseInt(String(ctx.line)) || 0,
+        },
+      },
+    })
+  } else if (ctx.kind === 'arrow') {
+    submitPendingArrowTask(ctx.annotationId, pendingTaskText.value.trim())
+  }
+
+  pendingTaskCreation.value = null
+  pendingTaskText.value = ''
+}
+
+function cancelPendingTask() {
+  const ctx = pendingTaskCreation.value
+  if (ctx) {
+    // Remove the annotation since user cancelled
+    if (ctx.kind === 'pin') annotations.removePin(ctx.annotationId)
+    if (ctx.kind === 'arrow') annotations.removeArrow(ctx.annotationId)
+  }
+  pendingTaskCreation.value = null
+  pendingTaskText.value = ''
 }
 
 // ── General Add Task ─────────────────────────────────
@@ -570,14 +730,47 @@ function onAddGeneralTask(text: string) {
 
 // ── Shell keyboard ────────────────────────────────────
 function onShellKeyDown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+  const mod = e.ctrlKey || e.metaKey
+
+  // Ctrl/Cmd shortcuts
+  if (mod && e.key === 'z' && !e.shiftKey) {
     e.preventDefault()
     doUndo()
+    return
   }
+
   const tag = (e.target as HTMLElement)?.tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-  if (e.key === 'l' || e.key === 'L') {
-    if (!e.ctrlKey && !e.metaKey) layoutOverlay.toggle()
+
+  const key = e.key
+
+  // Toggle shortcuts panel
+  if (key === '?' || (key === '/' && e.shiftKey)) {
+    showShortcuts.value = !showShortcuts.value
+    return
+  }
+
+  // Escape: close shortcuts, cancel pending task, or clear selection
+  if (key === 'Escape') {
+    if (showShortcuts.value) { showShortcuts.value = false; return }
+    if (pendingTaskCreation.value) { cancelPendingTask(); return }
+    primarySelection.value = null
+    selectedEids.value = []
+    templateGroupEids.value = []
+    selectionRects.value = []
+    groupRects.value = []
+    return
+  }
+
+  // Layout overlay toggle
+  if ((key === 'l' || key === 'L') && !mod) {
+    layoutOverlay.toggle()
+    return
+  }
+
+  // Toggle task/inspector panel
+  if (key === 't' || key === 'T') {
+    if (!mod) { showTaskPanel.value = !showTaskPanel.value; return }
   }
 }
 
@@ -603,7 +796,7 @@ const appUrl = computed(() => {
     <!-- Toolbar -->
     <header class="toolbar">
       <div class="toolbar-left">
-        <span class="logo">Annotask</span>
+        <svg class="logo" viewBox="0 0 85.81 90.51" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="m72.02 90.31c-.17-.1-.43-.48-.57-.82-.37-.93-1.97-3.46-2.74-4.33-.66-.74-.77-.79-5.99-2.5-2.93-.96-5.52-1.85-5.77-1.98-.47-.25-.35.01-4.7-9.99-1.1-2.53-2.11-4.72-2.25-4.87-.22-.24-1.7-.26-11.7-.21-6.3.03-11.51.12-11.58.19-.11.11-2.06 4.98-4.34 10.84-.4 1.04-1.21 3.11-1.8 4.6-.58 1.49-1.52 3.88-2.08 5.32-.64 1.65-1.18 2.76-1.45 3.02l-.44.41H8.31 0l.49-1.22c4.92-12.33 8.69-21.78 9.54-23.94 1.22-3.09 4.33-10.89 6.52-16.32.82-2.03 1.72-4.3 2-5.05.28-.74 1.17-2.97 1.97-4.96 2.26-5.6 3-7.45 4.7-11.72 2.32-5.86 5.17-13 7.63-19.11 1.2-2.98 2.29-5.73 2.44-6.13.15-.4.45-.9.68-1.13l.42-.41h8.22c4.57 0 8.4.07 8.63.17.49.19.22-.38 3.81 8.22 1.57 3.77 3 7.18 3.17 7.57.73 1.72 6 14.31 7.22 17.22 1.71 4.1 5.73 13.7 6 14.34.17.4.66 1.58 1.09 2.61.43 1.04 1.63 3.94 2.68 6.46 1.05 2.51 1.9 4.63 1.9 4.71 0 .08-.14.2-.3.27-.17.07-2.89 1.13-6.05 2.37-3.16 1.23-6.39 2.5-7.17 2.81-.78.31-1.47.51-1.53.45-.06-.06-.47-1.07-.92-2.24-1.24-3.24-5.96-15.5-7.72-20.06-.86-2.23-2.45-6.33-3.52-9.11-1.07-2.78-2.93-7.6-4.14-10.73-1.2-3.12-2.4-6.25-2.67-6.94l-.48-1.26-.19.54c-.42 1.17-1.35 3.64-3.23 8.56-1.08 2.83-2.45 6.44-3.05 8.02-.6 1.59-2.24 5.89-3.65 9.56l-2.57 6.67 8.58.05 8.58.05.31.76c.17.42 1.14 2.91 2.16 5.54 6.49 16.81 6.66 17.24 6.88 17.18.08-.02 1.08-.41 2.21-.87 1.13-.46 3.45-1.39 5.15-2.06 5.12-2.03 14.4-5.73 14.68-5.85.14-.06.39-.01.55.12.32.25 2.19 4.68 2.19 5.19 0 .18-.14.48-.3.68-.27.32-5.46 2.61-10.94 4.83-4.74 1.92-6.58 2.65-7.29 2.92l-.77.29 1.94.34 1.94.34.77-.38c1.61-.79 3.36-1.45 7.27-2.71 2.22-.72 4.1-1.32 4.19-1.33.16-.02.94 1.75 2.24 5.12.41 1.04 1.36 3.49 2.13 5.45.77 1.96 1.39 3.71 1.39 3.89 0 .75-.14.76-6.94.76-4.33 0-6.64-.07-6.85-.2z"/></svg>
         <div class="view-toggle">
           <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'">Editor</button>
           <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'">Theme</button>
@@ -642,6 +835,7 @@ const appUrl = computed(() => {
           {{ copied ? 'Copied!' : 'Copy Report' }}
         </button>
         <button v-if="changes.length" class="tool-btn danger" @click="doClearChanges">Clear</button>
+        <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else class="toolbar-right" />
     </header>
@@ -704,8 +898,6 @@ const appUrl = computed(() => {
           :drawingArrow="drawingArrow"
           @select="annotations.selectedArrowId.value = $event"
           @remove="annotations.removeArrow"
-          @update-label="(id, label) => annotations.updateArrow(id, { label })"
-          @commit="onArrowCommit"
         />
 
         <!-- Drawn sections -->
@@ -744,8 +936,70 @@ const appUrl = computed(() => {
         <ThemePage :iframeRef="iframeRef" />
       </aside>
 
+      <!-- Shortcuts Panel -->
+      <aside class="panel" v-if="shellView === 'editor' && showShortcuts">
+        <div class="panel-source">
+          <span class="source-path" style="color:var(--text)">Keyboard Shortcuts</span>
+          <button class="component-badge" style="cursor:pointer;margin-left:auto" @click="showShortcuts = false">Esc to close</button>
+        </div>
+        <div class="shortcuts-panel">
+          <div class="shortcut-group">
+            <div class="shortcut-group-title">Tools</div>
+            <div class="shortcut-row"><kbd>V</kbd><span>Select</span></div>
+            <div class="shortcut-row"><kbd>P</kbd><span>Pin</span></div>
+            <div class="shortcut-row"><kbd>A</kbd><span>Arrow</span></div>
+            <div class="shortcut-row"><kbd>D</kbd><span>Draw Section</span></div>
+            <div class="shortcut-row"><kbd>H</kbd><span>Highlight Text</span></div>
+            <div class="shortcut-row"><kbd>I</kbd><span>Interact Mode</span></div>
+          </div>
+          <div class="shortcut-group">
+            <div class="shortcut-group-title">View</div>
+            <div class="shortcut-row"><kbd>L</kbd><span>Toggle Layout Overlay</span></div>
+            <div class="shortcut-row"><kbd>T</kbd><span>Toggle Task Panel</span></div>
+            <div class="shortcut-row"><kbd>?</kbd><span>Toggle Shortcuts</span></div>
+            <div class="shortcut-row"><kbd>Esc</kbd><span>Deselect / Close Panel</span></div>
+          </div>
+          <div class="shortcut-group">
+            <div class="shortcut-group-title">Actions</div>
+            <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Z</kbd><span>Undo</span></div>
+            <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Enter</kbd><span>Submit Form</span></div>
+          </div>
+          <div class="shortcut-hint">On Mac, use <kbd class="mod">⌘</kbd> instead of <kbd class="mod">Ctrl</kbd></div>
+        </div>
+      </aside>
+
+      <!-- Pending Task Creation Panel (after pin/arrow placement) -->
+      <aside class="panel" v-else-if="shellView === 'editor' && pendingTaskCreation">
+        <div class="panel-source">
+          <span class="source-path" style="color:var(--text)">Add Task</span>
+        </div>
+        <div class="pending-task-panel">
+          <div class="pending-task-context">
+            <div class="pending-task-kind" :class="pendingTaskCreation.kind">
+              <svg v-if="pendingTaskCreation.kind === 'pin'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 1 0-16 0c0 3 2.7 7 8 11.7z"/></svg>
+              <svg v-else-if="pendingTaskCreation.kind === 'arrow'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              <span>{{ pendingTaskCreation.label }}</span>
+            </div>
+            <code class="pending-task-file">{{ pendingTaskCreation.file }}:{{ pendingTaskCreation.line }}</code>
+          </div>
+          <textarea
+            v-model="pendingTaskText"
+            class="pending-task-input"
+            rows="3"
+            placeholder="Describe the change..."
+            autofocus
+            @keydown.enter.ctrl="submitPendingTask"
+            @keydown.escape="cancelPendingTask"
+          />
+          <div class="pending-task-actions">
+            <button class="submit-btn" :disabled="!pendingTaskText.trim()" @click="submitPendingTask">Add Task</button>
+            <button class="cancel-btn" @click="cancelPendingTask">Cancel</button>
+          </div>
+        </div>
+      </aside>
+
       <!-- Task Panel (takes over sidebar when active) -->
-      <aside class="panel" v-if="shellView === 'editor' && showTaskPanel">
+      <aside class="panel" v-else-if="shellView === 'editor' && showTaskPanel">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Tasks</span>
           <span class="component-badge">{{ taskSystem.tasks.value.length }}</span>
@@ -816,7 +1070,7 @@ const appUrl = computed(() => {
           <button :class="['tab', { active: activeTab === 'style' }]" @click="activeTab = 'style'">Style</button>
           <button :class="['tab', { active: activeTab === 'classes' }]" @click="activeTab = 'classes'">Classes</button>
           <button :class="['tab', { active: activeTab === 'notes' }]" @click="activeTab = 'notes'">
-            Notes <span v-if="annotations.routePins.value.length" class="tab-badge">{{ annotations.routePins.value.length }}</span>
+            Task <span v-if="annotations.routePins.value.length" class="tab-badge">{{ annotations.routePins.value.length }}</span>
           </button>
         </div>
 
@@ -905,7 +1159,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 /* Toolbar */
 .toolbar { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 12px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 8px; }
-.logo { font-weight: 700; font-size: 14px; margin-right: 12px; color: var(--accent); letter-spacing: -0.02em; }
+.logo { height: 20px; width: auto; margin-right: 12px; color: var(--accent); }
 .tool-btn { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text); font-size: 12px; cursor: pointer; }
 .tool-btn:hover { background: var(--border); }
 .tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -1088,4 +1342,68 @@ details[open] > .changes-summary::before { content: '▾ '; }
 .task-card-actions .task-accept:hover { background: #22c55e; color: white; }
 .task-card-actions .task-deny { background: rgba(239,68,68,0.12); color: #ef4444; }
 .task-card-actions .task-deny:hover { background: #ef4444; color: white; }
+
+/* Pending task creation panel */
+.pending-task-panel { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.pending-task-context { display: flex; flex-direction: column; gap: 6px; }
+.pending-task-kind {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--text);
+}
+.pending-task-kind.pin { color: var(--accent); }
+.pending-task-kind.pin svg { stroke: var(--accent); }
+.pending-task-kind.arrow { color: #ef4444; }
+.pending-task-kind.arrow svg { stroke: #ef4444; }
+.pending-task-file { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+.pending-task-input {
+  width: 100%; padding: 8px 10px; font-size: 12px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  resize: vertical; font-family: inherit; line-height: 1.4;
+}
+.pending-task-input:focus { border-color: var(--accent); outline: none; }
+.pending-task-actions { display: flex; gap: 6px; }
+.pending-task-actions .submit-btn {
+  flex: 1; padding: 6px 12px; font-size: 11px; font-weight: 600;
+  background: var(--accent); color: white; border: none; border-radius: 5px; cursor: pointer;
+}
+.pending-task-actions .submit-btn:disabled { opacity: 0.4; cursor: default; }
+.pending-task-actions .cancel-btn {
+  padding: 6px 12px; font-size: 11px;
+  background: var(--surface-2); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
+}
+.pending-task-actions .cancel-btn:hover { background: var(--border); color: var(--text); }
+
+/* Shortcuts panel */
+.shortcuts-panel { padding: 14px; overflow-y: auto; flex: 1; }
+.shortcut-group { margin-bottom: 16px; }
+.shortcut-group-title {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted); margin-bottom: 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 0; font-size: 12px; color: var(--text);
+}
+.shortcut-row span { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.shortcut-row kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 20px; padding: 0 5px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
+  font-family: inherit; font-size: 11px; font-weight: 600; color: var(--text);
+  box-shadow: 0 1px 0 var(--border);
+}
+.shortcut-row kbd.mod { font-size: 10px; color: var(--text-muted); }
+.shortcut-hint {
+  font-size: 11px; color: var(--text-muted); padding-top: 8px;
+  border-top: 1px solid var(--border); display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+}
+.shortcut-hint kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 16px; padding: 0 4px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px;
+  font-family: inherit; font-size: 10px; font-weight: 600; color: var(--text-muted);
+}
 </style>

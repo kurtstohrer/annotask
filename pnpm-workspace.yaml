@@ -1,5 +1,4 @@
 packages:
-  - 'playground'
-  - 'playground-webpack'
+  - 'playgrounds/*'
 onlyBuiltDependencies:
   - esbuild

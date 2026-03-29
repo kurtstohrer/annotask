@@ -1,0 +1,4 @@
+node_modules/
+
+# Annotask (generated)
+.annotask/

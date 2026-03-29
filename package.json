@@ -30,8 +30,10 @@
     "build:shell": "vite build --config vite.config.shell.ts",
     "build:plugin": "tsup",
     "dev:shell": "vite --config vite.config.shell.ts",
-    "dev:playground": "pnpm --filter @annotask/playground dev",
-    "dev:playground-webpack": "pnpm --filter @annotask/playground-webpack dev",
+    "dev:vue-vite": "pnpm --filter @annotask/playground-vue-vite dev",
+    "dev:vue-webpack": "pnpm --filter @annotask/playground-vue-webpack dev",
+    "dev:react-vite": "pnpm --filter @annotask/playground-react-vite dev",
+    "dev:svelte-vite": "pnpm --filter @annotask/playground-svelte-vite dev",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"

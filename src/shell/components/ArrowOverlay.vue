@@ -14,8 +14,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [id: string]
   remove: [id: string]
-  'update-label': [id: string, label: string]
-  commit: [id: string]
 }>()
 
 /** Compute edge-to-edge arrow path that exits from the closest edge of fromRect and enters toRect */
@@ -98,26 +96,12 @@ function rectOutline(r: { x: number; y: number; width: number; height: number })
       />
       <circle :cx="arrow.fromX" :cy="arrow.fromY" r="5" fill="#ef4444" opacity="0.8" />
       <circle :cx="arrow.toX" :cy="arrow.toY" r="5" fill="#ef4444" opacity="0.8" />
-      <!-- Label: editable when selected, static text otherwise -->
-      <text v-if="arrow.id !== selectedId"
+      <!-- Label (static text, set via sidebar task panel) -->
+      <text v-if="arrow.label"
         :x="labelPos(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY).x"
         :y="labelPos(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY).y"
         text-anchor="middle" class="arrow-label"
       >{{ arrow.label }}</text>
-      <foreignObject v-else
-        :x="labelPos(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY).x - 120"
-        :y="labelPos(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY).y - 18"
-        width="240" height="28">
-        <input
-          class="arrow-label-input"
-          :value="arrow.label"
-          placeholder="Describe what to do..."
-          @input="emit('update-label', arrow.id, ($event.target as HTMLInputElement).value)"
-          @blur="emit('commit', arrow.id)"
-          @click.stop
-          @pointerdown.stop
-        />
-      </foreignObject>
       <g v-if="arrow.id === selectedId" class="arrow-delete"
         :transform="`translate(${(arrow.fromX + arrow.toX) / 2 + 20}, ${(arrow.fromY + arrow.toY) / 2 - 20})`"
         @click.stop="emit('remove', arrow.id)">
@@ -170,12 +154,4 @@ function rectOutline(r: { x: number; y: number; width: number; height: number })
   stroke-width: 3px;
 }
 .arrow-delete { cursor: pointer; pointer-events: auto; }
-.arrow-label-input {
-  width: 100%; height: 22px;
-  background: rgba(0,0,0,0.75); color: white;
-  border: 1px solid #ef4444; border-radius: 4px;
-  font-size: 10px; font-weight: 600; text-align: center;
-  outline: none; padding: 0 6px;
-  pointer-events: auto;
-}
 </style>

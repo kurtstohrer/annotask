@@ -4,7 +4,7 @@
 
 - Node.js >= 18
 - A Vite (v4+) or Webpack (v5+) project
-- Vue 3 (React and Svelte support planned)
+- Vue 3, React, or Svelte
 
 ## Install
 
@@ -47,6 +47,30 @@ export default {
 ```
 
 The Webpack plugin starts a standalone server on port 24678 by default. Pass `{ port: N }` to customize.
+
+## Configure React (Vite)
+
+```ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  plugins: [react(), annotask()],
+})
+```
+
+## Configure Svelte (Vite)
+
+```ts
+import { defineConfig } from 'vite'
+import { svelte } from '@sveltejs/vite-plugin-svelte'
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  plugins: [svelte(), annotask()],
+})
+```
 
 ## Start
 

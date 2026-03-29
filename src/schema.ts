@@ -1,7 +1,6 @@
 export interface AnnotaskReport {
   version: '1.0'
   project: {
-    /** Currently only 'vue' is emitted at runtime. React and Svelte are planned. */
     framework: 'vue' | 'react' | 'svelte'
     styling: string[]
     root: string

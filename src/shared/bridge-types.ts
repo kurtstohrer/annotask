@@ -247,17 +247,22 @@ export interface MoveElementPayload {
   position: 'before' | 'after' | 'append' | 'prepend'
 }
 
-export interface InsertVueComponentPayload {
+export interface InsertComponentPayload {
   targetEid: string
   position: 'before' | 'after' | 'append' | 'prepend'
   componentName: string
   props?: Record<string, unknown>
 }
 
-export interface InsertVueComponentResult {
+export interface InsertComponentResult {
   eid: string
   mounted: boolean
 }
+
+/** @deprecated Use InsertComponentPayload */
+export type InsertVueComponentPayload = InsertComponentPayload
+/** @deprecated Use InsertComponentResult */
+export type InsertVueComponentResult = InsertComponentResult
 
 // ── Source Mapping Check ────────────────────────────────
 

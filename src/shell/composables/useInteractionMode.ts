@@ -1,8 +1,13 @@
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 
 export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight'
 
-const mode = ref<InteractionMode>('select')
+const stored = localStorage.getItem('annotask:mode')
+const mode = ref<InteractionMode>(
+  stored && ['select', 'interact', 'pin', 'arrow', 'draw', 'highlight'].includes(stored)
+    ? stored as InteractionMode
+    : 'select'
+)
 
 function onKeyDown(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement)?.tagName
@@ -17,6 +22,8 @@ function onKeyDown(e: KeyboardEvent) {
     case 'h': mode.value = 'highlight'; break
   }
 }
+
+watch(mode, (v) => localStorage.setItem('annotask:mode', v))
 
 export function useInteractionMode() {
   onMounted(() => document.addEventListener('keydown', onKeyDown))
