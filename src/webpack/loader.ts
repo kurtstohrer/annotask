@@ -9,6 +9,7 @@ export default function annotaskLoader(this: any, source: string): string {
   const options = this.getOptions?.() || {}
   const filePath = this.resourcePath
   const projectRoot = options.projectRoot || process.cwd()
+  const mfe: string | undefined = options.mfe
 
   // Expose framework runtime on main entry files
   if (filePath.endsWith('/main.ts') || filePath.endsWith('/main.js') || filePath.endsWith('/main.tsx') || filePath.endsWith('/main.jsx')) {
@@ -26,7 +27,7 @@ export default function annotaskLoader(this: any, source: string): string {
   // Transform source files
   if (!filePath.endsWith('.vue') && !filePath.endsWith('.svelte') && !/\.[jt]sx$/.test(filePath)) return source
 
-  const result = transformFile(source, filePath, projectRoot)
+  const result = transformFile(source, filePath, projectRoot, mfe)
   if (!result) return source
 
   // Register imported PascalCase components globally
