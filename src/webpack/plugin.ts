@@ -6,7 +6,6 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startStandaloneServer } from '../server/standalone.js'
-import { toggleButtonScript } from '../plugin/toggle-button.js'
 import { bridgeClientScript } from '../plugin/bridge-client.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -66,9 +65,7 @@ export class AnnotaskWebpackPlugin {
 
       const hooks = htmlPluginConstructor.getHooks(compilation)
       hooks.beforeEmit.tapAsync('AnnotaskWebpackPlugin', (data: any, cb: any) => {
-        const scripts = `
-<script>${bridgeClientScript()}</script>
-<script type="module">${toggleButtonScript(this.serverUrl)}</script>`
+        const scripts = `\n<script>${bridgeClientScript()}</script>`
         data.html = data.html.replace('</body>', scripts + '\n</body>')
         cb(null, data)
       })

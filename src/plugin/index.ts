@@ -1,6 +1,5 @@
 import type { Plugin, ViteDevServer } from 'vite'
 import { transformFile, transformHTML } from './transform.js'
-import { toggleButtonScript } from './toggle-button.js'
 import { bridgeClientScript } from './bridge-client.js'
 import { createAnnotaskServer } from '../server/index.js'
 import { writeServerInfo, writeMfeServerInfo } from '../server/discovery.js'
@@ -100,12 +99,6 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         tags: [
           {
             tag: 'script',
-            attrs: { type: 'module' },
-            children: toggleButtonScript(),
-            injectTo: 'body',
-          },
-          {
-            tag: 'script',
             children: bridgeClientScript(),
             injectTo: 'body',
           },
@@ -185,7 +178,7 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
             if (chunks.length > 0) {
               let body = chunks.join('')
               if (body.includes('</body>') && !body.includes('__ANNOTASK_BRIDGE__')) {
-                const scripts = `<script type="module">${toggleButtonScript()}</script>\n<script>${bridgeClientScript()}</script>\n`
+                const scripts = `<script>${bridgeClientScript()}</script>\n`
                 body = body.replace('</body>', scripts + '</body>')
               }
               return _end.call(res, body)
