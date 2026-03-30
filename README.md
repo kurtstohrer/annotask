@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="annotask-logo.svg" alt="Annotask" width="120" />
+  <img src="annotask-logo.png" alt="Annotask" width="120" />
 </p>
 
 <h1 align="center">Annotask</h1>
