@@ -1,4 +1,8 @@
-# Annotask
+<p align="center">
+  <img src="annotask-logo.svg" alt="Annotask" width="120" />
+</p>
+
+<h1 align="center">Annotask</h1>
 
 Visual markup tool for web apps. Annotate your UI in the browser — pins, arrows, drawn sections, notes — and Annotask generates structured tasks that AI coding agents apply to your source code. Supports Vue, React, Svelte, Astro, and plain HTML/htmx with Vite and Webpack.
 
