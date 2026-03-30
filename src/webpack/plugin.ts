@@ -6,12 +6,15 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startStandaloneServer } from '../server/standalone.js'
+import { writeMfeServerInfo } from '../server/discovery.js'
 import { bridgeClientScript } from '../plugin/bridge-client.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export interface AnnotaskWebpackOptions {
   port?: number
+  mfe?: string
+  server?: string
 }
 
 export class AnnotaskWebpackPlugin {
@@ -36,25 +39,39 @@ export class AnnotaskWebpackPlugin {
       exclude: /node_modules/,
       use: [{
         loader: loaderPath,
-        options: { projectRoot },
+        options: { projectRoot, mfe: this.options.mfe },
       }],
     })
 
-    // Start standalone server
+    // Start standalone server, or point to remote server when server option is set
     let serverStarted = false
     compiler.hooks.beforeCompile.tapPromise('AnnotaskWebpackPlugin', async () => {
       if (serverStarted) return
       serverStarted = true
-      try {
-        const { port } = await startStandaloneServer({ projectRoot, port: this.options.port })
-        this.serverUrl = `http://localhost:${port}`
-        console.log(`[Annotask] Server running at ${this.serverUrl}/__annotask/`)
-      } catch (err) {
-        console.error('[Annotask] Failed to start server:', err)
+      if (this.options.server) {
+        // Skip local server, point to remote server (root shell)
+        if (this.options.mfe) {
+          writeMfeServerInfo(projectRoot, this.options.server, this.options.mfe)
+          console.log(`[Annotask] MFE '${this.options.mfe}' — using remote server at ${this.options.server}/__annotask/`)
+        } else {
+          console.log(`[Annotask] Using remote server at ${this.options.server}/__annotask/`)
+        }
+        this.serverUrl = this.options.server
+      } else {
+        try {
+          const { port } = await startStandaloneServer({ projectRoot, port: this.options.port })
+          this.serverUrl = `http://localhost:${port}`
+          console.log(`[Annotask] Server running at ${this.serverUrl}/__annotask/`)
+        } catch (err) {
+          console.error('[Annotask] Failed to start server:', err)
+        }
       }
     })
 
     // Inject scripts into HTML (works with html-webpack-plugin)
+    // Skip injection when server option is set — the root shell handles bridge/toggle
+    if (this.options.server) return
+
     compiler.hooks.compilation.tap('AnnotaskWebpackPlugin', (compilation: any) => {
       // Find HtmlWebpackPlugin from registered plugins
       const htmlPluginConstructor = compiler.options.plugins
