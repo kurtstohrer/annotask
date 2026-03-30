@@ -26,7 +26,7 @@ cat .annotask/server.json
 
 This returns `{ "url": "http://localhost:PORT", "port": PORT }`. Use the `url` value as `BASE_URL` for all API calls below.
 
-If the file contains a `"mfe"` field (e.g. `"mfe": "@antenna/factory"`), this project is a **micro-frontend** and the server is running on a remote root shell. Save the `mfe` value as `MFE_FILTER` — you will use it to filter tasks in step 1.
+If the file contains a `"mfe"` field (e.g. `"mfe": "@myorg/my-mfe"`), this project is a **micro-frontend** and the server is running on a remote root shell. Save the `mfe` value as `MFE_FILTER` — you will use it to filter tasks in step 1.
 
 If the file does not exist, probe for a running server:
 

@@ -326,7 +326,7 @@ function printHelp() {
   annotask watch --port=3000              # Watch on custom port
   annotask report                         # Get current report JSON
   annotask report | jq                    # Pipe to jq for formatting
-  annotask report --mfe=@antenna/factory  # Report filtered by MFE
+  annotask report --mfe=@myorg/my-mfe  # Report filtered by MFE
   annotask status                         # Check connection
   annotask status --server=http://localhost:24678  # Check remote server
   annotask init-skills                    # Install to .claude + .agents (default)

@@ -7,7 +7,7 @@ import { writeServerInfo, writeMfeServerInfo } from '../server/discovery.js'
 export interface AnnotaskOptions {
   /** @experimental Not yet implemented. OpenAPI spec path or URL */
   openapi?: string
-  /** MFE identity for multi-project setups (e.g. '@antenna/factory').
+  /** MFE identity for multi-project setups (e.g. '@myorg/my-mfe').
    *  Adds data-annotask-mfe attribute to all elements.
    *  When used alone, annotask runs normally (shell + server available).
    *  When combined with `server`, the local server is skipped and

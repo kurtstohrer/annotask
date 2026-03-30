@@ -137,7 +137,7 @@ export interface AnnotaskTask {
   file: string
   line: number
   component?: string
-  mfe?: string              // MFE identity (e.g. '@antenna/factory') for multi-project setups
+  mfe?: string              // MFE identity (e.g. '@myorg/my-mfe') for multi-project setups
   status: 'pending' | 'applied' | 'review' | 'accepted' | 'denied'
   intent?: string
   action?: string
