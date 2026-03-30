@@ -98,7 +98,9 @@ export function bridgeClientScript(): string {
   }
 
   // ── Interaction Mode ──────────────────────────────────
-  var currentMode = 'select';
+  var storedMode = '';
+  try { storedMode = localStorage.getItem('annotask:mode') || ''; } catch(e) {}
+  var currentMode = storedMode || 'select';
   var inspectModes = { select: true, pin: true };
 
   // ── Event Handlers ────────────────────────────────────
@@ -269,6 +271,7 @@ export function bridgeClientScript(): string {
     // ── Mode ──
     if (type === 'mode:set') {
       currentMode = payload.mode || 'select';
+      try { localStorage.setItem('annotask:mode', currentMode); } catch(e) {}
       return;
     }
 
