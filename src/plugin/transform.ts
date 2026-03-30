@@ -15,13 +15,14 @@
 export function transformFile(
   code: string,
   filePath: string,
-  projectRoot: string
+  projectRoot: string,
+  mfe?: string
 ): string | null {
-  if (filePath.endsWith('.vue')) return transformVueSFC(code, filePath, projectRoot)
-  if (filePath.endsWith('.svelte')) return transformSvelte(code, filePath, projectRoot)
-  if (/\.[jt]sx$/.test(filePath)) return transformJSX(code, filePath, projectRoot)
-  if (filePath.endsWith('.html')) return transformHTML(code, filePath, projectRoot)
-  if (filePath.endsWith('.astro')) return transformAstro(code, filePath, projectRoot)
+  if (filePath.endsWith('.vue')) return transformVueSFC(code, filePath, projectRoot, mfe)
+  if (filePath.endsWith('.svelte')) return transformSvelte(code, filePath, projectRoot, mfe)
+  if (/\.[jt]sx$/.test(filePath)) return transformJSX(code, filePath, projectRoot, mfe)
+  if (filePath.endsWith('.html')) return transformHTML(code, filePath, projectRoot, mfe)
+  if (filePath.endsWith('.astro')) return transformAstro(code, filePath, projectRoot, mfe)
   return null
 }
 
@@ -34,7 +35,8 @@ export function transformFile(
 export function transformVueSFC(
   code: string,
   filePath: string,
-  projectRoot: string
+  projectRoot: string,
+  mfe?: string
 ): string | null {
   if (!code.includes('<template')) return null
 
@@ -52,7 +54,7 @@ export function transformVueSFC(
   const componentName = extractComponentName(filePath)
   const templateStartLine = code.slice(0, templateOpenTagEnd).split('\n').length
 
-  const injected = injectAttributes(templateContent, relativeFile, componentName, templateStartLine)
+  const injected = injectAttributes(templateContent, relativeFile, componentName, templateStartLine, { mfe })
   if (!injected) return null
 
   return code.slice(0, templateOpenTagEnd) + injected + code.slice(templateEnd)
@@ -70,7 +72,8 @@ export const transformSFC = transformVueSFC
 export function transformSvelte(
   code: string,
   filePath: string,
-  projectRoot: string
+  projectRoot: string,
+  mfe?: string
 ): string | null {
   const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
@@ -99,7 +102,7 @@ export function transformSvelte(
       relativeFile,
       componentName,
       regionStartLine,
-      { skipTags: SVELTE_SKIP_TAGS }
+      { skipTags: SVELTE_SKIP_TAGS, mfe }
     )
 
     if (injected) {
@@ -134,7 +137,8 @@ const SVELTE_SKIP_TAGS = new Set([
 export function transformJSX(
   code: string,
   filePath: string,
-  projectRoot: string
+  projectRoot: string,
+  mfe?: string
 ): string | null {
   const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
@@ -142,6 +146,7 @@ export function transformJSX(
   const injected = injectAttributes(code, relativeFile, componentName, 1, {
     jsxMode: true,
     skipTags: JSX_SKIP_TAGS,
+    mfe,
   })
 
   return injected
@@ -159,7 +164,8 @@ const JSX_SKIP_TAGS = new Set(['script', 'style'])
 export function transformHTML(
   code: string,
   filePath: string,
-  projectRoot: string
+  projectRoot: string,
+  mfe?: string
 ): string | null {
   const bodyMatch = code.match(/<body(\s[^>]*)?>/)
   if (!bodyMatch) return null
@@ -177,6 +183,7 @@ export function transformHTML(
 
   const injected = injectAttributes(bodyContent, relativeFile, componentName, bodyStartLine, {
     skipTags: HTML_SKIP_TAGS,
+    mfe,
   })
   if (!injected) return null
 
@@ -195,7 +202,8 @@ const HTML_SKIP_TAGS = new Set(['script', 'style'])
 export function transformAstro(
   code: string,
   filePath: string,
-  projectRoot: string
+  projectRoot: string,
+  mfe?: string
 ): string | null {
   const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
@@ -232,6 +240,7 @@ export function transformAstro(
     const injected = injectAttributes(regionContent, relativeFile, componentName, regionStartLine, {
       jsxMode: true,
       skipTags: ASTRO_SKIP_TAGS,
+      mfe,
     })
 
     if (injected) {
@@ -285,6 +294,8 @@ interface InjectOptions {
   jsxMode?: boolean
   /** Tags to skip (won't have attributes injected) */
   skipTags?: Set<string>
+  /** MFE identity for multi-project setups */
+  mfe?: string
 }
 
 /**
@@ -303,6 +314,7 @@ export function injectAttributes(
 ): string | null {
   const skipTags = options?.skipTags ?? DEFAULT_SKIP_TAGS
   const jsxMode = options?.jsxMode ?? false
+  const mfe = options?.mfe
 
   let result = ''
   let lastIndex = 0
@@ -371,7 +383,7 @@ export function injectAttributes(
       // Calculate file-relative line number
       const lineInFile = templateStartLine + template.slice(0, tagStart).split('\n').length - 1
 
-      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}"`
+      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}"${mfe ? ` data-annotask-mfe="${mfe}"` : ''}`
 
       // Find the insertion point: right before '>' or '/>'
       let insertAt = tagEndIndex - 1 // the '>'

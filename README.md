@@ -100,6 +100,42 @@ import { AnnotaskWebpackPlugin } from 'annotask/webpack'
 plugins: [new AnnotaskWebpackPlugin()]
 ```
 
+### Micro-frontends (single-spa, Module Federation, etc.)
+
+For MFE architectures where multiple apps load into a single root shell:
+
+**MFE child** (Vite) — adds `data-annotask-mfe` attribute to all elements:
+
+```ts
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  plugins: [
+    vue(),
+    annotask({
+      mfe: '@myorg/my-mfe',                    // MFE identity tag
+      server: 'http://localhost:24678',         // Root's annotask server URL
+    }),
+  ],
+})
+```
+
+**Root shell** (Webpack) — runs the annotask server, bridge, and shell UI:
+
+```ts
+import { AnnotaskWebpackPlugin } from 'annotask/webpack'
+
+plugins: [new AnnotaskWebpackPlugin({ port: 24678 })]
+```
+
+When `server` is set, the MFE's local annotask server is skipped — the root handles it. When only `mfe` is set (no `server`), annotask runs normally for standalone development.
+
+Tasks created from MFE elements carry the `mfe` field. Filter them with `GET /__annotask/api/tasks?mfe=@myorg/my-mfe` or use the CLI:
+
+```bash
+annotask report --mfe=@myorg/my-mfe
+```
+
 Start your dev server, then open:
 - **App**: `http://localhost:5173/` (Vite) or `http://localhost:8090/` (Webpack)
 - **Annotask**: `http://localhost:5173/__annotask/`
@@ -108,7 +144,7 @@ Start your dev server, then open:
 
 ### Annotation tools (primary)
 - **Pins** — Pin an element and describe what you want changed
-- **Arrows** — Draw arrows to show where elements should move
+- **Arrows** — Draw arrows to reference other elements or parts of the page
 - **Drawn sections** — Draw a rectangle where new content should go, with a prompt
 - **Text highlights** — Select text to mark it for editing
 - **Notes** — Attach free-text design notes to any element
@@ -134,10 +170,12 @@ annotask status             # Check connection
 annotask init-skills        # Install agent skills into your project
 ```
 
+Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=NAME` (filter by MFE).
+
 ## API
 
 - `GET /__annotask/api/report` — Current change report
-- `GET /__annotask/api/tasks` — Task list
+- `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
 - `POST /__annotask/api/tasks` — Create a task
 - `PATCH /__annotask/api/tasks/:id` — Update task status
 - `GET /__annotask/api/status` — Health check
@@ -180,7 +218,7 @@ pnpm test:e2e                 # Run E2E tests (all frameworks)
 - `src/schema.ts` — TypeScript types for change reports
 - `src/cli/` — CLI tool for terminal interaction
 - `skills/` — Agent skill definitions (shipped with the npm package)
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite)
+- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
 
 ## Troubleshooting
 

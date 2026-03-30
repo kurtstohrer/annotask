@@ -20,7 +20,7 @@ Connect to the Annotask WebSocket and stream changes as the user makes them visu
    ```bash
    cat .annotask/server.json
    ```
-   Use the `port` and `url` values. If not found, probe `curl -s http://localhost:24678/__annotask/api/status` then `curl -s http://localhost:5173/__annotask/api/status`. **Do NOT read server.json from parent or sibling directories.**
+   Use the `url` value as the server URL. If the file contains a `"mfe"` field, this is a micro-frontend setup — the server is running on a remote root shell. Save the `mfe` value for filtering. If not found, probe `curl -s http://localhost:24678/__annotask/api/status` then `curl -s http://localhost:5173/__annotask/api/status`. **Do NOT read server.json from parent or sibling directories.**
 
 1. **Start watching** by running in the background:
    ```bash

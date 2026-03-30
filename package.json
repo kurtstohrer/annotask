@@ -1,6 +1,6 @@
 {
   "name": "annotask",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "type": "module",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -37,6 +37,7 @@
     "dev:html-vite": "pnpm --filter @annotask/playground-html-vite dev",
     "dev:astro": "pnpm --filter @annotask/playground-astro dev",
     "dev:htmx-vite": "pnpm --filter @annotask/playground-htmx-vite dev",
+    "dev:mfe-vite": "pnpm --filter @annotask/playground-mfe-vite dev",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"

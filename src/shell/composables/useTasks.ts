@@ -8,6 +8,7 @@ export interface Task {
   file: string
   line: number
   component?: string
+  mfe?: string
   status: 'pending' | 'applied' | 'review' | 'accepted' | 'denied'
   intent?: string
   action?: string

@@ -87,7 +87,9 @@ export function bridgeClientScript(): string {
       component = fileName.replace(/\.[^.]+$/, '');
     }
 
-    return { file: file, line: line, component: component };
+    var mfe = el.getAttribute('data-annotask-mfe') || '';
+
+    return { file: file, line: line, component: component, mfe: mfe };
   }
 
   function getRect(el) {
@@ -160,6 +162,7 @@ export function bridgeClientScript(): string {
       file: data.file,
       line: data.line,
       component: data.component,
+      mfe: data.mfe,
       tag: targetEl.tagName.toLowerCase(),
       classes: classes,
       rect: getRect(targetEl),
@@ -190,6 +193,7 @@ export function bridgeClientScript(): string {
       file: data.file,
       line: parseInt(data.line) || 0,
       component: data.component,
+      mfe: data.mfe,
       tag: anchorEl.tagName.toLowerCase()
     });
   }
@@ -210,6 +214,7 @@ export function bridgeClientScript(): string {
       file: data.file,
       line: data.line,
       component: data.component,
+      mfe: data.mfe,
       tag: targetEl.tagName.toLowerCase(),
       classes: classes,
       rect: getRect(targetEl),
@@ -287,6 +292,7 @@ export function bridgeClientScript(): string {
         file: srcData.file,
         line: srcData.line,
         component: srcData.component,
+        mfe: srcData.mfe,
         tag: src.sourceEl.tagName.toLowerCase(),
         rect: getRect(src.sourceEl),
         classes: typeof src.targetEl.className === 'string' ? src.targetEl.className : ''

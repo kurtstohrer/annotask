@@ -26,6 +26,7 @@ interface BaseChange {
   section: 'template' | 'style' | 'script'
   line: number
   component?: string
+  mfe?: string
 }
 
 /** Direct inline style change on an element (from visual editing) */
@@ -136,6 +137,7 @@ export interface AnnotaskTask {
   file: string
   line: number
   component?: string
+  mfe?: string              // MFE identity (e.g. '@antenna/factory') for multi-project setups
   status: 'pending' | 'applied' | 'review' | 'accepted' | 'denied'
   intent?: string
   action?: string

@@ -51,6 +51,10 @@ astro: ensure-api
 htmx: ensure-api
     cd htmx-vite && pnpm dev
 
+# Start MFE + Vite playground (port 5180, MFE mode — no local annotask server)
+mfe:
+    cd mfe-vite && pnpm dev
+
 # Install dependencies for all playgrounds
 install:
     cd .. && pnpm install
@@ -77,6 +81,7 @@ list:
     @echo "  just html         — HTML + Vite          (port 5176)"
     @echo "  just astro        — Astro                (port 5177)"
     @echo "  just htmx         — htmx + Vite          (port 5178)"
+    @echo "  just mfe          — MFE + Vite           (port 5180, MFE mode)"
     @echo "  just stop-api     — Stop background API"
     @echo ""
     @echo "The API auto-starts in the background when you run a playground."

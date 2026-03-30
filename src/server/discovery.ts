@@ -9,6 +9,7 @@ export interface ServerInfo {
   url: string
   port: number
   pid: number
+  mfe?: string
 }
 
 export function writeServerInfo(projectRoot: string, port: number) {
@@ -23,6 +24,14 @@ export function readServerInfo(projectRoot: string): ServerInfo | null {
     const raw = fs.readFileSync(path.join(projectRoot, '.annotask', 'server.json'), 'utf-8')
     return JSON.parse(raw)
   } catch { return null }
+}
+
+export function writeMfeServerInfo(projectRoot: string, serverUrl: string, mfe: string) {
+  const dir = path.join(projectRoot, '.annotask')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const url = new URL(serverUrl)
+  const info: ServerInfo = { url: serverUrl, port: parseInt(url.port) || 80, pid: 0, mfe }
+  fs.writeFileSync(path.join(dir, 'server.json'), JSON.stringify(info, null, 2))
 }
 
 export function removeServerInfo(projectRoot: string) {

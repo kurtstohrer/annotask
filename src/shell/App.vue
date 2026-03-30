@@ -160,7 +160,7 @@ const pendingHighlight = ref<{ text: string; x: number; y: number; file: string;
 
 // ── Selection Model ────────────────────────────────────
 const primarySelection = ref<{
-  file: string; line: string; component: string
+  file: string; line: string; component: string; mfe: string
   tagName: string; classes: string; eid: string
 } | null>(null)
 const selectedEids = ref<string[]>([])
@@ -273,7 +273,7 @@ function setupBridgeEvents() {
   })
 
   iframe.onBridgeEvent('click:element', async (data: ClickElementEvent) => {
-    const { file, line, component, tag: tagName, classes, eid, shiftKey, clientX, clientY } = data
+    const { file, line, component, mfe, tag: tagName, classes, eid, shiftKey, clientX, clientY } = data
     const shellRect = iframe.toShellRect(data.rect)
 
     // Pin mode: create pin → open task creation panel
@@ -284,7 +284,7 @@ function setupBridgeEvents() {
         { file, line, component, elementTag: tagName, elementClasses: classes },
         pinX, pinY
       )
-      primarySelection.value = { file, line, component, tagName, classes, eid }
+      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid }
       selectedEids.value = [eid]
       await readLiveStyles()
       await refreshElementRole()
@@ -312,7 +312,7 @@ function setupBridgeEvents() {
       }
       await refreshRects()
     } else {
-      primarySelection.value = { file, line, component, tagName, classes, eid }
+      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid }
       selectedEids.value = [eid]
       const group = await iframe.findTemplateGroup(file, line, tagName)
       templateGroupEids.value = group.eids
@@ -327,7 +327,7 @@ function setupBridgeEvents() {
   })
 
   iframe.onBridgeEvent('contextmenu:element', async (data: ClickElementEvent) => {
-    const { file, line, component, tag: tagName, classes, eid } = data
+    const { file, line, component, mfe, tag: tagName, classes, eid } = data
     const shellRect = iframe.toShellRect(data.rect)
     primarySelection.value = { file, line, component, tagName, classes, eid }
     selectedEids.value = [eid]
@@ -514,7 +514,8 @@ async function restoreAnnotationsFromTasks() {
 
 // ── Task helper (adds route + visual data) ───────────
 function createRouteTask(data: Record<string, unknown>) {
-  return taskSystem.createTask({ ...data, route: currentRoute.value })
+  const mfe = primarySelection.value?.mfe || ''
+  return taskSystem.createTask({ ...data, route: currentRoute.value, ...(mfe ? { mfe } : {}) })
 }
 
 // ── Text Highlight Handlers ──────────────────────────

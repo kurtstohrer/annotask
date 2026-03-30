@@ -3,13 +3,33 @@ import { existsSync, mkdirSync, cpSync, readdirSync, symlinkSync, lstatSync, rmS
 import { resolve, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { readFileSync } from 'node:fs'
+
 const args = process.argv.slice(2)
 const command = args[0] || 'watch'
 const port = args.find(a => a.startsWith('--port='))?.split('=')[1] || '5173'
 const host = args.find(a => a.startsWith('--host='))?.split('=')[1] || 'localhost'
+const serverArg = args.find(a => a.startsWith('--server='))?.split('=')[1] || ''
+const mfeArg = args.find(a => a.startsWith('--mfe='))?.split('=')[1] || ''
 
-const wsUrl = `ws://${host}:${port}/__annotask/ws`
-const apiUrl = `http://${host}:${port}/__annotask/api`
+// Discover server URL and MFE from .annotask/server.json or CLI flags
+let baseUrl = ''
+let mfeFilter = mfeArg
+
+try {
+  const serverJson = JSON.parse(readFileSync('.annotask/server.json', 'utf-8'))
+  baseUrl = serverArg || serverJson.url || ''
+  if (!mfeFilter && serverJson.mfe) mfeFilter = serverJson.mfe
+} catch {
+  // No server.json found
+}
+
+if (!baseUrl) {
+  baseUrl = serverArg || `http://${host}:${port}`
+}
+
+const wsUrl = baseUrl.replace(/^http/, 'ws') + '/__annotask/ws'
+const apiUrl = baseUrl + '/__annotask/api'
 
 // ── Skill targets ────────────────────────────────────
 
@@ -133,12 +153,23 @@ function watchChanges() {
 
 async function fetchReport() {
   try {
-    const res = await fetch(`${apiUrl}/report`)
-    const data = await res.json()
-    console.log(JSON.stringify(data, null, 2))
+    const tasksUrl = mfeFilter ? `${apiUrl}/tasks?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/tasks`
+    const reportUrl = `${apiUrl}/report`
+
+    const [tasksRes, reportRes] = await Promise.all([
+      fetch(tasksUrl),
+      fetch(reportUrl),
+    ])
+    const tasks = await tasksRes.json()
+    const report = await reportRes.json()
+
+    console.log(JSON.stringify({ report, tasks }, null, 2))
+    if (mfeFilter) {
+      console.error(`\x1b[36m[Annotask]\x1b[0m Filtered by MFE: ${mfeFilter}`)
+    }
   } catch (err: any) {
     console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch report: ${err.message}`)
-    console.error(`Make sure your Vite dev server is running with the annotask() plugin on port ${port}`)
+    console.error(`Make sure the Annotask server is running at ${baseUrl}`)
     process.exit(1)
   }
 }
@@ -149,10 +180,11 @@ async function checkStatus() {
   try {
     const res = await fetch(`${apiUrl}/status`)
     const data = await res.json()
-    console.log(`\x1b[32m[Annotask]\x1b[0m Server is running on port ${port}`)
+    console.log(`\x1b[32m[Annotask]\x1b[0m Server is running at ${baseUrl}`)
+    if (mfeFilter) console.log(`\x1b[36m[Annotask]\x1b[0m MFE filter: ${mfeFilter}`)
     console.log(JSON.stringify(data, null, 2))
   } catch {
-    console.log(`\x1b[31m[Annotask]\x1b[0m No Annotask server found on port ${port}`)
+    console.log(`\x1b[31m[Annotask]\x1b[0m No Annotask server found at ${baseUrl}`)
     process.exit(1)
   }
 }
@@ -280,8 +312,10 @@ function printHelp() {
   help         Show this help
 
 \x1b[33mOptions:\x1b[0m
-  --port=N          Vite dev server port (default: 5173)
-  --host=H          Vite dev server host (default: localhost)
+  --port=N          Dev server port (default: 5173)
+  --host=H          Dev server host (default: localhost)
+  --server=URL      Annotask server URL (overrides .annotask/server.json)
+  --mfe=NAME        Filter tasks by MFE identity (overrides server.json mfe)
   --force           Overwrite existing skills (for init-skills)
   --target=NAME     Comma-separated targets (default: claude,agents)
                     Built-in: claude, agents, copilot
@@ -292,7 +326,9 @@ function printHelp() {
   annotask watch --port=3000              # Watch on custom port
   annotask report                         # Get current report JSON
   annotask report | jq                    # Pipe to jq for formatting
+  annotask report --mfe=@antenna/factory  # Report filtered by MFE
   annotask status                         # Check connection
+  annotask status --server=http://localhost:24678  # Check remote server
   annotask init-skills                    # Install to .claude + .agents (default)
   annotask init-skills --target=claude    # Only .claude/skills/
   annotask init-skills --target=copilot   # Only .copilot/skills/

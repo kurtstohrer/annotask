@@ -26,6 +26,8 @@ cat .annotask/server.json
 
 This returns `{ "url": "http://localhost:PORT", "port": PORT }`. Use the `url` value as `BASE_URL` for all API calls below.
 
+If the file contains a `"mfe"` field (e.g. `"mfe": "@antenna/factory"`), this project is a **micro-frontend** and the server is running on a remote root shell. Save the `mfe` value as `MFE_FILTER` — you will use it to filter tasks in step 1.
+
 If the file does not exist, probe for a running server:
 
 ```bash
@@ -37,8 +39,14 @@ Use whichever responds with `{"status":"ok"}`. **IMPORTANT: Do NOT read server.j
 
 ### 1. Fetch pending tasks
 
+If `MFE_FILTER` is set (from step 0), append it as a query parameter to filter tasks for this project:
+
 ```bash
+# Without MFE filter (standard single-project setup):
 curl -s $BASE_URL/__annotask/api/tasks
+
+# With MFE filter (micro-frontend setup):
+curl -s $BASE_URL/__annotask/api/tasks?mfe=$MFE_FILTER
 ```
 
 Response:

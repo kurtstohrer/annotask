@@ -30,6 +30,11 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:8090' },
       testMatch: '**/vue-webpack*.test.ts',
     },
+    {
+      name: 'mfe-vite',
+      use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:5180' },
+      testMatch: '**/mfe-vite*.test.ts',
+    },
   ],
   webServer: [
     {
@@ -53,6 +58,12 @@ export default defineConfig({
     {
       command: 'pnpm dev:vue-webpack',
       url: 'http://localhost:8090',
+      reuseExistingServer: true,
+      timeout: 30_000,
+    },
+    {
+      command: 'pnpm dev:mfe-vite',
+      url: 'http://localhost:5180',
       reuseExistingServer: true,
       timeout: 30_000,
     },

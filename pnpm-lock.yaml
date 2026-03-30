@@ -86,6 +86,25 @@ importers:
         specifier: ^6.0.0
         version: 6.4.1(@types/node@25.5.0)(terser@5.46.1)(yaml@2.8.3)
 
+  playgrounds/mfe-vite:
+    dependencies:
+      vue:
+        specifier: ^3.5.0
+        version: 3.5.31(typescript@5.9.3)
+      vue-router:
+        specifier: ^5.0.4
+        version: 5.0.4(@vue/compiler-sfc@3.5.31)(vue@3.5.31(typescript@5.9.3))
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^5.0.0
+        version: 5.2.4(vite@6.4.1(@types/node@25.5.0)(terser@5.46.1)(yaml@2.8.3))(vue@3.5.31(typescript@5.9.3))
+      annotask:
+        specifier: workspace:*
+        version: link:../..
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@25.5.0)(terser@5.46.1)(yaml@2.8.3)
+
   playgrounds/react-vite:
     dependencies:
       react:

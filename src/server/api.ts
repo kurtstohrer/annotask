@@ -4,7 +4,7 @@ export interface APIOptions {
   getReport: () => unknown
   getConfig: () => unknown
   getDesignSpec: () => unknown
-  getTasks: () => unknown
+  getTasks: () => { version: string; tasks: any[] }
   updateTask: (id: string, updates: Record<string, unknown>) => unknown
   addTask: (task: Record<string, unknown>) => unknown
 }
@@ -64,8 +64,16 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
-    if (path === 'tasks' && req.method === 'GET') {
-      res.end(JSON.stringify(options.getTasks(), null, 2))
+    if (path.startsWith('tasks') && !path.startsWith('tasks/') && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const mfeFilter = urlObj.searchParams.get('mfe')
+      const taskData = options.getTasks()
+      if (mfeFilter) {
+        const filtered = { ...taskData, tasks: taskData.tasks.filter((t: any) => t.mfe === mfeFilter) }
+        res.end(JSON.stringify(filtered, null, 2))
+      } else {
+        res.end(JSON.stringify(taskData, null, 2))
+      }
       return
     }
 

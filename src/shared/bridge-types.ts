@@ -40,6 +40,7 @@ export interface ResolvedElement {
   file: string
   line: string
   component: string
+  mfe?: string
   tag: string
   rect: BridgeRect
   classes: string
@@ -170,6 +171,7 @@ export interface ClickElementEvent {
   file: string
   line: string
   component: string
+  mfe?: string
   tag: string
   classes: string
   rect: BridgeRect
@@ -188,6 +190,7 @@ export interface SelectionTextEvent {
   file: string
   line: number
   component: string
+  mfe?: string
   tag: string
 }
 

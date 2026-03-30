@@ -66,6 +66,10 @@ react: ensure-api
 svelte: ensure-api
     pnpm dev:svelte-vite
 
+# Start MFE + Vite playground (MFE mode, no local server)
+mfe: ensure-api
+    pnpm dev:mfe-vite
+
 # Start shell UI in standalone dev mode
 shell:
     pnpm dev:shell
@@ -89,6 +93,7 @@ list:
     @echo "  just vue-webpack  — Vue + Webpack        (port 8090)"
     @echo "  just react        — React + Vite         (port 5174)"
     @echo "  just svelte       — Svelte + Vite        (port 5175)"
+    @echo "  just mfe          — MFE + Vite           (port 5180, MFE mode)"
     @echo "  just stop-api     — Stop background API"
     @echo ""
     @echo "The API auto-starts in the background when you run a playground."

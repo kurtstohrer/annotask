@@ -3,15 +3,27 @@ import { transformFile, transformHTML } from './transform.js'
 import { toggleButtonScript } from './toggle-button.js'
 import { bridgeClientScript } from './bridge-client.js'
 import { createAnnotaskServer } from '../server/index.js'
-import { writeServerInfo } from '../server/discovery.js'
+import { writeServerInfo, writeMfeServerInfo } from '../server/discovery.js'
 
 export interface AnnotaskOptions {
   /** @experimental Not yet implemented. OpenAPI spec path or URL */
   openapi?: string
+  /** MFE identity for multi-project setups (e.g. '@antenna/factory').
+   *  Adds data-annotask-mfe attribute to all elements.
+   *  When used alone, annotask runs normally (shell + server available).
+   *  When combined with `server`, the local server is skipped and
+   *  .annotask/server.json points to the remote root server. */
+  mfe?: string
+  /** Remote annotask server URL (e.g. 'http://localhost:24678').
+   *  When set, the local annotask server is skipped — the root shell's
+   *  plugin handles the server and UI injection. Writes .annotask/server.json
+   *  pointing to this URL so skills/CLI connect to the root. */
+  server?: string
 }
 
 export function annotask(options: AnnotaskOptions = {}): Plugin[] {
   let projectRoot = ''
+  const mfe = options.mfe
 
   const transformPlugin: Plugin = {
     name: 'annotask:transform',
@@ -20,6 +32,12 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
 
     configResolved(config) {
       projectRoot = config.root
+
+      // When a remote server is specified, write server.json pointing to it
+      // so skills/CLI in this repo connect to the root's annotask server.
+      if (mfe && options.server) {
+        writeMfeServerInfo(projectRoot, options.server, mfe)
+      }
     },
 
     transform(code, id) {
@@ -44,7 +62,7 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       // handled via data-astro-source-* attributes in the bridge client.
       if (!id.endsWith('.vue') && !id.endsWith('.svelte') && !/\.[jt]sx$/.test(id)) return null
 
-      const result = transformFile(code, id, projectRoot)
+      const result = transformFile(code, id, projectRoot, mfe)
       if (!result) return null
 
       // Register imported PascalCase components globally
@@ -72,7 +90,11 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
     },
 
     transformIndexHtml(html, ctx) {
-      const transformed = transformHTML(html, ctx.filename, projectRoot)
+      const transformed = transformHTML(html, ctx.filename, projectRoot, mfe)
+      // When embedded in a root (server option set), skip bridge/toggle — root handles that
+      if (options.server) {
+        return transformed ?? html
+      }
       return {
         html: transformed ?? html,
         tags: [
@@ -175,6 +197,14 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         next()
       })
     },
+  }
+
+  // When a remote server is specified, skip the serve plugin — no local
+  // server, bridge, or toggle. The root shell's plugin handles all of that.
+  // When only `mfe` is set (no server), annotask runs normally so the
+  // shell is available for standalone testing.
+  if (options.server) {
+    return [transformPlugin]
   }
 
   return [transformPlugin, servePlugin]
