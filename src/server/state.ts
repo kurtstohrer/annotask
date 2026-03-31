@@ -1,5 +1,7 @@
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import path from 'node:path'
+import os from 'node:os'
 
 const DEFAULT_DESIGN_SPEC = {
   initialized: false,
@@ -22,10 +24,42 @@ export interface ProjectState {
   dispose: () => void
 }
 
+/** Atomic write: write to tmp file then rename into place */
+async function atomicWrite(filePath: string, data: string) {
+  const dir = path.dirname(filePath)
+  await fsp.mkdir(dir, { recursive: true })
+  const tmpPath = filePath + `.tmp.${process.pid}.${Date.now()}`
+  await fsp.writeFile(tmpPath, data, 'utf-8')
+  await fsp.rename(tmpPath, filePath)
+}
+
 export function createProjectState(projectRoot: string, broadcast: (event: string, data: unknown) => void): ProjectState {
   let cachedDesignSpec: unknown = null
   let specWatcher: fs.FSWatcher | null = null
   const tasksPath = path.join(projectRoot, '.annotask', 'tasks.json')
+
+  // In-memory task cache — loaded once from disk, written back atomically on mutation
+  let taskCache: { version: string; tasks: any[] } | null = null
+  let writeQueue: Promise<void> = Promise.resolve()
+
+  function loadTasksSync(): { version: string; tasks: any[] } {
+    if (taskCache) return taskCache
+    try {
+      taskCache = JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
+    } catch {
+      taskCache = { version: '1.0', tasks: [] }
+    }
+    return taskCache!
+  }
+
+  /** Queue an atomic write so concurrent mutations don't race */
+  function flushTasks() {
+    const data = taskCache
+    if (!data) return
+    writeQueue = writeQueue
+      .then(() => atomicWrite(tasksPath, JSON.stringify(data, null, 2)))
+      .catch(() => { /* write errors are non-fatal for the in-memory state */ })
+  }
 
   function getDesignSpec(): unknown {
     if (cachedDesignSpec !== null) return cachedDesignSpec
@@ -42,6 +76,10 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
         specWatcher = fs.watch(configDir, (_, filename) => {
           cachedDesignSpec = null
           if (filename === 'design-spec.json') broadcast('designspec:updated', null)
+          if (filename === 'tasks.json') {
+            // External edit — reload from disk
+            taskCache = null
+          }
         })
       } catch { cachedDesignSpec = null }
     }
@@ -53,39 +91,29 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     return { initialized: !!spec?.initialized, ...spec }
   }
 
-  function readTasks(): { version: string; tasks: any[] } {
-    try { return JSON.parse(fs.readFileSync(tasksPath, 'utf-8')) } catch { return { version: '1.0', tasks: [] } }
-  }
-
-  function writeTasks(data: { version: string; tasks: any[] }) {
-    const dir = path.dirname(tasksPath)
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(tasksPath, JSON.stringify(data, null, 2))
-  }
-
   function addTask(task: Record<string, unknown>) {
-    const data = readTasks()
+    const data = loadTasksSync()
     const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     const newTask = { id, status: 'pending', createdAt: Date.now(), updatedAt: Date.now(), ...task }
     data.tasks.push(newTask)
-    writeTasks(data)
+    flushTasks()
     broadcast('tasks:updated', data)
     return newTask
   }
 
   function updateTask(id: string, updates: Record<string, unknown>) {
-    const data = readTasks()
+    const data = loadTasksSync()
     const task = data.tasks.find((t: any) => t.id === id)
     if (!task) return { error: 'Task not found' }
     Object.assign(task, updates, { updatedAt: Date.now() })
     if (updates.status === 'accepted') {
       if (task.screenshot) {
         const screenshotPath = path.join(projectRoot, '.annotask', 'screenshots', task.screenshot)
-        try { if (fs.existsSync(screenshotPath)) fs.unlinkSync(screenshotPath) } catch {}
+        fsp.unlink(screenshotPath).catch(() => {})
       }
       data.tasks = data.tasks.filter((t: any) => t.id !== id)
     }
-    writeTasks(data)
+    flushTasks()
     broadcast('tasks:updated', data)
     return task
   }
@@ -94,5 +122,5 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     if (specWatcher) { specWatcher.close(); specWatcher = null }
   }
 
-  return { getDesignSpec, getConfig, getTasks: readTasks, addTask, updateTask, dispose }
+  return { getDesignSpec, getConfig, getTasks: loadTasksSync, addTask, updateTask, dispose }
 }

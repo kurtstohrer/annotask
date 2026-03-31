@@ -18,7 +18,7 @@ export interface InteractionSnapshot {
 export interface AnnotaskReport {
   version: '1.0'
   project: {
-    framework: 'vue' | 'react' | 'svelte'
+    framework: 'vue' | 'react' | 'svelte' | 'astro' | 'html' | 'htmx'
     styling: string[]
     root: string
   }

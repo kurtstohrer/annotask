@@ -628,9 +628,9 @@ export function bridgeClientScript(): string {
         runAxeScan(a11yEl);
       } else {
         var script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js';
+        script.src = '/__annotask/vendor/axe-core.min.js';
         script.onload = function() { runAxeScan(a11yEl); };
-        script.onerror = function() { respond(id, { violations: [], error: 'failed to load axe-core' }); };
+        script.onerror = function() { respond(id, { violations: [], error: 'failed to load axe-core — run: pnpm build:vendor' }); };
         document.head.appendChild(script);
       }
       return;
@@ -664,9 +664,9 @@ export function bridgeClientScript(): string {
         doCapture(clipRect);
       } else {
         var h2cScript = document.createElement('script');
-        h2cScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        h2cScript.src = '/__annotask/vendor/html2canvas.min.js';
         h2cScript.onload = function() { doCapture(clipRect); };
-        h2cScript.onerror = function() { respond(id, { error: 'failed to load html2canvas' }); };
+        h2cScript.onerror = function() { respond(id, { error: 'failed to load html2canvas — run: pnpm build:vendor' }); };
         document.head.appendChild(h2cScript);
       }
       return;

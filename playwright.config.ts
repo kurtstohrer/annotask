@@ -13,7 +13,7 @@ export default defineConfig({
     {
       name: 'vue-vite',
       use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:5173' },
-      testMatch: ['**/vue-vite*.test.ts', '**/new-page.test.ts'],
+      testMatch: '**/vue-vite*.test.ts',
     },
     {
       name: 'react-vite',
@@ -24,6 +24,21 @@ export default defineConfig({
       name: 'svelte-vite',
       use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:5175' },
       testMatch: '**/svelte-vite*.test.ts',
+    },
+    {
+      name: 'html-vite',
+      use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:5176' },
+      testMatch: '**/html-vite*.test.ts',
+    },
+    {
+      name: 'astro',
+      use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:5177' },
+      testMatch: '**/astro*.test.ts',
+    },
+    {
+      name: 'htmx-vite',
+      use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:5178' },
+      testMatch: '**/htmx-vite*.test.ts',
     },
     {
       name: 'vue-webpack',
@@ -52,6 +67,24 @@ export default defineConfig({
     {
       command: 'pnpm dev:svelte-vite',
       url: 'http://localhost:5175',
+      reuseExistingServer: true,
+      timeout: 30_000,
+    },
+    {
+      command: 'pnpm dev:html-vite',
+      url: 'http://localhost:5176',
+      reuseExistingServer: true,
+      timeout: 30_000,
+    },
+    {
+      command: 'pnpm dev:astro',
+      url: 'http://localhost:5177',
+      reuseExistingServer: true,
+      timeout: 30_000,
+    },
+    {
+      command: 'pnpm dev:htmx-vite',
+      url: 'http://localhost:5178',
       reuseExistingServer: true,
       timeout: 30_000,
     },

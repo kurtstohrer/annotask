@@ -160,7 +160,7 @@ function watchChanges() {
 async function fetchReport() {
   try {
     const tasksUrl = mfeFilter ? `${apiUrl}/tasks?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/tasks`
-    const reportUrl = `${apiUrl}/report`
+    const reportUrl = mfeFilter ? `${apiUrl}/report?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/report`
 
     const [tasksRes, reportRes] = await Promise.all([
       fetch(tasksUrl),

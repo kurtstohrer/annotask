@@ -16,6 +16,10 @@ build-shell:
 build-plugin:
     pnpm build:plugin
 
+# Type-check the project
+typecheck:
+    pnpm typecheck
+
 # Run unit tests
 test:
     pnpm test

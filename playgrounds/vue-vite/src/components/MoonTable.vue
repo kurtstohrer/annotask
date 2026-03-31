@@ -200,7 +200,7 @@ const filtered = computed(() => {
 
 .table-title i { color: var(--text-muted); font-size: 14px; }
 
-.table-search { position: relative; margin-left: auto; flex-shrink: 0; }
+.table-search { position: relative; margin-left: auto; flex: 0 1 220px; min-width: 120px; }
 .search-icon {
   position: absolute;
   left: 12px;
@@ -210,7 +210,7 @@ const filtered = computed(() => {
   font-size: 13px;
   z-index: 1;
 }
-.search-input { padding-left: 34px; width: 220px; font-size: 13px; background-color: #212121; }
+.search-input { padding-left: 34px; width: 100%; font-size: 13px; background-color: #212121; }
 
 .moon-cell { display: flex; align-items: center; gap: 10px; }
 .moon-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
@@ -231,7 +231,6 @@ const filtered = computed(() => {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
-  overflow-x: auto;
 }
 .filter-label {
   font-size: 12px;
@@ -239,6 +238,7 @@ const filtered = computed(() => {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-weight: 600;
+  flex-shrink: 0;
 }
 .filter-chip {
   display: inline-flex;
@@ -253,6 +253,8 @@ const filtered = computed(() => {
   color: var(--text-muted);
   cursor: pointer;
   transition: all 0.15s;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .planet-dot {
   width: 8px;

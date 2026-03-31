@@ -23,6 +23,9 @@ function handleMessage(event: MessageEvent) {
   const msg = event.data as BridgeMessage
   if (!msg || msg.source !== 'annotask-client') return
 
+  // Verify the message came from our iframe, not an unrelated window
+  if (targetWindow && event.source !== targetWindow) return
+
   // Store the origin from the first bridge:ready message
   if (msg.type === 'bridge:ready') {
     targetOrigin = event.origin || '*'

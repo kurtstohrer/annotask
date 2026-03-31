@@ -12,6 +12,9 @@ import { useAnnotations } from './composables/useAnnotations'
 import { type ElementRole } from './composables/useElementClassification'
 import { useIframeManager } from './composables/useIframeManager'
 import { useCanvasDrawing } from './composables/useCanvasDrawing'
+import { useScreenshots } from './composables/useScreenshots'
+import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
+import { useA11yScanner } from './composables/useA11yScanner'
 import type { ClickElementEvent, HoverEnterEvent, BridgeRect } from '../shared/bridge-types'
 import ModeToolbar from './components/ModeToolbar.vue'
 import ContextMenu from './components/ContextMenu.vue'
@@ -27,7 +30,6 @@ import { useTasks } from './composables/useTasks'
 import { useViewportPreview } from './composables/useViewportPreview'
 import { useInteractionHistory } from './composables/useInteractionHistory'
 import ViewportSelector from './components/ViewportSelector.vue'
-import A11yTab from './components/A11yTab.vue'
 
 const styleEditor = useStyleEditor()
 const { applyStyle, recordAnnotation, recordClassChange, removeAnnotationsByFile, changes, report } = styleEditor
@@ -147,22 +149,7 @@ const newTaskText = ref('')
 const includeHistory = ref(localStorage.getItem('annotask:includeHistory') === 'true')
 watch(includeHistory, (v) => localStorage.setItem('annotask:includeHistory', String(v)))
 const includeElementContext = ref(localStorage.getItem('annotask:includeElementContext') === 'true')
-const snipActive = ref(false)
-const snipRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
-const snipStart = ref<{ x: number; y: number } | null>(null)
-const pendingScreenshot = ref<string | null>(null)
-const a11yViolations = ref<Array<{ id: string; impact: string; description: string; help: string; helpUrl: string; nodes: number }>>([])
-const a11yTaskRules = computed(() => {
-  const rules = new Set<string>()
-  for (const t of taskSystem.tasks.value) {
-    if (t.type === 'a11y_fix' && t.context?.rule) rules.add(t.context.rule as string)
-  }
-  return rules
-})
-const a11yLoading = ref(false)
-const a11yError = ref<string | null>(null)
-const a11yScanned = ref(false)
-const a11yScanTarget = ref('')
+const screenshots = useScreenshots(iframe)
 watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElementContext', String(v)))
 const denyingTaskId = ref<string | null>(null)
 const denyFeedbackText = ref('')
@@ -221,9 +208,32 @@ function acceptTask(taskId: string) {
   taskSystem.updateTaskStatus(taskId, 'accepted')
 }
 
-function submitDeny(taskId: string) {
+async function submitDeny(taskId: string) {
   if (!denyFeedbackText.value.trim()) return
-  taskSystem.updateTaskStatus(taskId, 'denied', denyFeedbackText.value.trim())
+
+  const extra: Record<string, unknown> = {}
+
+  // Attach screenshot if one was captured during denial
+  const screenshotFilename = screenshots.consumeScreenshot()
+  if (screenshotFilename) extra.screenshot = screenshotFilename
+
+  // Attach viewport
+  const vp = viewport.effectiveViewport.value
+  if (vp.width || vp.height) extra.viewport = { width: vp.width, height: vp.height }
+
+  // Attach interaction history
+  if (includeHistory.value) {
+    const snapshot = interactionHistory.snapshotForChange(currentRoute.value)
+    if (snapshot.recent_actions.length > 0) extra.interaction_history = snapshot
+  }
+
+  // Attach element context
+  if (includeElementContext.value && primarySelection.value?.eid) {
+    const ctx = await iframe.getElementContext(primarySelection.value.eid)
+    if (ctx) extra.element_context = ctx
+  }
+
+  taskSystem.updateTaskStatus(taskId, 'denied', denyFeedbackText.value.trim(), Object.keys(extra).length > 0 ? extra : undefined)
   denyingTaskId.value = null
   denyFeedbackText.value = ''
 }
@@ -246,6 +256,10 @@ const primarySelection = ref<{
 const selectedEids = ref<string[]>([])
 const templateGroupEids = ref<string[]>([])
 const applyToGroup = ref(true)
+
+// A11y scanner (needs primarySelection and currentRoute)
+const a11yScanner = useA11yScanner(iframe, taskSystem, primarySelection as any, currentRoute)
+const { a11yViolations, a11yLoading, a11yError, a11yScanned, a11yScanTarget, a11yTaskRules, scanA11y, createA11yTask } = a11yScanner
 
 const editTargetEids = computed<string[]>(() => {
   if (selectedEids.value.length > 1) return selectedEids.value
@@ -312,19 +326,6 @@ async function refreshElementRole() {
   selectedElementRole.value = classification?.role || null
 }
 
-async function scanA11y(target: 'element' | 'page' = 'element') {
-  a11yLoading.value = true
-  a11yError.value = null
-  const eid = target === 'element' ? primarySelection.value?.eid : undefined
-  a11yScanTarget.value = eid
-    ? `<${primarySelection.value?.tagName}> · ${primarySelection.value?.component}`
-    : 'full page'
-  const result = await iframe.scanA11y(eid)
-  a11yViolations.value = result.violations
-  a11yError.value = result.error || null
-  a11yLoading.value = false
-  a11yScanned.value = true
-}
 
 // Live computed styles
 const liveStyles = ref<Record<string, string>>({})
@@ -489,6 +490,7 @@ async function onStyleChange(property: string, value: string) {
     file: primarySelection.value.file,
     line: primarySelection.value.line,
     component: primarySelection.value.component,
+    mfe: primarySelection.value.mfe || undefined,
   }
   // Apply via bridge to all targets
   const eids = editTargetEids.value
@@ -509,6 +511,7 @@ async function applyClassChange() {
     file: primarySelection.value.file,
     line: primarySelection.value.line,
     component: primarySelection.value.component,
+    mfe: primarySelection.value.mfe || undefined,
   }
   const eids = editTargetEids.value
   for (const eid of eids) {
@@ -643,102 +646,14 @@ async function createRouteTask(data: Record<string, unknown>) {
     if (ctx) elementContextData = { element_context: ctx }
   }
 
-  const screenshotData = pendingScreenshot.value ? { screenshot: pendingScreenshot.value } : {}
-  pendingScreenshot.value = null
+  const screenshotFilename = screenshots.consumeScreenshot()
+  const screenshotData = screenshotFilename ? { screenshot: screenshotFilename } : {}
   return taskSystem.createTask({ ...data, route: currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...historyData, ...elementContextData, ...screenshotData })
 }
 
-// ── Screenshot Snip Handlers ─────────────────────────
-function startSnip() {
-  snipActive.value = true
-}
+// Screenshot aliases (from useScreenshots composable)
+const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
 
-function onSnipDown(e: PointerEvent) {
-  snipStart.value = { x: e.clientX, y: e.clientY }
-  snipRect.value = { x: e.clientX, y: e.clientY, width: 0, height: 0 }
-}
-
-function onSnipMove(e: PointerEvent) {
-  if (!snipStart.value) return
-  const x = Math.min(snipStart.value.x, e.clientX)
-  const y = Math.min(snipStart.value.y, e.clientY)
-  snipRect.value = { x, y, width: Math.abs(e.clientX - snipStart.value.x), height: Math.abs(e.clientY - snipStart.value.y) }
-}
-
-async function onSnipUp() {
-  // Determine clip rect in iframe coords
-  let clipRect: { x: number; y: number; width: number; height: number } | null = null
-  if (snipRect.value && snipRect.value.width > 30 && snipRect.value.height > 30) {
-    const iCoords = iframe.toIframeCoords(snipRect.value.x, snipRect.value.y)
-    const iCoordsEnd = iframe.toIframeCoords(snipRect.value.x + snipRect.value.width, snipRect.value.y + snipRect.value.height)
-    if (iCoords && iCoordsEnd) {
-      clipRect = { x: iCoords.x, y: iCoords.y, width: iCoordsEnd.x - iCoords.x, height: iCoordsEnd.y - iCoords.y }
-    }
-  }
-
-  snipActive.value = false
-  snipRect.value = null
-  snipStart.value = null
-
-  // Capture
-  const result = await iframe.captureScreenshot(clipRect)
-  if (result.error || !result.dataUrl) {
-    console.warn('Screenshot failed:', result.error)
-    return
-  }
-
-  // Upload
-  try {
-    const resp = await fetch('/__annotask/api/screenshots', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: result.dataUrl }),
-    })
-    const { filename } = await resp.json()
-    pendingScreenshot.value = filename
-  } catch {
-    console.warn('Screenshot upload failed')
-  }
-}
-
-function cancelSnip() {
-  snipActive.value = false
-  snipRect.value = null
-  snipStart.value = null
-}
-
-function removeScreenshot() {
-  pendingScreenshot.value = null
-}
-
-// ── A11y Task Creation ────────────────────────────────
-function createA11yTask(violation: { id: string; impact: string; description: string; help: string; helpUrl: string; nodes: number; elements?: Array<{ html: string; target: string; failureSummary: string; file?: string; line?: string; component?: string }> }) {
-  const elements = violation.elements || []
-  // Use the first element with source info for file/line
-  const firstWithSource = elements.find(e => e.file)
-  taskSystem.createTask({
-    type: 'a11y_fix',
-    description: `Fix accessibility: ${violation.help}`,
-    file: firstWithSource?.file || '',
-    line: firstWithSource?.line ? parseInt(firstWithSource.line) : 0,
-    component: firstWithSource?.component || '',
-    route: currentRoute.value,
-    context: {
-      rule: violation.id,
-      impact: violation.impact,
-      description: violation.description,
-      help: violation.help,
-      helpUrl: violation.helpUrl,
-      affected_elements: violation.nodes,
-      elements: elements.map(e => ({
-        html: e.html,
-        selector: e.target,
-        fix: e.failureSummary,
-        ...(e.file ? { file: e.file, line: e.line, component: e.component } : {}),
-      })),
-    },
-  })
-}
 
 // ── Text Highlight Handlers ──────────────────────────
 function onSubmitHighlight(prompt: string) {
@@ -926,60 +841,30 @@ function onAddGeneralTask(text: string) {
 }
 
 
-// ── Shell keyboard ────────────────────────────────────
-function onShellKeyDown(e: KeyboardEvent) {
-  const mod = e.ctrlKey || e.metaKey
 
-  // Ctrl/Cmd shortcuts
-  if (mod && e.key === 'z' && !e.shiftKey) {
-    e.preventDefault()
-    doUndo()
-    return
-  }
-
-  const tag = (e.target as HTMLElement)?.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-
-  const key = e.key
-
-  // Toggle shortcuts panel
-  if (key === '?' || (key === '/' && e.shiftKey)) {
-    showShortcuts.value = !showShortcuts.value
-    return
-  }
-
-  // Escape: close shortcuts, cancel pending task, or clear selection
-  if (key === 'Escape') {
-    if (snipActive.value) { cancelSnip(); return }
-    if (showReportPanel.value) { showReportPanel.value = false; return }
-    if (showShortcuts.value) { showShortcuts.value = false; return }
-    if (pendingTaskCreation.value) { cancelPendingTask(); return }
-    primarySelection.value = null
-    selectedEids.value = []
-    templateGroupEids.value = []
-    selectionRects.value = []
-    groupRects.value = []
-    return
-  }
-
-  // Layout overlay toggle
-  if ((key === 'l' || key === 'L') && !mod) {
-    layoutOverlay.toggle()
-    return
-  }
-
-  // Toggle task/inspector panel
-  if (key === 't' || key === 'T') {
-    if (!mod) { activePanel.value = activePanel.value === 'tasks' ? 'inspector' : 'tasks'; return }
-  }
-}
+// ── Keyboard Shortcuts (composable handles mount/unmount) ──
+useKeyboardShortcuts({
+  snipActive,
+  showReportPanel,
+  showShortcuts,
+  pendingTaskCreation,
+  primarySelection,
+  selectedEids,
+  templateGroupEids,
+  selectionRects,
+  groupRects,
+  activePanel,
+  doUndo,
+  cancelSnip,
+  cancelPendingTask,
+  layoutOverlayToggle: () => layoutOverlay.toggle(),
+})
 
 // ── Lifecycle ──────────────────────────────────────────
 onMounted(() => {
   iframe.mountBridge()
   setupBridgeEvents()
   iframeRef.value?.addEventListener('load', onIframeLoad)
-  document.addEventListener('keydown', onShellKeyDown)
 })
 onUnmounted(() => {
   iframe.unmountBridge()
@@ -1281,9 +1166,30 @@ const appUrl = computed(() => {
                 <button class="task-deny" @click="denyingTaskId = task.id; denyFeedbackText = ''">Deny</button>
               </template>
               <template v-else>
-                <input v-model="denyFeedbackText" class="deny-feedback-input" placeholder="What needs to change?" autofocus @keydown.enter="submitDeny(task.id)" @keydown.escape="denyingTaskId = null" />
-                <button class="task-deny" :disabled="!denyFeedbackText.trim()" @click="submitDeny(task.id)">Send</button>
-                <button class="cancel-btn" style="padding:4px 8px;font-size:10px" @click="denyingTaskId = null">Cancel</button>
+                <div class="deny-form">
+                  <textarea
+                    v-model="denyFeedbackText"
+                    class="deny-feedback-textarea"
+                    rows="3"
+                    placeholder="What needs to change?"
+                    autofocus
+                    @keydown.enter.ctrl="submitDeny(task.id)"
+                    @keydown.escape="denyingTaskId = null"
+                  />
+                  <div class="task-toggles">
+                    <label class="history-toggle"><input type="checkbox" v-model="includeHistory" /><span>History</span></label>
+                    <label class="history-toggle"><input type="checkbox" v-model="includeElementContext" /><span>DOM context</span></label>
+                  </div>
+                  <div v-if="pendingScreenshot" class="screenshot-preview">
+                    <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
+                    <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
+                  </div>
+                  <button v-else class="screenshot-btn" @click="startSnip">Add Screenshot</button>
+                  <div class="deny-form-actions">
+                    <button class="task-deny" :disabled="!denyFeedbackText.trim()" @click="submitDeny(task.id)">Deny</button>
+                    <button class="cancel-btn" style="padding:4px 8px;font-size:10px" @click="denyingTaskId = null">Cancel</button>
+                  </div>
+                </div>
               </template>
             </div>
           </div>
@@ -1635,13 +1541,15 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
 }
 
-.task-card-actions { display: flex; gap: 4px; margin-top: 6px; align-items: center; }
-.deny-feedback-input {
-  flex: 1; padding: 4px 8px; font-size: 10px;
-  background: var(--bg); border: 1px solid #ef4444; border-radius: 4px;
-  color: var(--text); outline: none;
+.task-card-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; align-items: center; }
+.deny-form { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.deny-feedback-textarea {
+  width: 100%; padding: 6px 8px; font-size: 11px;
+  background: var(--bg); border: 1px solid #ef4444; border-radius: 5px;
+  color: var(--text); outline: none; resize: vertical; font-family: inherit; line-height: 1.4;
 }
-.deny-feedback-input:focus { box-shadow: 0 0 0 2px rgba(239,68,68,0.2); }
+.deny-feedback-textarea:focus { box-shadow: 0 0 0 2px rgba(239,68,68,0.2); }
+.deny-form-actions { display: flex; gap: 4px; align-items: center; }
 .task-card-actions .task-accept, .task-card-actions .task-deny {
   flex: 1; padding: 5px 0; font-size: 11px; font-weight: 600;
   border: none; border-radius: 5px; cursor: pointer; transition: all 0.12s;

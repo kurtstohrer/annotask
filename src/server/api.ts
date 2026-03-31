@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 
 export interface APIOptions {
@@ -14,6 +15,13 @@ export interface APIOptions {
 
 const MAX_BODY_SIZE = 4_194_304
 const VALID_TASK_STATUSES = new Set(['pending', 'applied', 'review', 'accepted', 'denied'])
+
+/** Fields that PATCH /tasks/:id is allowed to update */
+const PATCHABLE_TASK_FIELDS = new Set([
+  'status', 'description', 'notes', 'screenshot', 'feedback',
+  'intent', 'action', 'context', 'viewport', 'interaction_history',
+  'element_context', 'mfe',
+])
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -38,6 +46,25 @@ function sendError(res: ServerResponse, status: number, message: string) {
   res.end(JSON.stringify({ error: message }))
 }
 
+/** Check if an Origin header is from localhost */
+function isLocalOrigin(origin: string | undefined): boolean {
+  if (!origin) return true // same-origin requests (no Origin header)
+  try {
+    const url = new URL(origin)
+    const host = url.hostname
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
+  } catch {
+    return false
+  }
+}
+
+/** Build CORS origin value — reflect the request origin if it's local, otherwise omit */
+function getCorsOrigin(req: IncomingMessage): string | null {
+  const origin = req.headers.origin as string | undefined
+  if (!origin) return null // same-origin, no CORS header needed
+  return isLocalOrigin(origin) ? origin : null
+}
+
 export function createAPIMiddleware(options: APIOptions) {
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     // Serve screenshots (outside /api/ path)
@@ -47,13 +74,16 @@ export function createAPIMiddleware(options: APIOptions) {
         res.statusCode = 400; res.end('Invalid filename'); return
       }
       const filePath = nodePath.join(options.projectRoot, '.annotask', 'screenshots', filename)
-      if (!fs.existsSync(filePath)) {
-        res.statusCode = 404; res.end('Not found'); return
+      try {
+        const data = await fsp.readFile(filePath)
+        res.setHeader('Content-Type', 'image/png')
+        res.setHeader('Cache-Control', 'public, max-age=3600')
+        const corsOrigin = getCorsOrigin(req)
+        if (corsOrigin) res.setHeader('Access-Control-Allow-Origin', corsOrigin)
+        res.end(data)
+      } catch {
+        res.statusCode = 404; res.end('Not found')
       }
-      res.setHeader('Content-Type', 'image/png')
-      res.setHeader('Cache-Control', 'public, max-age=3600')
-      res.setHeader('Access-Control-Allow-Origin', '*')
-      res.end(fs.readFileSync(filePath))
       return
     }
 
@@ -61,16 +91,34 @@ export function createAPIMiddleware(options: APIOptions) {
 
     const path = req.url.replace('/__annotask/api/', '')
 
+    // CORS — only allow localhost origins
+    const corsOrigin = getCorsOrigin(req)
     res.setHeader('Content-Type', 'application/json')
-    res.setHeader('Access-Control-Allow-Origin', '*')
+    if (corsOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', corsOrigin)
+      res.setHeader('Vary', 'Origin')
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     res.setHeader('Cache-Control', 'no-cache')
 
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return }
 
+    // Block mutating requests from non-local origins
+    if ((req.method === 'POST' || req.method === 'PATCH') && !isLocalOrigin(req.headers.origin as string | undefined)) {
+      return sendError(res, 403, 'Forbidden: non-local origin')
+    }
+
     if (path === 'report' && req.method === 'GET') {
-      res.end(JSON.stringify(options.getReport() ?? { version: '1.0', changes: [] }, null, 2))
+      const report = options.getReport() as any ?? { version: '1.0', changes: [] }
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const mfeFilter = urlObj.searchParams.get('mfe')
+      if (mfeFilter && report.changes) {
+        const filtered = { ...report, changes: report.changes.filter((c: any) => c.mfe === mfeFilter) }
+        res.end(JSON.stringify(filtered, null, 2))
+      } else {
+        res.end(JSON.stringify(report, null, 2))
+      }
       return
     }
 
@@ -120,11 +168,11 @@ export function createAPIMiddleware(options: APIOptions) {
       const match = body.data.match(/^data:image\/png;base64,(.+)$/)
       if (!match) return sendError(res, 400, 'Invalid PNG data URL')
       const buffer = Buffer.from(match[1], 'base64')
-      if (buffer.length > 2 * 1024 * 1024) return sendError(res, 413, 'Screenshot too large (max 2MB)')
+      if (buffer.length > 4 * 1024 * 1024) return sendError(res, 413, 'Screenshot too large (max 4MB)')
       const filename = `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`
       const dir = nodePath.join(options.projectRoot, '.annotask', 'screenshots')
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-      fs.writeFileSync(nodePath.join(dir, filename), buffer)
+      await fsp.mkdir(dir, { recursive: true })
+      await fsp.writeFile(nodePath.join(dir, filename), buffer)
       res.end(JSON.stringify({ filename }))
       return
     }
@@ -140,7 +188,14 @@ export function createAPIMiddleware(options: APIOptions) {
       if (body.status !== undefined && !VALID_TASK_STATUSES.has(body.status as string)) {
         return sendError(res, 400, `Invalid status. Must be one of: ${[...VALID_TASK_STATUSES].join(', ')}`)
       }
-      res.end(JSON.stringify(options.updateTask(id, body), null, 2))
+      // Strip unknown fields — only allow whitelisted fields through
+      const sanitized: Record<string, unknown> = {}
+      for (const key of Object.keys(body)) {
+        if (PATCHABLE_TASK_FIELDS.has(key)) {
+          sanitized[key] = body[key]
+        }
+      }
+      res.end(JSON.stringify(options.updateTask(id, sanitized), null, 2))
       return
     }
 

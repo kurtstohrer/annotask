@@ -1,5 +1,6 @@
 import { ref, computed, watch } from 'vue'
 import type { CatalogItem } from '../types'
+import type { AnnotaskReport } from '../../schema'
 import { useDesignSpec } from './useDesignSpec'
 import { useViewportPreview } from './useViewportPreview'
 import { useInteractionHistory } from './useInteractionHistory'
@@ -13,6 +14,7 @@ export interface StyleChangeRecord {
   section: 'template' | 'style'
   line: number
   component: string
+  mfe?: string
   element: string
   property: string
   before: string
@@ -27,6 +29,7 @@ export interface InsertChangeRecord {
   section: 'template'
   line: number
   component?: string
+  mfe?: string
   insert_inside?: { component?: string; element?: string }
   insert_position: 'before' | 'after' | 'append' | 'prepend'
   inserted: {
@@ -47,6 +50,7 @@ export interface MoveChangeRecord {
   section: 'template'
   line: number
   component?: string
+  mfe?: string
   element_tag: string
   from_file: string
   from_line: number
@@ -65,6 +69,7 @@ export interface AnnotationChangeRecord {
   section: 'template'
   line: number
   component: string
+  mfe?: string
   intent: string
   action?: string
   context?: {
@@ -84,6 +89,7 @@ export interface ClassChangeRecord {
   section: 'template'
   line: number
   component: string
+  mfe?: string
   element: string
   before: { classes: string }
   after: { classes: string }
@@ -111,7 +117,7 @@ export function useStyleEditor() {
     property: string,
     value: string,
     before: string,
-    meta: { file: string; line: string; component: string }
+    meta: { file: string; line: string; component: string; mfe?: string }
   ) {
     // Find existing change for this eid + property + source location
     const existing = changes.value.find(
@@ -133,6 +139,7 @@ export function useStyleEditor() {
         section: 'style',
         line: parseInt(meta.line) || 0,
         component: meta.component,
+        ...(meta.mfe ? { mfe: meta.mfe } : {}),
         element: 'element', // tag not available here, fine for report
         property,
         before,
@@ -173,7 +180,7 @@ export function useStyleEditor() {
   }
 
   function recordAnnotation(meta: {
-    file: string; line: string; component: string;
+    file: string; line: string; component: string; mfe?: string;
     intent: string; action?: string; elementTag?: string; elementClasses?: string;
     parentLayout?: string; siblingsCount?: number; pinId?: string;
   }): string {
@@ -187,6 +194,7 @@ export function useStyleEditor() {
       section: 'template',
       line: parseInt(meta.line) || 0,
       component: meta.component,
+      ...(meta.mfe ? { mfe: meta.mfe } : {}),
       intent: meta.intent,
       action: meta.action,
       context: {
@@ -205,7 +213,7 @@ export function useStyleEditor() {
     eid: string,
     beforeClasses: string,
     afterClasses: string,
-    meta: { file: string; line: string; component: string }
+    meta: { file: string; line: string; component: string; mfe?: string }
   ): string {
     const lineNum = parseInt(meta.line) || 0
     const existing = changes.value.find(c => {
@@ -230,6 +238,7 @@ export function useStyleEditor() {
       section: 'template',
       line: lineNum,
       component: meta.component,
+      ...(meta.mfe ? { mfe: meta.mfe } : {}),
       element: 'element',
       before: { classes: beforeClasses },
       after: { classes: afterClasses },
@@ -344,12 +353,13 @@ export function useStyleEditor() {
 
     const { designSpec } = useDesignSpec()
     const spec = designSpec.value
+    const detectedFramework = (spec?.framework?.name || 'html') as AnnotaskReport['project']['framework']
     const project = spec?.framework ? {
-      framework: (spec.framework.name || 'vue') as 'vue' | 'react' | 'svelte',
+      framework: detectedFramework,
       styling: spec.framework.styling || [],
       root: '',
     } : {
-      framework: 'vue' as const,
+      framework: 'html' as const,
       styling: [] as string[],
       root: '',
     }

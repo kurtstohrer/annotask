@@ -44,12 +44,12 @@ async function createTask(task: Partial<Task>): Promise<Task | null> {
   } catch { return null }
 }
 
-async function updateTaskStatus(id: string, status: Task['status'], feedback?: string) {
+async function updateTaskStatus(id: string, status: Task['status'], feedback?: string, extra?: Record<string, unknown>) {
   try {
     await fetch(`/__annotask/api/tasks/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status, ...(feedback ? { feedback } : {}) }),
+      body: JSON.stringify({ status, ...(feedback ? { feedback } : {}), ...extra }),
     })
     await fetchTasks()
   } catch {}
