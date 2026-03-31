@@ -189,6 +189,12 @@ export function bridgeClientScript(): string {
     var source = findSourceElement(anchorEl);
     var data = getSourceData(source.sourceEl);
 
+    var selRect = null;
+    try {
+      var range = sel.getRangeAt(0);
+      var br = range.getBoundingClientRect();
+      if (br.width > 0 && br.height > 0) selRect = { x: br.x, y: br.y, width: br.width, height: br.height };
+    } catch (_e) {}
     sendToShell('selection:text', {
       text: text,
       eid: getEid(anchorEl),
@@ -196,7 +202,8 @@ export function bridgeClientScript(): string {
       line: parseInt(data.line) || 0,
       component: data.component,
       mfe: data.mfe,
-      tag: anchorEl.tagName.toLowerCase()
+      tag: anchorEl.tagName.toLowerCase(),
+      rect: selRect
     });
   }
 

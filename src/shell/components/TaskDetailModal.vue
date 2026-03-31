@@ -2,6 +2,7 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { marked } from 'marked'
 import type { Task } from '../composables/useTasks'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const props = defineProps<{
   task: Task
@@ -11,6 +12,7 @@ const emit = defineEmits<{
   close: []
   accept: [id: string]
   deny: [id: string]
+  delete: [id: string]
   update: [id: string, fields: Record<string, unknown>]
 }>()
 
@@ -20,6 +22,7 @@ const editText = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const showJson = ref(false)
 const jsonCopied = ref(false)
+const showDeleteConfirm = ref(false)
 
 const taskJson = computed(() => JSON.stringify(props.task, null, 2))
 
@@ -241,6 +244,9 @@ function onKeydown(e: KeyboardEvent) {
           </span>
         </div>
         <div class="td-header-right">
+          <button class="td-delete-header-btn" @click="showDeleteConfirm = true" title="Delete task">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </button>
           <button :class="['td-json-btn', { active: showJson }]" @click="showJson = !showJson" title="View JSON">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
           </button>
@@ -430,6 +436,13 @@ function onKeydown(e: KeyboardEvent) {
       <img :src="previewImage" class="td-lightbox-img" @click.stop />
       <button class="td-lightbox-close" @click="previewImage = null">&times;</button>
     </div>
+
+    <ConfirmDialog
+      v-if="showDeleteConfirm"
+      message="Delete this task? This cannot be undone."
+      @confirm="showDeleteConfirm = false; emit('delete', task.id)"
+      @cancel="showDeleteConfirm = false"
+    />
   </div>
 </template>
 
@@ -715,6 +728,12 @@ function onKeydown(e: KeyboardEvent) {
 .td-accept:hover { background: #22c55e; color: white; }
 .td-deny-btn { background: rgba(239,68,68,0.12); color: #ef4444; }
 .td-deny-btn:hover { background: #ef4444; color: white; }
+.td-delete-header-btn {
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: 6px; cursor: pointer; transition: all 0.12s;
+  background: none; color: var(--text-muted);
+}
+.td-delete-header-btn:hover { background: rgba(239,68,68,0.12); color: #ef4444; }
 
 /* JSON view */
 .td-json-body { padding: 0; display: flex; flex-direction: column; }

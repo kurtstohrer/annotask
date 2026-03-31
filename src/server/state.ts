@@ -21,6 +21,7 @@ export interface ProjectState {
   getTasks: () => { version: string; tasks: any[] }
   addTask: (task: Record<string, unknown>) => unknown
   updateTask: (id: string, updates: Record<string, unknown>) => unknown
+  deleteTask: (id: string) => unknown
   dispose: () => void
 }
 
@@ -118,9 +119,23 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     return task
   }
 
+  function deleteTask(id: string) {
+    const data = loadTasksSync()
+    const task = data.tasks.find((t: any) => t.id === id)
+    if (!task) return { error: 'Task not found' }
+    if (task.screenshot) {
+      const screenshotPath = path.join(projectRoot, '.annotask', 'screenshots', task.screenshot)
+      fsp.unlink(screenshotPath).catch(() => {})
+    }
+    data.tasks = data.tasks.filter((t: any) => t.id !== id)
+    flushTasks()
+    broadcast('tasks:updated', data)
+    return { deleted: id }
+  }
+
   function dispose() {
     if (specWatcher) { specWatcher.close(); specWatcher = null }
   }
 
-  return { getDesignSpec, getConfig, getTasks: loadTasksSync, addTask, updateTask, dispose }
+  return { getDesignSpec, getConfig, getTasks: loadTasksSync, addTask, updateTask, deleteTask, dispose }
 }

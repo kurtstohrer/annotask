@@ -17,6 +17,7 @@ import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
 import { useA11yScanner } from './composables/useA11yScanner'
 import type { ClickElementEvent, HoverEnterEvent, BridgeRect } from '../shared/bridge-types'
 import ModeToolbar from './components/ModeToolbar.vue'
+import ArrowColorPicker from './components/ArrowColorPicker.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import PinOverlay from './components/PinOverlay.vue'
 import ArrowOverlay from './components/ArrowOverlay.vue'
@@ -27,6 +28,7 @@ import LayoutOverlay from './components/LayoutOverlay.vue'
 import ThemePage from './components/ThemePage.vue'
 import ReportViewer from './components/ReportViewer.vue'
 import TaskDetailModal from './components/TaskDetailModal.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 import { useTasks } from './composables/useTasks'
 import { useViewportPreview } from './composables/useViewportPreview'
 import { useInteractionHistory } from './composables/useInteractionHistory'
@@ -116,7 +118,11 @@ watch(shellView, (v) => localStorage.setItem('annotask:shellView', v))
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
-const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, onArrowCreated)
+const arrowColor = ref(localStorage.getItem('annotask:arrowColor') || '#ef4444')
+watch(arrowColor, (v) => localStorage.setItem('annotask:arrowColor', v))
+const highlightColor = ref(localStorage.getItem('annotask:highlightColor') || '#f59e0b')
+watch(highlightColor, (v) => localStorage.setItem('annotask:highlightColor', v))
+const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, onArrowCreated, () => arrowColor.value)
 const { drawingArrow, drawingRect, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
 // Sync mode to bridge + clear selection on interact
@@ -135,6 +141,7 @@ watch(interactionMode, (mode) => {
 })
 const showWarning = ref(false)
 const showReportPanel = ref(false)
+const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('notes')
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
@@ -156,19 +163,25 @@ watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElemen
 const denyingTaskId = ref<string | null>(null)
 const denyFeedbackText = ref('')
 const detailTaskId = ref<string | null>(null)
+const confirmDeleteTaskId = ref<string | null>(null)
+function executeDeleteTask() {
+  if (!confirmDeleteTaskId.value) return
+  taskSystem.deleteTask(confirmDeleteTaskId.value)
+  confirmDeleteTaskId.value = null
+}
 const detailTask = computed(() => detailTaskId.value ? taskSystem.tasks.value.find(t => t.id === detailTaskId.value) ?? null : null)
 const showShortcuts = ref(localStorage.getItem('annotask:showShortcuts') === 'true')
 watch(showShortcuts, (v) => localStorage.setItem('annotask:showShortcuts', String(v)))
 
 // ── Pending Task Creation (sidebar panel after pin/arrow placement) ──
 interface PendingTaskContext {
-  kind: 'pin' | 'arrow'
+  kind: 'pin' | 'arrow' | 'highlight'
   /** Colored icon label, e.g. "Pin on <div>" or "Arrow from Header → Footer" */
   label: string
   file: string
   line: string | number
   component: string
-  /** For pin: pin id. For arrow: arrow id */
+  /** For pin: pin id. For arrow: arrow id. For highlight: highlight id */
   annotationId: string
   /** Extra data for task creation */
   meta: Record<string, unknown>
@@ -250,7 +263,6 @@ function submitNewTask() {
   showNewTaskForm.value = false
 }
 
-const pendingHighlight = ref<{ text: string; x: number; y: number; file: string; line: number; component: string; tag: string } | null>(null)
 
 // ── Selection Model ────────────────────────────────────
 const primarySelection = ref<{
@@ -312,6 +324,103 @@ function startRectLoop() {
 watch([selectedEids, templateGroupEids, applyToGroup], () => {
   if (selectedEids.value.length) startRectLoop()
   else refreshRects()
+}, { deep: true })
+
+// ── Annotation rect refresh loop (arrows, highlights, sections follow scroll/resize) ──
+let annotationLoopRunning = false
+
+async function refreshAnnotationRects() {
+  // Collect all eids we need to refresh
+  const eidMap = new Map<string, { type: string; id: string; field: string }>()
+
+  for (const a of annotations.arrows.value) {
+    if (a.fromEid) eidMap.set(a.fromEid, { type: 'arrow', id: a.id, field: 'from' })
+    if (a.toEid) eidMap.set(a.toEid, { type: 'arrow', id: a.id, field: 'to' })
+  }
+  for (const h of annotations.highlights.value) {
+    if (h.eid) eidMap.set(h.eid, { type: 'highlight', id: h.id, field: 'rect' })
+  }
+  for (const s of annotations.drawnSections.value) {
+    if (s.nearEid) eidMap.set(s.nearEid, { type: 'section', id: s.id, field: 'near' })
+  }
+
+  if (eidMap.size === 0) return
+
+  const eids = [...eidMap.keys()]
+  const rects = await iframe.getElementRects(eids)
+
+  // Store initial section positions for delta calculation on first run
+  for (let i = 0; i < eids.length; i++) {
+    const rect = rects[i]
+    const entry = eidMap.get(eids[i])!
+    if (!rect) continue
+
+    if (entry.type === 'arrow') {
+      const arrow = annotations.arrows.value.find(a => a.id === entry.id)
+      if (!arrow) continue
+      if (entry.field === 'from') {
+        // Move fromX/fromY by same delta as element rect center
+        if (arrow.fromRect) {
+          const dx = (rect.x + rect.width / 2) - (arrow.fromRect.x + arrow.fromRect.width / 2)
+          const dy = (rect.y + rect.height / 2) - (arrow.fromRect.y + arrow.fromRect.height / 2)
+          if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+            arrow.fromX += dx; arrow.fromY += dy
+            arrow.fromRect = rect
+          }
+        } else {
+          arrow.fromRect = rect
+        }
+      } else {
+        if (arrow.toRect) {
+          const dx = (rect.x + rect.width / 2) - (arrow.toRect.x + arrow.toRect.width / 2)
+          const dy = (rect.y + rect.height / 2) - (arrow.toRect.y + arrow.toRect.height / 2)
+          if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+            arrow.toX += dx; arrow.toY += dy
+            arrow.toRect = rect
+          }
+        } else {
+          arrow.toRect = rect
+        }
+      }
+    } else if (entry.type === 'highlight') {
+      const hl = annotations.highlights.value.find(h => h.id === entry.id)
+      if (hl) hl.rect = rect
+    } else if (entry.type === 'section') {
+      const section = annotations.drawnSections.value.find(s => s.id === entry.id)
+      if (!section) continue
+      // Move section by element delta
+      const prevRect = (section as any)._nearRect as typeof rect | undefined
+      if (prevRect) {
+        const dx = rect.x - prevRect.x
+        const dy = rect.y - prevRect.y
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          section.x += dx; section.y += dy
+          ;(section as any)._nearRect = rect
+        }
+      } else {
+        ;(section as any)._nearRect = rect
+      }
+    }
+  }
+}
+
+function startAnnotationLoop() {
+  if (annotationLoopRunning) return
+  annotationLoopRunning = true
+  function tick() {
+    const hasAnnotations = annotations.arrows.value.some(a => a.fromEid || a.toEid)
+      || annotations.highlights.value.some(h => h.eid)
+      || annotations.drawnSections.value.some(s => s.nearEid)
+    if (!hasAnnotations) { annotationLoopRunning = false; return }
+    refreshAnnotationRects()
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+}
+
+// Start annotation loop when annotations exist
+watch([annotations.arrows, annotations.highlights, annotations.drawnSections], () => {
+  startAnnotationLoop()
 }, { deep: true })
 
 const selectionSummary = computed(() => {
@@ -454,19 +563,31 @@ function setupBridgeEvents() {
     }
   })
 
-  iframe.onBridgeEvent('selection:text', (data: { text: string; eid: string; file: string; line: number; component: string; tag: string }) => {
+  iframe.onBridgeEvent('selection:text', async (data: { text: string; eid: string; file: string; line: number; component: string; tag: string; rect?: { x: number; y: number; width: number; height: number } }) => {
+    // Convert iframe-local rect to viewport coords
     const iframeEl = iframeRef.value
     const offsetX = iframeEl?.getBoundingClientRect().left || 0
     const offsetY = iframeEl?.getBoundingClientRect().top || 0
-    pendingHighlight.value = {
-      text: data.text,
-      x: offsetX + 100,
-      y: offsetY + 100,
+    let viewportRect: { x: number; y: number; width: number; height: number } | undefined
+    if (data.rect) {
+      viewportRect = { x: data.rect.x + offsetX, y: data.rect.y + offsetY, width: data.rect.width, height: data.rect.height }
+    }
+    const hl = annotations.addHighlight(data.text, { file: data.file, line: data.line, component: data.component, elementTag: data.tag }, highlightColor.value, viewportRect, data.eid)
+    // Fallback: resolve element rect by eid if bridge didn't send selection rect
+    if (!viewportRect && data.eid) {
+      const elRect = await iframe.getElementRect(data.eid)
+      if (elRect) annotations.updateHighlight(hl.id, { rect: elRect })
+    }
+    pendingTaskCreation.value = {
+      kind: 'highlight',
+      label: `Text highlight`,
       file: data.file,
       line: data.line,
       component: data.component,
-      tag: data.tag,
+      annotationId: hl.id,
+      meta: { selectedText: data.text, elementTag: data.tag },
     }
+    pendingTaskText.value = data.text
   })
 
   iframe.onBridgeEvent('keydown', (data: { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
@@ -477,6 +598,7 @@ function setupBridgeEvents() {
 
   iframe.onBridgeEvent('route:changed', (data: { path: string }) => {
     annotations.setRoute(data.path)
+    localStorage.setItem('annotask:lastRoute', data.path)
     interactionHistory.push('route_change', data.path, { previousRoute: currentRoute.value })
   })
 
@@ -622,7 +744,10 @@ async function restoreAnnotationsFromTasks() {
         annotations.updatePinNote(pin.id, task.description)
       }
     } else if (v.kind === 'arrow') {
-      annotations.addArrow(v.fromX, v.fromY, v.toX, v.toY, v.label || task.description)
+      const arrow = annotations.addArrow(v.fromX, v.fromY, v.toX, v.toY, v.label || task.description, v.color)
+      if (v.fromRect || v.toRect) {
+        annotations.updateArrow(arrow.id, { ...(v.fromRect ? { fromRect: v.fromRect } : {}), ...(v.toRect ? { toRect: v.toRect } : {}) })
+      }
     } else if (v.kind === 'section') {
       const section = annotations.addDrawnSection(v.x, v.y, v.width, v.height)
       if (task.prompt || task.description) {
@@ -631,6 +756,7 @@ async function restoreAnnotationsFromTasks() {
           nearFile: task.file, nearLine: task.line,
         })
       }
+      sectionTaskMap.value = { ...sectionTaskMap.value, [section.id]: task.id }
     }
   }
 }
@@ -659,40 +785,21 @@ async function createRouteTask(data: Record<string, unknown>) {
 const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
 
 
-// ── Text Highlight Handlers ──────────────────────────
-function onSubmitHighlight(prompt: string) {
-  if (!pendingHighlight.value || !prompt.trim()) return
-  const h = pendingHighlight.value
-  const hl = annotations.addHighlight(h.text, { file: h.file, line: h.line, component: h.component, elementTag: h.tag })
-  annotations.updateHighlight(hl.id, { prompt: prompt.trim() })
-  const intent = `Change "${h.text}" → ${prompt.trim()}`
-  recordAnnotation({
-    file: h.file, line: String(h.line), component: h.component,
-    intent, action: 'text_edit', elementTag: h.tag,
-  })
-  createRouteTask({
-    type: 'annotation', description: intent, file: h.file, line: h.line,
-    component: h.component, action: 'text_edit',
-    context: {
-      element_tag: h.tag,
-      selected_text: h.text,
-    },
-  })
-  pendingHighlight.value = null
-}
-
-function onCancelHighlight() {
-  pendingHighlight.value = null
-}
 
 // ── Drawn Section → Task ──────────────────────────────
-const sectionTaskIds = new Set<string>()
+/** Maps section annotation ID → task ID */
+const sectionTaskMap = ref<Record<string, string>>({})
 
-function onSectionCommit(id: string) {
+async function onSectionSubmit(id: string) {
   const section = annotations.drawnSections.value.find(s => s.id === id)
   if (!section || !section.prompt.trim()) return
-  if (sectionTaskIds.has(id)) return
-  sectionTaskIds.add(id)
+
+  // Already has a task — update it
+  const existingTaskId = sectionTaskMap.value[id]
+  if (existingTaskId) {
+    await taskSystem.updateTask(existingTaskId, { description: section.prompt.trim() })
+    return
+  }
 
   recordAnnotation({
     file: section.nearFile || '',
@@ -701,7 +808,7 @@ function onSectionCommit(id: string) {
     intent: section.prompt.trim(),
     action: 'section_request',
   })
-  createRouteTask({
+  const task = await createRouteTask({
     type: 'section_request',
     description: section.prompt.trim(),
     file: section.nearFile || '',
@@ -710,6 +817,58 @@ function onSectionCommit(id: string) {
     placement: section.placement || '',
     visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height) },
   })
+  if (task) sectionTaskMap.value = { ...sectionTaskMap.value, [id]: (task as any).id }
+}
+
+// ── Arrow endpoint drag → element outline + re-resolve ─
+const arrowDragTargetRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
+let arrowDragResolveTimer: ReturnType<typeof setTimeout> | null = null
+
+function onArrowDragMove(x: number, y: number) {
+  if (arrowDragResolveTimer) clearTimeout(arrowDragResolveTimer)
+  arrowDragResolveTimer = setTimeout(async () => {
+    const ctx = await iframe.resolveElementAt(x, y)
+    arrowDragTargetRect.value = ctx?.rect || null
+  }, 50)
+}
+
+async function onArrowDragEnd(id: string, endpoint: 'from' | 'to', x: number, y: number) {
+  if (arrowDragResolveTimer) { clearTimeout(arrowDragResolveTimer); arrowDragResolveTimer = null }
+  arrowDragTargetRect.value = null
+  const ctx = await iframe.resolveElementAt(x, y)
+  if (!ctx) return
+  if (endpoint === 'from') {
+    annotations.updateArrow(id, { fromFile: ctx.file, fromLine: parseInt(ctx.line) || 0, fromComponent: ctx.component, fromRect: ctx.rect, fromEid: ctx.eid })
+  } else {
+    annotations.updateArrow(id, { toFile: ctx.file, toLine: parseInt(ctx.line) || 0, toRect: ctx.rect, toEid: ctx.eid })
+  }
+  // Update pending task label if this arrow's task panel is open
+  const pending = pendingTaskCreation.value
+  if (pending && pending.kind === 'arrow' && pending.annotationId === id) {
+    const arrow = annotations.arrows.value.find(a => a.id === id)
+    if (!arrow) return
+    const fromCtx = await iframe.resolveElementAt(arrow.fromX, arrow.fromY)
+    const toCtx = await iframe.resolveElementAt(arrow.toX, arrow.toY)
+    const fromDesc = describeElement(fromCtx)
+    const toDesc = describeElement(toCtx)
+    pendingTaskCreation.value = {
+      ...pending,
+      label: `Arrow from ${fromDesc} → ${toDesc}`,
+      file: arrow.fromFile || fromCtx?.file || '',
+      line: arrow.fromLine || fromCtx?.line || '',
+      component: arrow.fromComponent || fromCtx?.component || '',
+      meta: {
+        fromTag: fromCtx?.tag || '',
+        fromClasses: fromCtx?.classes || '',
+        fromComponent: fromCtx?.component || '',
+        toFile: arrow.toFile || toCtx?.file || '',
+        toLine: arrow.toLine || toCtx?.line || 0,
+        toTag: toCtx?.tag || '',
+        toClasses: toCtx?.classes || '',
+        toComponent: toCtx?.component || '',
+      },
+    }
+  }
 }
 
 // ── Arrow → Task ─────────────────────────────────────
@@ -718,7 +877,6 @@ const arrowTaskIds = new Set<string>()
 function describeElement(ctx: { file: string; line: string; component: string; tag: string; classes?: string } | null): string {
   if (!ctx) return 'element'
   const tag = ctx.tag || 'element'
-  // Use first meaningful class if available
   const cls = ctx.classes?.split(' ').find(c => c && !c.startsWith('data-'))
   if (ctx.component && cls) return `<${tag}.${cls}> in ${ctx.component}`
   if (ctx.component && ctx.tag !== ctx.component.toLowerCase()) return `<${tag}> in ${ctx.component}`
@@ -777,7 +935,7 @@ function submitPendingArrowTask(id: string, description: string) {
     file: arrow.fromFile || '',
     line: arrow.fromLine || 0,
     component: arrow.fromComponent || '',
-    visual: { kind: 'arrow', annotationId: arrow.id, fromX: arrow.fromX, fromY: arrow.fromY, toX: arrow.toX, toY: arrow.toY, label: description.trim() },
+    visual: { kind: 'arrow', annotationId: arrow.id, fromX: arrow.fromX, fromY: arrow.fromY, toX: arrow.toX, toY: arrow.toY, label: description.trim(), color: arrow.color, fromRect: arrow.fromRect, toRect: arrow.toRect },
     context: {
       from_element_tag: (meta.fromTag as string) || '',
       from_element_classes: (meta.fromClasses as string) || '',
@@ -817,6 +975,20 @@ function submitPendingTask() {
     })
   } else if (ctx.kind === 'arrow') {
     submitPendingArrowTask(ctx.annotationId, pendingTaskText.value.trim())
+  } else if (ctx.kind === 'highlight') {
+    const meta = ctx.meta as { selectedText: string; elementTag: string }
+    const description = pendingTaskText.value.trim()
+    annotations.updateHighlight(ctx.annotationId, { prompt: description })
+    const intent = `Change "${meta.selectedText}" → ${description}`
+    recordAnnotation({
+      file: ctx.file, line: String(ctx.line), component: ctx.component,
+      intent, action: 'text_edit', elementTag: meta.elementTag,
+    })
+    createRouteTask({
+      type: 'annotation', description: intent, file: ctx.file, line: parseInt(String(ctx.line)) || 0,
+      component: ctx.component, action: 'text_edit',
+      context: { element_tag: meta.elementTag, selected_text: meta.selectedText },
+    })
   }
 
   pendingTaskCreation.value = null
@@ -826,9 +998,9 @@ function submitPendingTask() {
 function cancelPendingTask() {
   const ctx = pendingTaskCreation.value
   if (ctx) {
-    // Remove the annotation since user cancelled
     if (ctx.kind === 'pin') annotations.removePin(ctx.annotationId)
     if (ctx.kind === 'arrow') annotations.removeArrow(ctx.annotationId)
+    if (ctx.kind === 'highlight') annotations.removeHighlight(ctx.annotationId)
   }
   pendingTaskCreation.value = null
   pendingTaskText.value = ''
@@ -883,9 +1055,21 @@ const iframeStyle = computed(() => {
   }
 })
 
+function navigateIframe(route: string) {
+  const r = route.trim()
+  if (!r || r === currentRoute.value) return
+  const path = r.startsWith('/') ? r : '/' + r
+  const iframeEl = iframeRef.value
+  if (iframeEl?.contentWindow) {
+    iframeEl.contentWindow.location.href = window.location.origin + path
+  }
+}
+
 const appUrl = computed(() => {
   const params = new URLSearchParams(window.location.search)
-  return params.get('appUrl') || window.location.origin + '/'
+  const base = params.get('appUrl') || window.location.origin
+  const savedRoute = localStorage.getItem('annotask:lastRoute')
+  return savedRoute ? base + savedRoute : base + '/'
 })
 </script>
 
@@ -901,14 +1085,22 @@ const appUrl = computed(() => {
         </div>
         <template v-if="shellView === 'editor'">
           <ModeToolbar v-model="interactionMode" />
-          <button :class="['tool-btn', { active: layoutOverlay.showOverlay.value }]" @click="layoutOverlay.toggle()" title="Show Layout (L)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-          </button>
+          <ArrowColorPicker v-if="interactionMode === 'arrow'" v-model="arrowColor" />
+          <ArrowColorPicker v-if="interactionMode === 'highlight'" v-model="highlightColor" />
         </template>
       </div>
       <div v-if="shellView === 'editor'" class="toolbar-center">
         <ViewportSelector />
-        <code class="route-indicator" title="Current page route in your app">{{ currentRoute }}</code>
+        <button :class="['tool-btn', { active: layoutOverlay.showOverlay.value }]" @click="layoutOverlay.toggle()" title="Show Layout (L)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        </button>
+        <input
+          class="route-input"
+          :value="currentRoute"
+          title="Current route — edit to navigate"
+          @keydown.enter="navigateIframe(($event.target as HTMLInputElement).value)"
+          @blur="navigateIframe(($event.target as HTMLInputElement).value)"
+        />
       </div>
       <div v-else class="toolbar-center" />
       <div v-if="shellView === 'editor'" class="toolbar-right">
@@ -935,9 +1127,6 @@ const appUrl = computed(() => {
           <button :class="['vis-btn', { off: !showMarkup.sections }]" @click="showMarkup.sections = !showMarkup.sections" title="Toggle Sections">D</button>
           <button :class="['vis-btn', { off: !showMarkup.highlights }]" @click="showMarkup.highlights = !showMarkup.highlights" title="Toggle Highlights">H</button>
         </div>
-        <button :class="['tool-btn', { active: showReportPanel }]" @click="showReportPanel = !showReportPanel" title="View all tasks as raw JSON/YAML for agents">
-          Task JSON
-        </button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else class="toolbar-right" />
@@ -1009,8 +1198,13 @@ const appUrl = computed(() => {
           :arrows="annotations.routeArrows.value"
           :selectedId="annotations.selectedArrowId.value"
           :drawingArrow="drawingArrow"
+          :drawingColor="arrowColor"
           @select="annotations.selectedArrowId.value = $event"
           @remove="annotations.removeArrow"
+          :dragTargetRect="arrowDragTargetRect"
+          @update-arrow="(id, updates) => annotations.updateArrow(id, updates)"
+          @drag-move="onArrowDragMove"
+          @drag-end="onArrowDragEnd"
         />
 
         <!-- Drawn sections -->
@@ -1018,22 +1212,21 @@ const appUrl = computed(() => {
           :sections="annotations.routeSections.value"
           :selectedId="annotations.selectedSectionId.value"
           :drawingRect="drawingRect"
+          :sectionTaskMap="sectionTaskMap"
           @select="annotations.selectedSectionId.value = $event"
           @remove="annotations.removeDrawnSection"
           @update-prompt="(id, prompt) => annotations.updateDrawnSection(id, { prompt })"
-          @commit="onSectionCommit"
+          @update-rect="(id, rect) => annotations.updateDrawnSection(id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height })"
+          @submit="onSectionSubmit"
         />
 
-        <!-- Text highlight prompt -->
+        <!-- Text highlight cards -->
         <TextHighlightOverlay v-if="showMarkup.highlights"
           :highlights="annotations.routeHighlights.value"
           :selectedId="annotations.selectedHighlightId.value"
-          :pending="pendingHighlight"
           @select="annotations.selectedHighlightId.value = $event"
           @remove="annotations.removeHighlight"
           @update-prompt="(id, p) => annotations.updateHighlight(id, { prompt: p })"
-          @submit-pending="onSubmitHighlight"
-          @cancel-pending="onCancelHighlight"
         />
 
         <!-- Layout overlay -->
@@ -1078,6 +1271,7 @@ const appUrl = computed(() => {
             <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Enter</kbd><span>Submit Form</span></div>
           </div>
           <div class="shortcut-hint">On Mac, use <kbd class="mod">⌘</kbd> instead of <kbd class="mod">Ctrl</kbd></div>
+          <div class="shortcut-version">Annotask v{{ annotaskVersion }}</div>
         </div>
       </aside>
 
@@ -1087,7 +1281,7 @@ const appUrl = computed(() => {
           <span class="source-path" style="color:var(--text)">Add Task</span>
         </div>
         <div class="pending-task-panel">
-          <div class="pending-task-context">
+          <div v-if="pendingTaskCreation.kind !== 'highlight'" class="pending-task-context">
             <div class="pending-task-kind" :class="pendingTaskCreation.kind">
               <svg v-if="pendingTaskCreation.kind === 'pin'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 1 0-16 0c0 3 2.7 7 8 11.7z"/></svg>
               <svg v-else-if="pendingTaskCreation.kind === 'arrow'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
@@ -1095,10 +1289,11 @@ const appUrl = computed(() => {
             </div>
             <code class="pending-task-file">{{ pendingTaskCreation.file }}:{{ pendingTaskCreation.line }}</code>
           </div>
+          <span v-if="pendingTaskCreation.kind === 'highlight'" class="pending-task-title">Change text</span>
           <textarea
             v-model="pendingTaskText"
             class="pending-task-input"
-            rows="3"
+            rows="6"
             placeholder="Describe the change..."
             autofocus
             @keydown.enter.ctrl="submitPendingTask"
@@ -1125,6 +1320,9 @@ const appUrl = computed(() => {
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Tasks</span>
           <span class="component-badge">{{ taskSystem.tasks.value.length }}</span>
+          <button :class="['new-task-toggle json-toggle', { active: showReportPanel }]" @click="showReportPanel = !showReportPanel" title="View all tasks as JSON">
+            JSON
+          </button>
           <button class="new-task-toggle" @click="showNewTaskForm = !showNewTaskForm" title="Create a general task (not tied to an element)">
             {{ showNewTaskForm ? '−' : '+' }} New
           </button>
@@ -1156,7 +1354,7 @@ const appUrl = computed(() => {
             <div class="task-card-header">
               <span class="task-status-dot" :class="task.status" />
               <span class="task-card-desc task-card-md" v-html="marked.parse(task.description, { breaks: true, gfm: true })"></span>
-              <button class="task-card-close" @click.stop="acceptTask(task.id)" title="Accept and remove this task">×</button>
+              <button class="task-card-close" @click.stop="confirmDeleteTaskId = task.id" title="Delete task">×</button>
             </div>
             <div class="task-card-meta">
               <code class="task-card-file">{{ task.file }}:{{ task.line }}</code>
@@ -1344,7 +1542,15 @@ const appUrl = computed(() => {
       @close="detailTaskId = null"
       @accept="(id) => { acceptTask(id); detailTaskId = null }"
       @deny="(id) => { denyingTaskId = id; denyFeedbackText = ''; detailTaskId = null }"
+      @delete="(id) => { taskSystem.deleteTask(id); detailTaskId = null }"
       @update="(id, fields) => { taskSystem.updateTaskStatus(id, detailTask!.status, undefined, fields) }"
+    />
+
+    <ConfirmDialog
+      v-if="confirmDeleteTaskId"
+      message="Delete this task? This cannot be undone."
+      @confirm="executeDeleteTask"
+      @cancel="confirmDeleteTaskId = null"
     />
   </div>
 </template>
@@ -1423,7 +1629,13 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 /* Main */
 .main { display: flex; flex: 1; overflow: hidden; }
 .toolbar-center { display: flex; align-items: center; gap: 8px; }
-.route-indicator { font-size: 11px; color: var(--text-muted); background: var(--surface-2); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); }
+.route-input {
+  font-size: 11px; color: var(--text-muted); background: var(--surface-2);
+  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  outline: none; min-width: 80px; max-width: 200px;
+}
+.route-input:focus { border-color: var(--accent); color: var(--text); }
 .canvas-area { flex: 1; position: relative; overflow: hidden; }
 .canvas-area.viewport-active {
   display: flex; align-items: flex-start; justify-content: center;
@@ -1548,6 +1760,8 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer;
 }
 .new-task-toggle:hover { opacity: 0.9; }
+.new-task-toggle.json-toggle { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+.new-task-toggle.json-toggle.active { background: var(--accent); color: white; border-color: var(--accent); }
 .new-task-form { padding: 8px 14px; border-bottom: 1px solid var(--border); }
 .new-task-input {
   width: 100%; padding: 6px 8px; font-size: 12px;
@@ -1596,7 +1810,10 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .pending-task-kind.pin svg { stroke: var(--accent); }
 .pending-task-kind.arrow { color: #ef4444; }
 .pending-task-kind.arrow svg { stroke: #ef4444; }
+.pending-task-kind.highlight { color: #f59e0b; }
+.pending-task-kind.highlight svg { stroke: #f59e0b; }
 .pending-task-file { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+.pending-task-title { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 4px; display: block; }
 .pending-task-input {
   width: 100%; padding: 8px 10px; font-size: 12px;
   background: var(--bg); color: var(--text);
@@ -1735,5 +1952,9 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   min-width: 18px; height: 16px; padding: 0 4px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px;
   font-family: inherit; font-size: 10px; font-weight: 600; color: var(--text-muted);
+}
+.shortcut-version {
+  margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);
+  font-size: 10px; color: var(--text-muted); opacity: 0.6;
 }
 </style>

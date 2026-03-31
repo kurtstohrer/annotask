@@ -10,6 +10,7 @@ export interface APIOptions {
   getDesignSpec: () => unknown
   getTasks: () => { version: string; tasks: any[] }
   updateTask: (id: string, updates: Record<string, unknown>) => unknown
+  deleteTask: (id: string) => unknown
   addTask: (task: Record<string, unknown>) => unknown
 }
 
@@ -105,7 +106,7 @@ export function createAPIMiddleware(options: APIOptions) {
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return }
 
     // Block mutating requests from non-local origins
-    if ((req.method === 'POST' || req.method === 'PATCH') && !isLocalOrigin(req.headers.origin as string | undefined)) {
+    if ((req.method === 'POST' || req.method === 'PATCH' || req.method === 'DELETE') && !isLocalOrigin(req.headers.origin as string | undefined)) {
       return sendError(res, 403, 'Forbidden: non-local origin')
     }
 
@@ -196,6 +197,12 @@ export function createAPIMiddleware(options: APIOptions) {
         }
       }
       res.end(JSON.stringify(options.updateTask(id, sanitized), null, 2))
+      return
+    }
+
+    if (path.startsWith('tasks/') && req.method === 'DELETE') {
+      const id = path.replace('tasks/', '')
+      res.end(JSON.stringify(options.deleteTask(id), null, 2))
       return
     }
 

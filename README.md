@@ -148,9 +148,9 @@ Start your dev server, then open:
 
 ### Annotation tools (primary)
 - **Pins** — Pin an element and describe what you want changed
-- **Arrows** — Draw arrows to reference other elements or parts of the page
-- **Drawn sections** — Draw a rectangle where new content should go, with a prompt
-- **Text highlights** — Select text to mark it for editing
+- **Arrows** — Draw arrows between elements with color options, element outlines, and draggable endpoints
+- **Drawn sections** — Draw a rectangle where new content should go, with a markdown editor for detailed descriptions. Movable and resizable.
+- **Text highlights** — Select text to mark it for editing, with color options and visual highlight overlay
 
 ### Visual editing (experimental)
 - **Element inspection** — Click any element to see its source file, line, component, and computed styles
@@ -158,10 +158,10 @@ Start your dev server, then open:
 - **Class editing** — Add, remove, or modify CSS classes on elements
 - **Theme token editing** — Edit design tokens (colors, typography, spacing, borders) from a detected design spec
 
-### Viewport preview
-- **Device presets** — Quickly switch between phone, tablet, and desktop viewports (iPhone SE, iPhone 14 Pro, iPad, Desktop, etc.)
-- **Custom dimensions** — Set any width/height for the preview
-- **Viewport-tagged tasks** — Every task records the viewport dimensions so the AI agent generates the correct responsive CSS
+### Viewport & navigation
+- **Device presets** — Switch between phone, tablet, and desktop viewports; custom dimensions supported
+- **Viewport-tagged tasks** — Every task records viewport dimensions so the AI generates correct responsive CSS
+- **Route navigation** — Editable route indicator in the toolbar; route persists across page reloads
 
 ### Accessibility checker
 - **Page-level scanning** — Runs axe-core WCAG analysis on the entire page from the A11y panel
@@ -170,43 +170,21 @@ Start your dev server, then open:
 - **Locally bundled** — axe-core and html2canvas are shipped with the package (no CDN dependency, works offline and under CSP)
 
 ### Task detail drawer
-- **Slide-out detail view** — Click any task in the sidebar to open a full detail drawer
-- **Markdown descriptions** — Task descriptions support full GitHub-flavored Markdown (rendered with `marked`)
-- **Inline editing** — Click the rendered description to switch to a markdown editor; save with Ctrl+Enter
-- **Screenshot thumbnails** — Clickable thumbnails with full-screen lightbox preview
-- **Element display** — Shows selected element(s) with tag, classes, and component name
-- **Multi-file view** — Shows all source files involved (primary, arrow targets, multi-element)
-- **Interaction log** — History displayed as a numbered action log with route navigation and click details
-- **JSON view** — Toggle raw JSON view of the complete task object with copy button
-- **Accept/Deny actions** — Review tasks directly from the detail drawer (deny form includes screenshot, history, and DOM context options)
-
-### Screenshots
-- **Snipping tool** — Click "Add Screenshot" on any task form or deny form, then drag a region or click for full-page capture
-- **Thumbnail preview** — Screenshot appears as a preview on the task form before submitting (removable)
-- **Task-attached** — Screenshots are stored on the server and referenced by filename in the task
-- **Multimodal AI context** — AI agents can download and view screenshots for visual understanding of what the user sees
-- **Auto-cleanup** — Screenshot files are deleted when the task is accepted
+- **Slide-out detail view** — Click any task to see full details, markdown description, screenshots, element context, and source files
+- **Inline editing** — Click the description to edit markdown in-place; Ctrl+Enter to save
+- **Accept/Deny workflow** — Review AI-applied changes directly from the drawer with optional feedback for retries
+- **Screenshots** — Snip regions or full page, attached to tasks as multimodal AI context
 
 ### AI agent context
-
-These optional features give the AI agent richer context beyond just "change this element" — helping it make better decisions about how and where to apply changes.
-
-- **Interaction history** — Optionally track user navigation and button/link clicks in the app. Toggle per-task, off by default.
-  > Without this, the agent only sees the task description and a file path. With it, the agent knows the user navigated from `/settings` → `/profile` → clicked "Edit" → scrolled down before creating the task. This helps reproduce bugs and understand which user flow is affected.
-
-- **Element context** — Optionally capture the ancestor layout chain (3 levels of parent display, flex-direction, gap, grid-template) and DOM subtree (3 levels of children with tag, classes, text). Toggle per-task, off by default.
-  > The agent can usually determine this by reading the source file — and in most cases it will. This feature provides the same information upfront as a shortcut, saving the agent a round-trip of reading and parsing the file. It includes the computed layout state from the live browser (display, flex-direction, gap, grid-template, child count) which may differ from what's in the source when styles are inherited, overridden, or applied dynamically.
-
-- **Breakpoint detection** — `annotask init` detects responsive breakpoints from Tailwind, Bootstrap, CSS variables, or media query patterns and includes them in the design spec.
-  > The agent can find breakpoints by reading config files and stylesheets — and usually will. This pre-detects them so the agent has the project's breakpoint system immediately alongside the viewport dimensions on each task. When a task is created at 375px, the agent can instantly map that to the right Tailwind prefix, Bootstrap tier, or custom media query without searching the codebase first.
+- **Interaction history** — Optionally attach user navigation path and click actions to tasks
+- **Element context** — Optionally capture ancestor layout chain and DOM subtree snapshot
+- **Breakpoint detection** — `annotask init` detects responsive breakpoints from Tailwind, Bootstrap, CSS variables, or media queries
 
 ### Infrastructure
-- **Change reports** — Structured JSON of all changes, ready for agents to consume (supports `?mfe=` filtering)
-- **Task pipeline** — `pending → in_progress → review → accepted/denied` lifecycle with live status updates
-- **Security** — CORS restricted to localhost origins, PATCH field whitelisting, postMessage sender validation
-- **Async I/O** — In-memory task cache with atomic file writes (no race conditions under concurrent access)
+- **Task pipeline** — `pending → in_progress → review → accepted/denied` lifecycle with live WebSocket updates
+- **Security** — CORS restricted to localhost, field whitelisting on mutations, postMessage sender validation
 - **CLI** — `annotask tasks`, `annotask report`, `annotask watch` for terminal access
-- **API** — HTTP and WebSocket endpoints for programmatic access
+- **API** — Full HTTP + WebSocket API for programmatic access
 
 ## CLI
 
@@ -226,12 +204,13 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=N
 - `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
 - `POST /__annotask/api/tasks` — Create a task
 - `PATCH /__annotask/api/tasks/:id` — Update task (whitelisted fields: status, description, feedback, screenshot, viewport, etc.)
+- `DELETE /__annotask/api/tasks/:id` — Delete a task and clean up its screenshot
 - `POST /__annotask/api/screenshots` — Upload a screenshot (base64 PNG, max 4MB)
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
 - `GET /__annotask/api/status` — Health check
 - `ws://localhost:5173/__annotask/ws` — Live WebSocket stream
 
-CORS is restricted to localhost origins. Mutating requests from non-local origins are rejected.
+CORS is restricted to localhost origins. Mutating requests (POST, PATCH, DELETE) from non-local origins are rejected.
 
 ## Supported Frameworks
 

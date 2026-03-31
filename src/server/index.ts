@@ -29,6 +29,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     getTasks: () => state.getTasks(),
     addTask: (task) => state.addTask(task),
     updateTask: (id, updates) => state.updateTask(id, updates),
+    deleteTask: (id) => state.deleteTask(id),
   })
 
   const shellMiddleware = createShellMiddleware()

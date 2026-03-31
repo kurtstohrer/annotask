@@ -29,6 +29,8 @@ export interface StickyNote {
   timestamp: number
 }
 
+export type ElementRect = { x: number; y: number; width: number; height: number }
+
 export interface Arrow {
   id: string
   number: number
@@ -39,9 +41,14 @@ export interface Arrow {
   fromFile?: string
   fromLine?: number
   fromComponent?: string
+  fromRect?: ElementRect
+  fromEid?: string
   toFile?: string
   toLine?: number
+  toRect?: ElementRect
+  toEid?: string
   label: string
+  color: string
   route: string
   timestamp: number
 }
@@ -54,6 +61,7 @@ export interface DrawnSection {
   width: number
   height: number
   prompt: string
+  nearEid?: string
   nearFile?: string
   nearLine?: number
   nearComponent?: string
@@ -67,6 +75,9 @@ export interface TextHighlight {
   number: number
   selectedText: string
   prompt: string
+  color: string
+  rect?: ElementRect
+  eid?: string
   file: string
   line: number
   component: string
@@ -159,12 +170,13 @@ export function useAnnotations() {
   }
 
   // ── Arrows ──
-  function addArrow(fromX: number, fromY: number, toX: number, toY: number, label?: string): Arrow {
+  function addArrow(fromX: number, fromY: number, toX: number, toY: number, label?: string, color?: string): Arrow {
     counter++
     const arrow: Arrow = {
       id: `arrow-${counter}`, number: counter,
       fromX, fromY, toX, toY,
       label: label || 'Move here',
+      color: color || '#ef4444',
       route: activeRoute.value, timestamp: Date.now(),
     }
     arrows.value.push(arrow)
@@ -208,11 +220,14 @@ export function useAnnotations() {
   // ── Text Highlights ──
   const selectedHighlightId = ref<string | null>(null)
 
-  function addHighlight(text: string, source: { file: string; line: number; component: string; elementTag: string }): TextHighlight {
+  function addHighlight(text: string, source: { file: string; line: number; component: string; elementTag: string }, color?: string, rect?: ElementRect, eid?: string): TextHighlight {
     counter++
     const h: TextHighlight = {
       id: `hl-${counter}`, number: counter,
       selectedText: text, prompt: '',
+      color: color || '#f59e0b',
+      ...(rect ? { rect } : {}),
+      ...(eid ? { eid } : {}),
       file: source.file, line: source.line,
       component: source.component, elementTag: source.elementTag,
       route: activeRoute.value, timestamp: Date.now(),

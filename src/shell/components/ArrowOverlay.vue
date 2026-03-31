@@ -1,135 +1,223 @@
 <script setup lang="ts">
-import type { Arrow } from '../composables/useAnnotations'
+import { ref, computed } from 'vue'
+import type { Arrow, ElementRect } from '../composables/useAnnotations'
 
 const props = defineProps<{
   arrows: Arrow[]
   selectedId: string | null
   drawingArrow: {
     fromX: number; fromY: number; toX: number; toY: number
-    fromRect?: { x: number; y: number; width: number; height: number }
-    toRect?: { x: number; y: number; width: number; height: number }
+    fromRect?: ElementRect; toRect?: ElementRect
   } | null
+  drawingColor: string
+  dragTargetRect: ElementRect | null
 }>()
 
 const emit = defineEmits<{
   select: [id: string]
   remove: [id: string]
+  'update-arrow': [id: string, updates: Partial<Arrow>]
+  'drag-move': [x: number, y: number]
+  'drag-end': [id: string, endpoint: 'from' | 'to', x: number, y: number]
 }>()
 
-/** Compute edge-to-edge arrow path that exits from the closest edge of fromRect and enters toRect */
+// ── Endpoint drag ──
+const endpointDrag = ref<{ arrowId: string; endpoint: 'from' | 'to' } | null>(null)
+
+/** Unique arrow colors for dynamic marker generation */
+const markerColors = computed(() => {
+  const colors = new Set<string>()
+  for (const a of props.arrows) colors.add(a.color || '#ef4444')
+  if (props.drawingArrow) colors.add(props.drawingColor)
+  return [...colors]
+})
+
+function markerId(color: string) {
+  return `ah-${color.replace('#', '')}`
+}
+
+function darken(hex: string): string {
+  const m = hex.match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
+  if (!m) return hex
+  const d = (s: string) => Math.max(0, Math.round(parseInt(s, 16) * 0.8)).toString(16).padStart(2, '0')
+  return `#${d(m[1])}${d(m[2])}${d(m[3])}`
+}
+
+function lighten(hex: string, amount = 0.15): string {
+  const m = hex.match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i)
+  if (!m) return hex
+  const l = (s: string) => {
+    const v = parseInt(s, 16)
+    return Math.min(255, Math.round(v + (255 - v) * amount)).toString(16).padStart(2, '0')
+  }
+  return `#${l(m[1])}${l(m[2])}${l(m[3])}`
+}
+
+/** Edge-to-edge arrow path: exits from closest edge of fromRect, enters toRect */
 function edgePath(
-  fromX: number, fromY: number,
-  toX: number, toY: number,
-  fromRect?: { x: number; y: number; width: number; height: number },
-  toRect?: { x: number; y: number; width: number; height: number },
+  fromX: number, fromY: number, toX: number, toY: number,
+  fromRect?: ElementRect, toRect?: ElementRect,
 ): string {
-  // Find best exit point on from rect
+  // Find exit point on from-rect edge
   let sx = fromX, sy = fromY
   if (fromRect) {
     const cx = fromRect.x + fromRect.width / 2
     const cy = fromRect.y + fromRect.height / 2
     const angle = Math.atan2(toY - cy, toX - cx)
-    sx = cx + Math.cos(angle) * (fromRect.width / 2 + 4)
-    sy = cy + Math.sin(angle) * (fromRect.height / 2 + 4)
+    // Clamp to rect edge
+    const hw = fromRect.width / 2 + 6, hh = fromRect.height / 2 + 6
+    const tanA = Math.abs(Math.tan(angle))
+    if (tanA * hw <= hh) {
+      sx = cx + Math.sign(Math.cos(angle)) * hw
+      sy = cy + Math.sign(Math.cos(angle)) * hw * Math.tan(angle)
+    } else {
+      sy = cy + Math.sign(Math.sin(angle)) * hh
+      sx = cx + Math.sign(Math.sin(angle)) * hh / Math.tan(angle)
+    }
   }
 
-  // Find best entry point on to rect
+  // Find entry point on to-rect edge
   let ex = toX, ey = toY
   if (toRect) {
     const cx = toRect.x + toRect.width / 2
     const cy = toRect.y + toRect.height / 2
     const angle = Math.atan2(sy - cy, sx - cx)
-    ex = cx + Math.cos(angle) * (toRect.width / 2 + 4)
-    ey = cy + Math.sin(angle) * (toRect.height / 2 + 4)
+    const hw = toRect.width / 2 + 6, hh = toRect.height / 2 + 6
+    const tanA = Math.abs(Math.tan(angle))
+    if (tanA * hw <= hh) {
+      ex = cx + Math.sign(Math.cos(angle)) * hw
+      ey = cy + Math.sign(Math.cos(angle)) * hw * Math.tan(angle)
+    } else {
+      ey = cy + Math.sign(Math.sin(angle)) * hh
+      ex = cx + Math.sign(Math.sin(angle)) * hh / Math.tan(angle)
+    }
   }
 
-  // Curved path
-  const dx = ex - sx
-  const dy = ey - sy
-  const cx1 = sx + dx * 0.4
-  const cy1 = sy
-  const cx2 = sx + dx * 0.6
-  const cy2 = ey
+  // Natural bezier curve
+  const dx = ex - sx, dy = ey - sy
+  const dist = Math.sqrt(dx * dx + dy * dy)
+  if (dist < 1) return `M ${sx} ${sy} L ${ex} ${ey}`
+  const ux = dx / dist, uy = dy / dist
+  const px = -uy, py = ux
+  const off = Math.min(dist * 0.15, 60)
+  const cx1 = sx + dx / 3 + px * off
+  const cy1 = sy + dy / 3 + py * off
+  const cx2 = sx + dx * 2 / 3 + px * off
+  const cy2 = sy + dy * 2 / 3 + py * off
   return `M ${sx} ${sy} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${ex} ${ey}`
 }
 
-function simplePath(fromX: number, fromY: number, toX: number, toY: number): string {
-  const dx = toX - fromX
-  const dy = toY - fromY
-  const cx1 = fromX + dx * 0.4
-  const cy1 = fromY
-  const cx2 = fromX + dx * 0.6
-  const cy2 = toY
-  return `M ${fromX} ${fromY} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${toX} ${toY}`
+function rectPath(r: ElementRect, pad = 4): string {
+  const x = r.x - pad, y = r.y - pad, w = r.width + pad * 2, h = r.height + pad * 2
+  return `M ${x} ${y} h ${w} v ${h} h ${-w} Z`
 }
 
-function labelPos(fromX: number, fromY: number, toX: number, toY: number) {
-  return { x: (fromX + toX) / 2, y: (fromY + toY) / 2 - 10 }
+// ── Endpoint dragging ──
+function onEndpointDown(e: PointerEvent, arrowId: string, endpoint: 'from' | 'to') {
+  e.stopPropagation()
+  e.preventDefault()
+  endpointDrag.value = { arrowId, endpoint }
+  window.addEventListener('pointermove', onEndpointMove)
+  window.addEventListener('pointerup', onEndpointUp)
 }
 
-function rectOutline(r: { x: number; y: number; width: number; height: number }) {
-  return `M ${r.x} ${r.y} h ${r.width} v ${r.height} h ${-r.width} Z`
+function onEndpointMove(e: PointerEvent) {
+  if (!endpointDrag.value) return
+  const { arrowId, endpoint } = endpointDrag.value
+  if (endpoint === 'from') {
+    emit('update-arrow', arrowId, { fromX: e.clientX, fromY: e.clientY })
+  } else {
+    emit('update-arrow', arrowId, { toX: e.clientX, toY: e.clientY })
+  }
+  emit('drag-move', e.clientX, e.clientY)
+}
+
+function onEndpointUp(e: PointerEvent) {
+  if (endpointDrag.value) {
+    const { arrowId, endpoint } = endpointDrag.value
+    emit('drag-end', arrowId, endpoint, e.clientX, e.clientY)
+  }
+  endpointDrag.value = null
+  window.removeEventListener('pointermove', onEndpointMove)
+  window.removeEventListener('pointerup', onEndpointUp)
 }
 </script>
 
 <template>
   <svg class="arrow-svg">
     <defs>
-      <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-        <polygon points="0 0, 10 3.5, 0 7" fill="#ef4444" />
-      </marker>
-      <marker id="arrowhead-drawing" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-        <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6" />
+      <marker v-for="c in markerColors" :key="c"
+        :id="markerId(c)" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" :fill="c" />
       </marker>
     </defs>
 
     <!-- Existing arrows -->
     <g v-for="arrow in arrows" :key="arrow.id" @click.stop="emit('select', arrow.id)">
+      <!-- Element outlines in arrow color -->
+      <path v-if="arrow.fromRect" :d="rectPath(arrow.fromRect)"
+        fill="none" :stroke="arrow.color" stroke-width="2" stroke-dasharray="4 2" opacity="0.4" rx="3" />
+      <path v-if="arrow.toRect" :d="rectPath(arrow.toRect)"
+        :fill="lighten(arrow.color) + '0a'" :stroke="arrow.color" stroke-width="2" stroke-dasharray="4 2" opacity="0.4" rx="3" />
+
+      <!-- Arrow path (edge-to-edge when rects available) -->
       <path
-        :d="simplePath(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY)"
+        :d="edgePath(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY, arrow.fromRect, arrow.toRect)"
         fill="none"
-        :stroke="arrow.id === selectedId ? '#dc2626' : '#ef4444'"
+        :stroke="arrow.id === selectedId ? darken(arrow.color) : arrow.color"
         :stroke-width="arrow.id === selectedId ? 3 : 2"
         stroke-dasharray="6 3"
-        marker-end="url(#arrowhead)"
+        :marker-end="`url(#${markerId(arrow.color)})`"
         class="arrow-path"
       />
-      <circle :cx="arrow.fromX" :cy="arrow.fromY" r="5" fill="#ef4444" opacity="0.8" />
-      <circle :cx="arrow.toX" :cy="arrow.toY" r="5" fill="#ef4444" opacity="0.8" />
-      <!-- Label (static text, set via sidebar task panel) -->
-      <text v-if="arrow.label"
-        :x="labelPos(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY).x"
-        :y="labelPos(arrow.fromX, arrow.fromY, arrow.toX, arrow.toY).y"
-        text-anchor="middle" class="arrow-label"
-      >{{ arrow.label }}</text>
+
+      <!-- Endpoints: draggable when selected -->
+      <circle v-if="arrow.id !== selectedId"
+        :cx="arrow.fromX" :cy="arrow.fromY" r="5" :fill="arrow.color" opacity="0.8" />
+      <circle v-if="arrow.id !== selectedId"
+        :cx="arrow.toX" :cy="arrow.toY" r="5" :fill="arrow.color" opacity="0.8" />
+      <circle v-if="arrow.id === selectedId"
+        :cx="arrow.fromX" :cy="arrow.fromY" r="7"
+        :fill="arrow.color" :stroke="darken(arrow.color)" stroke-width="2"
+        class="endpoint-handle"
+        @pointerdown="onEndpointDown($event, arrow.id, 'from')" />
+      <circle v-if="arrow.id === selectedId"
+        :cx="arrow.toX" :cy="arrow.toY" r="7"
+        :fill="arrow.color" :stroke="darken(arrow.color)" stroke-width="2"
+        class="endpoint-handle"
+        @pointerdown="onEndpointDown($event, arrow.id, 'to')" />
       <g v-if="arrow.id === selectedId" class="arrow-delete"
         :transform="`translate(${(arrow.fromX + arrow.toX) / 2 + 20}, ${(arrow.fromY + arrow.toY) / 2 - 20})`"
         @click.stop="emit('remove', arrow.id)">
-        <circle r="8" fill="#ef4444" />
+        <circle r="8" :fill="arrow.color" />
         <text text-anchor="middle" dy="3.5" fill="white" font-size="10" font-weight="bold">×</text>
       </g>
     </g>
 
+    <!-- Element outline during endpoint drag -->
+    <rect v-if="endpointDrag && dragTargetRect"
+      :x="dragTargetRect.x - 4" :y="dragTargetRect.y - 4"
+      :width="dragTargetRect.width + 8" :height="dragTargetRect.height + 8"
+      fill="rgba(59,130,246,0.06)" stroke="#3b82f6" stroke-width="2"
+      stroke-dasharray="4 2" rx="3" opacity="0.7"
+    />
+
     <!-- Drawing preview -->
-    <g v-if="drawingArrow">
+    <g v-if="drawingArrow" opacity="0.7">
       <!-- Source element outline -->
-      <path v-if="drawingArrow.fromRect"
-        :d="rectOutline(drawingArrow.fromRect)"
-        fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="4 2" opacity="0.6"
-      />
+      <path v-if="drawingArrow.fromRect" :d="rectPath(drawingArrow.fromRect)"
+        fill="none" :stroke="drawingColor" stroke-width="2" stroke-dasharray="4 2" opacity="0.6" />
       <!-- Target element outline -->
-      <path v-if="drawingArrow.toRect"
-        :d="rectOutline(drawingArrow.toRect)"
-        fill="rgba(59,130,246,0.08)" stroke="#3b82f6" stroke-width="2" stroke-dasharray="4 2" opacity="0.6"
-      />
-      <!-- Arrow line -->
+      <path v-if="drawingArrow.toRect" :d="rectPath(drawingArrow.toRect)"
+        :fill="drawingColor + '0a'" :stroke="drawingColor" stroke-width="2" stroke-dasharray="4 2" opacity="0.6" />
+      <!-- Arrow line (edge-to-edge) -->
       <path
         :d="edgePath(drawingArrow.fromX, drawingArrow.fromY, drawingArrow.toX, drawingArrow.toY, drawingArrow.fromRect, drawingArrow.toRect)"
-        fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-dasharray="6 3"
-        marker-end="url(#arrowhead-drawing)" opacity="0.8"
+        fill="none" :stroke="drawingColor" stroke-width="2.5" stroke-dasharray="6 3"
+        :marker-end="`url(#${markerId(drawingColor)})`"
       />
-      <!-- Endpoints -->
-      <circle :cx="drawingArrow.fromX" :cy="drawingArrow.fromY" r="5" fill="#3b82f6" opacity="0.6" />
+      <circle :cx="drawingArrow.fromX" :cy="drawingArrow.fromY" r="5" :fill="drawingColor" opacity="0.6" />
+      <circle :cx="drawingArrow.toX" :cy="drawingArrow.toY" r="5" :fill="drawingColor" opacity="0.6" />
     </g>
   </svg>
 </template>
@@ -144,14 +232,7 @@ function rectOutline(r: { x: number; y: number; width: number; height: number })
   pointer-events: none;
 }
 .arrow-path { pointer-events: stroke; cursor: pointer; }
-.arrow-label {
-  font-size: 10px;
-  font-weight: 600;
-  fill: #ef4444;
-  pointer-events: none;
-  paint-order: stroke;
-  stroke: rgba(0,0,0,0.5);
-  stroke-width: 3px;
-}
 .arrow-delete { cursor: pointer; pointer-events: auto; }
+.endpoint-handle { cursor: grab; pointer-events: auto; }
+.endpoint-handle:active { cursor: grabbing; }
 </style>

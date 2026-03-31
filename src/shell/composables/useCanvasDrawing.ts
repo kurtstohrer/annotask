@@ -1,9 +1,10 @@
 import { ref } from 'vue'
 import type { useAnnotations } from './useAnnotations'
+import type { ElementRect } from './useAnnotations'
 
 type Annotations = ReturnType<typeof useAnnotations>
 type ResolvedCtx = {
-  file: string; line: string; component: string; tag: string; classes?: string
+  eid: string; file: string; line: string; component: string; tag: string; classes?: string
   rect: { x: number; y: number; width: number; height: number }
 } | null
 type ResolveElementAt = (x: number, y: number) => Promise<ResolvedCtx>
@@ -13,11 +14,12 @@ export function useCanvasDrawing(
   resolveElementAt: ResolveElementAt,
   getInteractionMode: () => string,
   onArrowCreated?: (arrowId: string, fromCtx: ResolvedCtx, toCtx: ResolvedCtx) => void,
+  getArrowColor?: () => string,
 ) {
   const drawingArrow = ref<{
     fromX: number; fromY: number; toX: number; toY: number
-    fromRect?: { x: number; y: number; width: number; height: number }
-    toRect?: { x: number; y: number; width: number; height: number }
+    fromRect?: ElementRect
+    toRect?: ElementRect
   } | null>(null)
   const drawingRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
   let drawStart: { x: number; y: number } | null = null
@@ -27,7 +29,7 @@ export function useCanvasDrawing(
     if (mode === 'arrow') {
       drawStart = { x: e.clientX, y: e.clientY }
       drawingArrow.value = { fromX: e.clientX, fromY: e.clientY, toX: e.clientX, toY: e.clientY }
-      // Resolve from-element asynchronously, update when ready
+      // Resolve from-element asynchronously
       const fromCtx = await resolveElementAt(e.clientX, e.clientY)
       if (drawingArrow.value && fromCtx) {
         drawingArrow.value = { ...drawingArrow.value, fromRect: fromCtx.rect }
@@ -38,7 +40,7 @@ export function useCanvasDrawing(
     }
   }
 
-  // Throttle async resolve during move to avoid flooding
+  // Throttle async resolve during move
   let moveResolveTimer: ReturnType<typeof setTimeout> | null = null
 
   function onCanvasPointerMove(e: PointerEvent) {
@@ -46,7 +48,7 @@ export function useCanvasDrawing(
     const mode = getInteractionMode()
     if (mode === 'arrow' && drawingArrow.value) {
       drawingArrow.value = { ...drawingArrow.value, toX: e.clientX, toY: e.clientY }
-      // Debounced snap resolve
+      // Debounced target element resolve
       if (moveResolveTimer) clearTimeout(moveResolveTimer)
       const cx = e.clientX, cy = e.clientY
       moveResolveTimer = setTimeout(async () => {
@@ -73,16 +75,17 @@ export function useCanvasDrawing(
       if (Math.abs(a.toX - a.fromX) > 20 || Math.abs(a.toY - a.fromY) > 20) {
         const fromCtx = await resolveElementAt(a.fromX, a.fromY)
         const toCtx = await resolveElementAt(a.toX, a.toY)
-        const arrow = annotations.addArrow(a.fromX, a.fromY, a.toX, a.toY)
+        const color = getArrowColor?.() || '#ef4444'
+        const arrow = annotations.addArrow(a.fromX, a.fromY, a.toX, a.toY, undefined, color)
         if (fromCtx) {
           annotations.updateArrow(arrow.id, {
             fromFile: fromCtx.file, fromLine: parseInt(fromCtx.line) || 0,
-            fromComponent: fromCtx.component,
+            fromComponent: fromCtx.component, fromRect: fromCtx.rect, fromEid: fromCtx.eid,
           })
         }
         if (toCtx) {
           annotations.updateArrow(arrow.id, {
-            toFile: toCtx.file, toLine: parseInt(toCtx.line) || 0,
+            toFile: toCtx.file, toLine: parseInt(toCtx.line) || 0, toRect: toCtx.rect, toEid: toCtx.eid,
           })
         }
         annotations.updateArrow(arrow.id, { label: '' })
@@ -97,6 +100,7 @@ export function useCanvasDrawing(
         if (nearCtx) {
           const placement = r.y > (drawStart?.y || 0) ? 'below' : 'above'
           annotations.updateDrawnSection(section.id, {
+            nearEid: nearCtx.eid,
             nearFile: nearCtx.file,
             nearLine: parseInt(nearCtx.line) || 0,
             nearComponent: nearCtx.component,

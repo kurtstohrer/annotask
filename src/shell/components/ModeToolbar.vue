@@ -8,10 +8,10 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
 <template>
   <div class="mode-toolbar">
     <button :class="['mode-btn mode-interact', { active: modelValue === 'interact' }]" @click="emit('update:modelValue', 'interact')" title="Interact (I)">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7 6 13 6 13s6-6 6-13z"/><circle cx="12" cy="8" r="1" fill="currentColor"/><path d="M9 21h6"/></svg>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
     </button>
     <button :class="['mode-btn', { active: modelValue === 'select' }]" @click="emit('update:modelValue', 'select')" title="Select (V)">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 14a8 8 0 0 1-8 8h-1c-2.4 0-4.7-1-6.4-2.6L2.3 15A1.5 1.5 0 0 1 4.4 13l3.6 3V4.5a1.5 1.5 0 0 1 3 0V12"/><path d="M14 10.5a1.5 1.5 0 0 1 3 0V12"/><path d="M17 11.5a1.5 1.5 0 0 1 3 0V14"/></svg>
     </button>
     <span class="mode-sep" />
     <button :class="['mode-btn', { active: modelValue === 'pin' }]" @click="emit('update:modelValue', 'pin')" title="Pin Note (P)">
@@ -46,7 +46,7 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
 .mode-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
 .mode-btn.mode-interact.active { background: #6366f1; border-color: #6366f1; }
 .mode-btn.arrow.active { background: #ef4444; border-color: #ef4444; }
-.mode-btn.draw.active { background: #22c55e; border-color: #22c55e; }
+.mode-btn.draw.active { background: #6b7280; border-color: #6b7280; }
 .mode-btn.mode-highlight.active { background: #f59e0b; border-color: #f59e0b; }
 .mode-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; align-self: center; }
 </style>

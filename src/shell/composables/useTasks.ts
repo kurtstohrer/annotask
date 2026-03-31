@@ -50,15 +50,26 @@ async function createTask(task: Partial<Task>): Promise<Task | null> {
   } catch { return null }
 }
 
-async function updateTaskStatus(id: string, status: Task['status'], feedback?: string, extra?: Record<string, unknown>) {
+async function updateTask(id: string, updates: Record<string, unknown>) {
   try {
     await fetch(`/__annotask/api/tasks/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status, ...(feedback ? { feedback } : {}), ...extra }),
+      body: JSON.stringify(updates),
     })
     await fetchTasks()
   } catch {}
+}
+
+async function deleteTask(id: string) {
+  try {
+    await fetch(`/__annotask/api/tasks/${id}`, { method: 'DELETE' })
+    await fetchTasks()
+  } catch {}
+}
+
+async function updateTaskStatus(id: string, status: Task['status'], feedback?: string, extra?: Record<string, unknown>) {
+  return updateTask(id, { status, ...(feedback ? { feedback } : {}), ...extra })
 }
 
 let initialized = false
@@ -80,7 +91,7 @@ export function useTasks() {
   return {
     tasks, pendingTasks, reviewTasks, deniedTasks,
     isLoading,
-    createTask, updateTaskStatus,
+    createTask, updateTask, deleteTask, updateTaskStatus,
     fetchTasks,
   }
 }

@@ -47,9 +47,17 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
 - **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept (max 4MB)
-- **Task detail drawer** — Slide-out detail view with markdown rendering, inline editing, screenshot lightbox, element/file display, interaction log, JSON view
+- **Task detail drawer** — Slide-out detail view with markdown rendering, inline editing, screenshot lightbox, element/file display, interaction log, JSON view, delete button
 - **Task lifecycle** — `pending → in_progress → review → accepted/denied` with live status updates
 - **Markdown descriptions** — Task descriptions support GitHub-flavored Markdown (rendered with `marked`)
-- **Security** — CORS restricted to localhost, PATCH field whitelisting, postMessage sender validation
+- **Security** — CORS restricted to localhost, PATCH/DELETE field whitelisting, postMessage sender validation
 - **Async I/O** — In-memory task cache with atomic file writes (no race conditions)
 - **Inspector highlights** — Selection/hover overlays that track scroll and resize via rAF loop
+- **Arrow tool** — Multi-color arrows with element outlines, edge-to-edge bezier paths, draggable endpoints, element-aware re-resolution on move, scroll/resize tracking via rAF
+- **Section tool** — Markdown editor (edit/preview toggle), dark theme, movable/resizable sections with drag handles, explicit "Add Task" / "Update Task" button
+- **Text highlights** — Multi-color highlights with visual overlay on selected text, sidebar task creation with preloaded text
+- **Scroll/resize tracking** — All annotations (arrows, highlights, sections) follow elements during scroll and window resize via rAF loop, same pattern as inspector selections
+- **Route persistence** — Iframe route saved to localStorage, restored on page reload
+- **Editable route indicator** — Route input in toolbar navigates the iframe to a typed path
+- **Confirm dialogs** — Reusable ConfirmDialog component for destructive actions (task deletion)
+- **Task deletion** — DELETE /api/tasks/:id endpoint, trash icon in task detail drawer with confirm

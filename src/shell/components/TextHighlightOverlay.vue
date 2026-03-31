@@ -4,49 +4,53 @@ import type { TextHighlight } from '../composables/useAnnotations'
 defineProps<{
   highlights: TextHighlight[]
   selectedId: string | null
-  /** Pending highlight: text selected, waiting for prompt */
-  pending: { text: string; x: number; y: number } | null
 }>()
 
 const emit = defineEmits<{
   select: [id: string]
   remove: [id: string]
   'update-prompt': [id: string, prompt: string]
-  'submit-pending': [prompt: string]
-  'cancel-pending': []
 }>()
 </script>
 
 <template>
-  <!-- Pending highlight prompt (just selected text, need user's prompt) -->
-  <div v-if="pending" class="highlight-prompt" :style="{ left: pending.x + 'px', top: pending.y + 'px' }">
-    <div class="prompt-header">
-      <span class="prompt-text-preview">"{{ pending.text.substring(0, 50) }}{{ pending.text.length > 50 ? '...' : '' }}"</span>
+  <!-- Visual highlights on the page -->
+  <div
+    v-for="h in highlights"
+    :key="'vis-' + h.id"
+  >
+    <div
+      v-if="h.rect"
+      class="text-highlight-visual"
+      :class="{ selected: h.id === selectedId }"
+      :style="{
+        left: h.rect.x + 'px', top: h.rect.y + 'px',
+        width: h.rect.width + 'px', height: h.rect.height + 'px',
+        background: h.color + '30',
+        borderBottom: '2px solid ' + h.color,
+        boxShadow: h.id === selectedId ? '0 0 0 1px ' + h.color : 'none',
+      }"
+      @click.stop="emit('select', h.id)"
+    >
+      <span class="highlight-badge" :style="{ background: h.color }">#{{ h.number }}</span>
     </div>
-    <input
-      class="prompt-input"
-      placeholder="What should this text become?"
-      autofocus
-      @keydown.enter="emit('submit-pending', ($event.target as HTMLInputElement).value)"
-      @keydown.escape="emit('cancel-pending')"
-    />
-    <div class="prompt-hint">Enter to submit, Escape to cancel</div>
   </div>
 
-  <!-- Existing highlights -->
+  <!-- Highlight cards (in overlay area) -->
   <div
     v-for="h in highlights"
     :key="h.id"
     class="text-highlight-card"
     :class="{ selected: h.id === selectedId }"
+    :style="{ borderColor: h.id === selectedId ? h.color : undefined }"
     @click.stop="emit('select', h.id)"
   >
     <div class="hl-header">
-      <span class="hl-badge">#{{ h.number }}</span>
+      <span class="hl-badge" :style="{ color: h.color }">#{{ h.number }}</span>
       <code class="hl-file">{{ h.file }}:{{ h.line }}</code>
       <button class="hl-delete" @click.stop="emit('remove', h.id)">×</button>
     </div>
-    <div class="hl-text">"{{ h.selectedText }}"</div>
+    <div class="hl-text" :style="{ color: h.color }">"{{ h.selectedText }}"</div>
     <div v-if="h.prompt" class="hl-prompt">→ {{ h.prompt }}</div>
     <input
       v-if="h.id === selectedId"
@@ -60,31 +64,23 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-/* Pending prompt popup */
-.highlight-prompt {
+/* Visual highlight on the page */
+.text-highlight-visual {
   position: fixed;
-  z-index: 10005;
-  background: var(--surface, #141414);
-  border: 1px solid #f59e0b;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  padding: 8px;
-  width: 280px;
+  z-index: 10003;
+  border-radius: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: box-shadow 0.15s;
 }
-.prompt-header { margin-bottom: 6px; }
-.prompt-text-preview {
-  font-size: 11px; color: #f59e0b; font-style: italic;
-  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.highlight-badge {
+  position: absolute; top: -10px; left: -2px;
+  font-size: 8px; font-weight: 700; color: white;
+  padding: 0 4px; border-radius: 3px;
+  line-height: 14px; pointer-events: none;
 }
-.prompt-input {
-  width: 100%; padding: 6px 8px;
-  background: var(--bg, #0a0a0a); border: 1px solid var(--border, #2a2a2a);
-  border-radius: 5px; color: var(--text, #e4e4e7); font-size: 12px; outline: none;
-}
-.prompt-input:focus { border-color: #f59e0b; }
-.prompt-hint { font-size: 9px; color: var(--text-muted, #71717a); margin-top: 4px; }
 
-/* Highlight cards (shown in panel or floating) */
+/* Highlight cards */
 .text-highlight-card {
   position: relative;
   margin: 4px 0;
