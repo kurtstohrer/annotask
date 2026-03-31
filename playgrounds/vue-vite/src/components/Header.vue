@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 defineProps<{ title: string }>()
+
+const menuOpen = ref(false)
 </script>
 
 <template>
@@ -10,20 +13,23 @@ defineProps<{ title: string }>()
       <i class="pi pi-globe brand-icon"></i>
       <h1 class="brand-title">{{ title }}</h1>
     </div>
-    <nav class="header-nav">
-      <RouterLink to="/sun" class="nav-link">
+    <button class="menu-toggle" @click="menuOpen = !menuOpen" aria-label="Toggle menu">
+      <i :class="menuOpen ? 'pi pi-times' : 'pi pi-bars'"></i>
+    </button>
+    <nav class="header-nav" :class="{ open: menuOpen }">
+      <RouterLink to="/sun" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-sun"></i> Sun
       </RouterLink>
-      <RouterLink to="/planets" class="nav-link">
+      <RouterLink to="/planets" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-globe"></i> Planets
       </RouterLink>
-      <RouterLink to="/moons" class="nav-link">
+      <RouterLink to="/moons" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-moon"></i> Moons
       </RouterLink>
-      <RouterLink to="/orbits" class="nav-link">
+      <RouterLink to="/orbits" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-sun"></i> Orbits
       </RouterLink>
-      <RouterLink to="/api-docs" class="nav-link">
+      <RouterLink to="/api-docs" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-book"></i> API Docs
       </RouterLink>
     </nav>
@@ -32,6 +38,7 @@ defineProps<{ title: string }>()
 
 <style scoped>
 .header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -86,5 +93,51 @@ defineProps<{ title: string }>()
 .nav-link.router-link-active {
   background: rgba(156, 163, 175, 0.1);
   color: #d1d5db;
+}
+
+.menu-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 8px;
+  transition: all 0.15s;
+}
+
+.menu-toggle:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+@media (max-width: 768px) {
+  .brand-title {
+    display: none;
+  }
+
+  .menu-toggle {
+    display: flex;
+  }
+
+  .header-nav {
+    display: none;
+    position: absolute;
+    top: 56px;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px;
+    z-index: 100;
+  }
+
+  .header-nav.open {
+    display: flex;
+  }
 }
 </style>

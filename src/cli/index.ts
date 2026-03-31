@@ -59,6 +59,8 @@ if (command === 'watch') {
   checkStatus()
 } else if (command === 'init-skills') {
   initSkills()
+} else if (command === 'screenshot') {
+  fetchScreenshot()
 } else if (command === 'help' || command === '--help') {
   printHelp()
 } else {
@@ -185,6 +187,44 @@ async function checkStatus() {
     console.log(JSON.stringify(data, null, 2))
   } catch {
     console.log(`\x1b[31m[Annotask]\x1b[0m No Annotask server found at ${baseUrl}`)
+    process.exit(1)
+  }
+}
+
+// ── Screenshot: download a task's screenshot ─────────────
+
+async function fetchScreenshot() {
+  const taskId = args[1]
+  if (!taskId) {
+    console.error('\x1b[31m[Annotask]\x1b[0m Usage: annotask screenshot <task-id> [--output=path.png]')
+    process.exit(1)
+  }
+
+  try {
+    // Fetch tasks to find the screenshot filename
+    const tasksRes = await fetch(`${apiUrl}/tasks`)
+    const tasksData = await tasksRes.json()
+    const task = tasksData.tasks.find((t: any) => t.id === taskId)
+    if (!task) { console.error(`\x1b[31m[Annotask]\x1b[0m Task not found: ${taskId}`); process.exit(1) }
+    if (!task.screenshot) { console.error(`\x1b[31m[Annotask]\x1b[0m Task has no screenshot`); process.exit(1) }
+
+    // Download the screenshot
+    const screenshotUrl = `${baseUrl}/__annotask/screenshots/${task.screenshot}`
+    const res = await fetch(screenshotUrl)
+    if (!res.ok) { console.error(`\x1b[31m[Annotask]\x1b[0m Screenshot not found: ${task.screenshot}`); process.exit(1) }
+    const buffer = Buffer.from(await res.arrayBuffer())
+
+    const outputArg = args.find(a => a.startsWith('--output='))
+    const outputPath = outputArg ? outputArg.split('=')[1] : resolve('.annotask', 'screenshots', task.screenshot)
+
+    const dir = dirname(outputPath)
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(outputPath, buffer)
+    console.log(`\x1b[32m[Annotask]\x1b[0m Screenshot saved to ${outputPath}`)
+  } catch (err: any) {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch screenshot: ${err.message}`)
     process.exit(1)
   }
 }

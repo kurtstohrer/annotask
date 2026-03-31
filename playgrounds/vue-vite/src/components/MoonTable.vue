@@ -180,7 +180,7 @@ const filtered = computed(() => {
 </template>
 
 <style scoped>
-.moon-table-wrapper { flex: 1; min-width: 0; }
+.moon-table-wrapper { flex: 1; min-width: 0; container-type: inline-size; }
 
 .table-header {
   display: flex;
@@ -200,7 +200,7 @@ const filtered = computed(() => {
 
 .table-title i { color: var(--text-muted); font-size: 14px; }
 
-.table-search { position: relative; margin-left: auto; }
+.table-search { position: relative; margin-left: auto; flex-shrink: 0; }
 .search-icon {
   position: absolute;
   left: 12px;
@@ -231,7 +231,7 @@ const filtered = computed(() => {
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
-  flex-wrap: wrap;
+  overflow-x: auto;
 }
 .filter-label {
   font-size: 12px;
@@ -269,5 +269,24 @@ const filtered = computed(() => {
 :deep(.p-datatable-thead > tr > th) {
   background-color: #3b3b3b !important;
   color: #605c5e !important;
+}
+
+@container (max-width: 600px) {
+  .filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .filter-label {
+    width: 100%;
+  }
+  .table-search {
+    width: 100%;
+    margin-left: 0;
+    order: -1;
+    margin-bottom: 4px;
+  }
+  .search-input {
+    width: 100%;
+  }
 }
 </style>

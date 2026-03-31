@@ -78,7 +78,13 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     const task = data.tasks.find((t: any) => t.id === id)
     if (!task) return { error: 'Task not found' }
     Object.assign(task, updates, { updatedAt: Date.now() })
-    if (updates.status === 'accepted') data.tasks = data.tasks.filter((t: any) => t.id !== id)
+    if (updates.status === 'accepted') {
+      if (task.screenshot) {
+        const screenshotPath = path.join(projectRoot, '.annotask', 'screenshots', task.screenshot)
+        try { if (fs.existsSync(screenshotPath)) fs.unlinkSync(screenshotPath) } catch {}
+      }
+      data.tasks = data.tasks.filter((t: any) => t.id !== id)
+    }
     writeTasks(data)
     broadcast('tasks:updated', data)
     return task

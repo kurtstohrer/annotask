@@ -147,6 +147,10 @@ const newTaskText = ref('')
 const includeHistory = ref(localStorage.getItem('annotask:includeHistory') === 'true')
 watch(includeHistory, (v) => localStorage.setItem('annotask:includeHistory', String(v)))
 const includeElementContext = ref(localStorage.getItem('annotask:includeElementContext') === 'true')
+const snipActive = ref(false)
+const snipRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
+const snipStart = ref<{ x: number; y: number } | null>(null)
+const pendingScreenshot = ref<string | null>(null)
 const a11yViolations = ref<Array<{ id: string; impact: string; description: string; help: string; helpUrl: string; nodes: number }>>([])
 const a11yTaskRules = computed(() => {
   const rules = new Set<string>()
@@ -639,7 +643,72 @@ async function createRouteTask(data: Record<string, unknown>) {
     if (ctx) elementContextData = { element_context: ctx }
   }
 
-  return taskSystem.createTask({ ...data, route: currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...historyData, ...elementContextData })
+  const screenshotData = pendingScreenshot.value ? { screenshot: pendingScreenshot.value } : {}
+  pendingScreenshot.value = null
+  return taskSystem.createTask({ ...data, route: currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...historyData, ...elementContextData, ...screenshotData })
+}
+
+// ── Screenshot Snip Handlers ─────────────────────────
+function startSnip() {
+  snipActive.value = true
+}
+
+function onSnipDown(e: PointerEvent) {
+  snipStart.value = { x: e.clientX, y: e.clientY }
+  snipRect.value = { x: e.clientX, y: e.clientY, width: 0, height: 0 }
+}
+
+function onSnipMove(e: PointerEvent) {
+  if (!snipStart.value) return
+  const x = Math.min(snipStart.value.x, e.clientX)
+  const y = Math.min(snipStart.value.y, e.clientY)
+  snipRect.value = { x, y, width: Math.abs(e.clientX - snipStart.value.x), height: Math.abs(e.clientY - snipStart.value.y) }
+}
+
+async function onSnipUp() {
+  // Determine clip rect in iframe coords
+  let clipRect: { x: number; y: number; width: number; height: number } | null = null
+  if (snipRect.value && snipRect.value.width > 30 && snipRect.value.height > 30) {
+    const iCoords = iframe.toIframeCoords(snipRect.value.x, snipRect.value.y)
+    const iCoordsEnd = iframe.toIframeCoords(snipRect.value.x + snipRect.value.width, snipRect.value.y + snipRect.value.height)
+    if (iCoords && iCoordsEnd) {
+      clipRect = { x: iCoords.x, y: iCoords.y, width: iCoordsEnd.x - iCoords.x, height: iCoordsEnd.y - iCoords.y }
+    }
+  }
+
+  snipActive.value = false
+  snipRect.value = null
+  snipStart.value = null
+
+  // Capture
+  const result = await iframe.captureScreenshot(clipRect)
+  if (result.error || !result.dataUrl) {
+    console.warn('Screenshot failed:', result.error)
+    return
+  }
+
+  // Upload
+  try {
+    const resp = await fetch('/__annotask/api/screenshots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: result.dataUrl }),
+    })
+    const { filename } = await resp.json()
+    pendingScreenshot.value = filename
+  } catch {
+    console.warn('Screenshot upload failed')
+  }
+}
+
+function cancelSnip() {
+  snipActive.value = false
+  snipRect.value = null
+  snipStart.value = null
+}
+
+function removeScreenshot() {
+  pendingScreenshot.value = null
 }
 
 // ── A11y Task Creation ────────────────────────────────
@@ -881,6 +950,7 @@ function onShellKeyDown(e: KeyboardEvent) {
 
   // Escape: close shortcuts, cancel pending task, or clear selection
   if (key === 'Escape') {
+    if (snipActive.value) { cancelSnip(); return }
     if (showReportPanel.value) { showReportPanel.value = false; return }
     if (showShortcuts.value) { showShortcuts.value = false; return }
     if (pendingTaskCreation.value) { cancelPendingTask(); return }
@@ -990,6 +1060,14 @@ const appUrl = computed(() => {
     </div>
     <div v-if="!configInitialized" class="setup-banner">
       Annotask not initialized — run <code>/annotask-init</code> in your AI assistant to set up project tokens and component detection.
+    </div>
+
+    <!-- Snipping overlay -->
+    <div v-if="snipActive" class="snip-overlay"
+      @pointerdown="onSnipDown" @pointermove="onSnipMove" @pointerup="onSnipUp" @keydown.escape="cancelSnip">
+      <div class="snip-hint">Drag to select a region, or click for full page</div>
+      <div v-if="snipRect && snipRect.width > 5 && snipRect.height > 5" class="snip-selection"
+        :style="{ left: snipRect.x+'px', top: snipRect.y+'px', width: snipRect.width+'px', height: snipRect.height+'px' }" />
     </div>
 
     <!-- Main -->
@@ -1141,6 +1219,11 @@ const appUrl = computed(() => {
             <label class="history-toggle"><input type="checkbox" v-model="includeHistory" /><span>History</span></label>
             <label class="history-toggle"><input type="checkbox" v-model="includeElementContext" /><span>DOM context</span></label>
           </div>
+          <div v-if="pendingScreenshot" class="screenshot-preview">
+            <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
+            <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
+          </div>
+          <button v-else class="screenshot-btn" @click="startSnip">Add Screenshot</button>
           <div class="pending-task-actions">
             <button class="submit-btn" :disabled="!pendingTaskText.trim()" @click="submitPendingTask">Add Task</button>
             <button class="cancel-btn" @click="cancelPendingTask">Cancel</button>
@@ -1165,6 +1248,11 @@ const appUrl = computed(() => {
             <label class="history-toggle"><input type="checkbox" v-model="includeHistory" /><span>History</span></label>
             <label class="history-toggle"><input type="checkbox" v-model="includeElementContext" /><span>DOM context</span></label>
           </div>
+          <div v-if="pendingScreenshot" class="screenshot-preview">
+            <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
+            <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
+          </div>
+          <button v-else class="screenshot-btn" @click="startSnip">Add Screenshot</button>
           <div class="new-task-actions">
             <button class="submit-btn" :disabled="!newTaskText.trim()" @click="submitNewTask">Add</button>
             <button class="cancel-btn" @click="showNewTaskForm = false; newTaskText = ''">Cancel</button>
@@ -1185,6 +1273,7 @@ const appUrl = computed(() => {
               <code class="task-card-file">{{ task.file }}:{{ task.line }}</code>
               <span v-if="task.route" class="task-route-badge">{{ task.route }}</span>
             </div>
+            <img v-if="task.screenshot" class="task-screenshot-thumb" :src="'/__annotask/screenshots/' + task.screenshot" />
             <div v-if="task.feedback" class="task-card-feedback">{{ task.feedback }}</div>
             <div v-if="task.status === 'review'" class="task-card-actions">
               <template v-if="denyingTaskId !== task.id">
@@ -1284,6 +1373,9 @@ const appUrl = computed(() => {
             :includeElementContext="includeElementContext"
             @update:includeHistory="includeHistory = $event"
             @update:includeElementContext="includeElementContext = $event"
+            :pendingScreenshot="pendingScreenshot"
+            @start-snip="startSnip"
+            @remove-screenshot="removeScreenshot"
             @add-note="onAddAnnotationNote"
             @add-action="onAddAnnotationAction"
             @add-task="onAddGeneralTask"
@@ -1637,6 +1729,45 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .a11y-fix-btn:hover { background: #3b82f6; color: white; }
 .a11y-tasked { font-size: 10px; color: #22c55e; font-weight: 600; }
+
+/* Screenshot button and preview */
+.screenshot-btn {
+  width: 100%; padding: 5px; margin-top: 4px; font-size: 10px; font-weight: 600;
+  background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border);
+  border-radius: 5px; cursor: pointer;
+}
+.screenshot-btn:hover { border-color: var(--accent); color: var(--accent); }
+.screenshot-preview { position: relative; margin-top: 4px; }
+.screenshot-thumb { width: 100%; border-radius: 4px; border: 1px solid var(--border); }
+.screenshot-remove {
+  position: absolute; top: 4px; right: 4px; width: 18px; height: 18px;
+  border: none; border-radius: 50%; background: rgba(0,0,0,0.6); color: white;
+  font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.screenshot-remove:hover { background: #ef4444; }
+
+/* Snipping overlay */
+.snip-overlay {
+  position: fixed; inset: 0; z-index: 20000;
+  background: rgba(0, 0, 0, 0.3); cursor: crosshair;
+}
+.snip-hint {
+  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+  padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  background: rgba(0, 0, 0, 0.7); color: white; pointer-events: none;
+}
+.snip-selection {
+  position: fixed; z-index: 20001; pointer-events: none;
+  border: 2px dashed #06b6d4;
+  background: rgba(6, 182, 212, 0.08);
+  border-radius: 4px;
+}
+
+/* Task screenshot thumbnail */
+.task-screenshot-thumb {
+  width: 100%; border-radius: 4px; margin-top: 6px;
+  border: 1px solid var(--border);
+}
 .history-toggle { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .history-toggle input { margin: 0; }
 .history-toggle span { user-select: none; }

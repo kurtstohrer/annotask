@@ -14,6 +14,7 @@ const props = defineProps<{
   tasks: TaskItem[]
   includeHistory: boolean
   includeElementContext: boolean
+  pendingScreenshot: string | null
 }>()
 
 const denyFeedback = ref<Record<string, string>>({})
@@ -24,6 +25,8 @@ const emit = defineEmits<{
   'add-task': [text: string]
   'update:includeHistory': [value: boolean]
   'update:includeElementContext': [value: boolean]
+  'start-snip': []
+  'remove-screenshot': []
   'select-pin': [id: string]
   'accept-task': [id: string]
   'deny-task': [id: string, feedback: string]
@@ -103,6 +106,11 @@ function submitNote() {
         <label class="history-toggle"><input type="checkbox" :checked="includeHistory" @change="emit('update:includeHistory', ($event.target as HTMLInputElement).checked)" /><span>History</span></label>
         <label class="history-toggle"><input type="checkbox" :checked="includeElementContext" @change="emit('update:includeElementContext', ($event.target as HTMLInputElement).checked)" /><span>DOM context</span></label>
       </div>
+      <div v-if="pendingScreenshot" class="screenshot-preview">
+        <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
+        <button class="screenshot-remove" @click="emit('remove-screenshot')">&times;</button>
+      </div>
+      <button v-else class="screenshot-btn" @click="emit('start-snip')">Add Screenshot</button>
       <div class="note-actions">
         <button class="submit-btn" :disabled="!newNote.trim()" @click="submitNote">Add Task</button>
       </div>
@@ -230,6 +238,21 @@ function submitNote() {
 .history-toggle { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .history-toggle input { margin: 0; }
 .history-toggle span { user-select: none; }
+
+.screenshot-btn {
+  width: 100%; padding: 5px; margin-top: 4px; font-size: 10px; font-weight: 600;
+  background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border);
+  border-radius: 5px; cursor: pointer;
+}
+.screenshot-btn:hover { border-color: var(--accent); color: var(--accent); }
+.screenshot-preview { position: relative; margin-top: 4px; }
+.screenshot-thumb { width: 100%; border-radius: 4px; border: 1px solid var(--border); }
+.screenshot-remove {
+  position: absolute; top: 4px; right: 4px; width: 18px; height: 18px;
+  border: none; border-radius: 50%; background: rgba(0,0,0,0.6); color: white;
+  font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.screenshot-remove:hover { background: #ef4444; }
 
 /* Pin items */
 .pin-item {

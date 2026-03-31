@@ -62,13 +62,24 @@ Response:
       "file": "src/components/Header.vue",
       "line": 5,
       "action": "text_edit",
-      "context": { "element_tag": "header" }
+      "context": { "element_tag": "header" },
+      "screenshot": "screenshot-1711800000-ab3kf.png"
     }
   ]
 }
 ```
 
-Each task has: `id`, `type`, `status`, `description` (what to do), `file`, `line`, `component`, and optionally `action` and `context` with element details.
+Each task has: `id`, `type`, `status`, `description` (what to do), `file`, `line`, `component`, and optionally `action`, `context` with element details, and `screenshot` with a filename.
+
+### Screenshot reference
+
+Some tasks include a `screenshot` field with a filename. The screenshot shows exactly what the user sees in the browser for this task. To view it:
+
+```bash
+annotask screenshot TASK_ID
+```
+
+This downloads the PNG to `.annotask/screenshots/`. The screenshot is visual context — use it alongside the task description and source code to understand what the user wants changed.
 
 ### 2. Process each pending task
 

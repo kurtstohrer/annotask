@@ -22,6 +22,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
   const state = createProjectState(options.projectRoot, wsServer.broadcast)
 
   const apiMiddleware = createAPIMiddleware({
+    projectRoot: options.projectRoot,
     getReport: () => wsServer.getReport(),
     getConfig: () => state.getConfig(),
     getDesignSpec: () => state.getDesignSpec(),

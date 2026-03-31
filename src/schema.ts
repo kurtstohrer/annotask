@@ -194,6 +194,7 @@ export interface AnnotaskTask {
   viewport?: ViewportInfo
   interaction_history?: InteractionSnapshot
   element_context?: ElementContext
+  screenshot?: string       // Screenshot filename, served at /__annotask/screenshots/{filename}
   feedback?: string         // denial notes from reviewer
   createdAt: number
   updatedAt: number

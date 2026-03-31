@@ -1,6 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import fs from 'node:fs'
+import nodePath from 'node:path'
 
 export interface APIOptions {
+  projectRoot: string
   getReport: () => unknown
   getConfig: () => unknown
   getDesignSpec: () => unknown
@@ -9,7 +12,7 @@ export interface APIOptions {
   addTask: (task: Record<string, unknown>) => unknown
 }
 
-const MAX_BODY_SIZE = 1_048_576
+const MAX_BODY_SIZE = 4_194_304
 const VALID_TASK_STATUSES = new Set(['pending', 'applied', 'review', 'accepted', 'denied'])
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -37,6 +40,23 @@ function sendError(res: ServerResponse, status: number, message: string) {
 
 export function createAPIMiddleware(options: APIOptions) {
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    // Serve screenshots (outside /api/ path)
+    if (req.url?.startsWith('/__annotask/screenshots/') && req.method === 'GET') {
+      const filename = (req.url.replace('/__annotask/screenshots/', '')).replace(/\?.*$/, '')
+      if (!/^[a-zA-Z0-9_-]+\.png$/.test(filename)) {
+        res.statusCode = 400; res.end('Invalid filename'); return
+      }
+      const filePath = nodePath.join(options.projectRoot, '.annotask', 'screenshots', filename)
+      if (!fs.existsSync(filePath)) {
+        res.statusCode = 404; res.end('Not found'); return
+      }
+      res.setHeader('Content-Type', 'image/png')
+      res.setHeader('Cache-Control', 'public, max-age=3600')
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      res.end(fs.readFileSync(filePath))
+      return
+    }
+
     if (!req.url?.startsWith('/__annotask/api/')) return next()
 
     const path = req.url.replace('/__annotask/api/', '')
@@ -87,6 +107,25 @@ export function createAPIMiddleware(options: APIOptions) {
       if (typeof body.type !== 'string' || !body.type) return sendError(res, 400, 'Missing required field: type (string)')
       if (typeof body.description !== 'string') return sendError(res, 400, 'Missing required field: description (string)')
       res.end(JSON.stringify(options.addTask(body), null, 2))
+      return
+    }
+
+    if (path === 'screenshots' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body')
+      const body = parsed.data as { data: string }
+      if (!body.data || typeof body.data !== 'string') return sendError(res, 400, 'Missing data field')
+      const match = body.data.match(/^data:image\/png;base64,(.+)$/)
+      if (!match) return sendError(res, 400, 'Invalid PNG data URL')
+      const buffer = Buffer.from(match[1], 'base64')
+      if (buffer.length > 2 * 1024 * 1024) return sendError(res, 413, 'Screenshot too large (max 2MB)')
+      const filename = `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`
+      const dir = nodePath.join(options.projectRoot, '.annotask', 'screenshots')
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(nodePath.join(dir, filename), buffer)
+      res.end(JSON.stringify({ filename }))
       return
     }
 

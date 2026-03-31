@@ -250,6 +250,12 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     } catch { return null }
   }
 
+  async function captureScreenshot(clipRect: { x: number; y: number; width: number; height: number } | null): Promise<{ dataUrl?: string; error?: string }> {
+    try {
+      return await bridge.request('screenshot:capture', { rect: clipRect }, 15000)
+    } catch { return { error: 'timeout' } }
+  }
+
   async function scanA11y(eid?: string): Promise<{ violations: any[]; error?: string }> {
     try {
       return await bridge.request('a11y:scan', { eid }, 15000) // longer timeout for axe load
@@ -286,6 +292,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     // Classification
     classifyElement,
     getElementContext,
+    captureScreenshot,
     scanA11y,
     // Layout
     scanLayout,

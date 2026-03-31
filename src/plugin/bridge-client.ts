@@ -636,6 +636,42 @@ export function bridgeClientScript(): string {
       return;
     }
 
+    // ── Screenshot Capture ──
+    if (type === 'screenshot:capture') {
+      var clipRect = payload.rect;
+
+      function doCapture(clip) {
+        if (!window.html2canvas) {
+          respond(id, { error: 'html2canvas not loaded' });
+          return;
+        }
+        var opts = { useCORS: true, logging: false, allowTaint: true };
+        if (clip) {
+          opts.x = clip.x;
+          opts.y = clip.y;
+          opts.width = clip.width;
+          opts.height = clip.height;
+        }
+        window.html2canvas(document.body, opts).then(function(canvas) {
+          var dataUrl = canvas.toDataURL('image/png');
+          respond(id, { dataUrl: dataUrl });
+        }).catch(function(err) {
+          respond(id, { error: err.message || 'capture failed' });
+        });
+      }
+
+      if (window.html2canvas) {
+        doCapture(clipRect);
+      } else {
+        var h2cScript = document.createElement('script');
+        h2cScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        h2cScript.onload = function() { doCapture(clipRect); };
+        h2cScript.onerror = function() { respond(id, { error: 'failed to load html2canvas' }); };
+        document.head.appendChild(h2cScript);
+      }
+      return;
+    }
+
     // ── Layout Scan ──
     if (type === 'layout:scan') {
       var layoutResults = [];
