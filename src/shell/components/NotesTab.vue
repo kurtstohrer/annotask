@@ -44,31 +44,6 @@ const elementPins = computed(() => {
   )
 })
 
-const containerActions = [
-  { action: 'add_column', label: '+ Column' },
-  { action: 'add_row', label: '+ Row' },
-  { action: 'change_direction', label: 'Direction' },
-  { action: 'set_gap', label: 'Set Gap' },
-]
-
-const contentActions = [
-  { action: 'move_up', label: 'Move Up' },
-  { action: 'move_down', label: 'Move Down' },
-  { action: 'wrap_container', label: 'Wrap' },
-  { action: 'duplicate', label: 'Duplicate' },
-]
-
-const commonActions = [
-  { action: 'delete', label: 'Delete' },
-]
-
-const actions = computed(() => {
-  const role = props.elementRole
-  if (role === 'container') return [...containerActions, ...commonActions]
-  if (role === 'content') return [...contentActions, ...commonActions]
-  return commonActions
-})
-
 function submitNote() {
   const text = newNote.value.trim()
   if (!text) return
@@ -79,38 +54,25 @@ function submitNote() {
 
 <template>
   <div class="notes-tab">
-    <!-- Quick actions -->
-    <div v-if="selectedElement" class="quick-actions">
-      <span class="section-label">Quick Actions</span>
-      <div class="action-grid">
-        <button
-          v-for="a in actions"
-          :key="a.action"
-          class="action-btn"
-          @click="emit('add-action', a.action, a.label)"
-        >{{ a.label }}</button>
-      </div>
-    </div>
-
     <!-- Add task -->
     <div v-if="selectedElement" class="add-note">
-      <span class="section-label">Add Task</span>
+      <span class="section-label" title="Describe a change in plain text or markdown — your AI agent will apply it">Add Task</span>
       <textarea
         v-model="newNote"
         class="note-input"
         rows="3"
-        placeholder="Describe what you want to change..."
+        placeholder="Describe what you want to change (supports markdown)..."
         @keydown.enter.ctrl="submitNote"
       />
       <div class="task-toggles">
-        <label class="history-toggle"><input type="checkbox" :checked="includeHistory" @change="emit('update:includeHistory', ($event.target as HTMLInputElement).checked)" /><span>History</span></label>
-        <label class="history-toggle"><input type="checkbox" :checked="includeElementContext" @change="emit('update:includeElementContext', ($event.target as HTMLInputElement).checked)" /><span>DOM context</span></label>
+        <label class="history-toggle" title="Attach your navigation path and click actions to this task"><input type="checkbox" :checked="includeHistory" @change="emit('update:includeHistory', ($event.target as HTMLInputElement).checked)" /><span>Include interaction history</span></label>
+        <label class="history-toggle" title="Attach parent layout chain and DOM subtree snapshot to this task"><input type="checkbox" :checked="includeElementContext" @change="emit('update:includeElementContext', ($event.target as HTMLInputElement).checked)" /><span>Include DOM context</span></label>
       </div>
       <div v-if="pendingScreenshot" class="screenshot-preview">
         <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
         <button class="screenshot-remove" @click="emit('remove-screenshot')">&times;</button>
       </div>
-      <button v-else class="screenshot-btn" @click="emit('start-snip')">Add Screenshot</button>
+      <button v-else class="screenshot-btn" @click="emit('start-snip')" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
       <div class="note-actions">
         <button class="submit-btn" :disabled="!newNote.trim()" @click="submitNote">Add Task</button>
       </div>
@@ -189,21 +151,6 @@ function submitNote() {
   margin-bottom: 6px;
 }
 
-/* Quick actions */
-.action-grid { display: flex; flex-wrap: wrap; gap: 4px; }
-.action-btn {
-  padding: 4px 10px;
-  font-size: 11px;
-  font-weight: 500;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--text);
-  cursor: pointer;
-  transition: all 0.1s;
-}
-.action-btn:hover { background: var(--border); color: var(--accent); border-color: var(--accent); }
-
 /* Note input */
 .note-input {
   width: 100%;
@@ -233,7 +180,7 @@ function submitNote() {
 .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .submit-btn:hover:not(:disabled) { opacity: 0.9; }
 
-.task-toggles { display: flex; gap: 10px; margin-top: 4px; }
+.task-toggles { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
 .note-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .history-toggle { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .history-toggle input { margin: 0; }

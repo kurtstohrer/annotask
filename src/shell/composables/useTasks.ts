@@ -9,11 +9,17 @@ export interface Task {
   line: number
   component?: string
   mfe?: string
-  status: 'pending' | 'applied' | 'review' | 'accepted' | 'denied'
+  route?: string
+  status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied'
   intent?: string
   action?: string
   context?: Record<string, unknown>
+  viewport?: { width: number | null; height: number | null }
+  interaction_history?: { current_route: string; navigation_path: string[]; recent_actions: unknown[] }
+  element_context?: { ancestors: unknown[]; subtree: unknown }
+  screenshot?: string
   feedback?: string
+  visual?: Record<string, unknown>
   createdAt: number
   updatedAt: number
 }

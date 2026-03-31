@@ -187,7 +187,7 @@ export interface AnnotaskTask {
   line: number
   component?: string
   mfe?: string              // MFE identity (e.g. '@myorg/my-mfe') for multi-project setups
-  status: 'pending' | 'applied' | 'review' | 'accepted' | 'denied'
+  status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied'
   intent?: string
   action?: string
   context?: Record<string, unknown>

@@ -6,8 +6,9 @@ Visual UI design tool for web apps (Vue, React, Svelte, Astro, plain HTML/htmx).
 
 ```bash
 pnpm install
-pnpm build                   # Build shell + plugin + CLI
+pnpm build                   # Build shell + plugin + CLI + vendor deps
 pnpm dev:vue-vite             # Start Vue test app with Annotask
+pnpm typecheck                # Type-check (tsc + vue-tsc)
 ```
 
 Then open:
@@ -31,8 +32,9 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/server/` — HTTP API, WebSocket server, shell serving, project state
 - `src/webpack/` — Webpack plugin and transform loader
 - `src/shell/` — Design tool UI (Vue 3 app, pre-built into dist/shell/)
-- `src/shell/composables/` — Vue composables (viewport preview, interaction history, style editor, annotations, etc.)
-- `src/shell/components/` — UI components (inspector tabs, overlays, viewport selector, a11y panel, etc.)
+- `src/shell/composables/` — Vue composables (style editor, tasks, screenshots, keyboard shortcuts, a11y scanner, annotations, viewport, interaction history, etc.)
+- `src/shell/components/` — UI components (TaskDetailModal, inspector tabs, overlays, viewport selector, a11y panel, report viewer, etc.)
+- `src/shell/utils/` — Helpers (stripMarkdown)
 - `src/shared/` — Shared types (postMessage bridge protocol)
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
 - `src/cli/` — CLI tool for terminal interaction
@@ -43,6 +45,11 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports
 - **Interaction history** — Tracks user navigation and clicks in the app (optional, off by default)
 - **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
-- **A11y checker** — axe-core WCAG scanning with one-click fix task creation
-- **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept
+- **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
+- **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept (max 4MB)
+- **Task detail drawer** — Slide-out detail view with markdown rendering, inline editing, screenshot lightbox, element/file display, interaction log, JSON view
+- **Task lifecycle** — `pending → in_progress → review → accepted/denied` with live status updates
+- **Markdown descriptions** — Task descriptions support GitHub-flavored Markdown (rendered with `marked`)
+- **Security** — CORS restricted to localhost, PATCH field whitelisting, postMessage sender validation
+- **Async I/O** — In-memory task cache with atomic file writes (no race conditions)
 - **Inspector highlights** — Selection/hover overlays that track scroll and resize via rAF loop

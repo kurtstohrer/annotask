@@ -46,7 +46,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 
 <template>
   <div ref="root" class="viewport-selector">
-    <button class="vp-trigger" @click="open = !open" :title="viewport.effectiveViewport.value.label">
+    <button class="vp-trigger" @click="open = !open" :title="'Preview at different screen sizes — ' + (viewport.effectiveViewport.value.label || 'Responsive')">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="2" y="3" width="20" height="14" rx="2" />
         <line x1="8" y1="21" x2="16" y2="21" />

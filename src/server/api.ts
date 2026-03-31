@@ -14,7 +14,7 @@ export interface APIOptions {
 }
 
 const MAX_BODY_SIZE = 4_194_304
-const VALID_TASK_STATUSES = new Set(['pending', 'applied', 'review', 'accepted', 'denied'])
+const VALID_TASK_STATUSES = new Set(['pending', 'in_progress', 'applied', 'review', 'accepted', 'denied'])
 
 /** Fields that PATCH /tasks/:id is allowed to update */
 const PATCHABLE_TASK_FIELDS = new Set([

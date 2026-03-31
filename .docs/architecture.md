@@ -89,6 +89,9 @@ Key composables:
 | `useLayoutOverlay` | Flex/grid layout visualization |
 | `useElementClassification` | Semantic role detection for selected elements |
 | `useTasks` | Task CRUD and lifecycle management |
+| `useScreenshots` | Snipping tool, screenshot upload, and pending screenshot state |
+| `useKeyboardShortcuts` | Shell keyboard handler (undo, escape, toggle panels) |
+| `useA11yScanner` | Accessibility scanning and a11y task creation |
 
 ### Schema (`src/schema.ts`)
 
@@ -152,12 +155,13 @@ User clicks element in shell
 
 ```
 User creates annotation/edit in shell
-  → Task written to .annotask/tasks.json and broadcast via WS
+  → Task written to .annotask/tasks.json (atomic write) and broadcast via WS
   → AI agent fetches tasks via GET /api/tasks
+  → Agent locks task (status: in_progress)
   → Agent applies change to source code
-  → Agent PATCHes task status to "review"
-  → User reviews in Annotask, accepts or denies
-  → Denied tasks get feedback field, go back to pending
+  → Agent marks task for review (status: review) — one at a time
+  → User reviews in task detail drawer, accepts or denies
+  → Denied tasks get feedback field for agent to retry
 ```
 
 ### Source mapping
@@ -183,13 +187,14 @@ Line numbers are template-relative (line 1 = first line of `<template>`).
 ```
 pnpm build
   ├── build:shell    →  vite build (src/shell/ → dist/shell/)
-  └── build:plugin   →  tsup:
-                          src/plugin/index.ts    → dist/index.js      (Vite plugin)
-                          src/server/index.ts    → dist/server.js     (server API)
-                          src/server/standalone.ts → dist/standalone.js (standalone server)
-                          src/webpack/index.ts   → dist/webpack.js    (Webpack plugin)
-                          src/webpack/loader.ts  → dist/webpack-loader.js (Webpack loader)
-                          src/cli/index.ts       → dist/cli.js        (CLI binary)
+  ├── build:plugin   →  tsup:
+  │                        src/plugin/index.ts    → dist/index.js      (Vite plugin)
+  │                        src/server/index.ts    → dist/server.js     (server API)
+  │                        src/server/standalone.ts → dist/standalone.js (standalone server)
+  │                        src/webpack/index.ts   → dist/webpack.js    (Webpack plugin)
+  │                        src/webpack/loader.ts  → dist/webpack-loader.js (Webpack loader)
+  │                        src/cli/index.ts       → dist/cli.js        (CLI binary)
+  └── build:vendor   →  copies axe-core.min.js + html2canvas.min.js → dist/vendor/
 ```
 
 The shell is pre-built into `dist/shell/` so the plugin can serve it as static files without requiring Vue as a runtime dependency for consumers.

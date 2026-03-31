@@ -2,11 +2,13 @@
 
 All endpoints are served by the dev server (Vite or Webpack) at `/__annotask/`. They are only available in dev mode.
 
+CORS is restricted to localhost origins (`localhost`, `127.0.0.1`, `::1`). Mutating requests (POST, PATCH) from non-local origins are rejected with `403 Forbidden`.
+
 ## HTTP Endpoints
 
 ### GET /api/report
 
-Returns the current change report.
+Returns the current change report. Supports `?mfe=NAME` to filter changes by MFE identity.
 
 **Response:**
 ```json
@@ -81,24 +83,42 @@ Create a new task.
 
 ### PATCH /api/tasks/:id
 
-Update a task's status or add feedback.
+Update a task's status, description, or other fields.
+
+Only whitelisted fields are accepted: `status`, `description`, `notes`, `screenshot`, `feedback`, `intent`, `action`, `context`, `viewport`, `interaction_history`, `element_context`, `mfe`. Unknown fields are silently dropped.
+
+**Request body (lock for agent work):**
+```json
+{ "status": "in_progress" }
+```
 
 **Request body (mark for review):**
 ```json
 { "status": "review" }
 ```
 
-**Request body (deny with feedback):**
+**Request body (deny with feedback and screenshot):**
 ```json
 {
   "status": "denied",
-  "feedback": "The color should be darker, closer to #0a0a1e"
+  "feedback": "The color should be darker, closer to #0a0a1e",
+  "screenshot": "screenshot-1711800000-ab3kf.png"
 }
 ```
 
-**Valid status transitions:**
-- `pending` → `applied` → `review` → `accepted` or `denied`
-- `denied` tasks return to `pending` for re-processing
+**Request body (edit description):**
+```json
+{ "description": "Updated task description with **markdown** support" }
+```
+
+**Valid statuses:** `pending`, `in_progress`, `applied`, `review`, `accepted`, `denied`
+
+**Typical lifecycle:**
+```
+pending → in_progress (agent locks) → review (agent done) → accepted (removed) or denied (with feedback)
+```
+
+Screenshots: max 4MB, uploaded via POST /api/screenshots.
 
 ### GET /api/design-spec
 

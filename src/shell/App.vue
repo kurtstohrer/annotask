@@ -26,10 +26,12 @@ import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
 import ThemePage from './components/ThemePage.vue'
 import ReportViewer from './components/ReportViewer.vue'
+import TaskDetailModal from './components/TaskDetailModal.vue'
 import { useTasks } from './composables/useTasks'
 import { useViewportPreview } from './composables/useViewportPreview'
 import { useInteractionHistory } from './composables/useInteractionHistory'
 import ViewportSelector from './components/ViewportSelector.vue'
+import { marked } from 'marked'
 
 const styleEditor = useStyleEditor()
 const { applyStyle, recordAnnotation, recordClassChange, removeAnnotationsByFile, changes, report } = styleEditor
@@ -153,6 +155,8 @@ const screenshots = useScreenshots(iframe)
 watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElementContext', String(v)))
 const denyingTaskId = ref<string | null>(null)
 const denyFeedbackText = ref('')
+const detailTaskId = ref<string | null>(null)
+const detailTask = computed(() => detailTaskId.value ? taskSystem.tasks.value.find(t => t.id === detailTaskId.value) ?? null : null)
 const showShortcuts = ref(localStorage.getItem('annotask:showShortcuts') === 'true')
 watch(showShortcuts, (v) => localStorage.setItem('annotask:showShortcuts', String(v)))
 
@@ -892,8 +896,8 @@ const appUrl = computed(() => {
       <div class="toolbar-left">
         <svg class="logo" viewBox="0 0 85.81 90.51" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="m72.02 90.31c-.17-.1-.43-.48-.57-.82-.37-.93-1.97-3.46-2.74-4.33-.66-.74-.77-.79-5.99-2.5-2.93-.96-5.52-1.85-5.77-1.98-.47-.25-.35.01-4.7-9.99-1.1-2.53-2.11-4.72-2.25-4.87-.22-.24-1.7-.26-11.7-.21-6.3.03-11.51.12-11.58.19-.11.11-2.06 4.98-4.34 10.84-.4 1.04-1.21 3.11-1.8 4.6-.58 1.49-1.52 3.88-2.08 5.32-.64 1.65-1.18 2.76-1.45 3.02l-.44.41H8.31 0l.49-1.22c4.92-12.33 8.69-21.78 9.54-23.94 1.22-3.09 4.33-10.89 6.52-16.32.82-2.03 1.72-4.3 2-5.05.28-.74 1.17-2.97 1.97-4.96 2.26-5.6 3-7.45 4.7-11.72 2.32-5.86 5.17-13 7.63-19.11 1.2-2.98 2.29-5.73 2.44-6.13.15-.4.45-.9.68-1.13l.42-.41h8.22c4.57 0 8.4.07 8.63.17.49.19.22-.38 3.81 8.22 1.57 3.77 3 7.18 3.17 7.57.73 1.72 6 14.31 7.22 17.22 1.71 4.1 5.73 13.7 6 14.34.17.4.66 1.58 1.09 2.61.43 1.04 1.63 3.94 2.68 6.46 1.05 2.51 1.9 4.63 1.9 4.71 0 .08-.14.2-.3.27-.17.07-2.89 1.13-6.05 2.37-3.16 1.23-6.39 2.5-7.17 2.81-.78.31-1.47.51-1.53.45-.06-.06-.47-1.07-.92-2.24-1.24-3.24-5.96-15.5-7.72-20.06-.86-2.23-2.45-6.33-3.52-9.11-1.07-2.78-2.93-7.6-4.14-10.73-1.2-3.12-2.4-6.25-2.67-6.94l-.48-1.26-.19.54c-.42 1.17-1.35 3.64-3.23 8.56-1.08 2.83-2.45 6.44-3.05 8.02-.6 1.59-2.24 5.89-3.65 9.56l-2.57 6.67 8.58.05 8.58.05.31.76c.17.42 1.14 2.91 2.16 5.54 6.49 16.81 6.66 17.24 6.88 17.18.08-.02 1.08-.41 2.21-.87 1.13-.46 3.45-1.39 5.15-2.06 5.12-2.03 14.4-5.73 14.68-5.85.14-.06.39-.01.55.12.32.25 2.19 4.68 2.19 5.19 0 .18-.14.48-.3.68-.27.32-5.46 2.61-10.94 4.83-4.74 1.92-6.58 2.65-7.29 2.92l-.77.29 1.94.34 1.94.34.77-.38c1.61-.79 3.36-1.45 7.27-2.71 2.22-.72 4.1-1.32 4.19-1.33.16-.02.94 1.75 2.24 5.12.41 1.04 1.36 3.49 2.13 5.45.77 1.96 1.39 3.71 1.39 3.89 0 .75-.14.76-6.94.76-4.33 0-6.64-.07-6.85-.2z"/></svg>
         <div class="view-toggle">
-          <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'">Editor</button>
-          <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'">Theme</button>
+          <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'" title="Annotate and inspect your UI">Editor</button>
+          <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'" title="Edit design tokens (colors, typography, spacing)">Theme</button>
         </div>
         <template v-if="shellView === 'editor'">
           <ModeToolbar v-model="interactionMode" />
@@ -904,21 +908,21 @@ const appUrl = computed(() => {
       </div>
       <div v-if="shellView === 'editor'" class="toolbar-center">
         <ViewportSelector />
-        <code class="route-indicator">{{ currentRoute }}</code>
+        <code class="route-indicator" title="Current page route in your app">{{ currentRoute }}</code>
       </div>
       <div v-else class="toolbar-center" />
       <div v-if="shellView === 'editor'" class="toolbar-right">
         <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: activePanel === 'inspector' }]" @click="activePanel = 'inspector'">
+          <button :class="['toggle-btn', { active: activePanel === 'inspector' }]" @click="activePanel = 'inspector'" title="Inspect element styles, layout, and classes">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
             Inspector
           </button>
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = 'tasks'">
+          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = 'tasks'" title="View and manage design tasks for your AI agent (T)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
             Tasks
             <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
           </button>
-          <button :class="['toggle-btn', { active: activePanel === 'a11y' }]" @click="activePanel = 'a11y'">
+          <button :class="['toggle-btn', { active: activePanel === 'a11y' }]" @click="activePanel = 'a11y'" title="Run accessibility checks (axe-core WCAG)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="4" r="2"/><path d="M4 8h16M6 12l3 8M18 12l-3 8"/></svg>
             A11y
             <span v-if="a11yViolations.length" class="toggle-badge">{{ a11yViolations.length }}</span>
@@ -931,8 +935,8 @@ const appUrl = computed(() => {
           <button :class="['vis-btn', { off: !showMarkup.sections }]" @click="showMarkup.sections = !showMarkup.sections" title="Toggle Sections">D</button>
           <button :class="['vis-btn', { off: !showMarkup.highlights }]" @click="showMarkup.highlights = !showMarkup.highlights" title="Toggle Highlights">H</button>
         </div>
-        <button :class="['tool-btn', { active: showReportPanel }]" @click="showReportPanel = !showReportPanel">
-          View Tasks
+        <button :class="['tool-btn', { active: showReportPanel }]" @click="showReportPanel = !showReportPanel" title="View all tasks as raw JSON/YAML for agents">
+          Task JSON
         </button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
@@ -1101,14 +1105,14 @@ const appUrl = computed(() => {
             @keydown.escape="cancelPendingTask"
           />
           <div class="task-toggles">
-            <label class="history-toggle"><input type="checkbox" v-model="includeHistory" /><span>History</span></label>
-            <label class="history-toggle"><input type="checkbox" v-model="includeElementContext" /><span>DOM context</span></label>
+            <label class="history-toggle" title="Attach your navigation path and click actions to this task"><input type="checkbox" v-model="includeHistory" /><span>Include interaction history</span></label>
+            <label class="history-toggle" title="Attach parent layout chain and DOM subtree snapshot to this task"><input type="checkbox" v-model="includeElementContext" /><span>Include DOM context</span></label>
           </div>
           <div v-if="pendingScreenshot" class="screenshot-preview">
             <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
             <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
           </div>
-          <button v-else class="screenshot-btn" @click="startSnip">Add Screenshot</button>
+          <button v-else class="screenshot-btn" @click="startSnip" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
           <div class="pending-task-actions">
             <button class="submit-btn" :disabled="!pendingTaskText.trim()" @click="submitPendingTask">Add Task</button>
             <button class="cancel-btn" @click="cancelPendingTask">Cancel</button>
@@ -1121,7 +1125,7 @@ const appUrl = computed(() => {
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Tasks</span>
           <span class="component-badge">{{ taskSystem.tasks.value.length }}</span>
-          <button class="new-task-toggle" @click="showNewTaskForm = !showNewTaskForm">
+          <button class="new-task-toggle" @click="showNewTaskForm = !showNewTaskForm" title="Create a general task (not tied to an element)">
             {{ showNewTaskForm ? '−' : '+' }} New
           </button>
         </div>
@@ -1130,14 +1134,14 @@ const appUrl = computed(() => {
         <div v-if="showNewTaskForm" class="new-task-form">
           <textarea v-model="newTaskText" class="new-task-input" rows="2" placeholder="Describe a change..." @keydown.enter.ctrl="submitNewTask" />
           <div class="task-toggles">
-            <label class="history-toggle"><input type="checkbox" v-model="includeHistory" /><span>History</span></label>
-            <label class="history-toggle"><input type="checkbox" v-model="includeElementContext" /><span>DOM context</span></label>
+            <label class="history-toggle" title="Attach your navigation path and click actions to this task"><input type="checkbox" v-model="includeHistory" /><span>Include interaction history</span></label>
+            <label class="history-toggle" title="Attach parent layout chain and DOM subtree snapshot to this task"><input type="checkbox" v-model="includeElementContext" /><span>Include DOM context</span></label>
           </div>
           <div v-if="pendingScreenshot" class="screenshot-preview">
             <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
             <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
           </div>
-          <button v-else class="screenshot-btn" @click="startSnip">Add Screenshot</button>
+          <button v-else class="screenshot-btn" @click="startSnip" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
           <div class="new-task-actions">
             <button class="submit-btn" :disabled="!newTaskText.trim()" @click="submitNewTask">Add</button>
             <button class="cancel-btn" @click="showNewTaskForm = false; newTaskText = ''">Cancel</button>
@@ -1148,11 +1152,11 @@ const appUrl = computed(() => {
           <div v-if="taskSystem.tasks.value.length === 0 && !showNewTaskForm" class="empty-hint" style="padding:20px 0">
             No tasks yet. Click + New to add one.
           </div>
-          <div v-for="task in routeTasks" :key="task.id" class="task-card" :class="task.status">
+          <div v-for="task in routeTasks" :key="task.id" class="task-card" :class="task.status" @click="detailTaskId = task.id">
             <div class="task-card-header">
               <span class="task-status-dot" :class="task.status" />
-              <span class="task-card-desc">{{ task.description }}</span>
-              <button class="task-card-close" @click="acceptTask(task.id)">×</button>
+              <span class="task-card-desc task-card-md" v-html="marked.parse(task.description, { breaks: true, gfm: true })"></span>
+              <button class="task-card-close" @click.stop="acceptTask(task.id)" title="Accept and remove this task">×</button>
             </div>
             <div class="task-card-meta">
               <code class="task-card-file">{{ task.file }}:{{ task.line }}</code>
@@ -1160,10 +1164,10 @@ const appUrl = computed(() => {
             </div>
             <img v-if="task.screenshot" class="task-screenshot-thumb" :src="'/__annotask/screenshots/' + task.screenshot" />
             <div v-if="task.feedback" class="task-card-feedback">{{ task.feedback }}</div>
-            <div v-if="task.status === 'review'" class="task-card-actions">
+            <div v-if="task.status === 'review'" class="task-card-actions" @click.stop>
               <template v-if="denyingTaskId !== task.id">
-                <button class="task-accept" @click="acceptTask(task.id)">Accept</button>
-                <button class="task-deny" @click="denyingTaskId = task.id; denyFeedbackText = ''">Deny</button>
+                <button class="task-accept" @click="acceptTask(task.id)" title="Accept this change and remove the task">Accept</button>
+                <button class="task-deny" @click="denyingTaskId = task.id; denyFeedbackText = ''" title="Reject and send feedback to the agent">Deny</button>
               </template>
               <template v-else>
                 <div class="deny-form">
@@ -1177,14 +1181,14 @@ const appUrl = computed(() => {
                     @keydown.escape="denyingTaskId = null"
                   />
                   <div class="task-toggles">
-                    <label class="history-toggle"><input type="checkbox" v-model="includeHistory" /><span>History</span></label>
-                    <label class="history-toggle"><input type="checkbox" v-model="includeElementContext" /><span>DOM context</span></label>
+                    <label class="history-toggle" title="Attach your navigation path and click actions to this task"><input type="checkbox" v-model="includeHistory" /><span>Include interaction history</span></label>
+                    <label class="history-toggle" title="Attach parent layout chain and DOM subtree snapshot to this task"><input type="checkbox" v-model="includeElementContext" /><span>Include DOM context</span></label>
                   </div>
                   <div v-if="pendingScreenshot" class="screenshot-preview">
                     <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
                     <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
                   </div>
-                  <button v-else class="screenshot-btn" @click="startSnip">Add Screenshot</button>
+                  <button v-else class="screenshot-btn" @click="startSnip" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
                   <div class="deny-form-actions">
                     <button class="task-deny" :disabled="!denyFeedbackText.trim()" @click="submitDeny(task.id)">Deny</button>
                     <button class="cancel-btn" style="padding:4px 8px;font-size:10px" @click="denyingTaskId = null">Cancel</button>
@@ -1200,7 +1204,7 @@ const appUrl = computed(() => {
       <aside class="panel" v-else-if="shellView === 'editor' && activePanel === 'a11y'">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Accessibility</span>
-          <button class="scan-btn" :disabled="a11yLoading" @click="scanA11y('page')" style="margin-left:auto">
+          <button class="scan-btn" :disabled="a11yLoading" @click="scanA11y('page')" style="margin-left:auto" title="Run axe-core WCAG accessibility scan on the page">
             {{ a11yLoading ? 'Scanning...' : 'Scan Page' }}
           </button>
         </div>
@@ -1227,7 +1231,7 @@ const appUrl = computed(() => {
             </div>
             <p class="a11y-help">{{ v.help }}</p>
             <span v-if="a11yTaskRules.has(v.id)" class="a11y-tasked">Task created</span>
-            <button v-else class="a11y-fix-btn" @click="createA11yTask(v)">Create Fix Task</button>
+            <button v-else class="a11y-fix-btn" @click="createA11yTask(v)" title="Create a task for your AI agent to fix this accessibility violation">Create Fix Task</button>
           </div>
         </div>
       </aside>
@@ -1242,21 +1246,21 @@ const appUrl = computed(() => {
 
         <div v-if="selectionSummary" class="panel-group-bar">
           <span class="group-summary">{{ selectionSummary }}</span>
-          <label v-if="templateGroupEids.length > 1 && selectedEids.length <= 1" class="group-toggle">
+          <label v-if="templateGroupEids.length > 1 && selectedEids.length <= 1" class="group-toggle" title="Apply style changes to all instances of this element in the template">
             <input type="checkbox" v-model="applyToGroup" />
             <span class="toggle-label">Apply to all {{ templateGroupEids.length }}</span>
           </label>
         </div>
 
         <div class="panel-tabs">
-          <button :class="['tab', { active: activeTab === 'notes' }]" @click="activeTab = 'notes'">
+          <button :class="['tab', { active: activeTab === 'notes' }]" @click="activeTab = 'notes'" title="Create tasks and annotations for this element">
             Task <span v-if="annotations.routePins.value.length" class="tab-badge">{{ annotations.routePins.value.length }}</span>
           </button>
-          <button :class="['tab', { active: activeTab === 'layout' }]" @click="activeTab = 'layout'">Layout</button>
-          <button :class="['tab', { active: activeTab === 'spacing' }]" @click="activeTab = 'spacing'">Spacing</button>
-          <button :class="['tab', { active: activeTab === 'size' }]" @click="activeTab = 'size'">Size</button>
-          <button :class="['tab', { active: activeTab === 'style' }]" @click="activeTab = 'style'">Style</button>
-          <button :class="['tab', { active: activeTab === 'classes' }]" @click="activeTab = 'classes'">Classes</button>
+          <button :class="['tab', { active: activeTab === 'layout' }]" @click="activeTab = 'layout'" title="Edit display, flex, and grid properties">Layout</button>
+          <button :class="['tab', { active: activeTab === 'spacing' }]" @click="activeTab = 'spacing'" title="Edit padding and margin">Spacing</button>
+          <button :class="['tab', { active: activeTab === 'size' }]" @click="activeTab = 'size'" title="Edit width, height, and constraints">Size</button>
+          <button :class="['tab', { active: activeTab === 'style' }]" @click="activeTab = 'style'" title="Edit colors, typography, and appearance">Style</button>
+          <button :class="['tab', { active: activeTab === 'classes' }]" @click="activeTab = 'classes'" title="Edit CSS classes directly">Classes</button>
         </div>
 
         <div class="tab-content">
@@ -1311,8 +1315,8 @@ const appUrl = computed(() => {
           </div>
           <div class="changes-actions">
             <span class="changes-count">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
-            <button class="changes-commit" @click="commitChangesAsTask">Commit to Task</button>
-            <button class="changes-discard" @click="doClearChanges">Discard</button>
+            <button class="changes-commit" @click="commitChangesAsTask" title="Save these visual changes as a task for your AI agent to apply to source code">Commit to Task</button>
+            <button class="changes-discard" @click="doClearChanges" title="Undo all visual changes (does not affect source code)">Discard</button>
           </div>
         </div>
       </aside>
@@ -1322,7 +1326,7 @@ const appUrl = computed(() => {
         <div class="empty-content">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
           <p>Click an element to inspect</p>
-          <p class="empty-hint">Press P to pin, hover to highlight</p>
+          <p class="empty-hint">Use the toolbar modes: Select (V), Pin (P), Arrow (A), Draw (D), Highlight (H)</p>
         </div>
       </aside>
     </div>
@@ -1332,6 +1336,16 @@ const appUrl = computed(() => {
 
     <!-- Report viewer slide-out -->
     <ReportViewer v-if="showReportPanel" :tasks="taskSystem.tasks.value" @close="showReportPanel = false" />
+
+    <!-- Task detail modal -->
+    <TaskDetailModal
+      v-if="detailTask"
+      :task="detailTask"
+      @close="detailTaskId = null"
+      @accept="(id) => { acceptTask(id); detailTaskId = null }"
+      @deny="(id) => { denyingTaskId = id; denyFeedbackText = ''; detailTaskId = null }"
+      @update="(id, fields) => { taskSystem.updateTaskStatus(id, detailTask!.status, undefined, fields) }"
+    />
   </div>
 </template>
 
@@ -1502,15 +1516,26 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .changes-discard:hover { background: var(--border); color: var(--text); }
 
 /* Task cards in sidebar */
-.task-card { padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; }
+.task-card { padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; cursor: pointer; transition: border-color 0.12s; }
+.task-card:hover { border-color: var(--text-muted); }
+.task-card.in_progress { border-color: #3b82f6; }
 .task-card.review { border-color: #f59e0b; }
 .task-card.denied { border-color: #ef4444; }
 .task-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .task-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .task-status-dot.pending { background: #71717a; }
+.task-status-dot.in_progress { background: #3b82f6; }
 .task-status-dot.review { background: #f59e0b; }
 .task-status-dot.denied { background: #ef4444; }
 .task-card-desc { font-size: 11px; color: var(--text); flex: 1; }
+.task-card-md {
+  max-height: 40px; overflow: hidden; line-height: 1.4;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
+}
+.task-card-md p { margin: 0; }
+.task-card-md pre, .task-card-md blockquote, .task-card-md ul, .task-card-md ol { margin: 2px 0; }
+.task-card-md code { font-size: 10px; background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
 .task-card-close { width: 16px; height: 16px; border: none; background: none; color: var(--text-muted); font-size: 13px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 3px; }
 .task-card-close:hover { color: #ef4444; background: rgba(239,68,68,0.1); }
 .task-card-meta { display: flex; align-items: center; gap: 6px; }
@@ -1592,7 +1617,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .pending-task-actions .cancel-btn:hover { background: var(--border); color: var(--text); }
 
-.task-toggles { display: flex; gap: 10px; margin-bottom: 4px; }
+.task-toggles { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
 
 /* A11y panel */
 .scan-btn { padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; }

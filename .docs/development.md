@@ -23,8 +23,12 @@ pnpm build
 ```bash
 pnpm dev:vue-vite           # Vue + Vite (port 5173)
 pnpm dev:vue-webpack        # Vue + Webpack (port 8090)
-pnpm dev:react-vite         # React + Vite
-pnpm dev:svelte-vite        # Svelte + Vite
+pnpm dev:react-vite         # React + Vite (port 5174)
+pnpm dev:svelte-vite        # Svelte + Vite (port 5175)
+pnpm dev:html-vite          # Plain HTML + Vite (port 5176)
+pnpm dev:astro              # Astro (port 5177)
+pnpm dev:htmx-vite          # htmx + Vite (port 5178)
+pnpm dev:mfe-vite           # MFE + Vite (port 5180)
 ```
 
 Opens the playground app with Annotask enabled.
@@ -34,26 +38,30 @@ Annotask shell: `http://localhost:5173/__annotask/`
 ### Build
 
 ```bash
-pnpm build              # Full build (shell → plugin → CLI)
+pnpm build              # Full build (shell → plugin → vendor)
 pnpm build:shell        # Shell UI only (Vite build → dist/shell/)
 pnpm build:plugin       # Plugin + CLI only (tsup → dist/)
+pnpm build:vendor       # Copy axe-core + html2canvas to dist/vendor/
 ```
 
-Build order matters: shell must be built before the plugin, because the plugin serves `dist/shell/` as static files.
+Build order matters: shell must be built before the plugin, because the plugin serves `dist/shell/` as static files. Vendor deps are copied last.
 
 ### Test
 
 ```bash
 pnpm test               # Run all unit tests (Vitest)
 pnpm test:watch         # Watch mode
-pnpm test:e2e           # E2E tests (Playwright, requires dev server)
+pnpm typecheck          # Type-check (tsc + vue-tsc)
+pnpm test:e2e           # E2E tests (Playwright, all frameworks)
 ```
 
 Unit test environments:
 - Plugin tests (`src/plugin/__tests__/`): Node
 - Shell tests (`src/shell/composables/__tests__/`): jsdom
 
-E2E tests require the playground dev server running on port 5173. Playwright starts it automatically via `webServer` config.
+E2E tests cover vue-vite, react-vite, svelte-vite, html-vite, astro, htmx-vite, vue-webpack, and mfe-vite. Playwright starts dev servers automatically via `webServer` config.
+
+CI runs typecheck + unit tests on every push, and Playwright e2e (vue-vite + react-vite matrix) as a separate job.
 
 ### Shell UI development
 
@@ -93,8 +101,9 @@ src/
 │   ├── main.ts             # Vue app entry
 │   ├── App.vue             # Main component
 │   ├── index.html          # SPA template
-│   ├── components/         # UI components (14 files)
-│   ├── composables/        # Vue composables (11 files)
+│   ├── components/         # UI components (TaskDetailModal, ReportViewer, overlays, controls)
+│   ├── composables/        # Vue composables (style editor, tasks, screenshots, a11y, keyboard, etc.)
+│   ├── utils/              # Helpers (stripMarkdown)
 │   ├── services/           # iframe bridge & WebSocket client
 │   ├── data/               # Tailwind color palette data
 │   └── types.ts            # UI-specific types
@@ -103,10 +112,14 @@ src/
 └── schema.ts               # Canonical TypeScript types
 
 playgrounds/
-├── vue-vite/                # Vue + Vite test app
-├── vue-webpack/             # Vue + Webpack test app
-├── react-vite/              # React + Vite test app
-└── svelte-vite/             # Svelte + Vite test app
+├── vue-vite/                # Vue + Vite test app (port 5173)
+├── vue-webpack/             # Vue + Webpack test app (port 8090)
+├── react-vite/              # React + Vite test app (port 5174)
+├── svelte-vite/             # Svelte + Vite test app (port 5175)
+├── html-vite/               # Plain HTML + Vite (port 5176)
+├── astro/                   # Astro (port 5177)
+├── htmx-vite/               # htmx + Vite (port 5178)
+└── mfe-vite/                # MFE + Vite (port 5180)
 
 e2e/                         # Playwright browser tests
 plan/                        # Roadmap and improvement notes
@@ -136,7 +149,3 @@ skills/                      # AI agent skills (shipped in npm package)
 2. Emit the change in the relevant shell composable (usually `useStyleEditor`)
 3. Update the `/annotask-apply` skill in `.claude/skills/annotask-apply/SKILL.md` to handle it
 4. Add a test covering the new type
-
-## Feature freeze
-
-No new features until the stabilization criteria in `plan/improvements.md` are met. Focus on correctness, safety, and test coverage first.

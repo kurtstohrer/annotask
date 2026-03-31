@@ -36,24 +36,29 @@ Does not modify any files. Suggests `/annotask-apply` when the user seems done.
 
 ## /annotask-apply
 
-The main automation skill. Workflow:
+The main automation skill. Processes tasks **one at a time** for incremental feedback:
 
-1. Fetch pending tasks from `GET /__annotask/api/tasks`
-2. For each `status: "pending"` task, apply the change to source code based on type:
-   - **annotation**: Read `intent` and `action`, apply the described edit
-   - **style_update**: Set the CSS property to the `after` value
-   - **section_request**: Create new content matching the `prompt`
-   - **theme_update**: Update CSS variable or Tailwind config token
-3. Mark each task as `status: "review"` via `PATCH /api/tasks/:id`
-4. Report what was applied and which files changed
-5. Handle denied tasks (re-apply with corrections from `feedback` field)
+1. Fetch pending and denied tasks from `GET /__annotask/api/tasks`
+2. For each task, sequentially:
+   - **Lock**: `PATCH /api/tasks/:id` with `status: "in_progress"` — user sees it's being worked on
+   - **Apply**: Read the task type and apply the change to source code:
+     - **annotation**: Read `description` and `action`, apply the described edit
+     - **style_update**: Set the CSS property to the `after` value
+     - **section_request**: Create new content matching the `prompt`
+     - **theme_update**: Update CSS variable or Tailwind config token
+     - **a11y_fix**: Fix the accessibility violation using context details
+   - **Review**: `PATCH /api/tasks/:id` with `status: "review"` — immediately, before starting the next task
+3. Report what was applied and which files changed
+4. Denied tasks (with `feedback` field) are re-processed with corrections
+
+The user can accept or deny early tasks while later ones are still being applied.
 
 ### Task lifecycle
 
 ```
-pending → applied (agent writes code) → review (user checks in Annotask)
+pending → in_progress (agent working) → review (user checks in Annotask)
   → accepted (task removed)
-  → denied + feedback (task goes back to pending for next apply)
+  → denied + feedback (agent re-applies with corrections)
 ```
 
 ## Skill file locations

@@ -62,9 +62,21 @@ annotask screenshot TASK_ID
 
 This downloads the PNG to `.annotask/screenshots/`. Use it as visual context alongside the task description and source code.
 
-### 2. Process each pending task
+### 2. Process each pending task — one at a time
 
-Filter for `status: "pending"` tasks. For each:
+Filter for `status: "pending"` (and `status: "denied"` with `feedback`) tasks. Process them **sequentially** — do not batch. For each task, follow this cycle:
+
+#### a. Lock the task
+
+Mark it `in_progress` so the user sees you're working on it:
+
+```bash
+annotask update-task TASK_ID --status=in_progress
+```
+
+#### b. Apply the change
+
+Read the task type and apply accordingly:
 
 - **`annotation` with `action: "text_edit"`**: The `description` field says what text to change. Find the text in the source file and apply the edit.
 
@@ -94,26 +106,32 @@ Filter for `status: "pending"` tasks. For each:
   - If `isNew` is true: add the new variable/config entry in the most appropriate location (`:root` block in the main CSS file, or Tailwind config `theme.extend`).
   - After applying, update `.annotask/design-spec.json` to reflect the new value so the Theme page stays in sync.
 
-### 3. Mark tasks as ready for review
+#### c. Mark for review immediately
 
-After applying each task:
+As soon as you finish applying **this** task, mark it for review before moving to the next:
 
 ```bash
 annotask update-task TASK_ID --status=review
 ```
 
-### 4. Report to the user
+The user sees the status change live in the Annotask shell and can start reviewing while you work on the next task.
+
+#### d. Move to the next task
+
+Repeat steps a–c for each remaining pending task. This way the user gets incremental feedback — they can accept or deny early tasks while later ones are still being applied.
+
+### 3. Report to the user
 
 Tell the user:
 - Which tasks were applied
 - Which files were modified
 - Any tasks that couldn't be applied (and why)
 
-The user will review changes in Annotask and either **accept** (task removed) or **deny with notes** (task goes back to pending with feedback for next apply).
+The user will review changes in Annotask and either **accept** (task removed) or **deny with feedback** (task stays denied for next apply).
 
-### 5. Handle denied tasks
+### Denied tasks
 
-If there are tasks with `status: "denied"` and a `feedback` field, the user rejected a previous change. Read the `feedback` to understand what went wrong and re-apply with corrections.
+Tasks with `status: "denied"` and a `feedback` field were rejected by the user. They are processed alongside pending tasks in step 2. Read the `feedback` carefully to understand what went wrong and re-apply with corrections.
 
 ## Also check the live report
 
@@ -126,7 +144,8 @@ This returns both the live report (current session markup) and tasks. Use it as 
 ## Task lifecycle
 
 ```
-pending → applied (by agent) → review (user checks) → accepted (removed) or denied (with feedback → back to pending)
+pending → in_progress (agent working) → review (user checks) → accepted (removed)
+                                                              → denied (with feedback → agent re-applies)
 ```
 
 ## Important notes
