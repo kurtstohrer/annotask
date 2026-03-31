@@ -122,7 +122,36 @@ Search for:
 
 Use roles: `sm`, `md`, `lg`, `xl`, `full` (match by name or ascending size).
 
-### 6. Detect icon library
+### 6. Scan breakpoints
+
+Detect responsive breakpoints from whatever styling system the project uses. Output as a flat object mapping name → min-width value.
+
+**Sources (check in order):**
+
+1. **Tailwind v4** (>= 4): Look in CSS files for `@theme` blocks defining `--breakpoint-*` custom properties, or `@custom-media` rules.
+
+2. **Tailwind v3** (< 4): Read `tailwind.config.{js,ts,mjs}`. Extract `theme.screens` or `theme.extend.screens`. Default Tailwind screens: `{ "sm": "640px", "md": "768px", "lg": "1024px", "xl": "1280px", "2xl": "1536px" }` — use these as fallback if Tailwind is detected but no custom screens are defined.
+
+3. **Bootstrap**: Check for `bootstrap` in package.json. Default Bootstrap breakpoints: `{ "sm": "576px", "md": "768px", "lg": "992px", "xl": "1200px", "xxl": "1400px" }`.
+
+4. **CSS custom properties**: Search `:root` for variables containing `breakpoint`, `screen`, `bp` in the name (e.g., `--bp-mobile: 480px`).
+
+5. **CSS `@media` patterns**: Scan `.css`, `.scss`, `.vue` files for `@media` queries with `min-width` or `max-width`. Extract the 3–6 most common breakpoint values and assign roles by ascending size: `sm`, `md`, `lg`, `xl`, `2xl`.
+
+**Output example:**
+```json
+"breakpoints": {
+  "sm": "640px",
+  "md": "768px",
+  "lg": "1024px",
+  "xl": "1280px",
+  "2xl": "1536px"
+}
+```
+
+If no breakpoints are detected, omit the `breakpoints` field (don't include an empty object).
+
+### 7. Detect icon library
 
 Check `package.json` dependencies for:
 
@@ -136,7 +165,7 @@ Check `package.json` dependencies for:
 
 Read the version from package.json.
 
-### 7. Detect component library
+### 8. Detect component library
 
 Check `package.json` dependencies for:
 
@@ -157,7 +186,7 @@ grep -rh "from '${package}" --include='*.vue' --include='*.ts' --include='*.js' 
 
 Extract component names from the imports. Read the version from package.json.
 
-### 8. Write design spec
+### 9. Write design spec
 
 Create `.annotask/design-spec.json`:
 
@@ -190,6 +219,13 @@ Create `.annotask/design-spec.json`:
       { "role": "md", "value": "8px", "cssVar": "--radius-md", "source": "var(--radius-md)", "sourceFile": "src/assets/main.css", "sourceLine": 25 }
     ]
   },
+  "breakpoints": {
+    "sm": "640px",
+    "md": "768px",
+    "lg": "1024px",
+    "xl": "1280px",
+    "2xl": "1536px"
+  },
   "icons": {
     "library": "lucide",
     "version": "0.300.0"
@@ -202,11 +238,11 @@ Create `.annotask/design-spec.json`:
 }
 ```
 
-### 9. Clean up old config
+### 10. Clean up old config
 
 If `.annotask/config.json` exists, delete it — it's been replaced by `design-spec.json`.
 
-### 10. Update .gitignore
+### 11. Update .gitignore
 
 Check if `.gitignore` contains `.annotask/`. If not, append:
 ```
@@ -214,7 +250,7 @@ Check if `.gitignore` contains `.annotask/`. If not, append:
 .annotask/
 ```
 
-### 11. Report to user
+### 12. Report to user
 
 Tell the user:
 - What was detected (framework, number of color/typography/spacing tokens, libraries)

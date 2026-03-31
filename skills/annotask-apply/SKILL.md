@@ -16,37 +16,18 @@ Annotask is a visual markup tool that integrates with Vite and Webpack. The user
 
 ## Steps
 
-### 0. Discover server URL
-
-Read `.annotask/server.json` in the **current working directory only** (never search parent directories):
+### 0. Check server status
 
 ```bash
-cat .annotask/server.json
+annotask status
 ```
 
-This returns `{ "url": "http://localhost:PORT", "port": PORT }`. Use the `url` value as `BASE_URL` for all API calls below.
-
-If the file contains a `"mfe"` field (e.g. `"mfe": "@myorg/my-mfe"`), this project is a **micro-frontend** and the server is running on a remote root shell. Save the `mfe` value as `MFE_FILTER` — you will use it to filter tasks in step 1.
-
-If the file does not exist, probe for a running server:
-
-```bash
-curl -s http://localhost:24678/__annotask/api/status
-curl -s http://localhost:5173/__annotask/api/status
-```
-
-Use whichever responds with `{"status":"ok"}`. **IMPORTANT: Do NOT read server.json from parent or sibling directories — it belongs to a different project.**
+If this fails, the Annotask dev server isn't running. Ask the user to start it.
 
 ### 1. Fetch pending tasks
 
-If `MFE_FILTER` is set (from step 0), append it as a query parameter to filter tasks for this project:
-
 ```bash
-# Without MFE filter (standard single-project setup):
-curl -s $BASE_URL/__annotask/api/tasks
-
-# With MFE filter (micro-frontend setup):
-curl -s $BASE_URL/__annotask/api/tasks?mfe=$MFE_FILTER
+annotask tasks
 ```
 
 Response:
@@ -62,13 +43,24 @@ Response:
       "file": "src/components/Header.vue",
       "line": 5,
       "action": "text_edit",
-      "context": { "element_tag": "header" }
+      "context": { "element_tag": "header" },
+      "screenshot": "screenshot-1711800000-ab3kf.png"
     }
   ]
 }
 ```
 
-Each task has: `id`, `type`, `status`, `description` (what to do), `file`, `line`, `component`, and optionally `action` and `context` with element details.
+Each task has: `id`, `type`, `status`, `description` (what to do), `file`, `line`, `component`, and optionally `action`, `context` with element details, and `screenshot` with a filename.
+
+### Screenshot reference
+
+Some tasks include a `screenshot` field. The screenshot shows exactly what the user sees in the browser. To view it:
+
+```bash
+annotask screenshot TASK_ID
+```
+
+This downloads the PNG to `.annotask/screenshots/`. Use it as visual context alongside the task description and source code.
 
 ### 2. Process each pending task
 
@@ -80,9 +72,11 @@ Filter for `status: "pending"` tasks. For each:
 
 - **`annotation` with no action**: This is a free-text note. Read `description` and apply your best judgment to the source code. If `context.to_element` is present, this is an arrow annotation referencing two elements.
 
-- **`style_update`**: Apply CSS property change. `property` and `after` values tell you what to set. Use scoped styles, inline styles, or Tailwind classes based on project patterns.
+- **`style_update`**: Apply CSS property changes. The `context.changes` array contains each change with `property`, `before`, and `after` values. Use scoped styles, inline styles, or Tailwind classes based on project patterns.
 
 - **`section_request`**: Create a new section in the template near the referenced element. The `description` field describes what content to create. `placement` gives spatial hints.
+
+- **`a11y_fix`**: Fix an accessibility violation. The `context` contains `rule` (axe rule ID), `impact`, `help` (what to fix), `helpUrl` (WCAG reference), and `elements` array with `html` snippets, `selector`, `fix` suggestions, and source `file`/`line`/`component`.
 
 - **`theme_update`**: A design token value change from the Theme page. The `context` object contains:
   - `category`: which token category (`colors`, `typography.families`, `typography.scale`, `spacing`, `borders.radius`)
@@ -102,12 +96,10 @@ Filter for `status: "pending"` tasks. For each:
 
 ### 3. Mark tasks as ready for review
 
-After applying each task, mark it:
+After applying each task:
 
 ```bash
-curl -s -X PATCH $BASE_URL/__annotask/api/tasks/TASK_ID \
-  -H "Content-Type: application/json" \
-  -d '{"status": "review"}'
+annotask update-task TASK_ID --status=review
 ```
 
 ### 4. Report to the user
@@ -125,7 +117,11 @@ If there are tasks with `status: "denied"` and a `feedback` field, the user reje
 
 ## Also check the live report
 
-The real-time report at `$BASE_URL/__annotask/api/report` contains the current session's markup. Use this as additional context — it shows what's on the user's screen right now. But tasks are the source of truth for what to apply.
+```bash
+annotask report
+```
+
+This returns both the live report (current session markup) and tasks. Use it as additional context — it shows what's on the user's screen right now. But tasks are the source of truth for what to apply.
 
 ## Task lifecycle
 
