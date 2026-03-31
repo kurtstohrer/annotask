@@ -186,7 +186,7 @@ These optional features give the AI agent richer context beyond just "change thi
   > The agent can usually determine this by reading the source file — and in most cases it will. This feature provides the same information upfront as a shortcut, saving the agent a round-trip of reading and parsing the file. It includes the computed layout state from the live browser (display, flex-direction, gap, grid-template, child count) which may differ from what's in the source when styles are inherited, overridden, or applied dynamically.
 
 - **Breakpoint detection** — `annotask init` detects responsive breakpoints from Tailwind, Bootstrap, CSS variables, or media query patterns and includes them in the design spec.
-  > When a task is created at a 375px viewport, the agent needs to know the project's breakpoint system to generate the right responsive code — whether that's a Tailwind `sm:` prefix at 640px, a Bootstrap `md` at 768px, or a custom `@media (min-width: 480px)`. Without detected breakpoints, the agent has to guess or hard-code pixel values.
+  > The agent can find breakpoints by reading config files and stylesheets — and usually will. This pre-detects them so the agent has the project's breakpoint system immediately alongside the viewport dimensions on each task. When a task is created at 375px, the agent can instantly map that to the right Tailwind prefix, Bootstrap tier, or custom media query without searching the codebase first.
 
 ### Infrastructure
 - **Change reports** — Structured JSON of all changes, ready for agents to consume
