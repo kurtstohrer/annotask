@@ -629,8 +629,20 @@ export function bridgeClientScript(): string {
       } else {
         var script = document.createElement('script');
         script.src = '/__annotask/vendor/axe-core.min.js';
-        script.onload = function() { runAxeScan(a11yEl); };
-        script.onerror = function() { respond(id, { violations: [], error: 'failed to load axe-core — run: pnpm build:vendor' }); };
+        // Hide AMD define so UMD bundle uses the global assignment branch (SystemJS compat)
+        var savedDefine;
+        if (typeof window.define === 'function' && window.define.amd) {
+          savedDefine = window.define;
+          window.define = undefined;
+        }
+        script.onload = function() {
+          if (savedDefine !== undefined) window.define = savedDefine;
+          runAxeScan(a11yEl);
+        };
+        script.onerror = function() {
+          if (savedDefine !== undefined) window.define = savedDefine;
+          respond(id, { violations: [], error: 'failed to load axe-core — run: pnpm build:vendor' });
+        };
         document.head.appendChild(script);
       }
       return;
@@ -665,8 +677,20 @@ export function bridgeClientScript(): string {
       } else {
         var h2cScript = document.createElement('script');
         h2cScript.src = '/__annotask/vendor/html2canvas.min.js';
-        h2cScript.onload = function() { doCapture(clipRect); };
-        h2cScript.onerror = function() { respond(id, { error: 'failed to load html2canvas — run: pnpm build:vendor' }); };
+        // Hide AMD define so UMD bundle uses the global assignment branch (SystemJS compat)
+        var savedDefine2;
+        if (typeof window.define === 'function' && window.define.amd) {
+          savedDefine2 = window.define;
+          window.define = undefined;
+        }
+        h2cScript.onload = function() {
+          if (savedDefine2 !== undefined) window.define = savedDefine2;
+          doCapture(clipRect);
+        };
+        h2cScript.onerror = function() {
+          if (savedDefine2 !== undefined) window.define = savedDefine2;
+          respond(id, { error: 'failed to load html2canvas — run: pnpm build:vendor' });
+        };
         document.head.appendChild(h2cScript);
       }
       return;
