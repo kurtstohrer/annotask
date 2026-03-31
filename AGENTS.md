@@ -1,0 +1,78 @@
+# Annotask
+
+Visual UI design tool for web apps (Vue, React, Svelte, Astro, plain HTML/htmx). Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
+
+## Development
+
+```bash
+pnpm install
+pnpm build                   # Build shell + plugin + CLI
+pnpm dev:vue-vite             # Start Vue test app with Annotask
+```
+
+Then open:
+- App: http://localhost:5173/
+- Annotask: http://localhost:5173/__annotask/
+- API: http://localhost:5173/__annotask/api/report
+
+## Annotask CLI
+
+```bash
+annotask status              # Check if server is running
+annotask tasks               # Fetch pending tasks
+annotask report              # Fetch full report + tasks
+annotask watch               # Live stream changes via WebSocket
+annotask update-task <id> --status=<status>   # Update task status
+annotask screenshot <id>     # Download a task's screenshot
+annotask init-skills         # Install agent skills into project
+```
+
+## Annotask API
+
+- `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
+- `POST /__annotask/api/tasks` — Create a task
+- `PATCH /__annotask/api/tasks/:id` — Update task status
+- `GET /__annotask/api/report` — Current change report
+- `GET /__annotask/api/design-spec` — Design spec (tokens, framework, breakpoints)
+- `POST /__annotask/api/screenshots` — Upload a screenshot
+- `GET /__annotask/screenshots/:filename` — Serve a screenshot
+- `GET /__annotask/api/status` — Health check
+- `ws://localhost:5173/__annotask/ws` — Live WebSocket stream
+
+## Structure
+
+- `src/plugin/` — Vite plugin (multi-framework transform, toggle button, bridge client)
+- `src/server/` — HTTP API, WebSocket server, shell serving, project state
+- `src/webpack/` — Webpack plugin and transform loader
+- `src/shell/` — Design tool UI (Vue 3 app, pre-built into dist/shell/)
+- `src/shell/composables/` — Vue composables (viewport preview, interaction history, style editor, annotations, etc.)
+- `src/shell/components/` — UI components (inspector tabs, overlays, viewport selector, a11y panel, etc.)
+- `src/shared/` — Shared types (postMessage bridge protocol)
+- `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
+- `src/cli/` — CLI tool for terminal interaction
+- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
+
+## Key Shell Features
+
+- **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports
+- **Interaction history** — Tracks user navigation and clicks in the app (optional, off by default)
+- **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
+- **A11y checker** — axe-core WCAG scanning with one-click fix task creation
+- **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept
+- **Inspector highlights** — Selection/hover overlays that track scroll and resize via rAF loop
+
+## Task Types
+
+| Type | Source | Description |
+|------|--------|-------------|
+| `annotation` | Pins, arrows, notes, text highlights | User intent described in `description`, optional `action` and `context` |
+| `style_update` | Inspector style/class edits | CSS changes in `context.changes` array with `property`, `before`, `after` |
+| `theme_update` | Theme page token edits | Design token changes with `category`, `role`, `before`, `after`, `cssVar` |
+| `section_request` | Drawn sections | New content area with `description` and `placement` |
+| `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
+
+## Task Lifecycle
+
+```
+pending → applied (by agent) → review (user checks) → accepted (removed) or denied (with feedback)
+```
