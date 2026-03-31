@@ -151,7 +151,6 @@ Start your dev server, then open:
 - **Arrows** — Draw arrows to reference other elements or parts of the page
 - **Drawn sections** — Draw a rectangle where new content should go, with a prompt
 - **Text highlights** — Select text to mark it for editing
-- **Notes** — Attach free-text design notes to any element
 
 ### Visual editing (experimental)
 - **Element inspection** — Click any element to see its source file, line, component, and computed styles
@@ -177,9 +176,17 @@ Start your dev server, then open:
 - **Auto-cleanup** — Screenshot files are deleted when the task is accepted
 
 ### AI agent context
-- **Interaction history** — Optionally track user navigation and button/link clicks in the app so the AI agent understands how the user reached the current state
-- **Element context** — Optionally capture ancestor layout chain (3 levels of parent display, flex-direction, gap, grid-template) and DOM subtree (3 levels of children with tag, classes, text) for each task
-- **Breakpoint detection** — `/annotask-init` detects responsive breakpoints from Tailwind, Bootstrap, CSS variables, or media query patterns and includes them in the design spec
+
+These optional features give the AI agent richer context beyond just "change this element" — helping it make better decisions about how and where to apply changes.
+
+- **Interaction history** — Optionally track user navigation and button/link clicks in the app. Toggle per-task, off by default.
+  > Without this, the agent only sees the task description and a file path. With it, the agent knows the user navigated from `/settings` → `/profile` → clicked "Edit" → scrolled down before creating the task. This helps reproduce bugs and understand which user flow is affected.
+
+- **Element context** — Optionally capture the ancestor layout chain (3 levels of parent display, flex-direction, gap, grid-template) and DOM subtree (3 levels of children with tag, classes, text). Toggle per-task, off by default.
+  > The agent knows an element is at `Header.vue:15`, but not that it's inside a flex column with `gap: 16px` and 4 siblings, or that it contains an `<h1>`, `<nav>`, and `<button>`. Parent layout context prevents the agent from generating CSS that conflicts with the container. Child structure helps it understand what it's modifying without reading the full source file first.
+
+- **Breakpoint detection** — `annotask init` detects responsive breakpoints from Tailwind, Bootstrap, CSS variables, or media query patterns and includes them in the design spec.
+  > When a task is created at a 375px viewport, the agent needs to know the project's breakpoint system to generate the right responsive code — whether that's a Tailwind `sm:` prefix at 640px, a Bootstrap `md` at 768px, or a custom `@media (min-width: 480px)`. Without detected breakpoints, the agent has to guess or hard-code pixel values.
 
 ### Infrastructure
 - **Change reports** — Structured JSON of all changes, ready for agents to consume
