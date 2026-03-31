@@ -48,7 +48,7 @@ This copies skill files to `.claude/skills/` and `.agents/skills/` so your agent
 
 | Agent | Skill directory | Notes |
 |-------|----------------|-------|
-| Claude Code | `.claude/skills/` | Invoke with `/annotask-apply`, `/annotask-init`, `/annotask-watch` |
+| Claude Code | `.claude/skills/` | Invoke with `/annotask-apply`, `/annotask-init` |
 | GitHub Copilot | `.agents/skills/` | Auto-discovered by Copilot agents |
 | OpenAI Codex | `.agents/skills/` | Uses the same `.agents/` convention |
 | Other agents | `.agents/skills/` | Any agent that reads `.agents/skills/` |
@@ -59,7 +59,6 @@ This copies skill files to `.claude/skills/` and `.agents/skills/` so your agent
 |-------|-------------|
 | `/annotask-init` | Scans your project and generates `.annotask/design-spec.json` with detected tokens, fonts, colors, and component library. Run once per project. |
 | `/annotask-apply` | Fetches pending tasks from the Annotask API, applies changes to source files, and marks them for review. |
-| `/annotask-watch` | Streams live changes from the Annotask WebSocket so your agent can narrate what you're doing in real time. |
 
 ## Quick Start
 
@@ -191,7 +190,7 @@ These optional features give the AI agent richer context beyond just "change thi
 ### Infrastructure
 - **Change reports** — Structured JSON of all changes, ready for agents to consume
 - **Task pipeline** — Create, review, accept, or deny design change tasks
-- **CLI** — `annotask watch` for live streaming, `annotask report` for current state
+- **CLI** — `annotask tasks`, `annotask report`, `annotask watch` for terminal access
 - **API** — HTTP and WebSocket endpoints for programmatic access
 
 ## CLI
