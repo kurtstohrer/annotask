@@ -6,7 +6,7 @@ const stored = localStorage.getItem('annotask:mode')
 const mode = ref<InteractionMode>(
   stored && ['select', 'interact', 'pin', 'arrow', 'draw', 'highlight'].includes(stored)
     ? stored as InteractionMode
-    : 'select'
+    : 'interact'
 )
 
 function onKeyDown(e: KeyboardEvent) {

@@ -7,11 +7,11 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
 
 <template>
   <div class="mode-toolbar">
+    <button :class="['mode-btn mode-interact', { active: modelValue === 'interact' }]" @click="emit('update:modelValue', 'interact')" title="Interact (I)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7 6 13 6 13s6-6 6-13z"/><circle cx="12" cy="8" r="1" fill="currentColor"/><path d="M9 21h6"/></svg>
+    </button>
     <button :class="['mode-btn', { active: modelValue === 'select' }]" @click="emit('update:modelValue', 'select')" title="Select (V)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
-    </button>
-    <button :class="['mode-btn mode-interact', { active: modelValue === 'interact' }]" @click="emit('update:modelValue', modelValue === 'interact' ? 'select' : 'interact')" title="Interact (I)">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7 6 13 6 13s6-6 6-13z"/><circle cx="12" cy="8" r="1" fill="currentColor"/><path d="M9 21h6"/></svg>
     </button>
     <span class="mode-sep" />
     <button :class="['mode-btn', { active: modelValue === 'pin' }]" @click="emit('update:modelValue', 'pin')" title="Pin Note (P)">

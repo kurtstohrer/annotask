@@ -1,6 +1,8 @@
 import { ref, computed, watch } from 'vue'
 import type { CatalogItem } from '../types'
 import { useDesignSpec } from './useDesignSpec'
+import { useViewportPreview } from './useViewportPreview'
+import { useInteractionHistory } from './useInteractionHistory'
 import { send as wsSend } from '../services/wsClient'
 
 export interface StyleChangeRecord {
@@ -352,9 +354,19 @@ export function useStyleEditor() {
       root: '',
     }
 
+    const { effectiveViewport } = useViewportPreview()
+    const vp = effectiveViewport.value
+    const viewport = (vp.width || vp.height) ? { width: vp.width, height: vp.height } : undefined
+
+    const { snapshotForChange } = useInteractionHistory()
+    const snapshot = snapshotForChange(window.location.pathname)
+    const interaction_history = snapshot.recent_actions.length > 0 ? snapshot : undefined
+
     return {
       version: '1.0' as const,
       project,
+      ...(viewport ? { viewport } : {}),
+      ...(interaction_history ? { interaction_history } : {}),
       changes: reportChanges,
     }
   })

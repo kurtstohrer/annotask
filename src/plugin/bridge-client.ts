@@ -242,6 +242,49 @@ export function bridgeClientScript(): string {
   document.addEventListener('keydown', onKeyDown, { capture: true });
   document.addEventListener('contextmenu', onContextMenu, { capture: true });
 
+  // ── User Action Tracking (interact mode) ───────────────
+  // Tracks meaningful page actions (link/button clicks) so the LLM
+  // can understand what the user did to reach the current state.
+
+  var lastActionTs = 0;
+  function onUserAction(e) {
+    var el = e.target;
+    if (!el || !el.closest) return;
+
+    // Debounce — ignore clicks within 50ms (same gesture)
+    var now = Date.now();
+    if (now - lastActionTs < 50) return;
+    lastActionTs = now;
+
+    // Find the best description of what was clicked
+    var actionEl = el.closest('a, button, [role="button"], [role="tab"], [role="menuitem"], [role="link"], [type="submit"], tr[class*="row"], [data-pc-section="bodyrow"]');
+    var descEl = actionEl || el;
+
+    var tag = descEl.tagName.toLowerCase();
+    // Get concise text: prefer innerText of the immediate target, fall back to closest actionable
+    var text = '';
+    if (el.innerText) text = el.innerText.trim();
+    if (!text && descEl.innerText) text = descEl.innerText.trim();
+    text = text.split(String.fromCharCode(10))[0].substring(0, 60);
+
+    var href = '';
+    if (tag === 'a') href = descEl.getAttribute('href') || '';
+    else if (el.closest('a')) href = el.closest('a').getAttribute('href') || '';
+
+    // Get component context if available
+    var source = findSourceElement(descEl);
+    var data = getSourceData(source.sourceEl);
+
+    sendToShell('user:action', {
+      tag: tag,
+      text: text,
+      href: href,
+      component: data.component || '',
+    });
+  }
+
+  document.addEventListener('click', onUserAction, { capture: true });
+
   // ── Route Tracking ────────────────────────────────────
   var lastRoute = window.location.pathname;
 
@@ -461,6 +504,135 @@ export function bridgeClientScript(): string {
         childCount: childCount,
         isComponentUnit: role === 'component'
       });
+      return;
+    }
+
+    if (type === 'resolve:element-context') {
+      var ctxEl = getEl(payload.eid);
+      if (!ctxEl) { respond(id, null); return; }
+
+      // Ancestors: walk up 3 levels, capture layout-relevant styles
+      var ancestors = [];
+      var cur = ctxEl.parentElement;
+      for (var ai = 0; ai < 3 && cur && cur !== document.body && cur !== document.documentElement; ai++) {
+        var aCs = window.getComputedStyle(cur);
+        var aTag = cur.tagName.toLowerCase();
+        var aClasses = typeof cur.className === 'string' ? cur.className.trim() : '';
+        var aData = getSourceData(cur);
+        var ancestor = { tag: aTag, display: aCs.display };
+        if (aClasses) ancestor.classes = aClasses;
+        if (aData.component) ancestor.component = aData.component;
+        if (aCs.display.includes('flex')) {
+          ancestor.flexDirection = aCs.flexDirection;
+          if (aCs.gap && aCs.gap !== 'normal') ancestor.gap = aCs.gap;
+          ancestor.childCount = cur.children.length;
+        }
+        if (aCs.display.includes('grid')) {
+          ancestor.gridTemplateColumns = aCs.gridTemplateColumns;
+          ancestor.gridTemplateRows = aCs.gridTemplateRows;
+          if (aCs.gap && aCs.gap !== 'normal') ancestor.gap = aCs.gap;
+          ancestor.childCount = cur.children.length;
+        }
+        if (aCs.overflow && aCs.overflow !== 'visible') ancestor.overflow = aCs.overflow;
+        ancestors.push(ancestor);
+        cur = cur.parentElement;
+      }
+
+      // Subtree: simplified HTML of the element and its children (3 levels deep)
+      function describeEl(el, depth) {
+        var t = el.tagName.toLowerCase();
+        var cl = typeof el.className === 'string' ? el.className.trim() : '';
+        var txt = '';
+        // Only get direct text (not from children)
+        for (var ci = 0; ci < el.childNodes.length; ci++) {
+          if (el.childNodes[ci].nodeType === 3) {
+            var nt = el.childNodes[ci].textContent.trim();
+            if (nt) { txt = nt.substring(0, 40); break; }
+          }
+        }
+        var node = { tag: t };
+        if (cl) node.classes = cl;
+        if (txt) node.text = txt;
+        if (depth < 3 && el.children.length > 0) {
+          var kids = [];
+          for (var ki = 0; ki < el.children.length && ki < 10; ki++) {
+            kids.push(describeEl(el.children[ki], depth + 1));
+          }
+          node.children = kids;
+          if (el.children.length > 10) node.childrenTruncated = el.children.length;
+        }
+        return node;
+      }
+
+      respond(id, {
+        ancestors: ancestors,
+        subtree: describeEl(ctxEl, 0)
+      });
+      return;
+    }
+
+    // ── Accessibility Scan ──
+    if (type === 'a11y:scan') {
+      var a11yEid = payload.eid;
+      var a11yEl = a11yEid ? getEl(a11yEid) : document.body;
+      if (!a11yEl) { respond(id, { violations: [] }); return; }
+
+      function runAxeScan(target) {
+        if (!window.axe) { respond(id, { violations: [], error: 'axe not loaded' }); return; }
+        window.axe.run(target, { resultTypes: ['violations'] }, function(err, results) {
+          if (err) { respond(id, { violations: [], error: err.message }); return; }
+          var violations = [];
+          for (var vi = 0; vi < results.violations.length; vi++) {
+            var v = results.violations[vi];
+            var nodeDetails = [];
+            for (var ni = 0; ni < v.nodes.length && ni < 5; ni++) {
+              var node = v.nodes[ni];
+              var detail = {
+                html: (node.html || '').substring(0, 200),
+                target: node.target ? node.target[0] : '',
+                failureSummary: node.failureSummary || ''
+              };
+              // Try to resolve annotask source for this element
+              var selector = node.target ? node.target[0] : null;
+              if (selector) {
+                try {
+                  var domEl = document.querySelector(selector);
+                  if (domEl) {
+                    var src = findSourceElement(domEl);
+                    var srcData = getSourceData(src.sourceEl);
+                    if (srcData.file) {
+                      detail.file = srcData.file;
+                      detail.line = srcData.line;
+                      detail.component = srcData.component;
+                    }
+                  }
+                } catch(e) {}
+              }
+              nodeDetails.push(detail);
+            }
+            violations.push({
+              id: v.id,
+              impact: v.impact,
+              description: v.description,
+              help: v.help,
+              helpUrl: v.helpUrl,
+              nodes: v.nodes.length,
+              elements: nodeDetails
+            });
+          }
+          respond(id, { violations: violations });
+        });
+      }
+
+      if (window.axe) {
+        runAxeScan(a11yEl);
+      } else {
+        var script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js';
+        script.onload = function() { runAxeScan(a11yEl); };
+        script.onerror = function() { respond(id, { violations: [], error: 'failed to load axe-core' }); };
+        document.head.appendChild(script);
+      }
       return;
     }
 

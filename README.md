@@ -159,6 +159,21 @@ Start your dev server, then open:
 - **Class editing** — Add, remove, or modify CSS classes on elements
 - **Theme token editing** — Edit design tokens (colors, typography, spacing, borders) from a detected design spec
 
+### Viewport preview
+- **Device presets** — Quickly switch between phone, tablet, and desktop viewports (iPhone SE, iPhone 14 Pro, iPad, Desktop, etc.)
+- **Custom dimensions** — Set any width/height for the preview
+- **Viewport-tagged tasks** — Every task records the viewport dimensions so the AI agent generates the correct responsive CSS
+
+### Accessibility checker
+- **Page-level scanning** — Runs axe-core WCAG analysis on the entire page from the A11y panel
+- **Violation cards** — Shows impact level, rule, description, and affected element count
+- **One-click fix tasks** — Create tasks from violations with full context (HTML snippets, CSS selectors, source file/line, and fix suggestions)
+
+### AI agent context
+- **Interaction history** — Optionally track user navigation and button/link clicks in the app so the AI agent understands how the user reached the current state
+- **Element context** — Optionally capture ancestor layout chain (3 levels of parent display, flex-direction, gap, grid-template) and DOM subtree (3 levels of children with tag, classes, text) for each task
+- **Breakpoint detection** — `/annotask-init` detects responsive breakpoints from Tailwind, Bootstrap, CSS variables, or media query patterns and includes them in the design spec
+
 ### Infrastructure
 - **Change reports** — Structured JSON of all changes, ready for agents to consume
 - **Task pipeline** — Create, review, accept, or deny design change tasks

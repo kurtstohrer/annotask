@@ -1,3 +1,20 @@
+export interface ViewportInfo {
+  width: number | null
+  height: number | null
+}
+
+export interface InteractionEntry {
+  event: string
+  route?: string
+  data: Record<string, unknown>
+}
+
+export interface InteractionSnapshot {
+  current_route: string
+  navigation_path: string[]
+  recent_actions: InteractionEntry[]
+}
+
 export interface AnnotaskReport {
   version: '1.0'
   project: {
@@ -5,6 +22,8 @@ export interface AnnotaskReport {
     styling: string[]
     root: string
   }
+  viewport?: ViewportInfo
+  interaction_history?: InteractionSnapshot
   changes: AnnotaskChange[]
 }
 
@@ -27,6 +46,7 @@ interface BaseChange {
   line: number
   component?: string
   mfe?: string
+  viewport?: ViewportInfo
 }
 
 /** Direct inline style change on an element (from visual editing) */
@@ -129,6 +149,35 @@ export interface SectionRequestChange extends BaseChange {
   prompt: string
 }
 
+/** Simplified DOM node for element context */
+export interface ElementNode {
+  tag: string
+  classes?: string
+  text?: string
+  children?: ElementNode[]
+  childrenTruncated?: number
+}
+
+/** Ancestor layout info */
+export interface AncestorInfo {
+  tag: string
+  display: string
+  classes?: string
+  component?: string
+  flexDirection?: string
+  gridTemplateColumns?: string
+  gridTemplateRows?: string
+  gap?: string
+  overflow?: string
+  childCount?: number
+}
+
+/** Element context: parent layout chain + child structure */
+export interface ElementContext {
+  ancestors: AncestorInfo[]
+  subtree: ElementNode
+}
+
 /** Task in the review pipeline */
 export interface AnnotaskTask {
   id: string
@@ -142,6 +191,9 @@ export interface AnnotaskTask {
   intent?: string
   action?: string
   context?: Record<string, unknown>
+  viewport?: ViewportInfo
+  interaction_history?: InteractionSnapshot
+  element_context?: ElementContext
   feedback?: string         // denial notes from reviewer
   createdAt: number
   updatedAt: number
@@ -180,6 +232,7 @@ export interface AnnotaskDesignSpec {
   borders: {
     radius: DesignSpecToken[]
   }
+  breakpoints?: Record<string, string>
   icons: {
     library: string
     version?: string

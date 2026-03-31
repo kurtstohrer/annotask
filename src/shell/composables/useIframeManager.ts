@@ -244,6 +244,18 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   /** @deprecated Use insertComponent */
   const insertVueComponent = insertComponent
 
+  async function getElementContext(eid: string): Promise<{ ancestors: any[]; subtree: any } | null> {
+    try {
+      return await bridge.request('resolve:element-context', { eid })
+    } catch { return null }
+  }
+
+  async function scanA11y(eid?: string): Promise<{ violations: any[]; error?: string }> {
+    try {
+      return await bridge.request('a11y:scan', { eid }, 15000) // longer timeout for axe load
+    } catch { return { violations: [], error: 'timeout' } }
+  }
+
   function setMode(mode: InteractionMode) {
     bridge.send('mode:set', { mode })
   }
@@ -273,6 +285,8 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     undoClass,
     // Classification
     classifyElement,
+    getElementContext,
+    scanA11y,
     // Layout
     scanLayout,
     layoutAddTrack,

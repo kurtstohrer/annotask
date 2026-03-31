@@ -12,6 +12,8 @@ const props = defineProps<{
   selectedElement: { file: string; line: string; component: string; tagName: string; classes: string } | null
   elementRole: 'container' | 'content' | 'component' | null
   tasks: TaskItem[]
+  includeHistory: boolean
+  includeElementContext: boolean
 }>()
 
 const denyFeedback = ref<Record<string, string>>({})
@@ -20,6 +22,8 @@ const emit = defineEmits<{
   'add-note': [text: string]
   'add-action': [action: string, label: string]
   'add-task': [text: string]
+  'update:includeHistory': [value: boolean]
+  'update:includeElementContext': [value: boolean]
   'select-pin': [id: string]
   'accept-task': [id: string]
   'deny-task': [id: string, feedback: string]
@@ -95,9 +99,13 @@ function submitNote() {
         placeholder="Describe what you want to change..."
         @keydown.enter.ctrl="submitNote"
       />
-      <button class="submit-btn" :disabled="!newNote.trim()" @click="submitNote">
-        Add Task
-      </button>
+      <div class="task-toggles">
+        <label class="history-toggle"><input type="checkbox" :checked="includeHistory" @change="emit('update:includeHistory', ($event.target as HTMLInputElement).checked)" /><span>History</span></label>
+        <label class="history-toggle"><input type="checkbox" :checked="includeElementContext" @change="emit('update:includeElementContext', ($event.target as HTMLInputElement).checked)" /><span>DOM context</span></label>
+      </div>
+      <div class="note-actions">
+        <button class="submit-btn" :disabled="!newNote.trim()" @click="submitNote">Add Task</button>
+      </div>
     </div>
 
     <!-- Element pins -->
@@ -216,6 +224,12 @@ function submitNote() {
 }
 .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .submit-btn:hover:not(:disabled) { opacity: 0.9; }
+
+.task-toggles { display: flex; gap: 10px; margin-top: 4px; }
+.note-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.history-toggle { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.history-toggle input { margin: 0; }
+.history-toggle span { user-select: none; }
 
 /* Pin items */
 .pin-item {

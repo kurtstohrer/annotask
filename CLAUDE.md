@@ -31,7 +31,17 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/server/` — HTTP API, WebSocket server, shell serving, project state
 - `src/webpack/` — Webpack plugin and transform loader
 - `src/shell/` — Design tool UI (Vue 3 app, pre-built into dist/shell/)
+- `src/shell/composables/` — Vue composables (viewport preview, interaction history, style editor, annotations, etc.)
+- `src/shell/components/` — UI components (inspector tabs, overlays, viewport selector, a11y panel, etc.)
 - `src/shared/` — Shared types (postMessage bridge protocol)
-- `src/schema.ts` — TypeScript types for change reports
+- `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
 - `src/cli/` — CLI tool for terminal interaction
 - `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
+
+## Key Shell Features
+
+- **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports
+- **Interaction history** — Tracks user navigation and clicks in the app (optional, off by default)
+- **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
+- **A11y checker** — axe-core WCAG scanning with one-click fix task creation
+- **Inspector highlights** — Selection/hover overlays that track scroll and resize via rAF loop
