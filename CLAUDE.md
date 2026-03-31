@@ -44,4 +44,5 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - **Interaction history** — Tracks user navigation and clicks in the app (optional, off by default)
 - **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation
+- **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept
 - **Inspector highlights** — Selection/hover overlays that track scroll and resize via rAF loop

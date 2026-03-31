@@ -169,6 +169,13 @@ Start your dev server, then open:
 - **Violation cards** — Shows impact level, rule, description, and affected element count
 - **One-click fix tasks** — Create tasks from violations with full context (HTML snippets, CSS selectors, source file/line, and fix suggestions)
 
+### Screenshots
+- **Snipping tool** — Click "Add Screenshot" on any task form, then drag a region or click for full-page capture
+- **Thumbnail preview** — Screenshot appears as a preview on the task form before submitting (removable)
+- **Task-attached** — Screenshots are stored on the server and referenced by filename in the task
+- **Multimodal AI context** — AI agents can download and view screenshots for visual understanding of what the user sees
+- **Auto-cleanup** — Screenshot files are deleted when the task is accepted
+
 ### AI agent context
 - **Interaction history** — Optionally track user navigation and button/link clicks in the app so the AI agent understands how the user reached the current state
 - **Element context** — Optionally capture ancestor layout chain (3 levels of parent display, flex-direction, gap, grid-template) and DOM subtree (3 levels of children with tag, classes, text) for each task
@@ -186,10 +193,11 @@ Start your dev server, then open:
 annotask watch              # Live stream of changes
 annotask report             # Fetch current report JSON
 annotask status             # Check connection
+annotask screenshot <id>    # Download a task's screenshot
 annotask init-skills        # Install agent skills into your project
 ```
 
-Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=NAME` (filter by MFE).
+Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=NAME` (filter by MFE), `--output=PATH` (for screenshot command).
 
 ## API
 
@@ -197,6 +205,8 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=N
 - `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
 - `POST /__annotask/api/tasks` — Create a task
 - `PATCH /__annotask/api/tasks/:id` — Update task status
+- `POST /__annotask/api/screenshots` — Upload a screenshot (base64 PNG)
+- `GET /__annotask/screenshots/:filename` — Serve a screenshot
 - `GET /__annotask/api/status` — Health check
 - `ws://localhost:5173/__annotask/ws` — Live WebSocket stream
 
