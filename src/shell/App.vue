@@ -51,6 +51,51 @@ async function doClearChanges() {
     await iframe.removePlaceholder(eid)
   }
 }
+
+async function commitChangesAsTask() {
+  if (changes.value.length === 0) return
+
+  // Group changes by file:line
+  const styleChanges = changes.value.filter(c => c.type === 'style_update') as import('./composables/useStyleEditor').StyleChangeRecord[]
+  const classChanges = changes.value.filter(c => c.type === 'class_update') as import('./composables/useStyleEditor').ClassChangeRecord[]
+
+  // Build a description from the changes
+  const parts: string[] = []
+  for (const c of styleChanges) {
+    parts.push(`${c.property}: ${c.after}`)
+  }
+  for (const c of classChanges) {
+    parts.push(`classes: ${c.after.classes}`)
+  }
+  const description = parts.length <= 3
+    ? `Update ${parts.join(', ')}`
+    : `Update ${parts.slice(0, 2).join(', ')} and ${parts.length - 2} more`
+
+  // Use the primary selection or first change for file/line
+  const file = primarySelection.value?.file || styleChanges[0]?.file || classChanges[0]?.file || ''
+  const line = primarySelection.value?.line ? parseInt(primarySelection.value.line) : (styleChanges[0]?.line || classChanges[0]?.line || 0)
+  const component = primarySelection.value?.component || styleChanges[0]?.component || classChanges[0]?.component || ''
+
+  const taskChanges: Array<Record<string, unknown>> = []
+  for (const c of styleChanges) {
+    taskChanges.push({ property: c.property, before: c.before, after: c.after, file: c.file, line: c.line })
+  }
+  for (const c of classChanges) {
+    taskChanges.push({ type: 'class', before: c.before.classes, after: c.after.classes, file: c.file, line: c.line })
+  }
+
+  await createRouteTask({
+    type: 'style_update',
+    description,
+    file,
+    line,
+    component,
+    context: { changes: taskChanges },
+  })
+
+  // Clear changes after commit
+  await doClearChanges()
+}
 const annotations = useAnnotations()
 const taskSystem = useTasks()
 const viewport = useViewportPreview()
@@ -931,11 +976,9 @@ const appUrl = computed(() => {
           <button :class="['vis-btn', { off: !showMarkup.sections }]" @click="showMarkup.sections = !showMarkup.sections" title="Toggle Sections">D</button>
           <button :class="['vis-btn', { off: !showMarkup.highlights }]" @click="showMarkup.highlights = !showMarkup.highlights" title="Toggle Highlights">H</button>
         </div>
-        <span v-if="changes.length" class="change-count">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
         <button :class="['tool-btn', { active: showReportPanel }]" @click="showReportPanel = !showReportPanel">
           View Tasks
         </button>
-        <button v-if="changes.length" class="tool-btn danger" @click="doClearChanges">Clear</button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else class="toolbar-right" />
@@ -1254,23 +1297,25 @@ const appUrl = computed(() => {
         </div>
 
         <div v-if="changes.length" class="changes-footer">
-          <details>
-            <summary class="changes-summary">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }} recorded</summary>
-            <div class="changes-list">
-              <div v-for="ch in changes" :key="ch.id" class="change-item">
-                <template v-if="ch.type === 'style_update'">
-                  <code class="change-prop">{{ ch.property }}</code>
-                  <span class="change-arrow">→</span>
-                  <code class="change-val">{{ ch.after }}</code>
-                </template>
-                <template v-else-if="ch.type === 'annotation'">
-                  <code class="change-prop">{{ ch.action || 'note' }}</code>
-                  <span class="change-arrow">→</span>
-                  <code class="change-val">{{ ch.intent.substring(0, 30) }}</code>
-                </template>
-              </div>
+          <div class="changes-list">
+            <div v-for="ch in changes" :key="ch.id" class="change-item">
+              <template v-if="ch.type === 'style_update'">
+                <code class="change-prop">{{ ch.property }}</code>
+                <span class="change-arrow">→</span>
+                <code class="change-val">{{ ch.after }}</code>
+              </template>
+              <template v-else-if="ch.type === 'class_update'">
+                <code class="change-prop">classes</code>
+                <span class="change-arrow">→</span>
+                <code class="change-val">{{ ch.after.classes.substring(0, 30) }}</code>
+              </template>
             </div>
-          </details>
+          </div>
+          <div class="changes-actions">
+            <span class="changes-count">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
+            <button class="changes-commit" @click="commitChangesAsTask">Commit to Task</button>
+            <button class="changes-discard" @click="doClearChanges">Discard</button>
+          </div>
         </div>
       </aside>
 
@@ -1438,16 +1483,25 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .empty-hint { font-size: 11px; opacity: 0.6; }
 
 /* Changes footer */
-.changes-footer { border-top: 1px solid var(--border); flex-shrink: 0; }
-.changes-summary { padding: 8px 14px; font-size: 11px; color: var(--text-muted); cursor: pointer; list-style: none; }
-.changes-summary::-webkit-details-marker { display: none; }
-.changes-summary::before { content: '▸ '; }
-details[open] > .changes-summary::before { content: '▾ '; }
-.changes-list { max-height: 200px; overflow-y: auto; padding: 0 14px 10px; }
-.change-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 11px; }
+.changes-footer { border-top: 1px solid var(--border); flex-shrink: 0; padding: 8px 14px; }
+.changes-list { max-height: 120px; overflow-y: auto; margin-bottom: 6px; }
+.change-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
 .change-prop { color: var(--text-muted); font-family: monospace; }
 .change-arrow { color: var(--text-muted); font-size: 10px; }
 .change-val { color: #22c55e; font-family: monospace; }
+.changes-actions { display: flex; align-items: center; gap: 6px; }
+.changes-count { font-size: 10px; color: var(--text-muted); flex: 1; }
+.changes-commit {
+  padding: 4px 12px; font-size: 11px; font-weight: 600;
+  background: var(--accent); color: white; border: none; border-radius: 5px; cursor: pointer;
+}
+.changes-commit:hover { opacity: 0.9; }
+.changes-discard {
+  padding: 4px 12px; font-size: 11px;
+  background: var(--surface-2); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
+}
+.changes-discard:hover { background: var(--border); color: var(--text); }
 
 /* Task cards in sidebar */
 .task-card { padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; }
