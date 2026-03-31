@@ -16,19 +16,21 @@ Connect to the Annotask WebSocket and stream changes as the user makes them visu
 
 ## Steps
 
-0. **Discover server URL** — read `.annotask/server.json` in the current working directory only (never parent directories):
+0. **Check server status**:
    ```bash
-   cat .annotask/server.json
+   annotask status
    ```
-   Use the `url` value as the server URL. If the file contains a `"mfe"` field, this is a micro-frontend setup — the server is running on a remote root shell. Save the `mfe` value for filtering. If not found, probe `curl -s http://localhost:24678/__annotask/api/status` then `curl -s http://localhost:5173/__annotask/api/status`. **Do NOT read server.json from parent or sibling directories.**
+   If this fails, the Annotask dev server isn't running. Ask the user to start it.
 
-1. **Start watching** by running in the background:
+1. **Start watching**:
    ```bash
-   npx @annotask/cli watch --port=PORT
+   annotask watch
    ```
-   Or if the CLI isn't installed, poll the HTTP API:
+   This connects to the Annotask WebSocket and streams changes in real-time. If the CLI isn't installed globally, use `npx annotask watch`.
+
+   For a one-time snapshot instead of live streaming:
    ```bash
-   curl -s $BASE_URL/__annotask/api/report
+   annotask report
    ```
 
 2. **Describe what you see** — as changes come in, summarize them in plain language:

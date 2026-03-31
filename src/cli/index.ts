@@ -61,6 +61,10 @@ if (command === 'watch') {
   initSkills()
 } else if (command === 'screenshot') {
   fetchScreenshot()
+} else if (command === 'tasks') {
+  fetchTasks()
+} else if (command === 'update-task') {
+  updateTask()
 } else if (command === 'help' || command === '--help') {
   printHelp()
 } else {
@@ -225,6 +229,53 @@ async function fetchScreenshot() {
     console.log(`\x1b[32m[Annotask]\x1b[0m Screenshot saved to ${outputPath}`)
   } catch (err: any) {
     console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch screenshot: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Tasks: fetch task list ────────────────────────────────
+
+async function fetchTasks() {
+  try {
+    const tasksUrl = mfeFilter ? `${apiUrl}/tasks?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/tasks`
+    const res = await fetch(tasksUrl)
+    const data = await res.json()
+    console.log(JSON.stringify(data, null, 2))
+  } catch (err: any) {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch tasks: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Update Task: change task status ──────────────────────
+
+async function updateTask() {
+  const taskId = args[1]
+  const statusArg = args.find(a => a.startsWith('--status='))?.split('=')[1]
+  const feedbackArg = args.find(a => a.startsWith('--feedback='))?.split('=')[1]
+
+  if (!taskId || !statusArg) {
+    console.error('\x1b[31m[Annotask]\x1b[0m Usage: annotask update-task <task-id> --status=<status> [--feedback=<text>]')
+    console.error('  Valid statuses: pending, applied, review, accepted, denied')
+    process.exit(1)
+  }
+
+  try {
+    const body: Record<string, string> = { status: statusArg }
+    if (feedbackArg) body.feedback = feedbackArg
+    const res = await fetch(`${apiUrl}/tasks/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json()
+    if (data.error) {
+      console.error(`\x1b[31m[Annotask]\x1b[0m ${data.error}`)
+      process.exit(1)
+    }
+    console.log(JSON.stringify(data, null, 2))
+  } catch (err: any) {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to update task: ${err.message}`)
     process.exit(1)
   }
 }
