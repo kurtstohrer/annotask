@@ -52,6 +52,18 @@ annotask init-skills         # Install agent skills into project
 - `src/cli/` — CLI tool for terminal interaction
 - `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
 
+## Shell Architecture
+
+`App.vue` is the shell orchestrator — it wires composables together and handles bridge events. **Do not add business logic directly to App.vue.** Extract new concerns into composables under `src/shell/composables/`.
+
+Key composables:
+- `useSelectionModel` — Element selection, rect tracking, live styles, style/class changes
+- `useTaskWorkflows` — Task creation flows, pending task panel, accept/deny, annotation restoration
+- `useAnnotationRects` — rAF loop for annotation overlay positioning
+- `useAnnotations` — Annotation state (pins, arrows, sections, highlights)
+- `useStyleEditor` — Style/class change recording, undo, report generation
+- `useIframeManager` — Bridge communication with the app iframe
+
 ## Key Shell Features
 
 - **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports

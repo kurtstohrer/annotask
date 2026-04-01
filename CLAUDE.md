@@ -40,6 +40,20 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/cli/` — CLI tool for terminal interaction
 - `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
 
+## Shell Architecture
+
+`App.vue` is the shell orchestrator — it wires composables together and handles bridge events. **Do not add business logic directly to App.vue.** Extract new concerns into composables under `src/shell/composables/`.
+
+Key composables:
+- `useSelectionModel` — Element selection state, rect tracking, hover, live styles, style/class change handlers
+- `useTaskWorkflows` — Task creation flows (pin, arrow, highlight, section → task), pending task panel, accept/deny, annotation restoration
+- `useAnnotationRects` — rAF loop keeping annotation overlays positioned during scroll/resize
+- `useAnnotations` — Pin, arrow, section, highlight annotation state and route filtering
+- `useStyleEditor` — Style/class change recording, undo, report generation
+- `useIframeManager` — Bridge communication with the app iframe
+
+When adding new shell features, create a new composable that accepts its dependencies via constructor params and returns refs + methods. App.vue should only orchestrate (init composables, wire bridge events, pass props to components).
+
 ## Key Shell Features
 
 - **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports
