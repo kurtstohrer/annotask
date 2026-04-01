@@ -41,7 +41,9 @@ describe('API endpoints', () => {
   let server: http.Server
   const tasks: any[] = []
 
+  let perfSnapshot: unknown = null
   const options = {
+    projectRoot: '/tmp/annotask-test',
     getReport: () => ({ version: '1.0', changes: [] }),
     getConfig: () => ({ version: '1.0' }),
     getDesignSpec: () => ({ version: '1.0', initialized: false }),
@@ -57,6 +59,14 @@ describe('API endpoints', () => {
       Object.assign(task, updates)
       return task
     },
+    deleteTask: (id: string) => {
+      const idx = tasks.findIndex(t => t.id === id)
+      if (idx === -1) return { error: 'Task not found' }
+      tasks.splice(idx, 1)
+      return { deleted: id }
+    },
+    getPerformance: () => perfSnapshot,
+    setPerformance: (data: unknown) => { perfSnapshot = data },
   }
 
   beforeAll(async () => {
@@ -180,6 +190,100 @@ describe('API endpoints', () => {
     it('returns error for nonexistent task', async () => {
       const { data } = await request(server, 'PATCH', '/__annotask/api/tasks/nonexistent', { status: 'applied' })
       expect(data.error).toBe('Task not found')
+    })
+  })
+
+  describe('agent feedback (needs_info)', () => {
+    it('accepts needs_info status with valid agent_feedback', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        status: 'needs_info',
+        agent_feedback: [{
+          asked_at: Date.now(),
+          message: 'Need clarification on auth',
+          questions: [
+            { id: 'q1', text: 'Which auth library?', type: 'choice', options: ['NextAuth', 'Clerk', 'Custom'] },
+            { id: 'q2', text: 'Where is the session config?', type: 'text' },
+          ],
+        }],
+      })
+      expect(status).toBe(200)
+      expect(data.status).toBe('needs_info')
+      expect(data.agent_feedback).toHaveLength(1)
+      expect(data.agent_feedback[0].questions).toHaveLength(2)
+    })
+
+    it('rejects non-array agent_feedback', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        agent_feedback: 'not an array',
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('array')
+    })
+
+    it('rejects agent_feedback entry without questions', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        agent_feedback: [{ asked_at: Date.now(), questions: [] }],
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('non-empty questions')
+    })
+
+    it('rejects choice question without options', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        agent_feedback: [{
+          asked_at: Date.now(),
+          questions: [{ id: 'q1', text: 'Pick one', type: 'choice' }],
+        }],
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('options')
+    })
+
+    it('rejects invalid question type', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        agent_feedback: [{
+          asked_at: Date.now(),
+          questions: [{ id: 'q1', text: 'Something', type: 'radio' }],
+        }],
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('type')
+    })
+
+    it('accepts blocked status with blocked_reason', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        status: 'blocked',
+        blocked_reason: 'Performance issue in third-party vue-router v4 — needs upstream fix',
+      })
+      expect(status).toBe(200)
+      expect(data.status).toBe('blocked')
+      expect(data.blocked_reason).toContain('vue-router')
+    })
+
+    it('accepts reply with answers and status back to in_progress', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        status: 'in_progress',
+        agent_feedback: [{
+          asked_at: Date.now() - 60000,
+          message: 'Need clarification on auth',
+          questions: [
+            { id: 'q1', text: 'Which auth library?', type: 'choice', options: ['NextAuth', 'Clerk', 'Custom'] },
+          ],
+          answered_at: Date.now(),
+          answers: [{ id: 'q1', value: 'NextAuth' }],
+        }],
+      })
+      expect(status).toBe(200)
+      expect(data.status).toBe('in_progress')
+      expect(data.agent_feedback[0].answers).toHaveLength(1)
+      expect(data.agent_feedback[0].answers[0].value).toBe('NextAuth')
     })
   })
 })

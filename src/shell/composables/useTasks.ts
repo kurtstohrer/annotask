@@ -1,6 +1,21 @@
 import { ref, computed } from 'vue'
 import { on as wsOn } from '../services/wsClient'
 
+export interface AgentFeedbackQuestion {
+  id: string
+  text: string
+  type: 'text' | 'choice'
+  options?: string[]
+}
+
+export interface AgentFeedbackEntry {
+  asked_at: number
+  message?: string
+  questions: AgentFeedbackQuestion[]
+  answered_at?: number
+  answers?: Array<{ id: string; value: string }>
+}
+
 export interface Task {
   id: string
   type: string
@@ -10,7 +25,7 @@ export interface Task {
   component?: string
   mfe?: string
   route?: string
-  status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied'
+  status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied' | 'needs_info' | 'blocked'
   intent?: string
   action?: string
   context?: Record<string, unknown>
@@ -19,6 +34,9 @@ export interface Task {
   element_context?: { ancestors: unknown[]; subtree: unknown }
   screenshot?: string
   feedback?: string
+  agent_feedback?: AgentFeedbackEntry[]
+  blocked_reason?: string
+  resolution?: string
   visual?: Record<string, unknown>
   createdAt: number
   updatedAt: number
@@ -72,6 +90,17 @@ async function updateTaskStatus(id: string, status: Task['status'], feedback?: s
   return updateTask(id, { status, ...(feedback ? { feedback } : {}), ...extra })
 }
 
+async function respondToAgent(id: string, answers: Array<{ id: string; value: string }>) {
+  const task = tasks.value.find(t => t.id === id)
+  if (!task?.agent_feedback?.length) return
+  const thread = structuredClone(task.agent_feedback)
+  const last = thread[thread.length - 1]
+  if (last.answered_at) return // already answered
+  last.answered_at = Date.now()
+  last.answers = answers
+  return updateTask(id, { status: 'in_progress', agent_feedback: thread })
+}
+
 let initialized = false
 
 export function useTasks() {
@@ -87,11 +116,13 @@ export function useTasks() {
   const pendingTasks = computed(() => tasks.value.filter(t => t.status === 'pending'))
   const reviewTasks = computed(() => tasks.value.filter(t => t.status === 'review'))
   const deniedTasks = computed(() => tasks.value.filter(t => t.status === 'denied'))
+  const needsInfoTasks = computed(() => tasks.value.filter(t => t.status === 'needs_info'))
+  const blockedTasks = computed(() => tasks.value.filter(t => t.status === 'blocked'))
 
   return {
-    tasks, pendingTasks, reviewTasks, deniedTasks,
+    tasks, pendingTasks, reviewTasks, deniedTasks, needsInfoTasks, blockedTasks,
     isLoading,
-    createTask, updateTask, deleteTask, updateTaskStatus,
+    createTask, updateTask, deleteTask, updateTaskStatus, respondToAgent,
     fetchTasks,
   }
 }

@@ -17,8 +17,10 @@ Visual markup tool for web apps. Annotate your UI in the browser — pins, arrow
    sections, add notes,         ──>  /annotask-apply
    describe what you want            Fetches pending tasks
                                      Locks each task (in_progress)
+                                     Asks for clarification if stuck
                                      Applies code change
-                                     Marks for review — one at a time
+                                     Marks for review with resolution
+ Answer agent questions           <──>
  Review changes live              <──
  as they come in:
    Accept ✓  or  Deny ✗
@@ -181,7 +183,7 @@ Start your dev server, then open:
 - **Breakpoint detection** — `annotask init` detects responsive breakpoints from Tailwind, Bootstrap, CSS variables, or media queries
 
 ### Infrastructure
-- **Task pipeline** — `pending → in_progress → review → accepted/denied` lifecycle with live WebSocket updates
+- **Task pipeline** — `pending → in_progress → review → accepted/denied` lifecycle with `needs_info` and `blocked` statuses for agent feedback, live WebSocket updates
 - **Security** — CORS restricted to localhost, field whitelisting on mutations, postMessage sender validation
 - **CLI** — `annotask tasks`, `annotask report`, `annotask watch` for terminal access
 - **API** — Full HTTP + WebSocket API for programmatic access

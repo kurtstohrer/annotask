@@ -11,7 +11,7 @@ export interface KeyboardShortcutDeps {
   templateGroupEids: Ref<string[]>
   selectionRects: Ref<unknown[]>
   groupRects: Ref<unknown[]>
-  activePanel: Ref<'inspector' | 'tasks' | 'a11y'>
+  activePanel: Ref<'inspector' | 'tasks' | 'a11y' | 'perf'>
   doUndo: () => void
   cancelSnip: () => void
   cancelPendingTask: () => void

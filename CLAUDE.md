@@ -48,7 +48,7 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
 - **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept (max 4MB)
 - **Task detail drawer** — Slide-out detail view with markdown rendering, inline editing, screenshot lightbox, element/file display, interaction log, JSON view, delete button
-- **Task lifecycle** — `pending → in_progress → review → accepted/denied` with live status updates
+- **Task lifecycle** — `pending → in_progress → review → accepted/denied` with `needs_info` (agent asks questions) and `blocked` (agent can't apply) statuses, resolution messages, live status updates
 - **Markdown descriptions** — Task descriptions support GitHub-flavored Markdown (rendered with `marked`)
 - **Security** — CORS restricted to localhost, PATCH/DELETE field whitelisting, postMessage sender validation
 - **Async I/O** — In-memory task cache with atomic file writes (no race conditions)

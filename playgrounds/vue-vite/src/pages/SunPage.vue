@@ -30,44 +30,44 @@ const layers = ref([
 
 <template>
   <div class="sun-page">
-    <div class="sun-hero">
-      <svg class="sun-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <radialGradient id="sunGrad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#fff7cc" />
-            <stop offset="30%" stop-color="#ffe066" />
-            <stop offset="60%" stop-color="#ffb833" />
-            <stop offset="80%" stop-color="#ff9500" />
-            <stop offset="100%" stop-color="#ff5e3a" />
-          </radialGradient>
-          <filter id="sunGlow">
-            <feGaussianBlur stdDeviation="6" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-        <!-- Rays -->
-        <g opacity="0.5">
-          <line v-for="i in 12" :key="i"
-            x1="100" y1="100"
-            :x2="100 + 95 * Math.cos((i * 30) * Math.PI / 180)"
-            :y2="100 + 95 * Math.sin((i * 30) * Math.PI / 180)"
-            stroke="#ff9500" stroke-width="3" stroke-linecap="round" />
-        </g>
-        <!-- Sun body -->
-        <circle cx="100" cy="100" r="60" fill="url(#sunGrad)" filter="url(#sunGlow)" />
-        <!-- Inner highlight -->
-        <circle cx="90" cy="88" r="20" fill="rgba(255,255,255,0.15)" />
-      </svg>
-      <div class="sun-title-block">
-        <h2 class="sun-title">The Sun</h2>
-        <p class="sun-subtitle">Our nearest star and the center of the Solar System</p>
+    <div class="sun-intro">
+      <div class="sun-hero">
+        <div class="sun-title-block">
+          <h2 class="sun-title">The Sun</h2>
+          <p class="sun-subtitle">Our nearest star and the center of the Solar System</p>
+        </div>
+        <svg class="sun-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="sunGrad" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#fff7cc" />
+              <stop offset="30%" stop-color="#ffe066" />
+              <stop offset="60%" stop-color="#ffb833" />
+              <stop offset="80%" stop-color="#ff9500" />
+              <stop offset="100%" stop-color="#ff5e3a" />
+            </radialGradient>
+            <filter id="sunGlow">
+              <feGaussianBlur stdDeviation="6" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+          <!-- Rays -->
+          <g opacity="0.5">
+            <line v-for="i in 12" :key="i"
+              x1="100" y1="100"
+              :x2="100 + 95 * Math.cos((i * 30) * Math.PI / 180)"
+              :y2="100 + 95 * Math.sin((i * 30) * Math.PI / 180)"
+              stroke="#ff9500" stroke-width="3" stroke-linecap="round" />
+          </g>
+          <!-- Sun body -->
+          <circle cx="100" cy="100" r="60" fill="url(#sunGrad)" filter="url(#sunGlow)" />
+          <!-- Inner highlight -->
+          <circle cx="90" cy="88" r="20" fill="rgba(255,255,255,0.15)" />
+        </svg>
       </div>
-    </div>
 
-    <div class="sun-content">
       <section class="description-section">
         <h3 class="section-title">About</h3>
         <p class="description-text">
@@ -83,6 +83,9 @@ const layers = ref([
           currents, weather, climate, radiation belts, and auroras.
         </p>
       </section>
+    </div>
+
+    <div class="sun-content">
 
       <section class="facts-section">
         <h3 class="section-title">Key Facts</h3>
@@ -121,30 +124,34 @@ const layers = ref([
   gap: 0;
 }
 
-.sun-hero {
-  position: relative;
+.sun-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
   padding: 48px 32px 40px;
-  text-align: center;
-  overflow: hidden;
+}
+
+.sun-hero {
+  flex-shrink: 0;
+  text-align: left;
 }
 
 .sun-svg {
   width: 180px;
   height: 180px;
-  margin: 0 auto 16px;
+  margin: 0 0 0;
   display: block;
 }
 
 .sun-title-block {
-  position: relative;
-  z-index: 1;
+  margin-bottom: 12px;
 }
 
 .sun-title {
   font-size: 32px;
   font-weight: 800;
   color: #f8fafc;
-  margin: 0 0 8px;
+  margin: 0 0 4px;
   letter-spacing: -0.03em;
 }
 
@@ -152,6 +159,11 @@ const layers = ref([
   font-size: 14px;
   color: #9ca3af;
   margin: 0;
+}
+
+.description-section {
+  flex: 1;
+  min-width: 0;
 }
 
 .sun-content {

@@ -272,3 +272,77 @@ export type InsertVueComponentResult = InsertComponentResult
 export interface CheckSourceMappingResult {
   hasMapping: boolean
 }
+
+// ── Performance ────────────────────────────────────────
+
+export type WebVitalRating = 'good' | 'needs-improvement' | 'poor'
+
+export interface WebVitalMetric {
+  name: 'LCP' | 'FCP' | 'CLS' | 'INP' | 'TTFB'
+  value: number
+  rating: WebVitalRating
+}
+
+export interface ResourceEntry {
+  name: string
+  initiatorType: string
+  transferSize: number
+  duration: number
+  startTime: number
+}
+
+export interface LongTaskEntry {
+  startTime: number
+  duration: number
+}
+
+export interface LayoutShiftEntry {
+  value: number
+  startTime: number
+  hadRecentInput: boolean
+}
+
+export interface PerfNavigationTiming {
+  domContentLoaded: number
+  loadComplete: number
+  domInteractive: number
+  ttfb: number
+  responseTime: number
+  domProcessing: number
+}
+
+/** A single event captured during a performance recording */
+export interface PerfTimelineEvent {
+  /** Milliseconds since recording started */
+  time: number
+  type: 'action' | 'long-task' | 'layout-shift' | 'paint' | 'navigation'
+  label: string
+  duration?: number
+  value?: number
+  detail?: string
+}
+
+/** Result from perf:stop-recording */
+export interface PerfRecording {
+  startTime: number
+  endTime: number
+  duration: number
+  url: string
+  route: string
+  events: PerfTimelineEvent[]
+  vitals: WebVitalMetric[]
+  navigation?: PerfNavigationTiming
+  resources: ResourceEntry[]
+  error?: string
+}
+
+/** Result from perf:scan (quick snapshot of current vitals) */
+export interface PerfScanResult {
+  timestamp: number
+  url: string
+  route: string
+  vitals: WebVitalMetric[]
+  navigation?: PerfNavigationTiming
+  resources: ResourceEntry[]
+  error?: string
+}

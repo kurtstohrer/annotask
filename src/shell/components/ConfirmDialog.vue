@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
+
 defineProps<{
   message: string
   confirmLabel?: string
@@ -9,6 +11,14 @@ const emit = defineEmits<{
   confirm: []
   cancel: []
 }>()
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter') { e.preventDefault(); emit('confirm') }
+  if (e.key === 'Escape') { e.preventDefault(); emit('cancel') }
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>

@@ -166,13 +166,14 @@ function tempClass(c: number): Record<string, boolean> {
         </template>
       </Column>
 
-      <Column style="width: 80px">
+      <Column header="Actions" style="width: 80px">
         <template #body="{ data }">
           <Button
             icon="pi pi-arrow-right"
             size="small"
             text
             rounded
+            :aria-label="`View ${data.name} details`"
             @click="emit('select', data)"
           />
         </template>
@@ -250,15 +251,22 @@ function tempClass(c: number): Record<string, boolean> {
   font-size: 12px;
   font-weight: 600;
   border: 1px solid var(--border);
-  background: var(--surface-alt);
-  color: #000;
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
   transition: all 0.15s;
 }
+.filter-chip.badge-terrestrial { border-color: #047857; color: #a7f3d0; background: transparent; }
+.filter-chip.badge-gas-giant { border-color: #e11d48; color: #fbbf24; background: transparent; }
+.filter-chip.badge-ice-giant { border-color: #6366f1; color: #67e8f9; background: transparent; }
+.filter-chip:hover { filter: brightness(1.2); }
+.filter-chip:active { transform: scale(0.95); }
 .filter-chip.active {
   color: #000;
   border-color: transparent;
 }
+.filter-chip.active:hover { filter: brightness(1.15); }
+.filter-chip.active:active { filter: brightness(0.9); transform: scale(0.95); }
 .filter-chip.active.badge-terrestrial { background: linear-gradient(135deg, #a7f3d0, #047857); }
 .filter-chip.active.badge-gas-giant { background: linear-gradient(135deg, #fbbf24, #e11d48); }
 .filter-chip.active.badge-ice-giant { background: linear-gradient(135deg, #67e8f9, #6366f1); }
@@ -279,6 +287,6 @@ function tempClass(c: number): Record<string, boolean> {
 
 :deep(.p-datatable-thead > tr > th) {
   background-color: #3b3b3b !important;
-  color: #605c5e !important;
+  color: #aaaaaa !important;
 }
 </style>

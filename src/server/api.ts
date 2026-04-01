@@ -12,16 +12,18 @@ export interface APIOptions {
   updateTask: (id: string, updates: Record<string, unknown>) => unknown
   deleteTask: (id: string) => unknown
   addTask: (task: Record<string, unknown>) => unknown
+  getPerformance: () => unknown
+  setPerformance: (data: unknown) => void
 }
 
 const MAX_BODY_SIZE = 4_194_304
-const VALID_TASK_STATUSES = new Set(['pending', 'in_progress', 'applied', 'review', 'accepted', 'denied'])
+const VALID_TASK_STATUSES = new Set(['pending', 'in_progress', 'applied', 'review', 'accepted', 'denied', 'needs_info', 'blocked'])
 
 /** Fields that PATCH /tasks/:id is allowed to update */
 const PATCHABLE_TASK_FIELDS = new Set([
   'status', 'description', 'notes', 'screenshot', 'feedback',
   'intent', 'action', 'context', 'viewport', 'interaction_history',
-  'element_context', 'mfe',
+  'element_context', 'mfe', 'agent_feedback', 'blocked_reason', 'resolution',
 ])
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -112,6 +114,8 @@ export function createAPIMiddleware(options: APIOptions) {
 
     if (path === 'report' && req.method === 'GET') {
       const report = options.getReport() as any ?? { version: '1.0', changes: [] }
+      const perf = options.getPerformance()
+      if (perf) report.performance = perf
       const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
       const mfeFilter = urlObj.searchParams.get('mfe')
       if (mfeFilter && report.changes) {
@@ -120,6 +124,22 @@ export function createAPIMiddleware(options: APIOptions) {
       } else {
         res.end(JSON.stringify(report, null, 2))
       }
+      return
+    }
+
+    if (path === 'performance' && req.method === 'GET') {
+      const perf = options.getPerformance()
+      res.end(JSON.stringify(perf ?? null, null, 2))
+      return
+    }
+
+    if (path === 'performance' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body')
+      options.setPerformance(parsed.data)
+      res.end(JSON.stringify({ ok: true }))
       return
     }
 
@@ -188,6 +208,27 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'Request body must be a JSON object')
       if (body.status !== undefined && !VALID_TASK_STATUSES.has(body.status as string)) {
         return sendError(res, 400, `Invalid status. Must be one of: ${[...VALID_TASK_STATUSES].join(', ')}`)
+      }
+      // Validate agent_feedback structure
+      if (body.agent_feedback !== undefined) {
+        const af = body.agent_feedback
+        if (!Array.isArray(af)) return sendError(res, 400, 'agent_feedback must be an array')
+        for (const entry of af as any[]) {
+          if (!entry || typeof entry !== 'object') return sendError(res, 400, 'agent_feedback entries must be objects')
+          if (typeof entry.asked_at !== 'number') return sendError(res, 400, 'agent_feedback entry requires asked_at (number)')
+          if (!Array.isArray(entry.questions) || entry.questions.length === 0) return sendError(res, 400, 'agent_feedback entry requires non-empty questions array')
+          for (const q of entry.questions) {
+            if (typeof q.id !== 'string' || typeof q.text !== 'string') return sendError(res, 400, 'Each question requires id (string) and text (string)')
+            if (q.type !== 'text' && q.type !== 'choice') return sendError(res, 400, 'Question type must be "text" or "choice"')
+            if (q.type === 'choice' && (!Array.isArray(q.options) || q.options.length === 0)) return sendError(res, 400, 'Choice questions require non-empty options array')
+          }
+          if (entry.answers !== undefined) {
+            if (!Array.isArray(entry.answers)) return sendError(res, 400, 'answers must be an array')
+            for (const a of entry.answers) {
+              if (typeof a.id !== 'string' || typeof a.value !== 'string') return sendError(res, 400, 'Each answer requires id (string) and value (string)')
+            }
+          }
+        }
       }
       // Strip unknown fields — only allow whitelisted fields through
       const sanitized: Record<string, unknown> = {}

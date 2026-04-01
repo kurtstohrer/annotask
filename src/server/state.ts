@@ -22,6 +22,8 @@ export interface ProjectState {
   addTask: (task: Record<string, unknown>) => unknown
   updateTask: (id: string, updates: Record<string, unknown>) => unknown
   deleteTask: (id: string) => unknown
+  getPerformanceSnapshot: () => unknown
+  setPerformanceSnapshot: (data: unknown) => void
   dispose: () => void
 }
 
@@ -133,9 +135,26 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     return { deleted: id }
   }
 
+  // ── Performance snapshot ──
+  const perfPath = path.join(projectRoot, '.annotask', 'performance.json')
+  let perfSnapshot: unknown = null
+
+  function getPerformanceSnapshot(): unknown {
+    if (perfSnapshot !== null) return perfSnapshot
+    try { perfSnapshot = JSON.parse(fs.readFileSync(perfPath, 'utf-8')) } catch {}
+    return perfSnapshot
+  }
+
+  function setPerformanceSnapshot(data: unknown) {
+    perfSnapshot = data
+    writeQueue = writeQueue
+      .then(() => atomicWrite(perfPath, JSON.stringify(data, null, 2)))
+      .catch(() => {})
+  }
+
   function dispose() {
     if (specWatcher) { specWatcher.close(); specWatcher = null }
   }
 
-  return { getDesignSpec, getConfig, getTasks: loadTasksSync, addTask, updateTask, deleteTask, dispose }
+  return { getDesignSpec, getConfig, getTasks: loadTasksSync, addTask, updateTask, deleteTask, getPerformanceSnapshot, setPerformanceSnapshot, dispose }
 }

@@ -50,6 +50,37 @@ export function bridgeClientScript(): string {
     // type is not needed for responses — shell matches by id
   }
 
+  // ── Performance State (declared early so message handler can access) ──
+  var PERF_THRESHOLDS = {
+    LCP:  { good: 2500, poor: 4000 },
+    FCP:  { good: 1800, poor: 3000 },
+    CLS:  { good: 0.1,  poor: 0.25 },
+    INP:  { good: 200,  poor: 500 },
+    TTFB: { good: 800,  poor: 1800 }
+  };
+
+  function ratePerfVital(name, value) {
+    var t = PERF_THRESHOLDS[name];
+    if (!t) return 'good';
+    if (value <= t.good) return 'good';
+    if (value <= t.poor) return 'needs-improvement';
+    return 'poor';
+  }
+
+  var perfVitals = {};
+  var perfRecording = false;
+  var perfRecordStart = 0;
+  var perfRecordEvents = [];
+
+  function perfRecordEvent(evtType, label, duration, value) {
+    if (!perfRecording) return;
+    var t = performance.now() - perfRecordStart;
+    var evt = { time: Math.round(t), type: evtType, label: label };
+    if (duration !== undefined) evt.duration = Math.round(duration);
+    if (value !== undefined) evt.value = value;
+    if (perfRecordEvents.length < 500) perfRecordEvents.push(evt);
+  }
+
   // ── Source Element Resolution ─────────────────────────
   function hasSourceAttr(el) {
     return el.hasAttribute && (el.hasAttribute('data-annotask-file') || el.hasAttribute('data-astro-source-file'));
@@ -296,6 +327,10 @@ export function bridgeClientScript(): string {
       href: href,
       component: data.component || '',
     });
+
+    // Record user actions for perf timeline
+    var actionLabel = tag + (text ? ' "' + text.substring(0, 40) + '"' : '') + (href ? ' \u2192 ' + href : '');
+    perfRecordEvent('action', 'Click ' + actionLabel);
   }
 
   document.addEventListener('click', onUserAction, { capture: true });
@@ -308,6 +343,7 @@ export function bridgeClientScript(): string {
     if (path !== lastRoute) {
       lastRoute = path;
       sendToShell('route:changed', { path: path });
+      perfRecordEvent('navigation', 'Navigate ' + path);
     }
   }
 
@@ -675,6 +711,125 @@ export function bridgeClientScript(): string {
       return;
     }
 
+    // ── Performance Recording ──
+    if (type === 'perf:start-recording') {
+      perfRecording = true;
+      perfRecordStart = performance.now();
+      perfRecordEvents = [];
+      perfRecordEvents.push({ time: 0, type: 'navigation', label: 'Recording started on ' + window.location.pathname });
+      if (id) respond(id, { ok: true });
+      return;
+    }
+
+    if (type === 'perf:stop-recording') {
+      perfRecording = false;
+      var recEnd = performance.now();
+      var recDuration = recEnd - perfRecordStart;
+      var vitalsArr = [];
+      var recNavTiming = null;
+      var recResources = [];
+      var recEvents = perfRecordEvents.slice(0, 500);
+      perfRecordEvents = [];
+      try {
+        for (var vk in perfVitals) { if (perfVitals.hasOwnProperty(vk) && perfVitals[vk]) vitalsArr.push(perfVitals[vk]); }
+        try {
+          var navE = performance.getEntriesByType('navigation');
+          if (navE && navE.length > 0) {
+            var nv = navE[0];
+            recNavTiming = {
+              domContentLoaded: Number(nv.domContentLoadedEventEnd - nv.startTime) || 0,
+              loadComplete: Number(nv.loadEventEnd - nv.startTime) || 0,
+              domInteractive: Number(nv.domInteractive - nv.startTime) || 0,
+              ttfb: Number(nv.responseStart - nv.requestStart) || 0,
+              responseTime: Number(nv.responseEnd - nv.responseStart) || 0,
+              domProcessing: Number(nv.domComplete - nv.domInteractive) || 0
+            };
+            if (!perfVitals.TTFB) {
+              var tv = Number(nv.responseStart - nv.requestStart) || 0;
+              perfVitals.TTFB = { name: 'TTFB', value: tv, rating: ratePerfVital('TTFB', tv) };
+            }
+          }
+        } catch(e) {}
+        try {
+          var rawRes = Array.prototype.slice.call(performance.getEntriesByType('resource'));
+          rawRes.sort(function(a, b) { return (b.transferSize || 0) - (a.transferSize || 0); });
+          for (var rri = 0; rri < rawRes.length && rri < 200; rri++) {
+            var rr = rawRes[rri];
+            recResources.push({
+              name: String(rr.name || '').substring(0, 200),
+              initiatorType: String(rr.initiatorType || ''),
+              transferSize: Number(rr.transferSize) || 0,
+              duration: Number(rr.duration) || 0,
+              startTime: Number(rr.startTime) || 0
+            });
+          }
+        } catch(e) {}
+      } catch(e) {}
+      respond(id, {
+        startTime: perfRecordStart,
+        endTime: recEnd,
+        duration: recDuration,
+        url: String(window.location.href),
+        route: String(window.location.pathname),
+        events: recEvents,
+        vitals: vitalsArr,
+        navigation: recNavTiming,
+        resources: recResources
+      });
+      return;
+    }
+
+    if (type === 'perf:scan') {
+      try {
+        var scanVitals = [];
+        for (var svk in perfVitals) { if (perfVitals.hasOwnProperty(svk) && perfVitals[svk]) scanVitals.push(perfVitals[svk]); }
+
+        var scanNav = null;
+        var scanRes = [];
+        try {
+          var sNavE = performance.getEntriesByType('navigation');
+          if (sNavE && sNavE.length > 0) {
+            var sn = sNavE[0];
+            scanNav = {
+              domContentLoaded: Number(sn.domContentLoadedEventEnd - sn.startTime) || 0,
+              loadComplete: Number(sn.loadEventEnd - sn.startTime) || 0,
+              domInteractive: Number(sn.domInteractive - sn.startTime) || 0,
+              ttfb: Number(sn.responseStart - sn.requestStart) || 0,
+              responseTime: Number(sn.responseEnd - sn.responseStart) || 0,
+              domProcessing: Number(sn.domComplete - sn.domInteractive) || 0
+            };
+          }
+        } catch(e) {}
+        try {
+          var sRaw = Array.prototype.slice.call(performance.getEntriesByType('resource'));
+          sRaw.sort(function(a, b) { return (b.transferSize || 0) - (a.transferSize || 0); });
+          for (var sri = 0; sri < sRaw.length && sri < 200; sri++) {
+            var sr = sRaw[sri];
+            scanRes.push({
+              name: String(sr.name || '').substring(0, 200),
+              initiatorType: String(sr.initiatorType || ''),
+              transferSize: Number(sr.transferSize) || 0,
+              duration: Number(sr.duration) || 0,
+              startTime: Number(sr.startTime) || 0
+            });
+          }
+        } catch(e) {}
+      } catch(e) {
+        scanVitals = [];
+        scanNav = null;
+        scanRes = [];
+      }
+      respond(id, {
+        timestamp: Date.now(),
+        url: String(window.location.href),
+        route: String(window.location.pathname),
+        vitals: scanVitals || [],
+        navigation: scanNav,
+        resources: scanRes || []
+      });
+      return;
+    }
+
     // ── Screenshot Capture ──
     if (type === 'screenshot:capture') {
       var clipRect = payload.rect;
@@ -937,6 +1092,11 @@ export function bridgeClientScript(): string {
       respond(id, { path: window.location.pathname });
       return;
     }
+
+    // ── Fallback: respond with error for unknown request types ──
+    if (id) {
+      respond(id, { error: 'unsupported bridge request: ' + type });
+    }
   });
 
   // ── Helpers ───────────────────────────────────────────
@@ -1087,6 +1247,80 @@ export function bridgeClientScript(): string {
       };
       return true;
     } catch(e) { return false; }
+  }
+
+  // ── Performance Observers ─────────────────────────────
+  var supportedTypes = (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
+
+  if (supportedTypes.indexOf('largest-contentful-paint') !== -1) {
+    try {
+      new PerformanceObserver(function(list) {
+        var entries = list.getEntries();
+        var last = entries[entries.length - 1];
+        if (last) {
+          perfVitals.LCP = { name: 'LCP', value: last.startTime, rating: ratePerfVital('LCP', last.startTime) };
+          perfRecordEvent('paint', 'LCP ' + Math.round(last.startTime) + 'ms', undefined, last.startTime);
+        }
+      }).observe({ type: 'largest-contentful-paint', buffered: true });
+    } catch(e) {}
+  }
+
+  if (supportedTypes.indexOf('paint') !== -1) {
+    try {
+      new PerformanceObserver(function(list) {
+        var entries = list.getEntries();
+        for (var pi = 0; pi < entries.length; pi++) {
+          if (entries[pi].name === 'first-contentful-paint') {
+            perfVitals.FCP = { name: 'FCP', value: entries[pi].startTime, rating: ratePerfVital('FCP', entries[pi].startTime) };
+            perfRecordEvent('paint', 'FCP ' + Math.round(entries[pi].startTime) + 'ms', undefined, entries[pi].startTime);
+          }
+        }
+      }).observe({ type: 'paint', buffered: true });
+    } catch(e) {}
+  }
+
+  if (supportedTypes.indexOf('layout-shift') !== -1) {
+    try {
+      var perfClsValue = 0;
+      new PerformanceObserver(function(list) {
+        var entries = list.getEntries();
+        for (var si = 0; si < entries.length; si++) {
+          var entry = entries[si];
+          if (!entry.hadRecentInput) {
+            perfClsValue += entry.value;
+            perfRecordEvent('layout-shift', 'Layout shift ' + entry.value.toFixed(4), undefined, entry.value);
+          }
+        }
+        perfVitals.CLS = { name: 'CLS', value: perfClsValue, rating: ratePerfVital('CLS', perfClsValue) };
+      }).observe({ type: 'layout-shift', buffered: true });
+    } catch(e) {}
+  }
+
+  if (supportedTypes.indexOf('longtask') !== -1) {
+    try {
+      new PerformanceObserver(function(list) {
+        var entries = list.getEntries();
+        for (var li = 0; li < entries.length; li++) {
+          perfRecordEvent('long-task', 'Long task ' + Math.round(entries[li].duration) + 'ms', entries[li].duration);
+        }
+      }).observe({ type: 'longtask', buffered: true });
+    } catch(e) {}
+  }
+
+  if (supportedTypes.indexOf('event') !== -1) {
+    try {
+      var perfInpMax = 0;
+      new PerformanceObserver(function(list) {
+        var entries = list.getEntries();
+        for (var ei = 0; ei < entries.length; ei++) {
+          var dur = entries[ei].duration;
+          if (dur > perfInpMax) {
+            perfInpMax = dur;
+            perfVitals.INP = { name: 'INP', value: perfInpMax, rating: ratePerfVital('INP', perfInpMax) };
+          }
+        }
+      }).observe({ type: 'event', buffered: true, durationThreshold: 16 });
+    } catch(e) {}
   }
 
   // ── Ready ─────────────────────────────────────────────

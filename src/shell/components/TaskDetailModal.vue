@@ -14,6 +14,7 @@ const emit = defineEmits<{
   deny: [id: string]
   delete: [id: string]
   update: [id: string, fields: Record<string, unknown>]
+  reply: [id: string, answers: Array<{ id: string; value: string }>]
 }>()
 
 const previewImage = ref<string | null>(null)
@@ -39,6 +40,8 @@ const statusLabel: Record<string, string> = {
   review: 'In Review',
   accepted: 'Accepted',
   denied: 'Denied',
+  needs_info: 'Needs Info',
+  blocked: 'Blocked',
 }
 
 const isEditable = computed(() => props.task.status === 'pending' || props.task.status === 'denied')
@@ -53,6 +56,11 @@ const descriptionHtml = computed(() => {
 const feedbackHtml = computed(() => {
   if (!props.task.feedback) return ''
   return marked.parse(props.task.feedback, { breaks: true, gfm: true }) as string
+})
+
+const blockedReasonHtml = computed(() => {
+  if (!props.task.blocked_reason) return ''
+  return marked.parse(props.task.blocked_reason, { breaks: true, gfm: true }) as string
 })
 
 // ── Selected elements (from context) ──
@@ -196,6 +204,36 @@ const screenshots = computed(() => {
   if (props.task.screenshot) list.push('/__annotask/screenshots/' + props.task.screenshot)
   return list
 })
+
+// ── Agent feedback ──
+import type { AgentFeedbackEntry } from '../composables/useTasks'
+
+const replyDraft = ref<Record<string, string>>({})
+
+const pendingExchange = computed(() => {
+  const af = props.task.agent_feedback
+  if (!af?.length) return null
+  const last = af[af.length - 1]
+  return last.answered_at ? null : last
+})
+
+function selectChoice(questionId: string, value: string) {
+  replyDraft.value[questionId] = value
+}
+
+function submitReply() {
+  const exchange = pendingExchange.value
+  if (!exchange) return
+  const answers = exchange.questions.map(q => ({
+    id: q.id,
+    value: replyDraft.value[q.id] || '',
+  }))
+  if (answers.some(a => !a.value)) return // all questions must be answered
+  emit('reply', props.task.id, answers)
+  replyDraft.value = {}
+}
+
+watch(() => props.task.id, () => { replyDraft.value = {} })
 
 function startEditing() {
   if (!isEditable.value) return
@@ -350,6 +388,55 @@ function onKeydown(e: KeyboardEvent) {
           </div>
         </section>
 
+        <!-- Agent Feedback Thread -->
+        <section v-if="task.agent_feedback?.length" class="td-section">
+          <h4 class="td-label">Agent Questions</h4>
+          <div v-for="(exchange, ei) in task.agent_feedback" :key="ei" class="td-agent-exchange" :class="{ answered: !!exchange.answered_at }">
+            <div v-if="exchange.message" class="td-agent-msg" v-html="marked.parse(exchange.message, { breaks: true, gfm: true })" />
+            <div v-for="q in exchange.questions" :key="q.id" class="td-agent-question">
+              <p class="td-agent-q-text">{{ q.text }}</p>
+              <!-- Answered: show answer -->
+              <template v-if="exchange.answered_at">
+                <div class="td-agent-answer">{{ exchange.answers?.find(a => a.id === q.id)?.value }}</div>
+              </template>
+              <!-- Unanswered: interactive form -->
+              <template v-else>
+                <div v-if="q.type === 'choice' && q.options" class="td-agent-options">
+                  <button
+                    v-for="opt in q.options"
+                    :key="opt"
+                    class="td-agent-option"
+                    :class="{ selected: replyDraft[q.id] === opt }"
+                    @click="selectChoice(q.id, opt)"
+                  >{{ opt }}</button>
+                </div>
+                <textarea
+                  v-else
+                  class="td-reply-textarea"
+                  :value="replyDraft[q.id] || ''"
+                  @input="replyDraft[q.id] = ($event.target as HTMLTextAreaElement).value"
+                  placeholder="Type your answer..."
+                  rows="2"
+                />
+              </template>
+            </div>
+          </div>
+        </section>
+
+        <!-- Resolution -->
+        <section v-if="task.resolution" class="td-section">
+          <h4 class="td-label">Resolution</h4>
+          <div class="td-resolution">{{ task.resolution }}</div>
+        </section>
+
+        <!-- Blocked reason -->
+        <section v-if="task.blocked_reason" class="td-section">
+          <h4 class="td-label">Blocked</h4>
+          <div class="td-blocked">
+            <div class="td-markdown" v-html="blockedReasonHtml" />
+          </div>
+        </section>
+
         <!-- Feedback (markdown) -->
         <section v-if="task.feedback" class="td-section">
           <h4 class="td-label">Feedback</h4>
@@ -425,7 +512,14 @@ function onKeydown(e: KeyboardEvent) {
       </div>
 
       <!-- Footer actions -->
-      <div v-if="task.status === 'review'" class="td-footer">
+      <div v-if="task.status === 'needs_info' && pendingExchange" class="td-footer">
+        <button class="td-reply-btn" :disabled="pendingExchange.questions.some(q => !replyDraft[q.id])" @click="submitReply">Reply &amp; Resume</button>
+      </div>
+      <div v-else-if="task.status === 'blocked'" class="td-footer">
+        <button class="td-deny-btn" @click="emit('deny', task.id)">Push Back</button>
+        <button class="td-dismiss-btn" @click="showDeleteConfirm = true">Dismiss</button>
+      </div>
+      <div v-else-if="task.status === 'review'" class="td-footer">
         <button class="td-accept" @click="emit('accept', task.id)">Accept</button>
         <button class="td-deny-btn" @click="emit('deny', task.id)">Deny</button>
       </div>
@@ -752,4 +846,74 @@ function onKeydown(e: KeyboardEvent) {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 11px; line-height: 1.6; color: #86efac; tab-size: 2;
 }
+
+/* Resolution */
+.td-resolution {
+  padding: 8px 12px; background: rgba(34,197,94,0.06); border-radius: 6px;
+  border-left: 3px solid #22c55e; font-size: 12px; color: #86efac; line-height: 1.5;
+}
+
+/* Status: needs_info */
+.td-status.needs_info { background: rgba(168,85,247,0.15); color: #c084fc; }
+
+/* Status: blocked */
+.td-status.blocked { background: rgba(249,115,22,0.15); color: #fb923c; }
+
+/* Blocked reason */
+.td-blocked {
+  padding: 10px 12px; background: rgba(249,115,22,0.06); border-radius: 6px;
+  border-left: 3px solid #f97316;
+}
+.td-blocked .td-markdown { color: #fb923c; }
+
+/* Dismiss button */
+.td-dismiss-btn {
+  flex: 1; padding: 8px 0; font-size: 12px; font-weight: 600;
+  border: none; border-radius: 6px; cursor: pointer; transition: all 0.12s;
+  background: rgba(113,113,122,0.15); color: #a1a1aa;
+}
+.td-dismiss-btn:hover { background: rgba(113,113,122,0.3); color: #d4d4d8; }
+
+/* Agent feedback thread */
+.td-agent-exchange {
+  padding: 10px 12px; border-radius: 6px; margin-bottom: 8px;
+  border-left: 3px solid #818cf8; background: rgba(129,140,248,0.06);
+}
+.td-agent-exchange.answered { opacity: 0.7; }
+.td-agent-msg {
+  font-size: 12px; color: var(--text); margin-bottom: 8px; line-height: 1.5;
+}
+.td-agent-msg p { margin: 0 0 4px; }
+.td-agent-question { margin-bottom: 10px; }
+.td-agent-question:last-child { margin-bottom: 0; }
+.td-agent-q-text {
+  font-size: 12px; font-weight: 600; color: var(--text); margin: 0 0 6px;
+}
+.td-agent-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.td-agent-option {
+  padding: 5px 12px; font-size: 11px; font-weight: 500;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; cursor: pointer; transition: all 0.12s;
+}
+.td-agent-option:hover { border-color: #818cf8; color: #a5b4fc; }
+.td-agent-option.selected {
+  background: rgba(129,140,248,0.2); border-color: #818cf8; color: #a5b4fc;
+}
+.td-agent-answer {
+  padding: 5px 10px; background: rgba(34,197,94,0.08); border-radius: 5px;
+  font-size: 11px; color: #86efac; border-left: 2px solid #22c55e;
+}
+.td-reply-textarea {
+  width: 100%; padding: 8px 10px; font-size: 12px; font-family: inherit;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; resize: vertical; outline: none; box-sizing: border-box;
+}
+.td-reply-textarea:focus { border-color: #818cf8; }
+.td-reply-btn {
+  flex: 1; padding: 8px 0; font-size: 12px; font-weight: 600;
+  border: none; border-radius: 6px; cursor: pointer; transition: all 0.12s;
+  background: rgba(129,140,248,0.15); color: #a5b4fc;
+}
+.td-reply-btn:hover:not(:disabled) { background: #818cf8; color: white; }
+.td-reply-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

@@ -15,6 +15,10 @@ import { useCanvasDrawing } from './composables/useCanvasDrawing'
 import { useScreenshots } from './composables/useScreenshots'
 import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
 import { useA11yScanner } from './composables/useA11yScanner'
+import { usePerfMonitor } from './composables/usePerfMonitor'
+import PerfTab from './components/PerfTab.vue'
+import FindingDrawer from './components/FindingDrawer.vue'
+import type { A11yViolation } from './composables/useA11yScanner'
 import type { ClickElementEvent, HoverEnterEvent, BridgeRect } from '../shared/bridge-types'
 import ModeToolbar from './components/ModeToolbar.vue'
 import ArrowColorPicker from './components/ArrowColorPicker.vue'
@@ -158,9 +162,9 @@ const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('notes')
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
-const activePanel = ref<'inspector' | 'tasks' | 'a11y'>(
-  (['inspector', 'tasks', 'a11y'].includes(localStorage.getItem('annotask:activePanel') || ''))
-    ? localStorage.getItem('annotask:activePanel') as 'inspector' | 'tasks' | 'a11y'
+const activePanel = ref<'inspector' | 'tasks' | 'a11y' | 'perf'>(
+  (['inspector', 'tasks', 'a11y', 'perf'].includes(localStorage.getItem('annotask:activePanel') || ''))
+    ? localStorage.getItem('annotask:activePanel') as 'inspector' | 'tasks' | 'a11y' | 'perf'
     : 'inspector'
 )
 watch(activePanel, (v) => localStorage.setItem('annotask:activePanel', v))
@@ -318,6 +322,18 @@ const applyToGroup = ref(true)
 // A11y scanner (needs primarySelection and currentRoute)
 const a11yScanner = useA11yScanner(iframe, taskSystem, primarySelection as any, currentRoute)
 const { a11yViolations, a11yLoading, a11yError, a11yScanned, a11yScanTarget, a11yTaskRules, scanA11y, createA11yTask } = a11yScanner
+const detailA11yViolation = ref<A11yViolation | null>(null)
+function onCreateA11yTask(v: A11yViolation) { createA11yTask(v); detailA11yViolation.value = null }
+
+const perfMonitor = usePerfMonitor(iframe, taskSystem, currentRoute)
+const { recording: perfRecording, recordingResult: perfRecordingResult, recordingError: perfRecordingError,
+        scanResult: perfScanResult, scanLoading: perfScanLoading, scanError: perfScanError, hasData: perfHasData,
+        timeline: perfTimeline, vitals: perfVitals, perfScore, perfFindings, perfTaskFindings,
+        startRecording, stopRecording: stopPerfRecording, scanPerf: runPerfScan, createPerfTask } = perfMonitor
+function startPerfRecording() {
+  interactionMode.value = 'interact'
+  startRecording()
+}
 
 const editTargetEids = computed<string[]>(() => {
   if (selectedEids.value.length > 1) return selectedEids.value
@@ -1202,8 +1218,8 @@ const appUrl = computed(() => {
       <div class="toolbar-left">
         <svg class="logo" viewBox="0 0 85.81 90.51" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="m72.02 90.31c-.17-.1-.43-.48-.57-.82-.37-.93-1.97-3.46-2.74-4.33-.66-.74-.77-.79-5.99-2.5-2.93-.96-5.52-1.85-5.77-1.98-.47-.25-.35.01-4.7-9.99-1.1-2.53-2.11-4.72-2.25-4.87-.22-.24-1.7-.26-11.7-.21-6.3.03-11.51.12-11.58.19-.11.11-2.06 4.98-4.34 10.84-.4 1.04-1.21 3.11-1.8 4.6-.58 1.49-1.52 3.88-2.08 5.32-.64 1.65-1.18 2.76-1.45 3.02l-.44.41H8.31 0l.49-1.22c4.92-12.33 8.69-21.78 9.54-23.94 1.22-3.09 4.33-10.89 6.52-16.32.82-2.03 1.72-4.3 2-5.05.28-.74 1.17-2.97 1.97-4.96 2.26-5.6 3-7.45 4.7-11.72 2.32-5.86 5.17-13 7.63-19.11 1.2-2.98 2.29-5.73 2.44-6.13.15-.4.45-.9.68-1.13l.42-.41h8.22c4.57 0 8.4.07 8.63.17.49.19.22-.38 3.81 8.22 1.57 3.77 3 7.18 3.17 7.57.73 1.72 6 14.31 7.22 17.22 1.71 4.1 5.73 13.7 6 14.34.17.4.66 1.58 1.09 2.61.43 1.04 1.63 3.94 2.68 6.46 1.05 2.51 1.9 4.63 1.9 4.71 0 .08-.14.2-.3.27-.17.07-2.89 1.13-6.05 2.37-3.16 1.23-6.39 2.5-7.17 2.81-.78.31-1.47.51-1.53.45-.06-.06-.47-1.07-.92-2.24-1.24-3.24-5.96-15.5-7.72-20.06-.86-2.23-2.45-6.33-3.52-9.11-1.07-2.78-2.93-7.6-4.14-10.73-1.2-3.12-2.4-6.25-2.67-6.94l-.48-1.26-.19.54c-.42 1.17-1.35 3.64-3.23 8.56-1.08 2.83-2.45 6.44-3.05 8.02-.6 1.59-2.24 5.89-3.65 9.56l-2.57 6.67 8.58.05 8.58.05.31.76c.17.42 1.14 2.91 2.16 5.54 6.49 16.81 6.66 17.24 6.88 17.18.08-.02 1.08-.41 2.21-.87 1.13-.46 3.45-1.39 5.15-2.06 5.12-2.03 14.4-5.73 14.68-5.85.14-.06.39-.01.55.12.32.25 2.19 4.68 2.19 5.19 0 .18-.14.48-.3.68-.27.32-5.46 2.61-10.94 4.83-4.74 1.92-6.58 2.65-7.29 2.92l-.77.29 1.94.34 1.94.34.77-.38c1.61-.79 3.36-1.45 7.27-2.71 2.22-.72 4.1-1.32 4.19-1.33.16-.02.94 1.75 2.24 5.12.41 1.04 1.36 3.49 2.13 5.45.77 1.96 1.39 3.71 1.39 3.89 0 .75-.14.76-6.94.76-4.33 0-6.64-.07-6.85-.2z"/></svg>
         <div class="view-toggle">
-          <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'" title="Annotate and inspect your UI">Editor</button>
-          <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'" title="Edit design tokens (colors, typography, spacing)">Theme</button>
+          <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'" title="Annotate and inspect your UI">Annotate</button>
+          <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'" title="Edit design tokens (colors, typography, spacing)">Design</button>
         </div>
         <template v-if="shellView === 'editor'">
           <ModeToolbar v-model="interactionMode" />
@@ -1228,7 +1244,7 @@ const appUrl = computed(() => {
       <div v-if="shellView === 'editor'" class="toolbar-right">
         <div class="panel-toggle">
           <button :class="['toggle-btn', { active: activePanel === 'inspector' }]" @click="activePanel = 'inspector'" title="Inspect element styles, layout, and classes">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             Inspector
           </button>
           <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = 'tasks'" title="View and manage design tasks for your AI agent (T)">
@@ -1240,6 +1256,11 @@ const appUrl = computed(() => {
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="4" r="2"/><path d="M4 8h16M6 12l3 8M18 12l-3 8"/></svg>
             A11y
             <span v-if="a11yViolations.length" class="toggle-badge">{{ a11yViolations.length }}</span>
+          </button>
+          <button :class="['toggle-btn', { active: activePanel === 'perf' }]" @click="activePanel = 'perf'" title="Page performance and Web Vitals">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Perf
+            <span v-if="perfFindings.length" class="toggle-badge">{{ perfFindings.length }}</span>
           </button>
         </div>
         <div class="visibility-toggles">
@@ -1478,6 +1499,7 @@ const appUrl = computed(() => {
             No tasks yet. Click + New to add one.
           </div>
           <div v-for="task in routeTasks" :key="task.id" class="task-card" :class="task.status" @click="detailTaskId = task.id">
+            <div v-if="task.resolution" class="task-card-resolution">{{ task.resolution }}</div>
             <div class="task-card-header">
               <span class="task-status-dot" :class="task.status" />
               <span class="task-card-desc task-card-md" v-html="marked.parse(task.description, { breaks: true, gfm: true })"></span>
@@ -1489,6 +1511,12 @@ const appUrl = computed(() => {
             </div>
             <img v-if="task.screenshot" class="task-screenshot-thumb" :src="'/__annotask/screenshots/' + task.screenshot" />
             <div v-if="task.feedback" class="task-card-feedback">{{ task.feedback }}</div>
+            <div v-if="task.status === 'needs_info' && task.agent_feedback?.length" class="task-card-agent-q">
+              {{ task.agent_feedback[task.agent_feedback.length - 1].questions[0]?.text }}
+            </div>
+            <div v-if="task.status === 'blocked' && task.blocked_reason" class="task-card-blocked">
+              {{ task.blocked_reason }}
+            </div>
             <div v-if="task.status === 'review'" class="task-card-actions" @click.stop>
               <template v-if="denyingTaskId !== task.id">
                 <button class="task-accept" @click="acceptTask(task.id)" title="Accept this change and remove the task">Accept</button>
@@ -1515,7 +1543,7 @@ const appUrl = computed(() => {
                   </div>
                   <button v-else class="screenshot-btn" @click="startSnip" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
                   <div class="deny-form-actions">
-                    <button class="task-deny" :disabled="!denyFeedbackText.trim()" @click="submitDeny(task.id)">Deny</button>
+                    <button class="task-send-feedback" :disabled="!denyFeedbackText.trim()" @click="submitDeny(task.id)">Send Feedback</button>
                     <button class="cancel-btn" style="padding:4px 8px;font-size:10px" @click="denyingTaskId = null">Cancel</button>
                   </div>
                 </div>
@@ -1548,16 +1576,39 @@ const appUrl = computed(() => {
             {{ a11yViolations.length }} violation{{ a11yViolations.length === 1 ? '' : 's' }}
           </div>
 
-          <div v-for="v in a11yViolations" :key="v.id" class="a11y-card" :class="v.impact">
-            <div class="a11y-card-header">
-              <span class="a11y-impact" :class="v.impact">{{ v.impact }}</span>
-              <span class="a11y-rule">{{ v.id }}</span>
-              <span class="a11y-count">{{ v.nodes }} element{{ v.nodes === 1 ? '' : 's' }}</span>
-            </div>
-            <p class="a11y-help">{{ v.help }}</p>
-            <span v-if="a11yTaskRules.has(v.id)" class="a11y-tasked">Task created</span>
-            <button v-else class="a11y-fix-btn" @click="createA11yTask(v)" title="Create a task for your AI agent to fix this accessibility violation">Create Fix Task</button>
+          <div v-for="v in a11yViolations" :key="v.id" class="a11y-card" :class="v.impact" @click="detailA11yViolation = v">
+            <span class="a11y-impact" :class="v.impact">{{ v.impact }}</span>
+            <span class="a11y-rule">{{ v.id }}</span>
+            <span class="a11y-count">{{ v.nodes }} element{{ v.nodes === 1 ? '' : 's' }}</span>
+            <span v-if="a11yTaskRules.has(v.id)" class="a11y-tasked-badge">tasked</span>
+            <svg class="a11y-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
           </div>
+        </div>
+      </aside>
+
+      <!-- Performance Panel -->
+      <aside class="panel" v-else-if="shellView === 'editor' && activePanel === 'perf'">
+        <div class="panel-source">
+          <span class="source-path" style="color:var(--text)">Performance</span>
+        </div>
+        <div class="tab-content">
+          <PerfTab
+            :recording="perfRecording"
+            :recording-result="perfRecordingResult"
+            :scan-result="perfScanResult"
+            :scan-loading="perfScanLoading"
+            :has-data="perfHasData"
+            :timeline="perfTimeline"
+            :vitals="perfVitals"
+            :score="perfScore"
+            :findings="perfFindings"
+            :task-findings="perfTaskFindings"
+            :error="perfRecordingError || perfScanError"
+            @start-recording="startPerfRecording"
+            @stop-recording="stopPerfRecording"
+            @scan="runPerfScan"
+            @create-task="createPerfTask"
+          />
         </div>
       </aside>
 
@@ -1663,6 +1714,33 @@ const appUrl = computed(() => {
     <ReportViewer v-if="showReportPanel" :tasks="taskSystem.tasks.value" @close="showReportPanel = false" />
 
     <!-- Task detail modal -->
+    <!-- A11y Finding Detail -->
+    <FindingDrawer
+      v-if="detailA11yViolation"
+      :title="detailA11yViolation.help"
+      :severity="detailA11yViolation.impact"
+      :tasked="a11yTaskRules.has(detailA11yViolation.id)"
+      @close="detailA11yViolation = null"
+      @create-task="onCreateA11yTask(detailA11yViolation!)"
+    >
+      <div class="fd-detail-section"><span class="fd-detail-label">Rule</span><span class="fd-detail-value">{{ detailA11yViolation.id }}</span></div>
+      <div class="fd-detail-section"><span class="fd-detail-label">Impact</span><span class="fd-detail-value">{{ detailA11yViolation.impact }}</span></div>
+      <div class="fd-detail-section"><span class="fd-detail-label">Description</span><p class="fd-detail-text">{{ detailA11yViolation.description }}</p></div>
+      <div v-if="detailA11yViolation.elements && detailA11yViolation.elements.length" class="fd-detail-section">
+        <span class="fd-detail-label">Affected Elements ({{ detailA11yViolation.nodes }})</span>
+        <div v-for="(el, i) in detailA11yViolation.elements" :key="i" class="fd-a11y-element">
+          <code class="fd-a11y-html">{{ el.html }}</code>
+          <code v-if="el.target" class="fd-a11y-selector">{{ el.target }}</code>
+          <p v-if="el.failureSummary" class="fd-a11y-fix">{{ el.failureSummary }}</p>
+          <span v-if="el.file" class="fd-a11y-source">{{ el.file }}:{{ el.line }} &middot; {{ el.component }}</span>
+        </div>
+      </div>
+      <div class="fd-detail-section">
+        <span class="fd-detail-label">Learn More</span>
+        <a :href="detailA11yViolation.helpUrl" target="_blank" rel="noopener" class="fd-link">{{ detailA11yViolation.helpUrl }}</a>
+      </div>
+    </FindingDrawer>
+
     <TaskDetailModal
       v-if="detailTask"
       :task="detailTask"
@@ -1671,6 +1749,7 @@ const appUrl = computed(() => {
       @deny="(id) => { denyingTaskId = id; denyFeedbackText = ''; detailTaskId = null }"
       @delete="(id) => { removeTaskAnnotations(id); restoredTaskIds.delete(id); taskSystem.deleteTask(id); detailTaskId = null }"
       @update="(id, fields) => { taskSystem.updateTaskStatus(id, detailTask!.status, undefined, fields) }"
+      @reply="(id, answers) => { taskSystem.respondToAgent(id, answers) }"
     />
 
     <ConfirmDialog
@@ -1867,6 +1946,8 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .task-status-dot.in_progress { background: #3b82f6; }
 .task-status-dot.review { background: #f59e0b; }
 .task-status-dot.denied { background: #ef4444; }
+.task-status-dot.needs_info { background: #a855f7; }
+.task-status-dot.blocked { background: #f97316; }
 .task-card-desc { font-size: 11px; color: var(--text); flex: 1; }
 .task-card-md {
   max-height: 40px; overflow: hidden; line-height: 1.4;
@@ -1882,6 +1963,19 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .task-card-file { font-size: 9px; color: var(--text-muted); }
 .task-route-badge { font-size: 8px; padding: 1px 5px; background: rgba(59,130,246,0.12); color: #60a5fa; border-radius: 3px; font-weight: 600; }
 .task-card-feedback { font-size: 10px; color: #ef4444; font-style: italic; margin-top: 3px; }
+.task-card-resolution {
+  font-size: 10px; color: #86efac; margin-bottom: 4px; padding: 3px 8px;
+  background: rgba(34,197,94,0.08); border-radius: 4px; border-left: 2px solid #22c55e;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-card-agent-q {
+  font-size: 10px; color: #a5b4fc; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-card-blocked {
+  font-size: 10px; color: #fb923c; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* New task form */
 .new-task-toggle {
   margin-left: auto; padding: 2px 8px; font-size: 10px; font-weight: 600;
@@ -1926,6 +2020,13 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .task-card-actions .task-accept:hover { background: #22c55e; color: white; }
 .task-card-actions .task-deny { background: rgba(239,68,68,0.12); color: #ef4444; }
 .task-card-actions .task-deny:hover { background: #ef4444; color: white; }
+.task-send-feedback {
+  flex: 1; padding: 5px 0; font-size: 11px; font-weight: 600;
+  border: none; border-radius: 5px; cursor: pointer; transition: all 0.12s;
+  background: rgba(161,161,170,0.15); color: #a1a1aa;
+}
+.task-send-feedback:hover:not(:disabled) { background: rgba(161,161,170,0.3); color: #d4d4d8; }
+.task-send-feedback:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Pending task creation panel */
 .pending-task-panel { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
@@ -1981,32 +2082,42 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
 }
 .a11y-card {
-  padding: 8px; border-radius: 6px; margin-bottom: 6px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: 6px; margin-bottom: 4px;
   background: var(--surface-2); border-left: 3px solid var(--border);
+  cursor: pointer; font-size: 11px;
 }
+.a11y-card:hover { background: var(--border); }
 .a11y-card.critical { border-left-color: #dc2626; }
 .a11y-card.serious { border-left-color: #ef4444; }
 .a11y-card.moderate { border-left-color: #f59e0b; }
 .a11y-card.minor { border-left-color: #6b7280; }
-.a11y-card-header { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .a11y-impact {
   font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 5px;
-  border-radius: 3px; color: white;
+  border-radius: 3px; color: white; flex-shrink: 0;
 }
 .a11y-impact.critical { background: #dc2626; }
 .a11y-impact.serious { background: #ef4444; }
 .a11y-impact.moderate { background: #f59e0b; }
 .a11y-impact.minor { background: #6b7280; }
-.a11y-rule { font-weight: 600; color: var(--text); }
-.a11y-count { margin-left: auto; color: var(--text-muted); font-size: 10px; }
-.a11y-help { margin: 4px 0 6px; font-size: 11px; color: var(--text-muted); line-height: 1.4; }
-.a11y-fix-btn {
-  padding: 3px 10px; font-size: 10px; font-weight: 600;
-  background: rgba(59,130,246,0.12); color: #3b82f6; border: 1px solid rgba(59,130,246,0.25);
-  border-radius: 4px; cursor: pointer;
-}
-.a11y-fix-btn:hover { background: #3b82f6; color: white; }
-.a11y-tasked { font-size: 10px; color: #22c55e; font-weight: 600; }
+.a11y-rule { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.a11y-count { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+.a11y-tasked-badge { font-size: 9px; color: #22c55e; margin-left: auto; flex-shrink: 0; }
+.a11y-chevron { color: var(--text-muted); flex-shrink: 0; margin-left: auto; }
+.a11y-tasked-badge + .a11y-chevron { margin-left: 0; }
+
+/* Finding drawer detail styles */
+.fd-detail-section { display: flex; flex-direction: column; gap: 4px; }
+.fd-detail-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #a1a1aa; }
+.fd-detail-value { font-size: 13px; color: #fff; }
+.fd-detail-text { font-size: 12px; color: #e4e4e7; line-height: 1.5; margin: 0; }
+.fd-a11y-element { padding: 8px; background: var(--surface-2); border-radius: 6px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
+.fd-a11y-html { font-size: 11px; color: #f59e0b; word-break: break-all; }
+.fd-a11y-selector { font-size: 10px; color: #a1a1aa; }
+.fd-a11y-fix { font-size: 11px; color: #fff; line-height: 1.4; margin: 0; }
+.fd-a11y-source { font-size: 10px; color: var(--accent); }
+.fd-link { font-size: 12px; color: var(--accent); text-decoration: none; word-break: break-all; }
+.fd-link:hover { text-decoration: underline; }
 
 /* Screenshot button and preview */
 .screenshot-btn {

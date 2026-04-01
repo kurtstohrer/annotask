@@ -64,7 +64,7 @@ This downloads the PNG to `.annotask/screenshots/`. Use it as visual context alo
 
 ### 2. Process each pending task — one at a time
 
-Filter for `status: "pending"` (and `status: "denied"` with `feedback`) tasks. Process them **sequentially** — do not batch. For each task, follow this cycle:
+Filter for `status: "pending"` and `status: "denied"` (with `feedback`) tasks. Also check for `status: "in_progress"` tasks that have answers in `agent_feedback` (previously asked questions now answered). Skip `needs_info` tasks — they're waiting for user input. Process them **sequentially** — do not batch. For each task, follow this cycle:
 
 #### a. Lock the task
 
@@ -106,17 +106,51 @@ Read the task type and apply accordingly:
   - If `isNew` is true: add the new variable/config entry in the most appropriate location (`:root` block in the main CSS file, or Tailwind config `theme.extend`).
   - After applying, update `.annotask/design-spec.json` to reflect the new value so the Theme page stays in sync.
 
-#### c. Mark for review immediately
+#### c. Ask for clarification (only when stuck)
 
-As soon as you finish applying **this** task, mark it for review before moving to the next:
+If you are **genuinely stuck** — missing API context, unclear library usage, ambiguous intent that could lead to a wrong implementation — ask the user for clarification instead of guessing:
 
 ```bash
-annotask update-task TASK_ID --status=review
+annotask update-task TASK_ID --ask='{"message":"Optional markdown context","questions":[{"id":"q1","text":"Which auth library should I use?","type":"choice","options":["NextAuth","Clerk","Custom"]},{"id":"q2","text":"Where is the session config located?","type":"text"}]}'
 ```
 
-The user sees the status change live in the Annotask shell and can start reviewing while you work on the next task.
+This sets the task to `needs_info` status. The user sees your questions in the Annotask UI and responds there. When answered, the task returns to `in_progress` with answers in `agent_feedback`.
 
-#### d. Move to the next task
+**Question types:**
+- `text` — free-text answer from user
+- `choice` — user picks from your provided `options` array
+
+**Guidelines:**
+- Only ask when you truly cannot proceed — do not ask for confirmation on straightforward tasks
+- Be specific: "Which CSS framework should I use for the grid?" is better than "How should I do this?"
+- Combine related questions into a single ask rather than multiple rounds
+- After asking, move on to the next task. Come back to check answers later via `annotask tasks`
+
+#### d. Mark as blocked (when the task can't be done)
+
+If the task is **fundamentally outside your control** — a performance issue in a third-party library, an accessibility bug in a dependency, a config change that requires infrastructure access, etc. — mark it as blocked with an explanation:
+
+```bash
+annotask update-task TASK_ID --blocked-reason="This layout shift is caused by vue-router v4's async route loading. Needs upstream fix or a loading skeleton wrapper — cannot be resolved by editing component code alone."
+```
+
+This sets the task to `blocked` status automatically. The user sees your explanation and can either **dismiss** the task or **push back** (deny it with feedback asking you to try a different approach).
+
+**When to use blocked vs needs_info:**
+- `needs_info` = "I can do this, but I need more information from you"
+- `blocked` = "This can't be done through source code changes — here's why"
+
+#### e. Mark for review immediately
+
+As soon as you finish applying **this** task, mark it for review with a brief resolution note:
+
+```bash
+annotask update-task TASK_ID --status=review --resolution="Swapped grid to flexbox, added gap-4 for spacing"
+```
+
+Keep resolutions short — one sentence describing what you changed, not why. The user sees it in the Annotask shell alongside the diff.
+
+#### f. Move to the next task
 
 Repeat steps a–c for each remaining pending task. This way the user gets incremental feedback — they can accept or deny early tasks while later ones are still being applied.
 
@@ -145,7 +179,10 @@ This returns both the live report (current session markup) and tasks. Use it as 
 
 ```
 pending → in_progress (agent working) → review (user checks) → accepted (removed)
-                                                              → denied (with feedback → agent re-applies)
+                  ↓                          ↓                → denied (with feedback → agent re-applies)
+             needs_info (waiting)        blocked (can't do)   → dismissed (user deletes)
+                  ↓                          ↓                → pushed back (denied → agent retries)
+             in_progress (resume)        user decides
 ```
 
 ## Important notes
@@ -153,4 +190,7 @@ pending → in_progress (agent working) → review (user checks) → accepted (r
 - Always fetch tasks, not just the report — tasks persist across sessions
 - The `feedback` field on denied tasks is critical — it tells you what the user didn't like
 - Tasks with `status: "review"` are waiting for user review — don't re-apply them
+- Tasks with `status: "needs_info"` are waiting for the user to answer your questions — skip them and check back later
+- Tasks with `status: "blocked"` have been flagged as not actionable — skip them unless the user pushes back with feedback
+- When a `needs_info` task returns to `in_progress`, check `agent_feedback` for the user's answers before resuming work
 - After applying, the user's page will hot-reload via Vite HMR showing the changes immediately

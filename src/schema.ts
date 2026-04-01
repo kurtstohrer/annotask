@@ -15,6 +15,21 @@ export interface InteractionSnapshot {
   recent_actions: InteractionEntry[]
 }
 
+export interface PerformanceSnapshot {
+  url: string
+  route: string
+  timestamp: number
+  vitals: Array<{ name: string; value: number; rating: 'good' | 'needs-improvement' | 'poor' }>
+  navigation?: { domContentLoaded: number; loadComplete: number; ttfb: number }
+  resourceSummary: {
+    totalRequests: number
+    totalTransferSize: number
+    byType: Record<string, { count: number; size: number }>
+  }
+  longTaskCount: number
+  totalBlockingTime: number
+}
+
 export interface AnnotaskReport {
   version: '1.0'
   project: {
@@ -24,6 +39,7 @@ export interface AnnotaskReport {
   }
   viewport?: ViewportInfo
   interaction_history?: InteractionSnapshot
+  performance?: PerformanceSnapshot
   changes: AnnotaskChange[]
 }
 
@@ -178,6 +194,23 @@ export interface ElementContext {
   subtree: ElementNode
 }
 
+/** A single question the agent asks the user */
+export interface AgentFeedbackQuestion {
+  id: string
+  text: string
+  type: 'text' | 'choice'
+  options?: string[]  // required when type === 'choice'
+}
+
+/** One exchange: agent asks question(s), user responds */
+export interface AgentFeedbackEntry {
+  asked_at: number
+  message?: string  // optional markdown context/explanation
+  questions: AgentFeedbackQuestion[]
+  answered_at?: number
+  answers?: Array<{ id: string; value: string }>
+}
+
 /** Task in the review pipeline */
 export interface AnnotaskTask {
   id: string
@@ -187,7 +220,7 @@ export interface AnnotaskTask {
   line: number
   component?: string
   mfe?: string              // MFE identity (e.g. '@myorg/my-mfe') for multi-project setups
-  status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied'
+  status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied' | 'needs_info' | 'blocked'
   intent?: string
   action?: string
   context?: Record<string, unknown>
@@ -196,6 +229,9 @@ export interface AnnotaskTask {
   element_context?: ElementContext
   screenshot?: string       // Screenshot filename, served at /__annotask/screenshots/{filename}
   feedback?: string         // denial notes from reviewer
+  agent_feedback?: AgentFeedbackEntry[]  // agent clarification thread
+  blocked_reason?: string                // why agent cannot apply this task (markdown)
+  resolution?: string                    // brief note on what the agent did
   createdAt: number
   updatedAt: number
 }

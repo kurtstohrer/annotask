@@ -253,16 +253,48 @@ async function updateTask() {
   const taskId = args[1]
   const statusArg = args.find(a => a.startsWith('--status='))?.split('=')[1]
   const feedbackArg = args.find(a => a.startsWith('--feedback='))?.split('=')[1]
+  const askArg = args.find(a => a.startsWith('--ask='))?.split('=').slice(1).join('=')
+  const blockedReasonArg = args.find(a => a.startsWith('--blocked-reason='))?.split('=').slice(1).join('=')
+  const resolutionArg = args.find(a => a.startsWith('--resolution='))?.split('=').slice(1).join('=')
 
-  if (!taskId || !statusArg) {
+  if (!taskId || (!statusArg && !askArg && !blockedReasonArg)) {
     console.error('\x1b[31m[Annotask]\x1b[0m Usage: annotask update-task <task-id> --status=<status> [--feedback=<text>]')
-    console.error('  Valid statuses: pending, applied, review, accepted, denied')
+    console.error('       annotask update-task <task-id> --ask=\'{"message":"...","questions":[...]}\'')
+    console.error('       annotask update-task <task-id> --blocked-reason="Cannot fix: issue is in third-party library"')
+    console.error('  Valid statuses: pending, in_progress, applied, review, accepted, denied, needs_info, blocked')
     process.exit(1)
   }
 
   try {
-    const body: Record<string, string> = { status: statusArg }
+    const body: Record<string, unknown> = {}
+
+    if (askArg) {
+      // Fetch current task to get existing agent_feedback
+      const taskRes = await fetch(`${apiUrl}/tasks`)
+      const taskData = await taskRes.json()
+      const task = taskData.tasks.find((t: any) => t.id === taskId)
+      if (!task) { console.error(`\x1b[31m[Annotask]\x1b[0m Task not found: ${taskId}`); process.exit(1) }
+
+      const askData = JSON.parse(askArg)
+      const entry = {
+        asked_at: Date.now(),
+        message: askData.message,
+        questions: askData.questions,
+      }
+      const thread = [...(task.agent_feedback || []), entry]
+      body.agent_feedback = thread
+      body.status = statusArg || 'needs_info'
+    } else {
+      body.status = statusArg
+    }
+
     if (feedbackArg) body.feedback = feedbackArg
+    if (blockedReasonArg) {
+      body.blocked_reason = blockedReasonArg
+      if (!body.status) body.status = 'blocked'
+    }
+    if (resolutionArg) body.resolution = resolutionArg
+
     const res = await fetch(`${apiUrl}/tasks/${taskId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

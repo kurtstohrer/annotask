@@ -7,7 +7,7 @@ import type {
   LayoutContainerData, LayoutAddTrackResult, LayoutAddChildResult,
   CheckSourceMappingResult, ColorSwatch,
   InsertPlaceholderResult, InsertVueComponentResult,
-  type InteractionMode,
+  InteractionMode, PerfScanResult, PerfRecording,
 } from '../../shared/bridge-types'
 
 export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
@@ -266,6 +266,22 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     } catch { return { violations: [], error: 'timeout' } }
   }
 
+  async function scanPerf(): Promise<PerfScanResult> {
+    try {
+      return await bridge.request('perf:scan', {}, 5000)
+    } catch { return { timestamp: 0, url: '', route: '', vitals: [], resources: [], error: 'timeout' } }
+  }
+
+  function startPerfRecording() {
+    bridge.send('perf:start-recording', {})
+  }
+
+  async function stopPerfRecording(): Promise<PerfRecording> {
+    try {
+      return await bridge.request('perf:stop-recording', {}, 5000)
+    } catch { return { startTime: 0, endTime: 0, duration: 0, url: '', route: '', events: [], vitals: [], resources: [], error: 'timeout' } }
+  }
+
   function setMode(mode: InteractionMode) {
     bridge.send('mode:set', { mode })
   }
@@ -298,6 +314,9 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     getElementContext,
     captureScreenshot,
     scanA11y,
+    scanPerf,
+    startPerfRecording,
+    stopPerfRecording,
     // Layout
     scanLayout,
     layoutAddTrack,
