@@ -107,6 +107,13 @@ const taskSystem = useTasks()
 const viewport = useViewportPreview()
 const interactionHistory = useInteractionHistory()
 
+function normalizeRoute(path: string): string {
+  if (!path) return '/'
+  const base = path.split('#')[0].split('?')[0] || '/'
+  const withSlash = base.startsWith('/') ? base : `/${base}`
+  return withSlash.length > 1 ? withSlash.replace(/\/+$/, '') : withSlash
+}
+
 // ── State ──────────────────────────────────────────────
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const { mode: interactionMode } = useInteractionMode()
@@ -392,9 +399,10 @@ async function refreshAnnotationRects() {
     for (const s of annotations.drawnSections.value) {
       if (s.nearEid) addEid(s.nearEid, { type: 'section', id: s.id, field: 'near' })
     }
+    const currentRoute = annotations.activeRoute.value
     for (const t of taskSystem.tasks.value) {
       const v = t.visual as any
-      if (v?.kind === 'select' && t.status !== 'accepted') {
+      if (v?.kind === 'select' && t.status !== 'accepted' && (!t.route || normalizeRoute(t.route) === currentRoute)) {
         const taskEids: string[] = v.eids || (v.eid ? [v.eid] : [])
         for (const eid of taskEids) addEid(eid, { type: 'task', id: t.id, field: 'rect' })
       }
@@ -655,6 +663,8 @@ function setupBridgeEvents() {
   iframe.onBridgeEvent('route:changed', (data: { path: string }) => {
     annotations.setRoute(data.path)
     localStorage.setItem('annotask:lastRoute', data.path)
+    // Restore any tasks for the new route that haven't been loaded yet
+    restoreAnnotationsFromTasks()
   })
 
   // User action tracking (interact mode — link/button clicks in the app)

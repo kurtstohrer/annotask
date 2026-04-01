@@ -108,11 +108,11 @@ let counter = 0
 export function useAnnotations() {
   function setRoute(route: string) { activeRoute.value = normalizeRoute(route) }
 
-  // Route-filtered views — show all annotations (route filtering disabled for persistence)
-  const routePins = computed(() => pins.value)
-  const routeArrows = computed(() => arrows.value)
-  const routeSections = computed(() => drawnSections.value)
-  const routeHighlights = computed(() => highlights.value)
+  // Route-filtered views
+  const routePins = computed(() => pins.value.filter(p => normalizeRoute(p.route) === activeRoute.value))
+  const routeArrows = computed(() => arrows.value.filter(a => normalizeRoute(a.route) === activeRoute.value))
+  const routeSections = computed(() => drawnSections.value.filter(s => normalizeRoute(s.route) === activeRoute.value))
+  const routeHighlights = computed(() => highlights.value.filter(h => normalizeRoute(h.route) === activeRoute.value))
 
   // ── Pins ──
   function addPin(source: {
