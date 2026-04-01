@@ -257,6 +257,7 @@ export function useAnnotations() {
     selectedStickyId.value = null
     selectedArrowId.value = null
     selectedSectionId.value = null
+    selectedHighlightId.value = null
   }
 
   return {

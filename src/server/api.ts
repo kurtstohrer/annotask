@@ -99,7 +99,7 @@ export function createAPIMiddleware(options: APIOptions) {
       res.setHeader('Access-Control-Allow-Origin', corsOrigin)
       res.setHeader('Vary', 'Origin')
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     res.setHeader('Cache-Control', 'no-cache')
 

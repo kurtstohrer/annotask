@@ -103,6 +103,14 @@ export function bridgeClientScript(): string {
   var currentMode = storedMode || 'select';
   var inspectModes = { select: true, pin: true };
 
+  // Inject CSS class for user-select control (avoids overwriting inline styles)
+  var styleEl = document.createElement('style');
+  styleEl.textContent = '.annotask-no-select { -webkit-user-select: none !important; user-select: none !important; }';
+  document.head.appendChild(styleEl);
+  if (currentMode !== 'interact' && currentMode !== 'highlight') {
+    document.body.classList.add('annotask-no-select');
+  }
+
   // ── Event Handlers ────────────────────────────────────
   var lastHoverEid = null;
   var rafPending = false;
@@ -322,6 +330,12 @@ export function bridgeClientScript(): string {
     if (type === 'mode:set') {
       currentMode = payload.mode || 'select';
       try { localStorage.setItem('annotask:mode', currentMode); } catch(e) {}
+      // Prevent text selection in non-interact/non-highlight modes
+      if (currentMode === 'interact' || currentMode === 'highlight') {
+        document.body.classList.remove('annotask-no-select');
+      } else {
+        document.body.classList.add('annotask-no-select');
+      }
       return;
     }
 
