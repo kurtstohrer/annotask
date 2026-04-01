@@ -97,7 +97,7 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
   function addTask(task: Record<string, unknown>) {
     const data = loadTasksSync()
     const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-    const newTask = { id, status: 'pending', createdAt: Date.now(), updatedAt: Date.now(), ...task }
+    const newTask = { ...task, id, status: 'pending' as const, createdAt: Date.now(), updatedAt: Date.now() }
     data.tasks.push(newTask)
     flushTasks()
     broadcast('tasks:updated', data)
@@ -110,7 +110,7 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     if (!task) return { error: 'Task not found' }
     Object.assign(task, updates, { updatedAt: Date.now() })
     if (updates.status === 'accepted') {
-      if (task.screenshot) {
+      if (task.screenshot && /^[a-zA-Z0-9_-]+\.png$/.test(task.screenshot)) {
         const screenshotPath = path.join(projectRoot, '.annotask', 'screenshots', task.screenshot)
         fsp.unlink(screenshotPath).catch(() => {})
       }
@@ -125,7 +125,7 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     const data = loadTasksSync()
     const task = data.tasks.find((t: any) => t.id === id)
     if (!task) return { error: 'Task not found' }
-    if (task.screenshot) {
+    if (task.screenshot && /^[a-zA-Z0-9_-]+\.png$/.test(task.screenshot)) {
       const screenshotPath = path.join(projectRoot, '.annotask', 'screenshots', task.screenshot)
       fsp.unlink(screenshotPath).catch(() => {})
     }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { marked } from 'marked'
+import { safeMd } from '../utils/safeMd'
 import type { DrawnSection } from '../composables/useAnnotations'
 
 const props = defineProps<{
@@ -35,8 +35,7 @@ function hasTask(id: string): boolean {
 }
 
 function renderMd(text: string): string {
-  if (!text) return ''
-  return marked.parse(text, { breaks: true, gfm: true }) as string
+  return safeMd(text)
 }
 
 function startEditing(id: string) {

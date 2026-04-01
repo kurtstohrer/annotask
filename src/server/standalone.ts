@@ -30,7 +30,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
   return new Promise((resolve, reject) => {
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        httpServer.listen(0, () => {
+        httpServer.listen(0, '127.0.0.1', () => {
           const addr = httpServer.address() as { port: number }
           writeServerInfo(options.projectRoot, addr.port)
           resolve({
@@ -43,7 +43,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
       }
     })
 
-    httpServer.listen(port, () => {
+    httpServer.listen(port, '127.0.0.1', () => {
       writeServerInfo(options.projectRoot, port)
       resolve({
         port,

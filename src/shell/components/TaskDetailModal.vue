@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue'
-import { marked } from 'marked'
+import { safeMd } from '../utils/safeMd'
 import type { Task } from '../composables/useTasks'
 import ConfirmDialog from './ConfirmDialog.vue'
 
@@ -49,19 +49,11 @@ const isEditable = computed(() => props.task.status === 'pending' || props.task.
 const createdDate = computed(() => new Date(props.task.createdAt).toLocaleString())
 const updatedDate = computed(() => new Date(props.task.updatedAt).toLocaleString())
 
-const descriptionHtml = computed(() => {
-  return marked.parse(props.task.description, { breaks: true, gfm: true }) as string
-})
+const descriptionHtml = computed(() => safeMd(props.task.description))
 
-const feedbackHtml = computed(() => {
-  if (!props.task.feedback) return ''
-  return marked.parse(props.task.feedback, { breaks: true, gfm: true }) as string
-})
+const feedbackHtml = computed(() => safeMd(props.task.feedback || ''))
 
-const blockedReasonHtml = computed(() => {
-  if (!props.task.blocked_reason) return ''
-  return marked.parse(props.task.blocked_reason, { breaks: true, gfm: true }) as string
-})
+const blockedReasonHtml = computed(() => safeMd(props.task.blocked_reason || ''))
 
 // ── Selected elements (from context) ──
 interface ElementInfo {
@@ -392,7 +384,7 @@ function onKeydown(e: KeyboardEvent) {
         <section v-if="task.agent_feedback?.length" class="td-section">
           <h4 class="td-label">Agent Questions</h4>
           <div v-for="(exchange, ei) in task.agent_feedback" :key="ei" class="td-agent-exchange" :class="{ answered: !!exchange.answered_at }">
-            <div v-if="exchange.message" class="td-agent-msg" v-html="marked.parse(exchange.message, { breaks: true, gfm: true })" />
+            <div v-if="exchange.message" class="td-agent-msg" v-html="safeMd(exchange.message)" />
             <div v-for="q in exchange.questions" :key="q.id" class="td-agent-question">
               <p class="td-agent-q-text">{{ q.text }}</p>
               <!-- Answered: show answer -->

@@ -15,12 +15,12 @@ function createTestServer(options: Parameters<typeof createAPIMiddleware>[0]) {
   return server
 }
 
-function request(server: http.Server, method: string, path: string, body?: unknown): Promise<{ status: number; data: any; raw: string }> {
+function request(server: http.Server, method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<{ status: number; data: any; raw: string }> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, `http://localhost:${(server.address() as any).port}`)
-    const options: http.RequestOptions = { method, hostname: url.hostname, port: url.port, path: url.pathname, headers: {} }
+    const options: http.RequestOptions = { method, hostname: url.hostname, port: url.port, path: url.pathname, headers: { ...extraHeaders } }
     if (body !== undefined) {
-      options.headers = { 'Content-Type': 'application/json' }
+      options.headers = { ...options.headers, 'Content-Type': 'application/json' }
     }
     const req = http.request(options, (res) => {
       let raw = ''
@@ -175,6 +175,8 @@ describe('API endpoints', () => {
     it('updates task with valid status', async () => {
       const taskId = tasks[0]?.id
       expect(taskId).toBeTruthy()
+      // Must follow valid transitions: pending → in_progress → applied
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'in_progress' })
       const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'applied' })
       expect(status).toBe(200)
       expect(data.status).toBe('applied')
@@ -196,6 +198,8 @@ describe('API endpoints', () => {
   describe('agent feedback (needs_info)', () => {
     it('accepts needs_info status with valid agent_feedback', async () => {
       const taskId = tasks[0]?.id
+      // Transition: applied → in_progress → needs_info
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'in_progress' })
       const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
         status: 'needs_info',
         agent_feedback: [{
@@ -257,6 +261,8 @@ describe('API endpoints', () => {
 
     it('accepts blocked status with blocked_reason', async () => {
       const taskId = tasks[0]?.id
+      // Transition: needs_info → in_progress → blocked
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'in_progress' })
       const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
         status: 'blocked',
         blocked_reason: 'Performance issue in third-party vue-router v4 — needs upstream fix',
@@ -284,6 +290,147 @@ describe('API endpoints', () => {
       expect(data.status).toBe('in_progress')
       expect(data.agent_feedback[0].answers).toHaveLength(1)
       expect(data.agent_feedback[0].answers[0].value).toBe('NextAuth')
+    })
+  })
+
+  describe('POST /tasks field whitelisting', () => {
+    it('strips server-controlled fields from POST body', async () => {
+      const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation',
+        description: 'Test task',
+        id: 'attacker-id',
+        status: 'accepted',
+        createdAt: 0,
+        updatedAt: 0,
+        feedback: 'injected feedback',
+        resolution: 'fake resolution',
+      })
+      expect(status).toBe(200)
+      // Server-controlled fields should not be overridden
+      expect(data.id).not.toBe('attacker-id')
+      expect(data.status).toBe('pending')
+      expect(data.createdAt).not.toBe(0)
+      // Fields not in POSTABLE_TASK_FIELDS should be stripped
+      expect(data.feedback).toBeUndefined()
+      expect(data.resolution).toBeUndefined()
+    })
+  })
+
+  describe('screenshot filename validation', () => {
+    it('rejects PATCH with path-traversal screenshot filename', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        screenshot: '../../tasks.json',
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('screenshot')
+    })
+
+    it('rejects PATCH with non-png screenshot filename', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        screenshot: 'malicious.html',
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('screenshot')
+    })
+
+    it('accepts valid screenshot filename', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        screenshot: 'screenshot-12345-abc.png',
+      })
+      expect(status).toBe(200)
+      expect(data.screenshot).toBe('screenshot-12345-abc.png')
+    })
+  })
+
+  describe('task state transitions', () => {
+    let transitionTaskId: string
+
+    it('creates a fresh task for transition tests', async () => {
+      const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation',
+        description: 'Transition test task',
+      })
+      expect(status).toBe(200)
+      transitionTaskId = data.id
+      expect(data.status).toBe('pending')
+    })
+
+    it('rejects pending → accepted (skips required states)', async () => {
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${transitionTaskId}`, {
+        status: 'accepted',
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('Invalid state transition')
+    })
+
+    it('rejects pending → review (skips in_progress)', async () => {
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${transitionTaskId}`, {
+        status: 'review',
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('Invalid state transition')
+    })
+
+    it('allows pending → in_progress', async () => {
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${transitionTaskId}`, {
+        status: 'in_progress',
+      })
+      expect(status).toBe(200)
+      expect(data.status).toBe('in_progress')
+    })
+
+    it('rejects in_progress → accepted (must go through review)', async () => {
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${transitionTaskId}`, {
+        status: 'accepted',
+      })
+      expect(status).toBe(400)
+      expect(data.error).toContain('Invalid state transition')
+    })
+
+    it('allows in_progress → review', async () => {
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${transitionTaskId}`, {
+        status: 'review',
+      })
+      expect(status).toBe(200)
+      expect(data.status).toBe('review')
+    })
+
+    it('allows review → accepted', async () => {
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${transitionTaskId}`, {
+        status: 'accepted',
+      })
+      expect(status).toBe(200)
+    })
+  })
+
+  describe('origin validation', () => {
+    it('blocks POST from non-local origin', async () => {
+      const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation',
+        description: 'From remote',
+      }, { Origin: 'https://evil.example.com' })
+      expect(status).toBe(403)
+      expect(data.error).toContain('Forbidden')
+    })
+
+    it('blocks PATCH from non-local origin', async () => {
+      const taskId = tasks[0]?.id
+      const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, {
+        description: 'hacked',
+      }, { Origin: 'https://evil.example.com' })
+      expect(status).toBe(403)
+      expect(data.error).toContain('Forbidden')
+    })
+
+    it('allows mutation from localhost origin', async () => {
+      const { status } = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation',
+        description: 'From localhost',
+      }, { Origin: 'http://localhost:5173' })
+      expect(status).toBe(200)
     })
   })
 })

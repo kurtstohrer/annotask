@@ -37,7 +37,7 @@ import { useTasks } from './composables/useTasks'
 import { useViewportPreview } from './composables/useViewportPreview'
 import { useInteractionHistory } from './composables/useInteractionHistory'
 import ViewportSelector from './components/ViewportSelector.vue'
-import { marked } from 'marked'
+import { safeMd } from './utils/safeMd'
 
 const styleEditor = useStyleEditor()
 const { applyStyle, recordAnnotation, recordClassChange, removeAnnotationsByFile, changes, report } = styleEditor
@@ -1502,7 +1502,7 @@ const appUrl = computed(() => {
             <div v-if="task.resolution" class="task-card-resolution">{{ task.resolution }}</div>
             <div class="task-card-header">
               <span class="task-status-dot" :class="task.status" />
-              <span class="task-card-desc task-card-md" v-html="marked.parse(task.description, { breaks: true, gfm: true })"></span>
+              <span class="task-card-desc task-card-md" v-html="safeMd(task.description)"></span>
               <button class="task-card-close" @click.stop="confirmDeleteTaskId = task.id" title="Delete task">×</button>
             </div>
             <div class="task-card-meta">

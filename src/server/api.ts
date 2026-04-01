@@ -18,6 +18,25 @@ export interface APIOptions {
 
 const MAX_BODY_SIZE = 4_194_304
 const VALID_TASK_STATUSES = new Set(['pending', 'in_progress', 'applied', 'review', 'accepted', 'denied', 'needs_info', 'blocked'])
+const SAFE_SCREENSHOT_RE = /^[a-zA-Z0-9_-]+\.png$/
+
+/** Valid state transitions — from current status to allowed next statuses */
+const VALID_TRANSITIONS: Record<string, Set<string>> = {
+  pending:     new Set(['in_progress', 'denied']),
+  in_progress: new Set(['applied', 'review', 'needs_info', 'blocked', 'denied']),
+  applied:     new Set(['review', 'in_progress']),
+  review:      new Set(['accepted', 'denied', 'in_progress']),
+  needs_info:  new Set(['in_progress', 'denied']),
+  blocked:     new Set(['in_progress', 'denied']),
+  denied:      new Set(['pending', 'in_progress']),
+}
+
+/** Fields that POST /tasks is allowed to set (server controls id, status, timestamps) */
+const POSTABLE_TASK_FIELDS = new Set([
+  'type', 'description', 'file', 'line', 'component', 'mfe', 'route',
+  'intent', 'action', 'context', 'viewport', 'interaction_history',
+  'element_context', 'screenshot',
+])
 
 /** Fields that PATCH /tasks/:id is allowed to update */
 const PATCHABLE_TASK_FIELDS = new Set([
@@ -49,17 +68,7 @@ function sendError(res: ServerResponse, status: number, message: string) {
   res.end(JSON.stringify({ error: message }))
 }
 
-/** Check if an Origin header is from localhost */
-function isLocalOrigin(origin: string | undefined): boolean {
-  if (!origin) return true // same-origin requests (no Origin header)
-  try {
-    const url = new URL(origin)
-    const host = url.hostname
-    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1'
-  } catch {
-    return false
-  }
-}
+import { isLocalOrigin } from './origin.js'
 
 /** Build CORS origin value — reflect the request origin if it's local, otherwise omit */
 function getCorsOrigin(req: IncomingMessage): string | null {
@@ -175,7 +184,14 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'Request body must be a JSON object')
       if (typeof body.type !== 'string' || !body.type) return sendError(res, 400, 'Missing required field: type (string)')
       if (typeof body.description !== 'string') return sendError(res, 400, 'Missing required field: description (string)')
-      res.end(JSON.stringify(options.addTask(body), null, 2))
+      // Strip unknown fields — only allow whitelisted fields through
+      const sanitized: Record<string, unknown> = {}
+      for (const key of Object.keys(body)) {
+        if (POSTABLE_TASK_FIELDS.has(key)) {
+          sanitized[key] = body[key]
+        }
+      }
+      res.end(JSON.stringify(options.addTask(sanitized), null, 2))
       return
     }
 
@@ -209,6 +225,16 @@ export function createAPIMiddleware(options: APIOptions) {
       if (body.status !== undefined && !VALID_TASK_STATUSES.has(body.status as string)) {
         return sendError(res, 400, `Invalid status. Must be one of: ${[...VALID_TASK_STATUSES].join(', ')}`)
       }
+      // Validate state transition
+      if (body.status !== undefined) {
+        const currentTask = options.getTasks().tasks.find((t: any) => t.id === id)
+        if (currentTask) {
+          const allowed = VALID_TRANSITIONS[currentTask.status]
+          if (allowed && !allowed.has(body.status as string)) {
+            return sendError(res, 400, `Invalid state transition: ${currentTask.status} → ${body.status}. Allowed: ${[...allowed].join(', ')}`)
+          }
+        }
+      }
       // Validate agent_feedback structure
       if (body.agent_feedback !== undefined) {
         const af = body.agent_feedback
@@ -229,6 +255,10 @@ export function createAPIMiddleware(options: APIOptions) {
             }
           }
         }
+      }
+      // Validate screenshot filename if provided
+      if (body.screenshot !== undefined && typeof body.screenshot === 'string' && !SAFE_SCREENSHOT_RE.test(body.screenshot)) {
+        return sendError(res, 400, 'Invalid screenshot filename')
       }
       // Strip unknown fields — only allow whitelisted fields through
       const sanitized: Record<string, unknown> = {}

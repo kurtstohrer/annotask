@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
+import { isLocalOrigin } from './origin.js'
 
 export interface AnnotaskWSServer {
   handleUpgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => void
@@ -50,6 +51,11 @@ export function createWSServer(): AnnotaskWSServer {
 
   return {
     handleUpgrade(req, socket, head) {
+      if (!isLocalOrigin(req.headers.origin as string | undefined)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+        socket.destroy()
+        return
+      }
       wss.handleUpgrade(req, socket, head, (ws) => { wss.emit('connection', ws, req) })
     },
     broadcast(event, data) {
