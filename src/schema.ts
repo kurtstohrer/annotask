@@ -220,6 +220,7 @@ export interface AnnotaskTask {
   line: number
   component?: string
   mfe?: string              // MFE identity (e.g. '@myorg/my-mfe') for multi-project setups
+  route?: string            // iframe route when task was created
   status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied' | 'needs_info' | 'blocked'
   intent?: string
   action?: string
@@ -232,6 +233,7 @@ export interface AnnotaskTask {
   agent_feedback?: AgentFeedbackEntry[]  // agent clarification thread
   blocked_reason?: string                // why agent cannot apply this task (markdown)
   resolution?: string                    // brief note on what the agent did
+  visual?: Record<string, unknown>       // annotation visual state for restoration
   createdAt: number
   updatedAt: number
 }

@@ -1,46 +1,9 @@
 import { ref, computed } from 'vue'
 import { on as wsOn } from '../services/wsClient'
+import type { AnnotaskTask, AgentFeedbackQuestion, AgentFeedbackEntry } from '../../schema'
 
-export interface AgentFeedbackQuestion {
-  id: string
-  text: string
-  type: 'text' | 'choice'
-  options?: string[]
-}
-
-export interface AgentFeedbackEntry {
-  asked_at: number
-  message?: string
-  questions: AgentFeedbackQuestion[]
-  answered_at?: number
-  answers?: Array<{ id: string; value: string }>
-}
-
-export interface Task {
-  id: string
-  type: string
-  description: string
-  file: string
-  line: number
-  component?: string
-  mfe?: string
-  route?: string
-  status: 'pending' | 'in_progress' | 'applied' | 'review' | 'accepted' | 'denied' | 'needs_info' | 'blocked'
-  intent?: string
-  action?: string
-  context?: Record<string, unknown>
-  viewport?: { width: number | null; height: number | null }
-  interaction_history?: { current_route: string; navigation_path: string[]; recent_actions: unknown[] }
-  element_context?: { ancestors: unknown[]; subtree: unknown }
-  screenshot?: string
-  feedback?: string
-  agent_feedback?: AgentFeedbackEntry[]
-  blocked_reason?: string
-  resolution?: string
-  visual?: Record<string, unknown>
-  createdAt: number
-  updatedAt: number
-}
+export type Task = AnnotaskTask
+export type { AgentFeedbackQuestion, AgentFeedbackEntry }
 
 const tasks = ref<Task[]>([])
 const isLoading = ref(false)
