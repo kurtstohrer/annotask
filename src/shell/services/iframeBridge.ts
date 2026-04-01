@@ -1,23 +1,25 @@
-/**
- * Shell-side postMessage bridge for communicating with the client script
- * running inside the user's app (potentially cross-origin iframe).
- */
 import type { BridgeMessage } from '../../shared/bridge-types'
 
-type Handler = (payload: any) => void
 type PendingRequest = {
   resolve: (value: any) => void
-  reject: (reason: any) => void
+  reject: (reason?: any) => void
   timer: ReturnType<typeof setTimeout>
 }
 
-let counter = 0
+const listeners = new Map<string, Set<(payload: any) => void>>()
 const pending = new Map<string, PendingRequest>()
-const listeners = new Map<string, Set<Handler>>()
+
 let targetWindow: Window | null = null
 let targetOrigin: string = '*'
 let connected = false
 let onReadyCallbacks: Array<() => void> = []
+
+function flushReadyCallbacks() {
+  if (onReadyCallbacks.length === 0) return
+  const cbs = onReadyCallbacks
+  onReadyCallbacks = []
+  for (const cb of cbs) cb()
+}
 
 function handleMessage(event: MessageEvent) {
   const msg = event.data as BridgeMessage
@@ -30,8 +32,7 @@ function handleMessage(event: MessageEvent) {
   if (msg.type === 'bridge:ready') {
     targetOrigin = event.origin || '*'
     connected = true
-    for (const cb of onReadyCallbacks) cb()
-    onReadyCallbacks = []
+    flushReadyCallbacks()
     emit('bridge:ready', msg.payload)
     return
   }
@@ -59,19 +60,12 @@ function emit(type: string, payload: unknown) {
 /** Initialize the bridge. Call once when the shell mounts. */
 export function initBridge(iframeWindow: Window) {
   targetWindow = iframeWindow
-  connected = false
-  targetOrigin = '*'
   window.addEventListener('message', handleMessage)
 }
 
-/** Clean up. Call when the shell unmounts or iframe navigates. */
+/** Destroy the bridge */
 export function destroyBridge() {
   window.removeEventListener('message', handleMessage)
-  for (const [, p] of pending) {
-    clearTimeout(p.timer)
-    p.reject(new Error('bridge destroyed'))
-  }
-  pending.clear()
   targetWindow = null
   connected = false
   onReadyCallbacks = []
@@ -87,6 +81,7 @@ export function resetBridge(iframeWindow: Window) {
   pending.clear()
   targetWindow = iframeWindow
   connected = false
+  onReadyCallbacks = []
   targetOrigin = '*'
 }
 
@@ -97,38 +92,43 @@ export function onBridgeReady(cb: () => void) {
 }
 
 /** Whether the bridge is currently connected */
-export function isBridgeConnected(): boolean {
-  return connected
-}
+export function isConnected() { return connected }
 
-/** Send a fire-and-forget message to the client */
-export function send(type: string, payload: unknown = {}) {
+/** Probe the bridge — send a ping to check if client is alive.
+ *  If it responds, mark as connected and flush ready callbacks. */
+export function probeBridge() {
+  if (connected) { flushReadyCallbacks(); return }
   if (!targetWindow) return
-  const msg: BridgeMessage = { type, payload, source: 'annotask-shell' }
-  targetWindow.postMessage(msg, targetOrigin)
+  // Send a ping request; if the client responds, we know it's ready
+  request('bridge:ping', {}, 1500)
+    .then(() => {
+      connected = true
+      flushReadyCallbacks()
+    })
+    .catch(() => { /* client not ready yet — will get bridge:ready later */ })
 }
 
-/** Send a request and wait for a response */
-export function request<T = unknown>(type: string, payload: unknown = {}, timeout = 5000): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    if (!targetWindow) {
-      reject(new Error('bridge not connected'))
-      return
-    }
-    const id = `req-${++counter}`
+/** Send a request to the bridge client and wait for response */
+export function request<T = any>(type: string, payload: unknown = {}, timeout = 3000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (!targetWindow) return reject(new Error('no target window'))
+    const id = `req-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const timer = setTimeout(() => {
       pending.delete(id)
-      reject(new Error(`bridge timeout: ${type}`))
+      reject(new Error(`bridge request '${type}' timed out`))
     }, timeout)
-    pending.set(id, { resolve: resolve as (v: any) => void, reject, timer })
-    const msg: BridgeMessage = { type, id, payload, source: 'annotask-shell' }
-    targetWindow.postMessage(msg, targetOrigin)
+    pending.set(id, { resolve, reject, timer })
+    targetWindow.postMessage({ source: 'annotask-shell', type, id, payload }, targetOrigin)
   })
 }
 
-/** Subscribe to push events from the client. Returns unsubscribe function. */
-export function on(type: string, handler: Handler): () => void {
+/** Listen for events from the bridge client */
+export function on(type: string, handler: (payload: any) => void) {
   if (!listeners.has(type)) listeners.set(type, new Set())
   listeners.get(type)!.add(handler)
-  return () => { listeners.get(type)?.delete(handler) }
+}
+
+/** Remove an event listener */
+export function off(type: string, handler: (payload: any) => void) {
+  listeners.get(type)?.delete(handler)
 }

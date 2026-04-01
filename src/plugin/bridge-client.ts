@@ -326,6 +326,12 @@ export function bridgeClientScript(): string {
     var payload = msg.payload || {};
     var id = msg.id;
 
+    // ── Ping (shell probes if bridge:ready was missed) ──
+    if (type === 'bridge:ping') {
+      if (id) respond(id, { ok: true });
+      return;
+    }
+
     // ── Mode ──
     if (type === 'mode:set') {
       currentMode = payload.mode || 'select';

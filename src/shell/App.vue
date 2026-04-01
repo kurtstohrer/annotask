@@ -173,6 +173,7 @@ const confirmDeleteTaskId = ref<string | null>(null)
 function executeDeleteTask() {
   if (!confirmDeleteTaskId.value) return
   removeTaskAnnotations(confirmDeleteTaskId.value)
+  restoredTaskIds.delete(confirmDeleteTaskId.value)
   taskSystem.deleteTask(confirmDeleteTaskId.value)
   confirmDeleteTaskId.value = null
 }
@@ -243,8 +244,8 @@ function removeTaskAnnotations(taskId: string) {
   }
   // Clear inspect selection if it matches the deleted task's element
   const v = task.visual as any
-  const taskEid = v?.eid
-  if (taskEid && primarySelection.value?.eid === taskEid) {
+  const taskEids: string[] = v?.eids || (v?.eid ? [v.eid] : [])
+  if (taskEids.length && primarySelection.value?.eid && taskEids.includes(primarySelection.value.eid)) {
     primarySelection.value = null
     selectedEids.value = []
     selectionRects.value = []
@@ -255,6 +256,7 @@ function removeTaskAnnotations(taskId: string) {
 
 function acceptTask(taskId: string) {
   removeTaskAnnotations(taskId)
+  restoredTaskIds.delete(taskId)
   taskSystem.updateTaskStatus(taskId, 'accepted')
 }
 
@@ -392,12 +394,16 @@ async function refreshAnnotationRects() {
     }
     for (const t of taskSystem.tasks.value) {
       const v = t.visual as any
-      if (v?.kind === 'select' && v.eid && t.status !== 'accepted') {
-        addEid(v.eid, { type: 'task', id: t.id, field: 'rect' })
+      if (v?.kind === 'select' && t.status !== 'accepted') {
+        const taskEids: string[] = v.eids || (v.eid ? [v.eid] : [])
+        for (const eid of taskEids) addEid(eid, { type: 'task', id: t.id, field: 'rect' })
       }
     }
 
-    if (eidEntries.size === 0) { taskElementRects.value = []; return }
+    if (eidEntries.size === 0) {
+      if (taskElementRects.value.length) taskElementRects.value = []
+      return
+    }
 
     const eids = [...eidEntries.keys()]
     const rects = await iframe.getElementRects(eids)
@@ -459,8 +465,8 @@ function startAnnotationLoop() {
     const hasWork = annotations.arrows.value.some(a => a.fromEid || a.toEid)
       || annotations.highlights.value.some(h => h.eid)
       || annotations.drawnSections.value.some(s => s.nearEid)
-      || taskSystem.tasks.value.some(t => (t.visual as any)?.kind === 'select' && (t.visual as any)?.eid && t.status !== 'accepted')
-    if (!hasWork) { annotationLoopRunning = false; taskElementRects.value = []; return }
+      || taskSystem.tasks.value.some(t => { const v = t.visual as any; return v?.kind === 'select' && (v.eids?.length || v.eid) && t.status !== 'accepted' })
+    if (!hasWork) { annotationLoopRunning = false; return }
     refreshAnnotationRects()
     requestAnimationFrame(tick)
   }
@@ -521,11 +527,12 @@ async function onIframeLoad() {
     iframe.setMode(interactionMode.value)
     // Check source mapping
     showWarning.value = !(await iframe.checkSourceMapping())
-    // Get initial route
+    // Get actual route from bridge and persist it
     const route = await iframe.getCurrentRoute()
     annotations.setRoute(route)
-    // Restore annotations
-    restoreAnnotationsFromTasks()
+    localStorage.setItem('annotask:lastRoute', route)
+    // Re-resolve select task eids now that bridge is connected
+    await resolveSelectTaskEids()
     // Rescan layout if overlay is active
     if (layoutOverlay.showOverlay.value) layoutOverlay.scan()
   })
@@ -648,9 +655,6 @@ function setupBridgeEvents() {
   iframe.onBridgeEvent('route:changed', (data: { path: string }) => {
     annotations.setRoute(data.path)
     localStorage.setItem('annotask:lastRoute', data.path)
-    interactionHistory.push('route_change', data.path, { previousRoute: currentRoute.value })
-    // Re-restore annotations for the new route
-    restoreAnnotationsFromTasks()
   })
 
   // User action tracking (interact mode — link/button clicks in the app)
@@ -718,12 +722,13 @@ async function onAddAnnotationNote(text: string) {
   }
 
   const primary = targets[0]
-  // Capture current rect before async task creation so the highlight persists immediately
-  const currentRect = selectionRects.value[0] || null
+  // Capture all current rects + eids before async task creation
+  const currentRects = [...selectionRects.value]
+  const eids = [...selectedEids.value]
   const task = await createRouteTask({
     type: 'annotation', description: text,
     file: primary.file, line: parseInt(primary.line) || 0, component: primary.component,
-    visual: { kind: 'select', eid: sel.eid },
+    visual: { kind: 'select', eids },
     context: {
       element_tag: primary.tag,
       element_classes: primary.classes,
@@ -735,9 +740,10 @@ async function onAddAnnotationNote(text: string) {
       } : {}),
     },
   })
-  // Seed task element highlight immediately (rAF loop will take over)
-  if (task && currentRect) {
-    taskElementRects.value = [...taskElementRects.value, { taskId: (task as any).id, rect: currentRect }]
+  // Seed task element highlights immediately (rAF loop will take over)
+  if (task && currentRects.length) {
+    const id = (task as any).id
+    taskElementRects.value = [...taskElementRects.value, ...currentRects.map(rect => ({ taskId: id, rect }))]
     startAnnotationLoop()
   }
 }
@@ -765,41 +771,47 @@ function onAddAnnotationAction(action: string, label: string) {
 }
 
 // ── Restore annotations from saved tasks ─────────────
+const restoredTaskIds = new Set<string>()
+
 async function restoreAnnotationsFromTasks() {
-  // Clear existing annotations to prevent duplicates on repeated calls
-  annotations.clearAll()
-  sectionTaskMap.value = {}
   await taskSystem.fetchTasks()
-  const route = currentRoute.value
+  const fallbackRoute = annotations.activeRoute.value || '/'
+
   for (const task of taskSystem.tasks.value) {
-    // Only restore for current route (or tasks without route)
-    if (task.route && task.route !== route) continue
+    if (restoredTaskIds.has(task.id)) continue
     if (task.status === 'accepted') continue
 
     const v = task.visual as any
     if (!v) continue
 
+    restoredTaskIds.add(task.id)
+    const taskRoute = task.route || fallbackRoute
+
     if (v.kind === 'pin' && v.x != null && v.y != null) {
-      // Check if pin already exists at this location
-      const existing = annotations.getPinsForElement(task.file, task.line)
-      if (existing.length === 0) {
-        const pin = annotations.addPin(
-          { file: task.file, line: String(task.line), component: task.component || '', elementTag: v.element_tag || '', elementClasses: '' },
-          v.x, v.y
-        )
-        annotations.updatePinNote(pin.id, task.description)
-      }
+      const ctx = (task as any).context || {}
+      const pin = annotations.addPin(
+        { file: task.file, line: String(task.line), component: task.component || '', elementTag: ctx.element_tag || v.element_tag || '', elementClasses: ctx.element_classes || '' },
+        v.x, v.y
+      )
+      pin.route = taskRoute
+      annotations.updatePinNote(pin.id, task.description)
     } else if (v.kind === 'arrow') {
       const arrow = annotations.addArrow(v.fromX, v.fromY, v.toX, v.toY, v.label || task.description, v.color)
-      if (v.fromRect || v.toRect) {
-        annotations.updateArrow(arrow.id, { ...(v.fromRect ? { fromRect: v.fromRect } : {}), ...(v.toRect ? { toRect: v.toRect } : {}) })
-      }
+      arrow.route = taskRoute
+      annotations.updateArrow(arrow.id, {
+        ...(v.fromRect ? { fromRect: v.fromRect } : {}),
+        ...(v.toRect ? { toRect: v.toRect } : {}),
+        ...(v.fromEid ? { fromEid: v.fromEid } : {}),
+        ...(v.toEid ? { toEid: v.toEid } : {}),
+      })
     } else if (v.kind === 'section') {
       const section = annotations.addDrawnSection(v.x, v.y, v.width, v.height)
+      section.route = taskRoute
       if (task.prompt || task.description) {
         annotations.updateDrawnSection(section.id, {
           prompt: (task as any).prompt || task.description,
           nearFile: task.file, nearLine: task.line,
+          ...(v.nearEid ? { nearEid: v.nearEid } : {}),
         })
       }
       sectionTaskMap.value = { ...sectionTaskMap.value, [section.id]: task.id }
@@ -810,9 +822,31 @@ async function restoreAnnotationsFromTasks() {
         { file: task.file, line: task.line, component: task.component || '', elementTag: ctx.element_tag || '' },
         v.color, v.rect, v.eid,
       )
-      if (v.annotationId) v.annotationId = hl.id
+      hl.route = taskRoute
+      v.annotationId = hl.id
+    }
+    // kind === 'select' uses taskElementRects from rAF loop — eids re-resolved when bridge connects
+  }
+}
+
+/** Re-resolve volatile eids for select tasks after bridge connects */
+async function resolveSelectTaskEids() {
+  for (const task of taskSystem.tasks.value) {
+    const v = task.visual as any
+    if (v?.kind === 'select' && task.file && task.line && task.status !== 'accepted') {
+      try {
+        const group = await iframe.findTemplateGroup(task.file, String(task.line), '')
+        if (group.eids.length > 0) {
+          v.eids = group.eids
+          const rects = group.rects.filter((r: any): r is BridgeRect => r !== null)
+          for (const rect of rects) {
+            taskElementRects.value = [...taskElementRects.value, { taskId: task.id, rect }]
+          }
+        }
+      } catch { /* bridge not ready yet */ }
     }
   }
+  startAnnotationLoop()
 }
 
 // ── Task helper (adds route + visual data) ───────────
@@ -869,7 +903,7 @@ async function onSectionSubmit(id: string) {
     line: section.nearLine || 0,
     component: section.nearComponent || '',
     placement: section.placement || '',
-    visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height) },
+    visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height), nearEid: section.nearEid },
   })
   if (task) sectionTaskMap.value = { ...sectionTaskMap.value, [id]: (task as any).id }
 }
@@ -989,7 +1023,7 @@ function submitPendingArrowTask(id: string, description: string) {
     file: arrow.fromFile || '',
     line: arrow.fromLine || 0,
     component: arrow.fromComponent || '',
-    visual: { kind: 'arrow', annotationId: arrow.id, fromX: arrow.fromX, fromY: arrow.fromY, toX: arrow.toX, toY: arrow.toY, label: description.trim(), color: arrow.color, fromRect: arrow.fromRect, toRect: arrow.toRect },
+    visual: { kind: 'arrow', annotationId: arrow.id, fromX: arrow.fromX, fromY: arrow.fromY, toX: arrow.toX, toY: arrow.toY, label: description.trim(), color: arrow.color, fromRect: arrow.fromRect, toRect: arrow.toRect, fromEid: arrow.fromEid, toEid: arrow.toEid },
     context: {
       from_element_tag: (meta.fromTag as string) || '',
       from_element_classes: (meta.fromClasses as string) || '',
@@ -1065,17 +1099,19 @@ function cancelPendingTask() {
 // ── General Add Task ─────────────────────────────────
 async function onAddGeneralTask(text: string) {
   const sel = primarySelection.value
-  const currentRect = selectionRects.value[0] || null
+  const currentRects = [...selectionRects.value]
+  const eids = [...selectedEids.value]
   const task = await createRouteTask({
     type: 'annotation',
     description: text,
     file: sel?.file || '',
     line: sel ? parseInt(sel.line) || 0 : 0,
     component: sel?.component || '',
-    ...(sel?.eid ? { visual: { kind: 'select', eid: sel.eid } } : {}),
+    ...(eids.length ? { visual: { kind: 'select', eids } } : {}),
   })
-  if (task && sel?.eid && currentRect) {
-    taskElementRects.value = [...taskElementRects.value, { taskId: (task as any).id, rect: currentRect }]
+  if (task && currentRects.length) {
+    const id = (task as any).id
+    taskElementRects.value = [...taskElementRects.value, ...currentRects.map(rect => ({ taskId: id, rect }))]
     startAnnotationLoop()
   }
 }
@@ -1101,10 +1137,18 @@ useKeyboardShortcuts({
 })
 
 // ── Lifecycle ──────────────────────────────────────────
-onMounted(() => {
+onMounted(async () => {
+  // Seed route before bridge sync so restored annotations are filtered predictably.
+  const savedRoute = localStorage.getItem('annotask:lastRoute') || '/'
+  annotations.setRoute(savedRoute)
+  // Restore annotations from persisted tasks first (bridge-independent).
+  await restoreAnnotationsFromTasks()
+
   iframe.mountBridge()
   setupBridgeEvents()
   iframeRef.value?.addEventListener('load', onIframeLoad)
+  // If iframe already loaded, trigger manually
+  if (iframeRef.value?.contentWindow) onIframeLoad()
 })
 onUnmounted(() => {
   iframe.unmountBridge()
@@ -1247,10 +1291,11 @@ const appUrl = computed(() => {
           </div>
         </div>
 
-        <!-- Persistent task element highlights -->
+        </template>
+
+        <!-- Persistent task element highlights (always visible, outside inspector toggle) -->
         <div v-for="te in taskElementRects" :key="'te-'+te.taskId" class="highlight task-element"
           :style="{ left: te.rect.x+'px', top: te.rect.y+'px', width: te.rect.width+'px', height: te.rect.height+'px' }" />
-        </template>
 
         <!-- Pins -->
         <PinOverlay v-if="showMarkup.pins"
@@ -1610,7 +1655,7 @@ const appUrl = computed(() => {
       @close="detailTaskId = null"
       @accept="(id) => { acceptTask(id); detailTaskId = null }"
       @deny="(id) => { denyingTaskId = id; denyFeedbackText = ''; detailTaskId = null }"
-      @delete="(id) => { removeTaskAnnotations(id); taskSystem.deleteTask(id); detailTaskId = null }"
+      @delete="(id) => { removeTaskAnnotations(id); restoredTaskIds.delete(id); taskSystem.deleteTask(id); detailTaskId = null }"
       @update="(id, fields) => { taskSystem.updateTaskStatus(id, detailTask!.status, undefined, fields) }"
     />
 
@@ -1724,7 +1769,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .highlight.hover { background: rgba(59,130,246,0.1); border: 1.5px solid rgba(59,130,246,0.5); }
 .highlight.group { background: rgba(168,85,247,0.08); border: 1.5px dashed rgba(168,85,247,0.4); }
 .highlight.select { background: rgba(59,130,246,0.08); border: 2px solid var(--accent); }
-.highlight.task-element { background: rgba(59,130,246,0.05); border: 2px dashed rgba(59,130,246,0.4); }
+.highlight.task-element { background: rgba(59,130,246,0.08); border: 2px solid rgba(59,130,246,0.5); }
 
 .hover-label, .select-label {
   position: absolute; bottom: 100%; left: -1px;

@@ -29,6 +29,10 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     bridge.on('route:changed', (payload: { path: string }) => {
       currentRoute.value = payload.path
     })
+
+    // bridge:ready may already be queued from bridge-client script execution
+    // (before iframe load event). Probe on next tick to catch it.
+    setTimeout(() => bridge.probeBridge(), 0)
   }
 
   /** Start the bridge listener (call once on shell mount) */

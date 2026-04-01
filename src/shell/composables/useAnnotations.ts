@@ -92,6 +92,13 @@ const arrows = ref<Arrow[]>([])
 const drawnSections = ref<DrawnSection[]>([])
 const highlights = ref<TextHighlight[]>([])
 const activeRoute = ref('/')
+
+function normalizeRoute(path: string): string {
+  if (!path) return '/'
+  const base = path.split('#')[0].split('?')[0] || '/'
+  const withSlash = base.startsWith('/') ? base : `/${base}`
+  return withSlash.length > 1 ? withSlash.replace(/\/+$/, '') : withSlash
+}
 const selectedPinId = ref<string | null>(null)
 const selectedStickyId = ref<string | null>(null)
 const selectedArrowId = ref<string | null>(null)
@@ -99,13 +106,13 @@ const selectedSectionId = ref<string | null>(null)
 let counter = 0
 
 export function useAnnotations() {
-  function setRoute(route: string) { activeRoute.value = route }
+  function setRoute(route: string) { activeRoute.value = normalizeRoute(route) }
 
   // Route-filtered views
-  const routePins = computed(() => pins.value.filter(p => p.route === activeRoute.value))
-  const routeArrows = computed(() => arrows.value.filter(a => a.route === activeRoute.value))
-  const routeSections = computed(() => drawnSections.value.filter(s => s.route === activeRoute.value))
-  const routeHighlights = computed(() => highlights.value.filter(h => h.route === activeRoute.value))
+  const routePins = computed(() => pins.value.filter(p => normalizeRoute(p.route) === activeRoute.value))
+  const routeArrows = computed(() => arrows.value.filter(a => normalizeRoute(a.route) === activeRoute.value))
+  const routeSections = computed(() => drawnSections.value.filter(s => normalizeRoute(s.route) === activeRoute.value))
+  const routeHighlights = computed(() => highlights.value.filter(h => normalizeRoute(h.route) === activeRoute.value))
 
   // ── Pins ──
   function addPin(source: {
