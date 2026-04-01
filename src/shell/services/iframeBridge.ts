@@ -122,6 +122,12 @@ export function request<T = any>(type: string, payload: unknown = {}, timeout = 
   })
 }
 
+/** Send a fire-and-forget message to the bridge client (no response expected) */
+export function send(type: string, payload: unknown = {}) {
+  if (!targetWindow) return
+  targetWindow.postMessage({ source: 'annotask-shell', type, payload }, targetOrigin)
+}
+
 /** Listen for events from the bridge client */
 export function on(type: string, handler: (payload: any) => void) {
   if (!listeners.has(type)) listeners.set(type, new Set())

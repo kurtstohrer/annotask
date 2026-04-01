@@ -776,6 +776,7 @@ const restoredTaskIds = new Set<string>()
 async function restoreAnnotationsFromTasks() {
   await taskSystem.fetchTasks()
   const fallbackRoute = annotations.activeRoute.value || '/'
+  console.log('[annotask] restoreAnnotationsFromTasks: tasks=%d, activeRoute=%s', taskSystem.tasks.value.length, fallbackRoute)
 
   for (const task of taskSystem.tasks.value) {
     if (restoredTaskIds.has(task.id)) continue
@@ -786,6 +787,7 @@ async function restoreAnnotationsFromTasks() {
 
     restoredTaskIds.add(task.id)
     const taskRoute = task.route || fallbackRoute
+    console.log('[annotask] restoring task %s kind=%s route=%s', task.id, v.kind, taskRoute)
 
     if (v.kind === 'pin' && v.x != null && v.y != null) {
       const ctx = (task as any).context || {}
@@ -798,11 +800,10 @@ async function restoreAnnotationsFromTasks() {
     } else if (v.kind === 'arrow') {
       const arrow = annotations.addArrow(v.fromX, v.fromY, v.toX, v.toY, v.label || task.description, v.color)
       arrow.route = taskRoute
+      // Restore rects but NOT eids — eids are volatile across reloads
       annotations.updateArrow(arrow.id, {
         ...(v.fromRect ? { fromRect: v.fromRect } : {}),
         ...(v.toRect ? { toRect: v.toRect } : {}),
-        ...(v.fromEid ? { fromEid: v.fromEid } : {}),
-        ...(v.toEid ? { toEid: v.toEid } : {}),
       })
     } else if (v.kind === 'section') {
       const section = annotations.addDrawnSection(v.x, v.y, v.width, v.height)
@@ -811,7 +812,6 @@ async function restoreAnnotationsFromTasks() {
         annotations.updateDrawnSection(section.id, {
           prompt: (task as any).prompt || task.description,
           nearFile: task.file, nearLine: task.line,
-          ...(v.nearEid ? { nearEid: v.nearEid } : {}),
         })
       }
       sectionTaskMap.value = { ...sectionTaskMap.value, [section.id]: task.id }
@@ -820,13 +820,17 @@ async function restoreAnnotationsFromTasks() {
       const hl = annotations.addHighlight(
         ctx.selected_text || '',
         { file: task.file, line: task.line, component: task.component || '', elementTag: ctx.element_tag || '' },
-        v.color, v.rect, v.eid,
+        v.color, v.rect,
       )
       hl.route = taskRoute
       v.annotationId = hl.id
     }
     // kind === 'select' uses taskElementRects from rAF loop — eids re-resolved when bridge connects
   }
+  console.log('[annotask] restore done: pins=%d arrows=%d sections=%d highlights=%d routePins=%d routeArrows=%d',
+    annotations.pins.value.length, annotations.arrows.value.length,
+    annotations.drawnSections.value.length, annotations.highlights.value.length,
+    annotations.routePins.value.length, annotations.routeArrows.value.length)
 }
 
 /** Re-resolve volatile eids for select tasks after bridge connects */
