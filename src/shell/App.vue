@@ -630,9 +630,9 @@ function setupBridgeEvents() {
   })
 
   iframe.onBridgeEvent('contextmenu:element', async (data: ClickElementEvent) => {
-    const { file, line, component, mfe, tag: tagName, classes, eid } = data
+    const { file, line, component, mfe = '', tag: tagName, classes, eid } = data
     const shellRect = iframe.toShellRect(data.rect)
-    primarySelection.value = { file, line, component, tagName, classes, eid }
+    primarySelection.value = { file, line, component, mfe, tagName, classes, eid }
     selectedEids.value = [eid]
     await readLiveStyles()
     await refreshElementRole()
@@ -834,7 +834,7 @@ async function restoreAnnotationsFromTasks() {
     } else if (v.kind === 'section') {
       const section = annotations.addDrawnSection(v.x, v.y, v.width, v.height)
       section.route = taskRoute
-      if (task.prompt || task.description) {
+      if ((task as any).prompt || task.description) {
         annotations.updateDrawnSection(section.id, {
           prompt: (task as any).prompt || task.description,
           nearFile: task.file, nearLine: task.line,

@@ -4,7 +4,7 @@
     "jsx": "preserve",
     "jsxImportSource": "vue",
     "outDir": "../../dist/shell",
-    "rootDir": ".",
+    "rootDir": "..",
     "types": ["vite/client"]
   },
   "include": [".", "env.d.ts"]

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, type Ref } from 'vue'
+import { ref, computed, type Ref, type MaybeRef, toRef } from 'vue'
 import { useDesignSpec } from '../composables/useDesignSpec'
 import { useThemePreview } from '../composables/useThemePreview'
 import { useTasks } from '../composables/useTasks'
@@ -72,19 +72,22 @@ function onColorChange(token: DesignSpecToken, value: string) {
 function onTokenChange(
   token: DesignSpecToken,
   value: string,
-  editMap: Ref<Map<string, string>>
+  editMap: MaybeRef<Map<string, string>>
 ) {
-  editMap.value.set(token.role, value)
-  editMap.value = new Map(editMap.value)
+  const r = toRef(editMap)
+  r.value.set(token.role, value)
+  r.value = new Map(r.value)
   if (token.cssVar) themePreview.setOverride(token.cssVar, value)
 }
 
-function getEffectiveValue(token: DesignSpecToken, editMap: Map<string, string>): string {
-  return editMap.get(token.role) ?? token.value
+function getEffectiveValue(token: DesignSpecToken, editMap: MaybeRef<Map<string, string>>): string {
+  const map = toRef(editMap).value
+  return map.get(token.role) ?? token.value
 }
 
-function isEdited(token: DesignSpecToken, editMap: Map<string, string>): boolean {
-  const edited = editMap.get(token.role)
+function isEdited(token: DesignSpecToken, editMap: MaybeRef<Map<string, string>>): boolean {
+  const map = toRef(editMap).value
+  const edited = map.get(token.role)
   return edited !== undefined && edited !== token.value
 }
 
@@ -119,10 +122,11 @@ function confirmAdd() {
   addingNew.value = null
 }
 
-function removeNew(list: Ref<DesignSpecToken[]>, index: number) {
-  const token = list.value[index]
+function removeNew(list: MaybeRef<DesignSpecToken[]>, index: number) {
+  const r = toRef(list)
+  const token = r.value[index]
   if (token.cssVar) themePreview.removeOverride(token.cssVar)
-  list.value = list.value.filter((_, i) => i !== index)
+  r.value = r.value.filter((_, i) => i !== index)
 }
 
 // ── Commit ──

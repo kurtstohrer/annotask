@@ -19,7 +19,9 @@ describe('useStyleEditor', () => {
       expect(editor.changes.value).toHaveLength(1)
       const change = editor.changes.value[0]
       expect(change.type).toBe('style_update')
-      expect(change.after).toBe('blue')
+      if (change.type === 'style_update') {
+        expect(change.after).toBe('blue')
+      }
     })
 
     it('records the before value', () => {

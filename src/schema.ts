@@ -99,7 +99,7 @@ export interface PropUpdateChange extends BaseChange {
 }
 
 /** Insert a new element/component */
-export interface ComponentInsertChange extends BaseChange {
+export interface ComponentInsertChange extends Omit<BaseChange, 'component'> {
   type: 'component_insert'
   insert_inside?: { component?: string; element?: string; slot?: string }
   insert_position: 'append' | 'prepend' | 'before' | 'after'

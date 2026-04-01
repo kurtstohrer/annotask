@@ -114,7 +114,7 @@ export function useColorPalette(iframeDoc: Ref<Document | null>) {
   function addRecentColor(hex: string) {
     const normalized = hex.toLowerCase()
     recentColors.value = [
-      { label: normalized, value: normalized, source: 'recent' },
+      { label: normalized, value: normalized, source: 'recent' as const },
       ...recentColors.value.filter(c => c.value !== normalized),
     ].slice(0, MAX_RECENT)
   }
