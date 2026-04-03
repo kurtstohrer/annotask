@@ -78,23 +78,6 @@ onMounted(refresh)
 
 <template>
   <div class="libraries-page">
-    <!-- Context blurb -->
-    <div class="context-blurb">
-      <div class="blurb-icon">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-      </div>
-      <div class="blurb-text">
-        <strong>Component Libraries</strong>
-        <p>Annotask scans your installed packages and extracts component names, props, types, and defaults. This catalog is included as context when your AI coding agent processes tasks — it knows which components are available, how to import them, and what props they accept, so it can use your actual design system instead of writing generic HTML.</p>
-      </div>
-      <button class="refresh-btn" :disabled="loading" @click="refresh" title="Rescan libraries">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" :class="{ spinning: loading }">
-          <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-        </svg>
-      </button>
-    </div>
-
     <div class="libraries-body">
       <!-- List panel -->
       <div class="list-panel">
@@ -110,6 +93,12 @@ onMounted(refresh)
           </div>
           <button v-if="totalUsed > 0" :class="['filter-btn', { active: showUsedOnly }]" @click="showUsedOnly = !showUsedOnly" title="Show only components used in your project">
             Used <span class="filter-count">{{ totalUsed }}</span>
+          </button>
+          <button class="refresh-btn" :disabled="loading" @click="refresh" title="Rescan libraries">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" :class="{ spinning: loading }">
+              <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
           </button>
         </div>
 
@@ -184,8 +173,22 @@ onMounted(refresh)
         </template>
 
         <div v-else class="detail-empty">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-          <span>Select a component to view its props</span>
+          <div class="context-card">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            <h3>Component Context for AI</h3>
+            <p>Annotask scans your installed packages and extracts component names, props, types, and defaults into a structured catalog.</p>
+            <p>When your AI coding agent processes a task, this catalog is included as context. The agent knows which components are available in your project, how to import them, and what props they accept — so it writes code using your actual design system instead of generic HTML.</p>
+            <div class="context-how">
+              <span class="how-label">How it works</span>
+              <ol>
+                <li>Annotask reads your <code>package.json</code> dependencies</li>
+                <li>Each package is scanned for component exports and prop definitions</li>
+                <li>The catalog is served via the API and MCP tools</li>
+                <li>Your agent calls <code>annotask_get_components</code> to get the full catalog before applying changes</li>
+              </ol>
+            </div>
+            <p class="context-hint">Select a component from the list to view its props, types, and defaults.</p>
+          </div>
         </div>
       </div>
     </div>
@@ -196,42 +199,15 @@ onMounted(refresh)
 .libraries-page {
   display: flex;
   flex-direction: column;
+  flex: 1;
   height: 100%;
   overflow: hidden;
+  background: var(--surface);
 }
 
-/* Context blurb */
-.context-blurb {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 20px;
-  background: rgba(96, 165, 250, 0.04);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.blurb-icon {
-  color: var(--text-muted);
-  flex-shrink: 0;
-  margin-top: 1px;
-}
-.blurb-text { flex: 1; }
-.blurb-text strong {
-  display: block;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 4px;
-}
-.blurb-text p {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.55;
-}
 .refresh-btn {
   background: none; border: none; color: var(--text-muted); cursor: pointer;
-  padding: 4px; border-radius: 4px; flex-shrink: 0;
+  padding: 4px; border-radius: 4px; flex-shrink: 0; display: flex; align-items: center;
 }
 .refresh-btn:hover { color: var(--text); background: var(--surface-2); }
 .refresh-btn:disabled { opacity: 0.4; cursor: default; }
@@ -278,7 +254,7 @@ onMounted(refresh)
   width: 100%;
   padding: 6px 10px 6px 28px;
   font-size: 12px;
-  background: var(--bg);
+  background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -295,7 +271,7 @@ onMounted(refresh)
   cursor: pointer; white-space: nowrap; transition: all 0.15s;
 }
 .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
-.filter-btn.active { background: rgba(96, 165, 250, 0.15); border-color: #60a5fa; color: #60a5fa; }
+.filter-btn.active { background: color-mix(in srgb, var(--accent) 15%, transparent); border-color: var(--accent); color: var(--accent); }
 .filter-count { font-size: 10px; opacity: 0.7; }
 
 .lib-list {
@@ -330,7 +306,7 @@ onMounted(refresh)
   transition: background 0.1s;
 }
 .comp-item:hover { background: var(--surface-2); }
-.comp-item.selected { background: rgba(96, 165, 250, 0.1); }
+.comp-item.selected { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
 .comp-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .used-badge {
@@ -358,7 +334,7 @@ onMounted(refresh)
   margin-top: 6px;
   font-size: 12px;
   color: var(--text-muted);
-  background: var(--bg);
+  background: var(--surface-2);
   padding: 4px 10px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -399,23 +375,79 @@ onMounted(refresh)
 .props-table tr:last-child td { border-bottom: none; }
 .props-table tbody tr:hover { background: rgba(255,255,255,0.02); }
 
-.prop-name { font-size: 13px; color: #60a5fa; font-weight: 600; }
+.prop-name { font-size: 13px; color: var(--accent); font-weight: 600; }
 .prop-type { font-size: 12px; color: var(--text-muted); word-break: break-all; }
 .req-badge { font-size: 10px; font-weight: 700; color: #f59e0b; text-transform: uppercase; }
 .prop-default { font-size: 12px; color: var(--text-muted); }
 
+/* Empty detail: context explanation */
 .detail-empty {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100%;
-  gap: 12px;
+}
+.context-card {
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.context-card h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.context-card p {
+  margin: 0;
+  font-size: 12px;
   color: var(--text-muted);
-  font-size: 13px;
+  line-height: 1.6;
+}
+.context-how {
+  margin-top: 4px;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.how-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.context-how ol {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.context-how li {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.context-how code {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--surface);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.context-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.6;
+  margin-top: 2px;
 }
 
-/* Empty state */
+/* Empty state (list panel) */
 .empty-state {
   display: flex;
   flex-direction: column;
