@@ -875,7 +875,7 @@ const appUrl = computed(() => {
       </aside>
 
       <!-- Component Library Panel (Libraries view) -->
-      <aside class="panel" v-if="shellView === 'libraries'">
+      <aside class="panel" v-else-if="shellView === 'libraries'">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">{{ selectedComponent ? selectedComponent.name : 'Libraries' }}</span>
         </div>
