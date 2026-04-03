@@ -399,7 +399,8 @@ onMounted(refresh)
 
 /* Context explanation page */
 .context-page {
-  max-width: 760px;
+  max-width: 900px;
+  width: 100%;
   padding: 16px 32px 32px;
 }
 .context-page h2 {
