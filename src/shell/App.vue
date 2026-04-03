@@ -546,9 +546,11 @@ const appUrl = computed(() => {
     <!-- Snipping overlay -->
     <div v-if="snipActive" class="snip-overlay"
       @pointerdown="onSnipDown" @pointermove="onSnipMove" @pointerup="onSnipUp" @keydown.escape="cancelSnip">
-      <div class="snip-hint">Drag to select a region, or click for full page</div>
+      <div class="snip-hint">Drag to select a region, or press Esc to cancel</div>
       <div v-if="snipRect && snipRect.width > 5 && snipRect.height > 5" class="snip-selection"
-        :style="{ left: snipRect.x+'px', top: snipRect.y+'px', width: snipRect.width+'px', height: snipRect.height+'px' }" />
+        :style="{ left: snipRect.x+'px', top: snipRect.y+'px', width: snipRect.width+'px', height: snipRect.height+'px' }">
+        <div class="snip-size-label">{{ Math.round(snipRect.width) }} &times; {{ Math.round(snipRect.height) }}</div>
+      </div>
     </div>
 
     <!-- Main -->
@@ -1413,21 +1415,33 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .screenshot-remove:hover { background: #ef4444; }
 
-/* Snipping overlay */
+/* Snipping overlay — macOS-style: selected area clear, surroundings dimmed */
 .snip-overlay {
   position: fixed; inset: 0; z-index: 20000;
-  background: rgba(0, 0, 0, 0.3); cursor: crosshair;
+  cursor: crosshair;
+}
+/* Dim the entire screen when no selection is drawn yet */
+.snip-overlay:not(:has(.snip-selection)) {
+  background: rgba(0, 0, 0, 0.4);
 }
 .snip-hint {
   position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
-  padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 600;
-  background: rgba(0, 0, 0, 0.7); color: white; pointer-events: none;
+  padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600;
+  background: rgba(0, 0, 0, 0.75); color: white; pointer-events: none;
+  backdrop-filter: blur(4px); letter-spacing: 0.01em;
 }
 .snip-selection {
   position: fixed; z-index: 20001; pointer-events: none;
-  border: 2px dashed #06b6d4;
-  background: rgba(6, 182, 212, 0.08);
-  border-radius: 4px;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 2px;
+  /* Giant box-shadow creates the dimmed surround — the selection stays clear */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+}
+.snip-size-label {
+  position: absolute; bottom: -24px; left: 50%; transform: translateX(-50%);
+  padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+  background: rgba(0, 0, 0, 0.75); color: white; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Task screenshot thumbnail */
