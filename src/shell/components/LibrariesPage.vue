@@ -198,21 +198,21 @@ onMounted(refresh)
                 <span>package.json</span>
               </div>
               <div class="flow-arrow">
-                <svg width="20" height="12" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
+                <svg width="16" height="10" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
               </div>
               <div class="flow-box">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                 <span>Scan &amp; Extract</span>
               </div>
               <div class="flow-arrow">
-                <svg width="20" height="12" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
+                <svg width="16" height="10" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
               </div>
               <div class="flow-box">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                 <span>API / MCP</span>
               </div>
               <div class="flow-arrow">
-                <svg width="20" height="12" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
+                <svg width="16" height="10" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
               </div>
               <div class="flow-box highlight">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 014 4c0 2-2 3-2 6H10c0-3-2-4-2-6a4 4 0 014-4z"/><line x1="10" y1="18" x2="14" y2="18"/><line x1="10" y1="22" x2="14" y2="22"/></svg>
@@ -419,7 +419,7 @@ onMounted(refresh)
 
 /* Context explanation page */
 .context-page {
-  max-width: 640px;
+  max-width: 720px;
   margin: 0 auto;
   padding-top: 16px;
 }
