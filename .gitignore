@@ -12,3 +12,6 @@ __pycache__
 # Astro (generated)
 .astro/
 plan/
+
+# Local-only playgrounds (reference external repos)
+playgrounds/antenna-vite/

@@ -125,8 +125,14 @@ export async function scanComponentLibraries(projectRoot: string): Promise<Compo
     if (!depDir) continue
 
     const library = await scanLibrary(depName, depDir)
-    if (library && library.components.length >= 3 && library.components.some(c => c.props.length > 0)) {
-      libraries.push(library)
+    if (library && library.components.length >= 3) {
+      // Require at least one component with props OR a framework peer dependency
+      // (bundled libraries won't have props but are still valid if they depend on vue/react/svelte)
+      const hasProps = library.components.some(c => c.props.length > 0)
+      const hasFrameworkPeer = isFrameworkLibrary(depDir)
+      if (hasProps || hasFrameworkPeer) {
+        libraries.push(library)
+      }
     }
   }
 
@@ -135,6 +141,15 @@ export async function scanComponentLibraries(projectRoot: string): Promise<Compo
 }
 
 
+
+/** Check if a package has vue/react/svelte as a peer or dependency — signals it's a UI component library */
+function isFrameworkLibrary(pkgDir: string): boolean {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8'))
+    const allDeps = { ...pkg.dependencies, ...pkg.peerDependencies }
+    return ['vue', 'react', 'react-dom', 'svelte', '@angular/core'].some(fw => fw in allDeps)
+  } catch { return false }
+}
 
 function resolvePackageDir(projectRoot: string, packageName: string): string | null {
   // Walk up from projectRoot looking for node_modules/{packageName}
@@ -389,14 +404,15 @@ function findPackageEntry(pkgDir: string): string | null {
   }
 
   // Try to find source equivalent of the dist entry
+  const rootExport = pkg.exports?.['.']
   const distEntry: string | undefined =
-    (typeof pkg.exports?.['.'] === 'string' ? pkg.exports['.'] : null) ??
-    pkg.exports?.['.']?.import ??
-    pkg.exports?.['.']?.default ??
+    (typeof rootExport === 'string' ? rootExport : null) ??
+    (typeof rootExport?.import === 'string' ? rootExport.import : null) ??
+    (typeof rootExport?.default === 'string' ? rootExport.default : null) ??
     pkg.module ??
     pkg.main
 
-  if (distEntry) {
+  if (typeof distEntry === 'string') {
     // Map dist path back to source (dist/index.js → src/index.ts, etc.)
     const normalized = distEntry.replace(/^\.\//, '')
     const stem = normalized.replace(/\.(m?js|cjs)$/, '')
@@ -417,6 +433,12 @@ function findPackageEntry(pkgDir: string): string | null {
     'components/index', 'lib/index', 'index',
   ]) {
     const resolved = resolveModulePath(pkgDir, candidate)
+    if (resolved) return resolved
+  }
+
+  // Last resort: use the dist entry directly (for bundled export name extraction)
+  if (distEntry) {
+    const resolved = resolveModulePath(pkgDir, distEntry)
     if (resolved) return resolved
   }
 
@@ -523,14 +545,57 @@ async function scanFromEntryPoint(name: string, pkgDir: string): Promise<Scanned
   const entryPath = findPackageEntry(pkgDir)
   if (!entryPath) return []
 
-  // Don't scan bundled dist files (single large file = bundled)
+  let isBundled = false
   try {
     const stat = await fsp.stat(entryPath)
-    if (stat.size > 500_000) return [] // >500KB is almost certainly a bundle
+    isBundled = stat.size > 500_000 // >500KB is almost certainly a bundle
   } catch { return [] }
 
+  // For source/unbundled files: follow re-export chains and extract props
+  if (!isBundled) {
+    const components: ScannedComponent[] = []
+    await collectComponentExports(entryPath, name, components, new Set(), 4)
+    if (components.length > 0) return components
+  }
+
+  // Fallback: parse named exports from the dist entry file.
+  // Bundled ESM files end with export{internalName as exportName, ...}.
+  // We can extract component names (no props) from this.
+  return extractExportNames(entryPath, name)
+}
+
+/** Extract component names from a bundled ESM file's export statement */
+async function extractExportNames(filePath: string, pkgName: string): Promise<ScannedComponent[]> {
+  let content: string
+  try { content = await fsp.readFile(filePath, 'utf-8') } catch { return [] }
+
   const components: ScannedComponent[] = []
-  await collectComponentExports(entryPath, name, components, new Set(), 4)
+  const seen = new Set<string>()
+
+  // Match: export{X as name, Y as name2, ...} — handles minified bundles
+  const exportBlockRe = /export\s*\{([^}]+)\}/g
+  let m: RegExpExecArray | null
+  while ((m = exportBlockRe.exec(content)) !== null) {
+    for (const token of m[1].split(',')) {
+      const trimmed = token.trim()
+      if (!trimmed) continue
+      // "internalName as exportName" or just "exportName"
+      const asMatch = trimmed.match(/(?:\w+\s+as\s+)?(\w+)$/)
+      if (!asMatch) continue
+      const exportName = asMatch[1]
+
+      // Skip non-component exports: default, type names, camelCase utils, ALL_CAPS constants
+      if (exportName === 'default' || exportName === 'install') continue
+      if (exportName.endsWith('Props') || exportName.endsWith('Emits')) continue
+      if (exportName === exportName.toUpperCase()) continue // CONSTANTS
+      if (/^(use|create|get|set|is|has|with|to|from)[A-Z]/.test(exportName)) continue // utility functions
+      if (seen.has(exportName)) continue
+      seen.add(exportName)
+
+      components.push({ name: pascalCase(exportName), module: pkgName, props: [] })
+    }
+  }
+
   return components
 }
 
