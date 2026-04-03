@@ -184,11 +184,11 @@ onMounted(refresh)
 
         <!-- Context explanation (default view) -->
         <div v-else class="context-page">
-          <h2>Component Context for AI</h2>
+          <h2>Component Library Catalog</h2>
 
-          <p>Annotask scans your installed packages and extracts component names, props, types, and defaults into a structured catalog. When your AI coding agent processes a task, this catalog is included as context — the agent knows which components are available, how to import them, and what props they accept.</p>
+          <p>Annotask scans your installed packages and builds a queryable catalog of component names, props, types, and defaults. This catalog is available as a dataset your AI coding agent can query when it needs to understand what components exist in your project, how to import them, and what props they accept.</p>
 
-          <p>This means the agent writes code using your actual design system instead of generic HTML.</p>
+          <p>Tasks don't include the catalog automatically — the agent queries it on demand when it needs to look up a component. This keeps tasks lightweight while giving the agent full access to your design system when writing code.</p>
 
           <!-- Flow diagram -->
           <div class="flow-diagram">
@@ -196,9 +196,9 @@ onMounted(refresh)
             <div class="flow-arrow-cell">&rarr;</div>
             <div class="flow-box">Annotask Scans Props &amp; Types</div>
             <div class="flow-arrow-cell">&rarr;</div>
-            <div class="flow-box">Agent Gets Full Catalog</div>
+            <div class="flow-box">Queryable Catalog</div>
             <div class="flow-arrow-cell">&rarr;</div>
-            <div class="flow-box">Agent Uses Your Design System</div>
+            <div class="flow-box">Agent Queries On Demand</div>
           </div>
 
           <div class="context-section">
@@ -206,13 +206,13 @@ onMounted(refresh)
             <ol>
               <li>Annotask reads your <code>package.json</code> dependencies on dev server start</li>
               <li>Each package is scanned for component exports and prop definitions (supports Vue, React, Svelte)</li>
-              <li>The catalog is cached in memory and served via the HTTP API and MCP tools</li>
-              <li>Your agent calls <code>annotask_get_components</code> to retrieve the full catalog with props, types, and defaults</li>
+              <li>The catalog is cached in memory and served as a queryable dataset via the API and MCP tools</li>
+              <li>When applying a task, the agent calls <code>annotask_get_components</code> to look up available components, props, and import paths</li>
             </ol>
           </div>
 
           <div class="context-section">
-            <h3>Access methods</h3>
+            <h3>How to query</h3>
             <div class="access-grid">
               <div class="access-card">
                 <span class="access-label">MCP Tool</span>
