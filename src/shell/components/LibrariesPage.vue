@@ -190,35 +190,15 @@ onMounted(refresh)
 
           <p>This means the agent writes code using your actual design system instead of generic HTML.</p>
 
-          <!-- Flow diagram -->
+          <!-- Flow diagram — pure CSS grid, no SVG arrows -->
           <div class="flow-diagram">
-            <div class="flow-step">
-              <div class="flow-box">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
-                <span>package.json</span>
-              </div>
-              <div class="flow-arrow">
-                <svg width="16" height="10" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
-              </div>
-              <div class="flow-box">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-                <span>Scan &amp; Extract</span>
-              </div>
-              <div class="flow-arrow">
-                <svg width="16" height="10" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
-              </div>
-              <div class="flow-box">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                <span>API / MCP</span>
-              </div>
-              <div class="flow-arrow">
-                <svg width="16" height="10" viewBox="0 0 20 12"><path d="M0 6h16M12 1l5 5-5 5" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/></svg>
-              </div>
-              <div class="flow-box highlight">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 014 4c0 2-2 3-2 6H10c0-3-2-4-2-6a4 4 0 014-4z"/><line x1="10" y1="18" x2="14" y2="18"/><line x1="10" y1="22" x2="14" y2="22"/></svg>
-                <span>AI Agent</span>
-              </div>
-            </div>
+            <div class="flow-box">package.json</div>
+            <div class="flow-arrow-cell">&rarr;</div>
+            <div class="flow-box">Scan &amp; Extract</div>
+            <div class="flow-arrow-cell">&rarr;</div>
+            <div class="flow-box">API / MCP</div>
+            <div class="flow-arrow-cell">&rarr;</div>
+            <div class="flow-box highlight">AI Agent</div>
           </div>
 
           <div class="context-section">
@@ -441,34 +421,41 @@ onMounted(refresh)
   color: #fff;
 }
 
-/* Flow diagram */
+/* Flow diagram — CSS grid, 7 columns: box arrow box arrow box arrow box */
 .flow-diagram {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+  align-items: center;
+  gap: 0;
   margin: 20px 0;
-  padding: 16px 20px;
+  padding: 16px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow-x: auto;
-}
-.flow-step {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  white-space: nowrap;
 }
 .flow-box {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 14px; border-radius: 8px;
-  background: var(--surface); border: 1px solid var(--border);
-  color: var(--text-muted); font-size: 12px; font-weight: 600;
-  white-space: nowrap; flex-shrink: 0;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
 }
 .flow-box.highlight {
   border-color: var(--accent);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
-.flow-arrow { flex-shrink: 0; display: flex; align-items: center; }
+.flow-arrow-cell {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 16px;
+  padding: 0 6px;
+  user-select: none;
+}
 
 /* How it works + access */
 .context-section {
