@@ -124,7 +124,16 @@ export async function scanComponentLibraries(projectRoot: string): Promise<Compo
     const depDir = resolvePackageDir(projectRoot, depName)
     if (!depDir) continue
 
-    const library = await scanLibrary(depName, depDir)
+    // For file: dependencies, resolve the original source directory
+    // (pnpm respects "files" field, so node_modules may only have dist/)
+    const depVersion = deps[depName]
+    let sourceDir: string | undefined
+    if (typeof depVersion === 'string' && depVersion.startsWith('file:')) {
+      const resolved = path.resolve(projectRoot, depVersion.replace('file:', ''))
+      if (fs.existsSync(resolved)) sourceDir = resolved
+    }
+
+    const library = await scanLibrary(depName, depDir, sourceDir)
     if (library && library.components.length >= 3) {
       // Require at least one component with props OR a framework peer dependency
       // (bundled libraries won't have props but are still valid if they depend on vue/react/svelte)
@@ -164,7 +173,7 @@ function resolvePackageDir(projectRoot: string, packageName: string): string | n
   return null
 }
 
-async function scanLibrary(name: string, pkgDir: string): Promise<ScannedLibrary | null> {
+async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Promise<ScannedLibrary | null> {
   // Read package version
   let version = '0.0.0'
   try {
@@ -269,7 +278,7 @@ async function scanLibrary(name: string, pkgDir: string): Promise<ScannedLibrary
   // Strategy 3: Follow package entry point — handles any library structure
   // Reads package.json to find entry, follows re-export chains, discovers component files
   if (components.length === 0) {
-    const entryComponents = await scanFromEntryPoint(name, pkgDir)
+    const entryComponents = await scanFromEntryPoint(name, pkgDir, sourceDir)
     components.push(...entryComponents)
   }
 
@@ -541,27 +550,32 @@ async function collectComponentExports(
 }
 
 /** Entry-point-driven component scanner */
-async function scanFromEntryPoint(name: string, pkgDir: string): Promise<ScannedComponent[]> {
-  const entryPath = findPackageEntry(pkgDir)
-  if (!entryPath) return []
+async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: string): Promise<ScannedComponent[]> {
+  // Prefer source directory (for file: deps where node_modules only has dist/)
+  const scanDir = sourceDir || pkgDir
+  const entryPath = findPackageEntry(scanDir)
 
-  let isBundled = false
-  try {
-    const stat = await fsp.stat(entryPath)
-    isBundled = stat.size > 500_000 // >500KB is almost certainly a bundle
-  } catch { return [] }
+  if (entryPath) {
+    let isBundled = false
+    try {
+      const stat = await fsp.stat(entryPath)
+      isBundled = stat.size > 500_000
+    } catch { /* proceed */ }
 
-  // For source/unbundled files: follow re-export chains and extract props
-  if (!isBundled) {
-    const components: ScannedComponent[] = []
-    await collectComponentExports(entryPath, name, components, new Set(), 4)
-    if (components.length > 0) return components
+    if (!isBundled) {
+      const components: ScannedComponent[] = []
+      await collectComponentExports(entryPath, name, components, new Set(), 4)
+      if (components.length > 0) return components
+    }
   }
 
-  // Fallback: parse named exports from the dist entry file.
+  // Fallback: parse named exports from the dist entry in the installed package.
   // Bundled ESM files end with export{internalName as exportName, ...}.
   // We can extract component names (no props) from this.
-  return extractExportNames(entryPath, name)
+  const distEntry = findPackageEntry(pkgDir)
+  if (distEntry) return extractExportNames(distEntry, name)
+
+  return []
 }
 
 /** Extract component names from a bundled ESM file's export statement */
