@@ -445,7 +445,7 @@ onMounted(refresh)
 /* Flow diagram */
 .flow-diagram {
   margin: 20px 0;
-  padding: 16px;
+  padding: 16px 20px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -454,15 +454,15 @@ onMounted(refresh)
 .flow-step {
   display: flex;
   align-items: center;
-  gap: 8px;
-  justify-content: center;
+  gap: 10px;
+  min-width: max-content;
 }
 .flow-box {
   display: flex; align-items: center; gap: 6px;
   padding: 8px 14px; border-radius: 8px;
   background: var(--surface); border: 1px solid var(--border);
   color: var(--text-muted); font-size: 12px; font-weight: 600;
-  white-space: nowrap;
+  white-space: nowrap; flex-shrink: 0;
 }
 .flow-box.highlight {
   border-color: var(--accent);
