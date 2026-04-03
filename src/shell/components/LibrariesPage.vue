@@ -198,7 +198,7 @@ onMounted(refresh)
             <div class="flow-arrow-cell">&rarr;</div>
             <div class="flow-box">API / MCP</div>
             <div class="flow-arrow-cell">&rarr;</div>
-            <div class="flow-box highlight">AI Agent</div>
+            <div class="flow-box">AI Agent</div>
           </div>
 
           <div class="context-section">
@@ -443,11 +443,6 @@ onMounted(refresh)
   font-weight: 600;
   text-align: center;
   white-space: nowrap;
-}
-.flow-box.highlight {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 .flow-arrow-cell {
   text-align: center;
