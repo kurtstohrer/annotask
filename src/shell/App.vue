@@ -17,8 +17,7 @@ import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
 import { useA11yScanner } from './composables/useA11yScanner'
 import { usePerfMonitor } from './composables/usePerfMonitor'
 import PerfTab from './components/PerfTab.vue'
-import ComponentLibrary from './components/ComponentLibrary.vue'
-import ComponentDetail from './components/ComponentDetail.vue'
+import LibrariesPage from './components/LibrariesPage.vue'
 import FindingDrawer from './components/FindingDrawer.vue'
 import type { A11yViolation } from './composables/useA11yScanner'
 import type { ClickElementEvent, HoverEnterEvent, BridgeRect } from '../shared/bridge-types'
@@ -134,7 +133,7 @@ const shellView = ref<'editor' | 'theme' | 'libraries'>(
 )
 watch(shellView, (v, old) => {
   localStorage.setItem('annotask:shellView', v)
-  if (old === 'libraries') selectedComponent.value = null
+  // no-op: libraries view is self-contained
 })
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
@@ -166,7 +165,6 @@ watch(interactionMode, (mode) => {
 })
 const showWarning = ref(false)
 const showReportPanel = ref(false)
-const selectedComponent = ref<{ name: string; module?: string; props: Array<{ name: string; type: string | null; required: boolean; default?: unknown; description?: string | null }> } | null>(null)
 const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('notes')
 // Markup visibility toggles
@@ -555,7 +553,10 @@ const appUrl = computed(() => {
 
     <!-- Main -->
     <div class="main">
-      <div class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
+      <!-- Libraries: full-width view replacing the canvas -->
+      <LibrariesPage v-if="shellView === 'libraries'" />
+
+      <div v-else class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
         @pointerdown="shellView === 'editor' ? onCanvasPointerDown($event) : undefined"
         @pointermove="shellView === 'editor' ? onCanvasPointerMove($event) : undefined"
         @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined"
@@ -874,23 +875,7 @@ const appUrl = computed(() => {
         </div>
       </aside>
 
-      <!-- Component Library Panel (Libraries view) -->
-      <aside class="panel" v-else-if="shellView === 'libraries'">
-        <div class="panel-source">
-          <span class="source-path" style="color:var(--text)">{{ selectedComponent ? selectedComponent.name : 'Libraries' }}</span>
-        </div>
-        <div class="tab-content">
-          <ComponentDetail
-            v-if="selectedComponent"
-            :component="selectedComponent"
-            @back="selectedComponent = null"
-          />
-          <ComponentLibrary
-            v-else
-            @select="selectedComponent = $event"
-          />
-        </div>
-      </aside>
+
 
       <!-- Property Panel -->
       <aside class="panel" v-else-if="shellView === 'editor' && activePanel === 'inspector' && primarySelection">
