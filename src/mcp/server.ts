@@ -40,7 +40,7 @@ export interface McpDeps {
 // ── Constants ────────────────────────────────────────
 
 const PROTOCOL_VERSION = '2025-03-26'
-const SERVER_INFO = { name: 'annotask', version: '0.0.13' }
+const SERVER_INFO = { name: 'annotask', version: '0.0.14' }
 
 const VALID_TRANSITIONS: Record<string, Set<string>> = {
   pending:     new Set(['in_progress', 'denied']),
