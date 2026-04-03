@@ -419,9 +419,8 @@ onMounted(refresh)
 
 /* Context explanation page */
 .context-page {
-  max-width: 720px;
-  margin: 0 auto;
-  padding-top: 16px;
+  max-width: 760px;
+  padding: 16px 32px 32px;
 }
 .context-page h2 {
   margin: 0 0 16px;
@@ -452,10 +451,10 @@ onMounted(refresh)
   overflow-x: auto;
 }
 .flow-step {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-width: max-content;
+  white-space: nowrap;
 }
 .flow-box {
   display: flex; align-items: center; gap: 6px;
