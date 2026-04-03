@@ -169,7 +169,8 @@ async function scanLibrary(name: string, pkgDir: string): Promise<ScannedLibrary
     // Skip non-component directories
     if (entry.startsWith('.') || entry === 'node_modules' || entry === 'style' || entry === 'styles') continue
     if (['config', 'utils', 'helpers', 'types', 'core', 'icons', 'themes', 'locale',
-         'passthrough', 'src', 'dist', 'es', 'lib', 'cjs', 'esm'].includes(entry)) continue
+         'passthrough', 'src', 'dist', 'es', 'lib', 'cjs', 'esm',
+         'examples', 'tests', 'test', 'docs', 'stories', 'storybook-static', '__tests__', '__mocks__'].includes(entry)) continue
 
     const subdir = path.join(pkgDir, entry)
     let stat: fs.Stats
@@ -250,6 +251,13 @@ async function scanLibrary(name: string, pkgDir: string): Promise<ScannedLibrary
     components.push(...barrelComponents)
   }
 
+  // Strategy 3: Source barrel exports (custom libraries with src/components/index.js)
+  // Parses import/export statements to discover Vue components and their props
+  if (components.length === 0) {
+    const sourceComponents = await scanSourceBarrel(name, pkgDir)
+    components.push(...sourceComponents)
+  }
+
   if (components.length === 0) return null
 
   components.sort((a, b) => a.name.localeCompare(b.name))
@@ -325,6 +333,70 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
 
       components.push({ name: componentName, module: name, props })
     }
+  }
+
+  return components
+}
+
+/**
+ * Scan a package that has a JS/TS barrel export importing .vue components.
+ * Handles custom/private component libraries with patterns like:
+ *   import numberInput from './inputs/number/number.vue'
+ *   export { numberInput, ... }
+ */
+async function scanSourceBarrel(name: string, pkgDir: string): Promise<ScannedComponent[]> {
+  const candidatePaths = [
+    path.join(pkgDir, 'src', 'components', 'index.js'),
+    path.join(pkgDir, 'src', 'components', 'index.ts'),
+    path.join(pkgDir, 'src', 'index.js'),
+    path.join(pkgDir, 'src', 'index.ts'),
+    path.join(pkgDir, 'components', 'index.js'),
+    path.join(pkgDir, 'components', 'index.ts'),
+    path.join(pkgDir, 'lib', 'components', 'index.js'),
+    path.join(pkgDir, 'lib', 'components', 'index.ts'),
+  ]
+
+  let barrelPath: string | null = null
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p)) { barrelPath = p; break }
+  }
+  if (!barrelPath) return []
+
+  let content: string
+  try { content = await fsp.readFile(barrelPath, 'utf-8') } catch { return [] }
+
+  // Parse: import componentName from './path/to/component.vue'
+  const importRegex = /import\s+(\w+)\s+from\s+['"](\.\/[^'"]+\.vue)['"]/g
+  const imports = new Map<string, string>()
+  let match: RegExpExecArray | null
+  while ((match = importRegex.exec(content)) !== null) {
+    imports.set(match[1], match[2])
+  }
+
+  if (imports.size === 0) return []
+
+  // Parse exported names from export { ... } blocks
+  const exported = new Set<string>()
+  const exportBlockRegex = /export\s*\{([^}]+)\}/g
+  while ((match = exportBlockRegex.exec(content)) !== null) {
+    for (const token of match[1].split(',')) {
+      const name = token.trim()
+      if (name && !name.startsWith('type ')) exported.add(name)
+    }
+  }
+
+  const components: ScannedComponent[] = []
+  const barrelDir = path.dirname(barrelPath)
+
+  for (const [importName, relativePath] of imports) {
+    // Only include exported components (skip internal helpers)
+    if (exported.size > 0 && !exported.has(importName)) continue
+
+    const vuePath = path.resolve(barrelDir, relativePath)
+    const componentName = pascalCase(importName)
+    const props = await extractPropsFromVue(vuePath)
+
+    components.push({ name: componentName, module: name, props })
   }
 
   return components
@@ -491,27 +563,67 @@ async function extractPropsFromVue(vuePath: string): Promise<ScannedProp[]> {
   let content: string
   try { content = await fsp.readFile(vuePath, 'utf-8') } catch { return [] }
 
-  // Try to find defineProps or props: { ... }
   const props: ScannedProp[] = []
 
-  // Match props: { name: { type: String, required: true }, ... }
-  const propsMatch = content.match(/props:\s*\{([\s\S]*?)\n\s*\}/)
-  if (propsMatch) {
-    const propRegex = /(\w+):\s*\{([^}]+)\}/g
-    let m: RegExpExecArray | null
-    while ((m = propRegex.exec(propsMatch[1])) !== null) {
-      const propName = m[1]
-      const propDef = m[2]
-      const typeMatch = propDef.match(/type:\s*(\w+)/)
-      const requiredMatch = propDef.match(/required:\s*(true|false)/)
-      const defaultMatch = propDef.match(/default:\s*(.+?)(?:,|\s*$)/)
-      props.push({
-        name: propName,
-        type: typeMatch ? typeMatch[1] : null,
-        required: requiredMatch ? requiredMatch[1] === 'true' : false,
-        description: null,
-        default: defaultMatch ? defaultMatch[1].trim() : null,
-      })
+  // Strategy A: defineProps<InterfaceName>() with TypeScript interface
+  const definePropsGeneric = content.match(/defineProps<(\w+)>/)
+  if (definePropsGeneric) {
+    const interfaceName = definePropsGeneric[1]
+    const interfaceRegex = new RegExp(`interface\\s+${interfaceName}\\s*\\{([\\s\\S]*?)\\n\\s*\\}`)
+    const interfaceMatch = content.match(interfaceRegex)
+    if (interfaceMatch) {
+      const body = interfaceMatch[1]
+      // Match: propName?: Type or propName: Type (one per line)
+      const propLineRegex = /^\s*(\w+)(\??):\s*(.+)/gm
+      let m: RegExpExecArray | null
+      while ((m = propLineRegex.exec(body)) !== null) {
+        let type = m[3].replace(/[;,]\s*$/, '').replace(/\/\/.*$/, '').trim()
+        if (type.length > 80) type = type.slice(0, 77) + '...'
+        props.push({
+          name: m[1],
+          type: type || null,
+          required: m[2] !== '?',
+          description: null,
+          default: null,
+        })
+      }
+
+      // Extract defaults from withDefaults(defineProps<X>(), { ... })
+      const defaultsMatch = content.match(/withDefaults\s*\(\s*defineProps<\w+>\s*\(\)\s*,\s*\{([\s\S]*?)\}\s*\)/)
+      if (defaultsMatch && props.length > 0) {
+        const defaultLineRegex = /^\s*(\w+):\s*(.+?)(?:,\s*$|$)/gm
+        let dm: RegExpExecArray | null
+        while ((dm = defaultLineRegex.exec(defaultsMatch[1])) !== null) {
+          const prop = props.find(p => p.name === dm![1])
+          if (prop) {
+            const val = dm[2].trim().replace(/,\s*$/, '')
+            if (!val.startsWith('(') && val !== 'undefined') prop.default = val
+          }
+        }
+      }
+    }
+  }
+
+  // Strategy B: Options API props: { name: { type: String, required: true }, ... }
+  if (props.length === 0) {
+    const propsMatch = content.match(/props:\s*\{([\s\S]*?)\n\s*\}/)
+    if (propsMatch) {
+      const propRegex = /(\w+):\s*\{([^}]+)\}/g
+      let m: RegExpExecArray | null
+      while ((m = propRegex.exec(propsMatch[1])) !== null) {
+        const propName = m[1]
+        const propDef = m[2]
+        const typeMatch = propDef.match(/type:\s*(\w+)/)
+        const requiredMatch = propDef.match(/required:\s*(true|false)/)
+        const defaultMatch = propDef.match(/default:\s*(.+?)(?:,|\s*$)/)
+        props.push({
+          name: propName,
+          type: typeMatch ? typeMatch[1] : null,
+          required: requiredMatch ? requiredMatch[1] === 'true' : false,
+          description: null,
+          default: defaultMatch ? defaultMatch[1].trim() : null,
+        })
+      }
     }
   }
 
