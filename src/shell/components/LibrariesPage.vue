@@ -198,7 +198,7 @@ onMounted(refresh)
             <div class="flow-arrow-cell">&rarr;</div>
             <div class="flow-box">Agent Gets Full Catalog</div>
             <div class="flow-arrow-cell">&rarr;</div>
-            <div class="flow-box">LLM Uses Your Design System</div>
+            <div class="flow-box">Agent Uses Your Design System</div>
           </div>
 
           <div class="context-section">
