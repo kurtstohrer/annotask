@@ -251,11 +251,11 @@ async function scanLibrary(name: string, pkgDir: string): Promise<ScannedLibrary
     components.push(...barrelComponents)
   }
 
-  // Strategy 3: Source barrel exports (custom libraries with src/components/index.js)
-  // Parses import/export statements to discover Vue components and their props
+  // Strategy 3: Follow package entry point — handles any library structure
+  // Reads package.json to find entry, follows re-export chains, discovers component files
   if (components.length === 0) {
-    const sourceComponents = await scanSourceBarrel(name, pkgDir)
-    components.push(...sourceComponents)
+    const entryComponents = await scanFromEntryPoint(name, pkgDir)
+    components.push(...entryComponents)
   }
 
   if (components.length === 0) return null
@@ -338,67 +338,199 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
   return components
 }
 
-/**
- * Scan a package that has a JS/TS barrel export importing .vue components.
- * Handles custom/private component libraries with patterns like:
- *   import numberInput from './inputs/number/number.vue'
- *   export { numberInput, ... }
- */
-async function scanSourceBarrel(name: string, pkgDir: string): Promise<ScannedComponent[]> {
-  const candidatePaths = [
-    path.join(pkgDir, 'src', 'components', 'index.js'),
-    path.join(pkgDir, 'src', 'components', 'index.ts'),
-    path.join(pkgDir, 'src', 'index.js'),
-    path.join(pkgDir, 'src', 'index.ts'),
-    path.join(pkgDir, 'components', 'index.js'),
-    path.join(pkgDir, 'components', 'index.ts'),
-    path.join(pkgDir, 'lib', 'components', 'index.js'),
-    path.join(pkgDir, 'lib', 'components', 'index.ts'),
-  ]
+// ── Strategy 3: Entry-point-driven scanner ───────────
+// Follows the package's entry point, resolves re-export chains,
+// and discovers component files of any type (.vue, .tsx, .jsx, .svelte).
 
-  let barrelPath: string | null = null
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p)) { barrelPath = p; break }
-  }
-  if (!barrelPath) return []
+const COMPONENT_EXTS = new Set(['.vue', '.tsx', '.jsx', '.svelte'])
 
-  let content: string
-  try { content = await fsp.readFile(barrelPath, 'utf-8') } catch { return [] }
+/** Resolve a bare module specifier to an actual file path */
+function resolveModulePath(baseDir: string, specifier: string): string | null {
+  const base = path.resolve(baseDir, specifier)
 
-  // Parse: import componentName from './path/to/component.vue'
-  const importRegex = /import\s+(\w+)\s+from\s+['"](\.\/[^'"]+\.vue)['"]/g
-  const imports = new Map<string, string>()
-  let match: RegExpExecArray | null
-  while ((match = importRegex.exec(content)) !== null) {
-    imports.set(match[1], match[2])
+  // Direct file
+  if (fs.existsSync(base) && !fs.statSync(base).isDirectory()) return base
+
+  // Try extensions
+  for (const ext of ['.vue', '.tsx', '.jsx', '.ts', '.js', '.mjs', '.svelte']) {
+    const candidate = base + ext
+    if (fs.existsSync(candidate)) return candidate
   }
 
-  if (imports.size === 0) return []
+  // Directory — try index files and same-name convention (Button/Button.vue)
+  if (fs.existsSync(base) && fs.statSync(base).isDirectory()) {
+    for (const ext of ['.vue', '.tsx', '.jsx', '.ts', '.js', '.svelte']) {
+      const index = path.join(base, 'index' + ext)
+      if (fs.existsSync(index)) return index
+    }
+    const dirName = path.basename(base)
+    for (const ext of ['.vue', '.tsx', '.jsx', '.svelte']) {
+      const convention = path.join(base, dirName + ext)
+      if (fs.existsSync(convention)) return convention
+    }
+  }
 
-  // Parse exported names from export { ... } blocks
+  return null
+}
+
+function isComponentFile(filePath: string): boolean {
+  return COMPONENT_EXTS.has(path.extname(filePath))
+}
+
+/** Find the best source entry point for a package */
+function findPackageEntry(pkgDir: string): string | null {
+  let pkg: any
+  try { pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')) } catch { return null }
+
+  // Prefer explicit source field
+  if (pkg.source) {
+    const resolved = resolveModulePath(pkgDir, pkg.source)
+    if (resolved) return resolved
+  }
+
+  // Try to find source equivalent of the dist entry
+  const distEntry: string | undefined =
+    (typeof pkg.exports?.['.'] === 'string' ? pkg.exports['.'] : null) ??
+    pkg.exports?.['.']?.import ??
+    pkg.exports?.['.']?.default ??
+    pkg.module ??
+    pkg.main
+
+  if (distEntry) {
+    // Map dist path back to source (dist/index.js → src/index.ts, etc.)
+    const normalized = distEntry.replace(/^\.\//, '')
+    const stem = normalized.replace(/\.(m?js|cjs)$/, '')
+
+    for (const prefix of ['src', 'lib']) {
+      const mapped = normalized.startsWith('dist/')
+        ? stem.replace(/^dist\//, `${prefix}/`)
+        : `${prefix}/${stem}`
+
+      const resolved = resolveModulePath(pkgDir, mapped)
+      if (resolved) return resolved
+    }
+  }
+
+  // Fallback: scan common source locations
+  for (const candidate of [
+    'src/components/index', 'src/lib/index', 'src/index',
+    'components/index', 'lib/index', 'index',
+  ]) {
+    const resolved = resolveModulePath(pkgDir, candidate)
+    if (resolved) return resolved
+  }
+
+  return null
+}
+
+interface ModuleRef {
+  exportName: string   // Name as exported (or original name for default imports)
+  filePath: string     // Resolved specifier relative to the file's directory
+  isReExport: boolean  // true if it comes from export {...} from or export * from
+}
+
+/** Parse all local module references from a JS/TS file */
+function parseModuleRefs(content: string, dir: string): ModuleRef[] {
+  const refs: ModuleRef[] = []
+
+  // 1. import X from './path'
+  const defaultImportRe = /import\s+(\w+)\s+from\s+['"](\.[^'"]+)['"]/g
+  const importMap = new Map<string, string>() // localName → specifier
+  let m: RegExpExecArray | null
+  while ((m = defaultImportRe.exec(content)) !== null) {
+    importMap.set(m[1], m[2])
+  }
+
+  // 2. export { default as X } from './path'  and  export { X, Y } from './path'
+  const reExportRe = /export\s*\{([^}]+)\}\s*from\s*['"](\.[^'"]+)['"]/g
+  while ((m = reExportRe.exec(content)) !== null) {
+    const specifier = m[2]
+    for (const token of m[1].split(',')) {
+      const trimmed = token.trim()
+      if (!trimmed || trimmed.startsWith('type ')) continue
+      // "default as Button" or just "Button"
+      const asMatch = trimmed.match(/(?:default\s+as\s+)?(\w+)/)
+      if (asMatch) {
+        refs.push({ exportName: asMatch[1], filePath: specifier, isReExport: true })
+      }
+    }
+  }
+
+  // 3. export * from './path'
+  const starExportRe = /export\s*\*\s*from\s*['"](\.[^'"]+)['"]/g
+  while ((m = starExportRe.exec(content)) !== null) {
+    refs.push({ exportName: '*', filePath: m[1], isReExport: true })
+  }
+
+  // 4. export { X, Y } (local — match with imports above)
+  const localExportRe = /export\s*\{([^}]+)\}(?!\s*from)/g
   const exported = new Set<string>()
-  const exportBlockRegex = /export\s*\{([^}]+)\}/g
-  while ((match = exportBlockRegex.exec(content)) !== null) {
-    for (const token of match[1].split(',')) {
+  while ((m = localExportRe.exec(content)) !== null) {
+    for (const token of m[1].split(',')) {
       const name = token.trim()
       if (name && !name.startsWith('type ')) exported.add(name)
     }
   }
-
-  const components: ScannedComponent[] = []
-  const barrelDir = path.dirname(barrelPath)
-
-  for (const [importName, relativePath] of imports) {
-    // Only include exported components (skip internal helpers)
-    if (exported.size > 0 && !exported.has(importName)) continue
-
-    const vuePath = path.resolve(barrelDir, relativePath)
-    const componentName = pascalCase(importName)
-    const props = await extractPropsFromVue(vuePath)
-
-    components.push({ name: componentName, module: name, props })
+  // Link locally exported names back to their import source
+  for (const [localName, specifier] of importMap) {
+    if (exported.has(localName)) {
+      refs.push({ exportName: localName, filePath: specifier, isReExport: false })
+    }
   }
 
+  return refs
+}
+
+/**
+ * Recursively collect component exports starting from an entry file.
+ * Follows re-export chains up to `maxDepth` levels deep.
+ */
+async function collectComponentExports(
+  filePath: string,
+  pkgName: string,
+  components: ScannedComponent[],
+  visited: Set<string>,
+  maxDepth: number,
+): Promise<void> {
+  if (maxDepth <= 0 || visited.has(filePath)) return
+  visited.add(filePath)
+
+  let content: string
+  try { content = await fsp.readFile(filePath, 'utf-8') } catch { return }
+
+  const dir = path.dirname(filePath)
+  const refs = parseModuleRefs(content, dir)
+
+  for (const ref of refs) {
+    const resolved = resolveModulePath(dir, ref.filePath)
+    if (!resolved) continue
+
+    if (isComponentFile(resolved)) {
+      const name = ref.exportName !== '*'
+        ? pascalCase(ref.exportName)
+        : pascalCase(extractComponentName(resolved))
+      const props = await extractComponentProps(resolved)
+      components.push({ name, module: pkgName, props })
+    } else {
+      // JS/TS file — follow the chain
+      await collectComponentExports(resolved, pkgName, components, visited, maxDepth - 1)
+    }
+  }
+}
+
+/** Entry-point-driven component scanner */
+async function scanFromEntryPoint(name: string, pkgDir: string): Promise<ScannedComponent[]> {
+  const entryPath = findPackageEntry(pkgDir)
+  if (!entryPath) return []
+
+  // Don't scan bundled dist files (single large file = bundled)
+  try {
+    const stat = await fsp.stat(entryPath)
+    if (stat.size > 500_000) return [] // >500KB is almost certainly a bundle
+  } catch { return [] }
+
+  const components: ScannedComponent[] = []
+  await collectComponentExports(entryPath, name, components, new Set(), 4)
   return components
 }
 
@@ -559,71 +691,167 @@ async function extractPropsFromDts(dtsPath: string, componentName: string): Prom
   return { props, resolvedName }
 }
 
+/** Route props extraction to the right parser based on file extension */
+async function extractComponentProps(filePath: string): Promise<ScannedProp[]> {
+  const ext = path.extname(filePath)
+  if (ext === '.vue') return extractPropsFromVue(filePath)
+  if (ext === '.tsx' || ext === '.jsx') return extractPropsFromTsx(filePath)
+  if (ext === '.svelte') return extractPropsFromSvelte(filePath)
+  return []
+}
+
 async function extractPropsFromVue(vuePath: string): Promise<ScannedProp[]> {
   let content: string
   try { content = await fsp.readFile(vuePath, 'utf-8') } catch { return [] }
 
-  const props: ScannedProp[] = []
+  let props: ScannedProp[] = []
 
   // Strategy A: defineProps<InterfaceName>() with TypeScript interface
-  const definePropsGeneric = content.match(/defineProps<(\w+)>/)
-  if (definePropsGeneric) {
-    const interfaceName = definePropsGeneric[1]
-    const interfaceRegex = new RegExp(`interface\\s+${interfaceName}\\s*\\{([\\s\\S]*?)\\n\\s*\\}`)
-    const interfaceMatch = content.match(interfaceRegex)
-    if (interfaceMatch) {
-      const body = interfaceMatch[1]
-      // Match: propName?: Type or propName: Type (one per line)
-      const propLineRegex = /^\s*(\w+)(\??):\s*(.+)/gm
-      let m: RegExpExecArray | null
-      while ((m = propLineRegex.exec(body)) !== null) {
-        let type = m[3].replace(/[;,]\s*$/, '').replace(/\/\/.*$/, '').trim()
-        if (type.length > 80) type = type.slice(0, 77) + '...'
-        props.push({
-          name: m[1],
-          type: type || null,
-          required: m[2] !== '?',
-          description: null,
-          default: null,
-        })
-      }
+  props = extractPropsFromTsInterface(content)
 
-      // Extract defaults from withDefaults(defineProps<X>(), { ... })
-      const defaultsMatch = content.match(/withDefaults\s*\(\s*defineProps<\w+>\s*\(\)\s*,\s*\{([\s\S]*?)\}\s*\)/)
-      if (defaultsMatch && props.length > 0) {
-        const defaultLineRegex = /^\s*(\w+):\s*(.+?)(?:,\s*$|$)/gm
-        let dm: RegExpExecArray | null
-        while ((dm = defaultLineRegex.exec(defaultsMatch[1])) !== null) {
-          const prop = props.find(p => p.name === dm![1])
-          if (prop) {
-            const val = dm[2].trim().replace(/,\s*$/, '')
-            if (!val.startsWith('(') && val !== 'undefined') prop.default = val
-          }
-        }
+  // Strategy B: defineProps({ prop: { type: String, ... } }) — object literal
+  if (props.length === 0) {
+    const definePropsObj = content.match(/defineProps\s*\(\s*\{([\s\S]*?)\}\s*\)/)
+    if (definePropsObj) {
+      props = parseObjectProps(definePropsObj[1])
+    }
+  }
+
+  // Strategy C: Options API props: { ... }
+  if (props.length === 0) {
+    const propsMatch = content.match(/props:\s*\{([\s\S]*?)\n\s*\}/)
+    if (propsMatch) {
+      props = parseObjectProps(propsMatch[1])
+    }
+  }
+
+  return props
+}
+
+/** Extract props from a React .tsx/.jsx component file */
+async function extractPropsFromTsx(filePath: string): Promise<ScannedProp[]> {
+  let content: string
+  try { content = await fsp.readFile(filePath, 'utf-8') } catch { return [] }
+
+  // Look for Props/XProps interface or type used in component function
+  // Pattern: function Component(props: Props) or (props: ComponentProps)
+  // Pattern: const Component: React.FC<Props>
+  // Pattern: export default function Component({ prop1, prop2 }: Props)
+  const propsTypeMatch = content.match(
+    /(?:function\s+\w+|const\s+\w+\s*(?::\s*React\.FC)?)\s*(?:<[^>]*>)?\s*\(\s*(?:\{[^}]*\}\s*:\s*|(?:props)\s*:\s*)(\w+)/
+  )
+
+  if (propsTypeMatch) {
+    return extractPropsFromTsInterface(content, propsTypeMatch[1])
+  }
+
+  // Fallback: look for any exported Props-like interface
+  return extractPropsFromTsInterface(content)
+}
+
+/** Extract props from a Svelte component file */
+async function extractPropsFromSvelte(filePath: string): Promise<ScannedProp[]> {
+  let content: string
+  try { content = await fsp.readFile(filePath, 'utf-8') } catch { return [] }
+
+  const props: ScannedProp[] = []
+
+  // Svelte 4: export let propName: Type = default
+  const exportLetRe = /export\s+let\s+(\w+)\s*(?::\s*([^=;\n]+))?\s*(?:=\s*([^;\n]+))?/g
+  let m: RegExpExecArray | null
+  while ((m = exportLetRe.exec(content)) !== null) {
+    let type = m[2]?.trim() ?? null
+    if (type && type.length > 80) type = type.slice(0, 77) + '...'
+    let def: string | null = m[3]?.trim() ?? null
+    if (def === 'undefined') def = null
+    props.push({ name: m[1], type, required: !m[3], description: null, default: def })
+  }
+
+  // Svelte 5: interface Props { ... } with $props()
+  if (props.length === 0) {
+    const svelte5 = extractPropsFromTsInterface(content)
+    if (svelte5.length > 0) return svelte5
+  }
+
+  return props
+}
+
+/**
+ * Extract props from a TypeScript interface in source code.
+ * Works for: defineProps<Props>(), React FC<Props>, Svelte 5 $props<Props>().
+ * If `interfaceName` is given, look for that specific interface.
+ * Otherwise, find the interface referenced by defineProps<X>() or $props<X>().
+ */
+function extractPropsFromTsInterface(content: string, interfaceName?: string): ScannedProp[] {
+  // Auto-detect interface name from defineProps<X>() or $props<X>()
+  if (!interfaceName) {
+    const genericMatch = content.match(/(?:defineProps|props)\s*<\s*(\w+)\s*>/)
+    if (!genericMatch) return []
+    interfaceName = genericMatch[1]
+  }
+
+  // Find the interface body
+  const interfaceRegex = new RegExp(
+    `(?:interface|type)\\s+${interfaceName}\\s*(?:=\\s*)?(?:extends\\s+[^{]*)?\\{([\\s\\S]*?)\\n\\s*\\}`
+  )
+  const interfaceMatch = content.match(interfaceRegex)
+  if (!interfaceMatch) return []
+
+  const body = interfaceMatch[1]
+  const props: ScannedProp[] = []
+
+  // Match: propName?: Type (one per line)
+  const propLineRegex = /^\s*(\w+)(\??):\s*(.+)/gm
+  let m: RegExpExecArray | null
+  while ((m = propLineRegex.exec(body)) !== null) {
+    let type = m[3].replace(/[;,]\s*$/, '').replace(/\/\/.*$/, '').trim()
+    if (type.length > 80) type = type.slice(0, 77) + '...'
+    props.push({ name: m[1], type: type || null, required: m[2] !== '?', description: null, default: null })
+  }
+
+  // Extract defaults from withDefaults(defineProps<X>(), { ... })
+  const defaultsMatch = content.match(/withDefaults\s*\(\s*defineProps<\w+>\s*\(\)\s*,\s*\{([\s\S]*?)\}\s*\)/)
+  if (defaultsMatch && props.length > 0) {
+    const defaultLineRegex = /^\s*(\w+):\s*(.+?)(?:,\s*$|$)/gm
+    let dm: RegExpExecArray | null
+    while ((dm = defaultLineRegex.exec(defaultsMatch[1])) !== null) {
+      const prop = props.find(p => p.name === dm![1])
+      if (prop) {
+        const val = dm[2].trim().replace(/,\s*$/, '')
+        if (!val.startsWith('(') && val !== 'undefined') prop.default = val
       }
     }
   }
 
-  // Strategy B: Options API props: { name: { type: String, required: true }, ... }
+  return props
+}
+
+/** Parse Options-API-style props: { name: { type: X, required: Y, default: Z } } or shorthand { name: Type } */
+function parseObjectProps(body: string): ScannedProp[] {
+  const props: ScannedProp[] = []
+
+  // Full form: propName: { type: String, required: true, default: 'x' }
+  const fullPropRe = /(\w+):\s*\{([^}]+)\}/g
+  let m: RegExpExecArray | null
+  while ((m = fullPropRe.exec(body)) !== null) {
+    const propDef = m[2]
+    const typeMatch = propDef.match(/type:\s*(\w+)/)
+    const requiredMatch = propDef.match(/required:\s*(true|false)/)
+    const defaultMatch = propDef.match(/default:\s*(.+?)(?:,|\s*$)/)
+    props.push({
+      name: m[1],
+      type: typeMatch ? typeMatch[1] : null,
+      required: requiredMatch ? requiredMatch[1] === 'true' : false,
+      description: null,
+      default: defaultMatch ? defaultMatch[1].trim() : null,
+    })
+  }
+
+  // Shorthand: propName: String  (no braces)
   if (props.length === 0) {
-    const propsMatch = content.match(/props:\s*\{([\s\S]*?)\n\s*\}/)
-    if (propsMatch) {
-      const propRegex = /(\w+):\s*\{([^}]+)\}/g
-      let m: RegExpExecArray | null
-      while ((m = propRegex.exec(propsMatch[1])) !== null) {
-        const propName = m[1]
-        const propDef = m[2]
-        const typeMatch = propDef.match(/type:\s*(\w+)/)
-        const requiredMatch = propDef.match(/required:\s*(true|false)/)
-        const defaultMatch = propDef.match(/default:\s*(.+?)(?:,|\s*$)/)
-        props.push({
-          name: propName,
-          type: typeMatch ? typeMatch[1] : null,
-          required: requiredMatch ? requiredMatch[1] === 'true' : false,
-          description: null,
-          default: defaultMatch ? defaultMatch[1].trim() : null,
-        })
-      }
+    const shorthandRe = /(\w+):\s*(String|Number|Boolean|Array|Object|Function|Date|Symbol)/g
+    while ((m = shorthandRe.exec(body)) !== null) {
+      props.push({ name: m[1], type: m[2], required: false, description: null, default: null })
     }
   }
 
