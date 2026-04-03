@@ -290,4 +290,38 @@ const layers = ref([
 .description-text:last-child {
   margin-bottom: 0;
 }
+
+@media (max-width: 600px) {
+  .sun-intro {
+    flex-direction: column;
+    padding: 24px 16px 24px;
+    gap: 20px;
+  }
+
+  .sun-hero {
+    text-align: center;
+    width: 100%;
+  }
+
+  .sun-svg {
+    margin: 0 auto;
+  }
+
+  .sun-title {
+    font-size: 26px;
+  }
+
+  .sun-content {
+    padding: 0 16px 32px;
+    gap: 24px;
+  }
+
+  .facts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .layer-temp {
+    font-size: 12px;
+  }
+}
 </style>

@@ -17,6 +17,8 @@ import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
 import { useA11yScanner } from './composables/useA11yScanner'
 import { usePerfMonitor } from './composables/usePerfMonitor'
 import PerfTab from './components/PerfTab.vue'
+import ComponentLibrary from './components/ComponentLibrary.vue'
+import ComponentDetail from './components/ComponentDetail.vue'
 import FindingDrawer from './components/FindingDrawer.vue'
 import type { A11yViolation } from './composables/useA11yScanner'
 import type { ClickElementEvent, HoverEnterEvent, BridgeRect } from '../shared/bridge-types'
@@ -125,10 +127,15 @@ function normalizeRoute(path: string): string {
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const { mode: interactionMode } = useInteractionMode()
 const { isInitialized: configInitialized } = useDesignSpec()
-const shellView = ref<'editor' | 'theme'>(
-  localStorage.getItem('annotask:shellView') === 'theme' ? 'theme' : 'editor'
+const shellView = ref<'editor' | 'theme' | 'libraries'>(
+  (['editor', 'theme', 'libraries'].includes(localStorage.getItem('annotask:shellView') || ''))
+    ? localStorage.getItem('annotask:shellView') as 'editor' | 'theme' | 'libraries'
+    : 'editor'
 )
-watch(shellView, (v) => localStorage.setItem('annotask:shellView', v))
+watch(shellView, (v, old) => {
+  localStorage.setItem('annotask:shellView', v)
+  if (old === 'libraries') selectedComponent.value = null
+})
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
@@ -159,6 +166,7 @@ watch(interactionMode, (mode) => {
 })
 const showWarning = ref(false)
 const showReportPanel = ref(false)
+const selectedComponent = ref<{ name: string; module?: string; props: Array<{ name: string; type: string | null; required: boolean; default?: unknown; description?: string | null }> } | null>(null)
 const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('notes')
 // Markup visibility toggles
@@ -168,7 +176,9 @@ const activePanel = ref<'inspector' | 'tasks' | 'a11y' | 'perf'>(
     ? localStorage.getItem('annotask:activePanel') as 'inspector' | 'tasks' | 'a11y' | 'perf'
     : 'inspector'
 )
-watch(activePanel, (v) => localStorage.setItem('annotask:activePanel', v))
+watch(activePanel, (v) => {
+  localStorage.setItem('annotask:activePanel', v)
+})
 // Backward compat alias
 const showTaskPanel = computed(() => activePanel.value === 'tasks')
 const includeHistory = ref(localStorage.getItem('annotask:includeHistory') === 'true')
@@ -469,6 +479,7 @@ const appUrl = computed(() => {
         <div class="view-toggle">
           <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'" title="Annotate and inspect your UI">Annotate</button>
           <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'" title="Edit design tokens (colors, typography, spacing)">Design</button>
+          <button :class="['toggle-btn', { active: shellView === 'libraries' }]" @click="shellView = 'libraries'" title="Browse installed component libraries">Libraries</button>
         </div>
         <template v-if="shellView === 'editor'">
           <ModeToolbar v-model="interactionMode" />
@@ -857,6 +868,24 @@ const appUrl = computed(() => {
             @stop-recording="stopPerfRecording"
             @scan="runPerfScan"
             @create-task="createPerfTask"
+          />
+        </div>
+      </aside>
+
+      <!-- Component Library Panel (Libraries view) -->
+      <aside class="panel" v-if="shellView === 'libraries'">
+        <div class="panel-source">
+          <span class="source-path" style="color:var(--text)">{{ selectedComponent ? selectedComponent.name : 'Libraries' }}</span>
+        </div>
+        <div class="tab-content">
+          <ComponentDetail
+            v-if="selectedComponent"
+            :component="selectedComponent"
+            @back="selectedComponent = null"
+          />
+          <ComponentLibrary
+            v-else
+            @select="selectedComponent = $event"
           />
         </div>
       </aside>

@@ -69,6 +69,7 @@ function sendError(res: ServerResponse, status: number, message: string) {
 }
 
 import { isLocalOrigin } from './origin.js'
+import { scanComponentLibraries } from './component-scanner.js'
 
 /** Build CORS origin value — reflect the request origin if it's local, otherwise omit */
 function getCorsOrigin(req: IncomingMessage): string | null {
@@ -274,6 +275,12 @@ export function createAPIMiddleware(options: APIOptions) {
     if (path.startsWith('tasks/') && req.method === 'DELETE') {
       const id = path.replace('tasks/', '')
       res.end(JSON.stringify(options.deleteTask(id), null, 2))
+      return
+    }
+
+    if (path === 'components' && req.method === 'GET') {
+      const catalog = await scanComponentLibraries(options.projectRoot)
+      res.end(JSON.stringify(catalog, null, 2))
       return
     }
 

@@ -104,7 +104,16 @@ export function bridgeHelpers(): string {
       var miniApp = annotaskVue.createApp({
         render: function() { return annotaskVue.h(component, props || {}); }
       });
-      miniApp._context = vueApp._context;
+      // Share the parent app's provides, components, directives, and config
+      // but keep the mini app's own app reference intact
+      var parentCtx = vueApp._context;
+      miniApp._context.components = parentCtx.components;
+      miniApp._context.directives = parentCtx.directives;
+      miniApp._context.provides = parentCtx.provides;
+      miniApp._context.config.globalProperties = parentCtx.config.globalProperties;
+      // Suppress render errors so partial renders still display
+      miniApp.config.errorHandler = function() {};
+      miniApp.config.warnHandler = function() {};
       miniApp.mount(mountPoint);
       container.setAttribute('data-annotask-mounted', 'true');
       container.__annotask_unmount = function() { try { miniApp.unmount(); } catch(e) {} };

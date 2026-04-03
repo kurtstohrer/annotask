@@ -267,6 +267,24 @@ export type InsertVueComponentPayload = InsertComponentPayload
 /** @deprecated Use InsertComponentResult */
 export type InsertVueComponentResult = InsertComponentResult
 
+// ── Component Library ──────────────────────────────────
+
+export interface ComponentPropInfo {
+  name: string
+  type: string | null
+  required: boolean
+  default: unknown
+}
+
+export interface ComponentInfo {
+  name: string
+  props: ComponentPropInfo[]
+}
+
+export interface ComponentsListResult {
+  components: ComponentInfo[]
+}
+
 // ── Source Mapping Check ────────────────────────────────
 
 export interface CheckSourceMappingResult {

@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import type { Planet } from '../types'
 
 const props = defineProps<{ planets: Planet[]; loading: boolean }>()
-const emit = defineEmits<{ select: [planet: Planet] }>()
+const emit = defineEmits<{ select: [planet: Planet]; selectMoon: [moonName: string, planetName: string] }>()
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 let animationId = 0
@@ -272,6 +272,9 @@ function darkenColor(hex: string, amount: number): string {
   return `rgb(${r}, ${g}, ${b})`
 }
 
+let lastCanvasW = 0
+let lastCanvasH = 0
+
 function draw(time: number) {
   const c = canvas.value
   if (!c) return
@@ -280,9 +283,16 @@ function draw(time: number) {
 
   const dpr = window.devicePixelRatio || 1
   const rect = c.getBoundingClientRect()
-  c.width = rect.width * dpr
-  c.height = rect.height * dpr
-  ctx.scale(dpr, dpr)
+  const targetW = Math.round(rect.width * dpr)
+  const targetH = Math.round(rect.height * dpr)
+
+  if (c.width !== targetW || c.height !== targetH) {
+    c.width = targetW
+    c.height = targetH
+    lastCanvasW = targetW
+    lastCanvasH = targetH
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
   const w = rect.width
   const h = rect.height
@@ -306,7 +316,22 @@ function onCanvasClick(e: MouseEvent) {
   const my = e.clientY - rect.top
 
   if (zoomedPlanet.value) {
-    // In zoomed view — click anywhere to go back
+    // In zoomed view — hit test moons first
+    let hitMoon: { name: string; x: number; y: number } | null = null
+    for (const m of moonPositions) {
+      const dx = mx - m.x
+      const dy = my - m.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const hitRadius = Math.max(m.size + 8, 14)
+      if (dist <= hitRadius && (!hitMoon || dist < Math.sqrt((mx - hitMoon.x) ** 2 + (my - hitMoon.y) ** 2))) {
+        hitMoon = m
+      }
+    }
+    if (hitMoon) {
+      emit('selectMoon', hitMoon.name, zoomedPlanet.value.name)
+      return
+    }
+    // Click on empty space — go back
     zoomedPlanet.value = null
     return
   }
@@ -359,10 +384,11 @@ onUnmounted(() => {
 <style scoped>
 .orbital-wrapper {
   flex: 1;
-  min-height: 500px;
+  height: 500px;
   background: #0a0a0f;
   border-radius: 10px;
   overflow: hidden;
+  contain: layout style;
 }
 
 .orbital-canvas {
