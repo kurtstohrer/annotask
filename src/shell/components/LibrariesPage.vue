@@ -421,12 +421,13 @@ onMounted(refresh)
   color: #fff;
 }
 
-/* Flow diagram — CSS grid, 7 columns: box arrow box arrow box arrow box */
+/* Flow diagram */
 .flow-diagram {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0;
+  justify-content: center;
+  gap: 8px;
   margin: 20px 0;
   padding: 16px;
   background: var(--surface-2);
@@ -434,7 +435,7 @@ onMounted(refresh)
   border-radius: 10px;
 }
 .flow-box {
-  padding: 10px 16px;
+  padding: 10px 14px;
   border-radius: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -442,13 +443,10 @@ onMounted(refresh)
   font-size: 12px;
   font-weight: 600;
   text-align: center;
-  white-space: nowrap;
 }
 .flow-arrow-cell {
-  text-align: center;
   color: var(--text-muted);
   font-size: 16px;
-  padding: 0 6px;
   user-select: none;
 }
 
@@ -471,7 +469,7 @@ onMounted(refresh)
 
 .access-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
 }
 .access-card {
@@ -497,6 +495,14 @@ onMounted(refresh)
   font-size: 13px; color: var(--text-muted);
   margin-top: 20px; padding-top: 16px;
   border-top: 1px solid var(--border);
+}
+
+/* Responsive — context page */
+@media (max-width: 600px) {
+  .context-page { padding: 12px 16px 24px; }
+  .context-page h2 { font-size: 17px; }
+  .context-page p, .context-section li { font-size: 13px; }
+  .access-grid { grid-template-columns: 1fr; }
 }
 
 /* Empty state (list panel) */
