@@ -190,15 +190,15 @@ onMounted(refresh)
 
           <p>This means the agent writes code using your actual design system instead of generic HTML.</p>
 
-          <!-- Flow diagram — pure CSS grid, no SVG arrows -->
+          <!-- Flow diagram -->
           <div class="flow-diagram">
-            <div class="flow-box">package.json</div>
+            <div class="flow-box">Your Component Libraries</div>
             <div class="flow-arrow-cell">&rarr;</div>
-            <div class="flow-box">Scan &amp; Extract</div>
+            <div class="flow-box">Annotask Scans Props &amp; Types</div>
             <div class="flow-arrow-cell">&rarr;</div>
-            <div class="flow-box">API / MCP</div>
+            <div class="flow-box">Agent Gets Full Catalog</div>
             <div class="flow-arrow-cell">&rarr;</div>
-            <div class="flow-box">AI Agent</div>
+            <div class="flow-box">Code Uses Your Design System</div>
           </div>
 
           <div class="context-section">
