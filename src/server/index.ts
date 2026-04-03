@@ -4,6 +4,7 @@ import { createAPIMiddleware } from './api.js'
 import { createWSServer, type AnnotaskWSServer } from './ws-server.js'
 import { createShellMiddleware } from './serve-shell.js'
 import { createProjectState, type ProjectState } from './state.js'
+import { createMcpMiddleware } from '../mcp/server.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -34,12 +35,25 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     setPerformance: (data) => state.setPerformanceSnapshot(data),
   })
 
+  const mcpMiddleware = createMcpMiddleware({
+    projectRoot: options.projectRoot,
+    getReport: () => wsServer.getReport(),
+    getDesignSpec: () => state.getDesignSpec(),
+    getTasks: () => state.getTasks(),
+    addTask: (task) => state.addTask(task),
+    updateTask: (id, updates) => state.updateTask(id, updates),
+    deleteTask: (id) => state.deleteTask(id),
+    getPerformance: () => state.getPerformanceSnapshot(),
+  })
+
   const shellMiddleware = createShellMiddleware()
 
   const middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => {
-    // API first, then shell (shell is SPA fallback)
-    apiMiddleware(req, res, () => {
-      shellMiddleware(req, res, next)
+    // MCP first, then API, then shell (shell is SPA fallback)
+    mcpMiddleware(req, res, () => {
+      apiMiddleware(req, res, () => {
+        shellMiddleware(req, res, next)
+      })
     })
   }
 

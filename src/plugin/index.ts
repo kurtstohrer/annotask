@@ -64,28 +64,7 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       const result = transformFile(code, id, projectRoot, mfe)
       if (!result) return null
 
-      // Register imported PascalCase components globally
-      let output = result
-      const importRegex = /import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g
-      let match
-      const registrations: string[] = []
-      while ((match = importRegex.exec(result)) !== null) {
-        const [, name, source] = match
-        if (name[0] === name[0].toUpperCase() && name[0] !== name[0].toLowerCase() && !source.startsWith('.')) {
-          registrations.push(`window.__ANNOTASK_COMPONENTS__['${name}'] = ${name}`)
-        }
-      }
-      if (registrations.length > 0) {
-        const regCode = `\nif (typeof window !== 'undefined') { window.__ANNOTASK_COMPONENTS__ = window.__ANNOTASK_COMPONENTS__ || {}; ${registrations.join('; ')} }\n`
-        // Vue SFCs: inject before </script>. JSX/Svelte: append to end of file.
-        if (id.endsWith('.vue') && output.includes('</script>')) {
-          output = output.replace(/<\/script>/, regCode + '</script>')
-        } else {
-          output += regCode
-        }
-      }
-
-      return { code: output, map: null }
+      return { code: result, map: null }
     },
 
     transformIndexHtml(html, ctx) {
@@ -134,6 +113,7 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       console.log('[Annotask] Design tool available at /__annotask/')
       console.log('[Annotask] WebSocket: ws://localhost:<port>/__annotask/ws')
       console.log('[Annotask] API: http://localhost:<port>/__annotask/api/report')
+      console.log('[Annotask] MCP: http://localhost:<port>/__annotask/mcp')
 
       // Inject bridge scripts into SSR HTML responses (Astro, etc.)
       // Sniffs content-type from writeHead, buffers only HTML responses,

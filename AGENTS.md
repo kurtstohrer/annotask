@@ -2,6 +2,32 @@
 
 Visual UI design tool for web apps (Vue, React, Svelte, Astro, plain HTML/htmx). Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
 
+## MCP Server
+
+Annotask includes an MCP server that starts automatically with the dev server at `POST /__annotask/mcp`. If your editor is configured with the Annotask MCP server, you have these tools:
+
+| Tool | Description |
+|------|-------------|
+| `annotask_get_tasks` | List tasks — filter by `status` (`pending`, `denied` for actionable work) or `mfe` |
+| `annotask_update_task` | Transition status, set resolution, ask questions, mark blocked |
+| `annotask_create_task` | Create a new pending task |
+| `annotask_delete_task` | Delete a task and its screenshot |
+| `annotask_get_report` | Live change report from the browser session |
+| `annotask_get_design_spec` | Design tokens — colors, typography, spacing, borders, breakpoints |
+| `annotask_get_components` | Component library catalog with props |
+| `annotask_get_screenshot` | Task screenshot as base64 PNG |
+
+### Applying tasks via MCP
+
+1. Call `annotask_get_tasks` with `status: "pending"` — these are ready to apply
+2. For each task, call `annotask_update_task` with `status: "in_progress"` to lock it
+3. Read the task's `file`, `line`, `description`, `context`, and `screenshot` for full context
+4. Apply the change to the source file
+5. Call `annotask_update_task` with `status: "review"` and a short `resolution` note
+6. Also process `status: "denied"` tasks — read `feedback` for what the user didn't like, then re-apply
+7. If stuck, use `questions` parameter to ask the user (auto-sets `needs_info`)
+8. If impossible, use `blocked_reason` to explain why (auto-sets `blocked`)
+
 ## Development
 
 ```bash
@@ -14,6 +40,7 @@ Then open:
 - App: http://localhost:5173/
 - Annotask: http://localhost:5173/__annotask/
 - API: http://localhost:5173/__annotask/api/report
+- MCP: http://localhost:5173/__annotask/mcp
 
 ## Annotask CLI
 
@@ -25,10 +52,12 @@ annotask watch               # Live stream changes via WebSocket
 annotask update-task <id> --status=<status>   # Update task status
 annotask screenshot <id>     # Download a task's screenshot
 annotask init-skills         # Install agent skills into project
+annotask mcp                 # Start MCP stdio server (proxies to dev server)
 ```
 
 ## Annotask API
 
+- `POST /__annotask/mcp` — MCP endpoint (Streamable HTTP transport, JSON-RPC 2.0)
 - `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
 - `POST /__annotask/api/tasks` — Create a task
 - `PATCH /__annotask/api/tasks/:id` — Update task status

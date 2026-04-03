@@ -65,6 +65,12 @@ if (command === 'watch') {
   fetchTasks()
 } else if (command === 'update-task') {
   updateTask()
+} else if (command === 'components') {
+  listComponents()
+} else if (command === 'component') {
+  showComponent()
+} else if (command === 'mcp') {
+  runMcpStdio()
 } else if (command === 'help' || command === '--help') {
   printHelp()
 } else {
@@ -418,6 +424,143 @@ function isSymlink(p: string): boolean {
   try { return lstatSync(p).isSymbolicLink() } catch { return false }
 }
 
+// ── Components: list available component libraries ───
+
+async function listComponents() {
+  try {
+    const res = await fetch(`${apiUrl}/components`)
+    const data = await res.json()
+    const filterArg = args[1] || ''
+
+    for (const lib of data.libraries || []) {
+      const components = filterArg
+        ? lib.components.filter((c: any) => c.name.toLowerCase().includes(filterArg.toLowerCase()))
+        : lib.components
+
+      if (components.length === 0) continue
+
+      console.log(`\n\x1b[36m${lib.name}\x1b[0m v${lib.version} (${components.length} components)`)
+      for (const comp of components) {
+        const propCount = comp.props?.length || 0
+        console.log(`  \x1b[33m${comp.name}\x1b[0m  ${comp.module}  (${propCount} props)`)
+      }
+    }
+  } catch (err: any) {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch components: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Component: show detailed info for one component ──
+
+async function showComponent() {
+  const name = args[1]
+  if (!name) {
+    console.error('\x1b[31m[Annotask]\x1b[0m Usage: annotask component <ComponentName>')
+    process.exit(1)
+  }
+
+  const jsonFlag = args.includes('--json')
+
+  try {
+    const res = await fetch(`${apiUrl}/components`)
+    const data = await res.json()
+
+    let found: any = null
+    let libName = ''
+    for (const lib of data.libraries || []) {
+      const match = lib.components.find((c: any) => c.name.toLowerCase() === name.toLowerCase())
+      if (match) { found = match; libName = lib.name; break }
+    }
+
+    if (!found) {
+      console.error(`\x1b[31m[Annotask]\x1b[0m Component "${name}" not found. Use \x1b[33mannotask components\x1b[0m to list available components.`)
+      process.exit(1)
+    }
+
+    if (jsonFlag) {
+      console.log(JSON.stringify({ library: libName, ...found }, null, 2))
+      return
+    }
+
+    console.log(`\n\x1b[36m${found.name}\x1b[0m`)
+    console.log(`  Library: ${libName}`)
+    console.log(`  Import:  ${found.module}`)
+
+    if (found.props.length === 0) {
+      console.log('  Props:   none')
+    } else {
+      console.log(`  Props:   ${found.props.length}\n`)
+      for (const p of found.props) {
+        const req = p.required ? ' \x1b[33m(required)\x1b[0m' : ''
+        const type = p.type ? `\x1b[90m${p.type}\x1b[0m` : ''
+        const def = p.default != null ? `  default: ${p.default}` : ''
+        console.log(`  \x1b[36m${p.name}\x1b[0m  ${type}${req}${def}`)
+        if (p.description) console.log(`    ${p.description}`)
+      }
+    }
+  } catch (err: any) {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch component: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── MCP: stdio transport (proxies to HTTP MCP endpoint) ──
+
+import { createInterface } from 'node:readline'
+
+function runMcpStdio() {
+  const mcpUrl = baseUrl + '/__annotask/mcp'
+  const pending = new Set<Promise<void>>()
+  let stdinClosed = false
+
+  const rl = createInterface({ input: process.stdin, terminal: false })
+
+  rl.on('line', (line) => {
+    if (!line.trim()) return
+
+    const p = (async () => {
+      try {
+        const response = await fetch(mcpUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: line,
+        })
+
+        // Notifications get 202 with no body
+        if (response.status === 202) return
+
+        const body = await response.text()
+        if (body) process.stdout.write(body + '\n')
+      } catch (err: any) {
+        // Try to extract request id for error response
+        let id: string | number | null = null
+        try { id = JSON.parse(line).id ?? null } catch {}
+        if (id !== null && id !== undefined) {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32603, message: `Transport error: ${err.message}` },
+            id,
+          }) + '\n')
+        }
+      }
+    })()
+
+    pending.add(p)
+    p.finally(() => {
+      pending.delete(p)
+      if (stdinClosed && pending.size === 0) process.exit(0)
+    })
+  })
+
+  rl.on('close', () => {
+    stdinClosed = true
+    if (pending.size === 0) process.exit(0)
+  })
+
+  process.on('SIGINT', () => process.exit(0))
+}
+
 // ── Help ─────────────────────────────────────────────
 
 function printHelp() {
@@ -428,11 +571,14 @@ function printHelp() {
   annotask <command> [options]
 
 \x1b[33mCommands:\x1b[0m
-  watch        Live stream of design changes (default)
-  report       Fetch the current change report as JSON
-  status       Check if Annotask server is running
-  init-skills  Install AI agent skills to your project
-  help         Show this help
+  watch           Live stream of design changes (default)
+  report          Fetch the current change report as JSON
+  status          Check if Annotask server is running
+  components      List all available component library components
+  component       Show detailed props for a specific component
+  init-skills     Install AI agent skills to your project
+  mcp             Start MCP server (stdio transport, proxies to dev server)
+  help            Show this help
 
 \x1b[33mOptions:\x1b[0m
   --port=N          Dev server port (default: 5173)
@@ -446,15 +592,13 @@ function printHelp() {
 
 \x1b[33mExamples:\x1b[0m
   annotask watch                          # Watch live changes
-  annotask watch --port=3000              # Watch on custom port
   annotask report                         # Get current report JSON
-  annotask report | jq                    # Pipe to jq for formatting
-  annotask report --mfe=@myorg/my-mfe  # Report filtered by MFE
+  annotask components                     # List all library components
+  annotask components Button              # Filter by name
+  annotask component Button               # Show Button props
+  annotask component Button --json        # Props as JSON (for LLMs)
   annotask status                         # Check connection
-  annotask status --server=http://localhost:24678  # Check remote server
-  annotask init-skills                    # Install to .claude + .agents (default)
-  annotask init-skills --target=claude    # Only .claude/skills/
-  annotask init-skills --target=copilot   # Only .copilot/skills/
-  annotask init-skills --target=claude,agent,copilot  # All three
+  annotask init-skills                    # Install AI agent skills
+  annotask mcp                            # Start stdio MCP server
 `)
 }

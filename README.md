@@ -39,112 +39,38 @@ Visual markup tool for web apps. Annotate your UI in the browser — pins, arrow
 
 4. **You review** — In the Annotask shell, click any task to open the detail drawer — see the full markdown description, screenshots, element context, interaction history, and source files. Accept or deny each change. Denied tasks include your feedback so the agent can retry with corrections.
 
-## Agent Setup
+## Setup
 
-Annotask ships skills for AI coding agents. Install them into your project:
+See **[SETUP.md](SETUP.md)** for the full setup guide — install, plugin config, MCP / skills setup, MFE configuration, and troubleshooting.
 
-```bash
-npx annotask init-skills
-```
-
-This copies skill files to `.claude/skills/` and `.agents/skills/` so your agent can discover them.
-
-| Agent | Skill directory | Notes |
-|-------|----------------|-------|
-| Claude Code | `.claude/skills/` | Invoke with `/annotask-apply`, `/annotask-init` |
-| GitHub Copilot | `.agents/skills/` | Auto-discovered by Copilot agents |
-| OpenAI Codex | `.agents/skills/` | Uses the same `.agents/` convention |
-| Other agents | `.agents/skills/` | Any agent that reads `.agents/skills/` |
-
-### Skills
-
-| Skill | What it does |
-|-------|-------------|
-| `/annotask-init` | Scans your project and generates `.annotask/design-spec.json` with detected tokens, fonts, colors, and component library. Run once per project. |
-| `/annotask-apply` | Fetches pending tasks from the Annotask API, applies changes to source files, and marks them for review. |
-
-## Quick Start
+Quick version:
 
 ```bash
 npm install -D annotask
 ```
 
-### Vite (Vue, React, Svelte, or plain HTML)
-
 ```ts
+// vite.config.ts
 import { annotask } from 'annotask'
 
 export default defineConfig({
-  plugins: [
-    vue(),    // or react() or svelte() — omit for plain HTML/htmx
-    annotask(),
-  ],
+  plugins: [vue(), annotask()],
 })
 ```
 
-### Astro
-
-```js
-import { defineConfig } from 'astro/config'
-import { annotask } from 'annotask'
-
-export default defineConfig({
-  vite: {
-    plugins: [annotask()],
-  },
-})
+```json
+// .mcp.json — connect your AI agent via MCP
+{
+  "mcpServers": {
+    "annotask": {
+      "type": "url",
+      "url": "http://localhost:5173/__annotask/mcp"
+    }
+  }
+}
 ```
 
-Astro source mapping uses Astro's native `data-astro-source-*` attributes — no extra configuration needed.
-
-### Webpack
-
-```ts
-import { AnnotaskWebpackPlugin } from 'annotask/webpack'
-
-// Add to your webpack config plugins (dev only):
-plugins: [new AnnotaskWebpackPlugin()]
-```
-
-### Micro-frontends (single-spa, Module Federation, etc.)
-
-For MFE architectures where multiple apps load into a single root shell:
-
-**MFE child** (Vite) — adds `data-annotask-mfe` attribute to all elements:
-
-```ts
-import { annotask } from 'annotask'
-
-export default defineConfig({
-  plugins: [
-    vue(),
-    annotask({
-      mfe: '@myorg/my-mfe',                    // MFE identity tag
-      server: 'http://localhost:24678',         // Root's annotask server URL
-    }),
-  ],
-})
-```
-
-**Root shell** (Webpack) — runs the annotask server, bridge, and shell UI:
-
-```ts
-import { AnnotaskWebpackPlugin } from 'annotask/webpack'
-
-plugins: [new AnnotaskWebpackPlugin({ port: 24678 })]
-```
-
-When `server` is set, the MFE's local annotask server is skipped — the root handles it. When only `mfe` is set (no `server`), annotask runs normally for standalone development.
-
-Tasks created from MFE elements carry the `mfe` field. Filter them with `GET /__annotask/api/tasks?mfe=@myorg/my-mfe` or use the CLI:
-
-```bash
-annotask report --mfe=@myorg/my-mfe
-```
-
-Start your dev server, then open:
-- **App**: `http://localhost:5173/` (Vite) or `http://localhost:8090/` (Webpack)
-- **Annotask**: `http://localhost:5173/__annotask/`
+Start your dev server, then open `http://localhost:5173/__annotask/`.
 
 ## Features
 
@@ -196,11 +122,18 @@ annotask report             # Fetch current report JSON
 annotask status             # Check connection
 annotask screenshot <id>    # Download a task's screenshot
 annotask init-skills        # Install agent skills into your project
+annotask mcp                # Start MCP stdio server (proxies to dev server)
 ```
 
 Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=NAME` (filter by MFE), `--output=PATH` (for screenshot command).
 
 ## API
+
+### MCP (for AI agents)
+
+- `POST /__annotask/mcp` — MCP endpoint ([Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http)). Accepts JSON-RPC 2.0 requests, returns tool results. This is the recommended way for AI agents to interact with Annotask.
+
+### HTTP (for scripts and custom integrations)
 
 - `GET /__annotask/api/report` — Current change report (supports `?mfe=NAME` filter)
 - `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
@@ -258,8 +191,4 @@ pnpm test:e2e                 # Run E2E tests (all frameworks)
 
 ## Troubleshooting
 
-**Elements don't show source info**: Make sure your framework plugin (Vue, React, or Svelte) is installed and the Annotask plugin is listed after it in your Vite config. The transform needs to run before the framework compiler processes the source. For Astro, source mapping is automatic via Astro's native attributes. For plain HTML/htmx, source mapping is injected via `transformIndexHtml`.
-
-**WebSocket not connecting**: Ensure the dev server is running. The CLI and shell connect to `/__annotask/ws` on the same port as your dev server.
-
-**Changes not appearing in report**: Only style and class changes that differ from computed values are included. If before and after are identical, the change is filtered out.
+See [SETUP.md](SETUP.md#troubleshooting) for common issues and solutions.

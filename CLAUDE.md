@@ -20,6 +20,7 @@ Then open:
 
 When the Annotask design tool is running, you can interact with it:
 
+- **MCP**: `POST http://localhost:5173/__annotask/mcp` — MCP tools for tasks, report, design spec, components, screenshots
 - **HTTP**: `curl http://localhost:5173/__annotask/api/report` — get the current change report
 - **WebSocket**: `ws://localhost:5173/__annotask/ws` — live change stream
 - **CLI**: `annotask watch` / `annotask report` — terminal tools
@@ -37,6 +38,7 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/shell/utils/` — Helpers (stripMarkdown)
 - `src/shared/` — Shared types (postMessage bridge protocol)
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
+- `src/mcp/` — MCP server (Streamable HTTP transport, embedded in the Vite/Webpack server)
 - `src/cli/` — CLI tool for terminal interaction
 - `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
 
