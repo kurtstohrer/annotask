@@ -1,4 +1,4 @@
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import type { Ref } from 'vue'
 
 export interface KeyboardShortcutDeps {
@@ -11,7 +11,7 @@ export interface KeyboardShortcutDeps {
   templateGroupEids: Ref<string[]>
   selectionRects: Ref<unknown[]>
   groupRects: Ref<unknown[]>
-  activePanel: Ref<'inspector' | 'tasks' | 'a11y' | 'perf'>
+  activePanel: Ref<'inspector' | 'tasks'>
   doUndo: () => void
   cancelSnip: () => void
   cancelPendingTask: () => void

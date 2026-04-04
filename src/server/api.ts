@@ -8,7 +8,7 @@ export interface APIOptions {
   getReport: () => unknown
   getConfig: () => unknown
   getDesignSpec: () => unknown
-  getTasks: () => { version: string; tasks: any[] }
+  getTasks: () => { version: string; tasks: Array<Record<string, unknown>> }
   updateTask: (id: string, updates: Record<string, unknown>) => unknown
   deleteTask: (id: string) => unknown
   addTask: (task: Record<string, unknown>) => unknown
@@ -102,7 +102,8 @@ export function createAPIMiddleware(options: APIOptions) {
 
     if (!req.url?.startsWith('/__annotask/api/')) return next()
 
-    const path = req.url.replace('/__annotask/api/', '')
+    const pathWithQuery = req.url.replace('/__annotask/api/', '')
+    const path = pathWithQuery.split('?')[0]
 
     // CORS — only allow localhost origins
     const corsOrigin = getCorsOrigin(req)
@@ -163,12 +164,12 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
-    if (path.startsWith('tasks') && !path.startsWith('tasks/') && req.method === 'GET') {
+    if (path === 'tasks' && req.method === 'GET') {
       const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
       const mfeFilter = urlObj.searchParams.get('mfe')
       const taskData = options.getTasks()
       if (mfeFilter) {
-        const filtered = { ...taskData, tasks: taskData.tasks.filter((t: any) => t.mfe === mfeFilter) }
+        const filtered = { ...taskData, tasks: taskData.tasks.filter(t => t.mfe === mfeFilter) }
         res.end(JSON.stringify(filtered, null, 2))
       } else {
         res.end(JSON.stringify(taskData, null, 2))
@@ -215,8 +216,19 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
+    if (path.startsWith('tasks/') && req.method === 'GET') {
+      const id = decodeURIComponent(path.replace('tasks/', ''))
+      if (!id) return sendError(res, 400, 'Missing task id')
+      const taskData = options.getTasks()
+      const task = taskData.tasks.find(t => t.id === id)
+      if (!task) return sendError(res, 404, 'Task not found')
+      res.end(JSON.stringify(task, null, 2))
+      return
+    }
+
     if (path.startsWith('tasks/') && req.method === 'PATCH') {
-      const id = path.replace('tasks/', '')
+      const id = decodeURIComponent(path.replace('tasks/', ''))
+      if (!id) return sendError(res, 400, 'Missing task id')
       let raw: string
       try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large') }
       const parsed = parseJSON(raw)
@@ -228,11 +240,11 @@ export function createAPIMiddleware(options: APIOptions) {
       }
       // Validate state transition
       if (body.status !== undefined) {
-        const currentTask = options.getTasks().tasks.find((t: any) => t.id === id)
+        const currentTask = options.getTasks().tasks.find(t => t.id === id)
         if (currentTask) {
-          const allowed = VALID_TRANSITIONS[currentTask.status]
+          const allowed = VALID_TRANSITIONS[String(currentTask.status)]
           if (allowed && !allowed.has(body.status as string)) {
-            return sendError(res, 400, `Invalid state transition: ${currentTask.status} → ${body.status}. Allowed: ${[...allowed].join(', ')}`)
+            return sendError(res, 400, `Invalid state transition: ${String(currentTask.status)} → ${body.status}. Allowed: ${[...allowed].join(', ')}`)
           }
         }
       }

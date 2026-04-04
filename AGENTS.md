@@ -8,20 +8,20 @@ Annotask includes an MCP server that starts automatically with the dev server at
 
 | Tool | Description |
 |------|-------------|
-| `annotask_get_tasks` | List tasks — filter by `status` (`pending`, `denied` for actionable work) or `mfe` |
+| `annotask_get_tasks` | List task summaries — filter by `status`, `mfe`. Use `detail=true` for full objects |
+| `annotask_get_task` | Get full detail for a single task by ID (context, element_context, agent_feedback) |
 | `annotask_update_task` | Transition status, set resolution, ask questions, mark blocked |
 | `annotask_create_task` | Create a new pending task |
 | `annotask_delete_task` | Delete a task and its screenshot |
-| `annotask_get_report` | Live change report from the browser session |
-| `annotask_get_design_spec` | Design tokens — colors, typography, spacing, borders, breakpoints |
-| `annotask_get_components` | Component library catalog with props |
+| `annotask_get_design_spec` | Design spec summary, or full tokens for a `category` (colors, typography, etc.) |
+| `annotask_get_components` | Search component libraries by name. Returns up to 20 results per library |
 | `annotask_get_screenshot` | Task screenshot as base64 PNG |
 
 ### Applying tasks via MCP
 
-1. Call `annotask_get_tasks` with `status: "pending"` — these are ready to apply
+1. Call `annotask_get_tasks` with `status: "pending"` — returns compact summaries
 2. For each task, call `annotask_update_task` with `status: "in_progress"` to lock it
-3. Read the task's `file`, `line`, `description`, `context`, and `screenshot` for full context
+3. If the summary has enough context, apply directly. Otherwise call `annotask_get_task` for full detail
 4. Apply the change to the source file
 5. Call `annotask_update_task` with `status: "review"` and a short `resolution` note
 6. Also process `status: "denied"` tasks — read `feedback` for what the user didn't like, then re-apply
@@ -46,8 +46,8 @@ Then open:
 
 ```bash
 annotask status              # Check if server is running
-annotask tasks               # Fetch pending tasks
-annotask report              # Fetch full report + tasks
+annotask tasks               # Compact task summaries (use --pretty for full objects)
+annotask report              # Fetch live change report (no tasks)
 annotask watch               # Live stream changes via WebSocket
 annotask update-task <id> --status=<status>   # Update task status
 annotask screenshot <id>     # Download a task's screenshot
@@ -59,9 +59,9 @@ annotask mcp                 # Start MCP stdio server (proxies to dev server)
 
 - `POST /__annotask/mcp` — MCP endpoint (Streamable HTTP transport, JSON-RPC 2.0)
 - `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
+- `GET /__annotask/api/tasks/:id` — Single task detail
 - `POST /__annotask/api/tasks` — Create a task
 - `PATCH /__annotask/api/tasks/:id` — Update task status
-- `GET /__annotask/api/report` — Current change report
 - `GET /__annotask/api/design-spec` — Design spec (tokens, framework, breakpoints)
 - `POST /__annotask/api/screenshots` — Upload a screenshot
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot

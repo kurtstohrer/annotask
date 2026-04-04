@@ -21,7 +21,7 @@ export interface TimelineAction {
 
 export interface PerfFinding {
   findingId: string
-  category: 'vital' | 'resource' | 'long-task'
+  category: 'vital' | 'resource' | 'long-task' | 'bundle'
   severity: 'good' | 'needs-improvement' | 'poor'
   title: string
   detail: string
@@ -29,6 +29,34 @@ export interface PerfFinding {
   unit: string
   metric?: string
   resources?: Array<{ name: string; size: number; duration: number }>
+}
+
+/** Known heavy packages with lighter alternatives */
+const PACKAGE_ALTERNATIVES: Record<string, string> = {
+  'moment': 'dayjs (2KB vs 300KB)',
+  'lodash': 'lodash-es or native methods',
+  'classnames': 'clsx (smaller)',
+}
+
+/** Extract npm package name from a URL path */
+function extractPackageName(url: string): string | null {
+  try {
+    const path = new URL(url).pathname
+    // Vite pre-bundled deps: /node_modules/.vite/deps/react.js?v=abc
+    const viteDeps = path.match(/\/node_modules\/\.vite\/deps\/([^.?]+)/)
+    if (viteDeps) return viteDeps[1].replace(/_/g, '/')
+    // Direct node_modules: /node_modules/lodash-es/debounce.js or /@fs/.../node_modules/pkg/...
+    const nm = path.match(/\/node_modules\/(@[^/]+\/[^/]+|[^/]+)/)
+    if (nm) return nm[1]
+  } catch {}
+  return null
+}
+
+export interface PackageGroup {
+  name: string
+  modules: number
+  totalSize: number
+  alternative?: string
 }
 
 const VITAL_WEIGHTS: Record<string, number> = { LCP: 25, FCP: 15, CLS: 25, INP: 25, TTFB: 10 }
@@ -147,6 +175,23 @@ export function usePerfMonitor(
     return { score, label: score >= 90 ? 'Good' : score >= 50 ? 'Needs Work' : 'Poor', color: score >= 90 ? '#22c55e' : score >= 50 ? '#f59e0b' : '#ef4444' }
   })
 
+  /** Group resources by npm package name */
+  const packageGroups = computed<PackageGroup[]>(() => {
+    const resources = recordingResult.value?.resources || scanResult.value?.resources || []
+    const groups: Record<string, { modules: number; totalSize: number }> = {}
+    for (const r of resources) {
+      if (r.initiatorType !== 'script' && r.initiatorType !== 'module') continue
+      const pkg = extractPackageName(r.name)
+      if (!pkg) continue
+      if (!groups[pkg]) groups[pkg] = { modules: 0, totalSize: 0 }
+      groups[pkg].modules++
+      groups[pkg].totalSize += r.transferSize
+    }
+    return Object.entries(groups)
+      .map(([name, g]) => ({ name, ...g, alternative: PACKAGE_ALTERNATIVES[name] }))
+      .sort((a, b) => b.totalSize - a.totalSize)
+  })
+
   const perfFindings = computed<PerfFinding[]>(() => {
     const v = vitals.value
     const resources = recordingResult.value?.resources || scanResult.value?.resources || []
@@ -180,6 +225,20 @@ export function usePerfMonitor(
         detail: res.map(r => `${shortenUrl(r.name)} — ${formatBytes(r.size)}`).join(', '),
         value: totalSize, unit: 'bytes', resources: res,
       })
+    }
+
+    // Bundle: heavy packages (>100KB)
+    for (const pkg of packageGroups.value) {
+      if (pkg.totalSize > 100 * 1024) {
+        const alt = pkg.alternative ? ` Consider: ${pkg.alternative}.` : ''
+        findings.push({
+          findingId: `bundle:${pkg.name}`, category: 'bundle',
+          severity: pkg.totalSize > 300 * 1024 ? 'poor' : 'needs-improvement',
+          title: `${pkg.name}: ${formatBytes(pkg.totalSize)} (${pkg.modules} module${pkg.modules > 1 ? 's' : ''})`,
+          detail: `Package "${pkg.name}" contributes ${formatBytes(pkg.totalSize)} to page weight.${alt}`,
+          value: pkg.totalSize, unit: 'bytes',
+        })
+      }
     }
 
     // Long tasks from recording
@@ -264,7 +323,7 @@ export function usePerfMonitor(
   return {
     recording, recordingResult, recordingError,
     scanResult, scanLoading, scanError, hasData,
-    timeline, vitals, perfScore, perfFindings, perfTaskFindings,
+    timeline, vitals, perfScore, perfFindings, perfTaskFindings, packageGroups,
     startRecording, stopRecording, scanPerf, createPerfTask,
   }
 }

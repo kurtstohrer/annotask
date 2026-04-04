@@ -1,22 +1,19 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
-import LayoutControls from './components/LayoutControls.vue'
-import SpacingControls from './components/SpacingControls.vue'
-import SizeControls from './components/SizeControls.vue'
-import AppearanceControls from './components/AppearanceControls.vue'
 import { useStyleEditor } from './composables/useStyleEditor'
 import { useInteractionMode } from './composables/useInteractionMode'
 import { useDesignSpec } from './composables/useDesignSpec'
 import { useLayoutOverlay } from './composables/useLayoutOverlay'
 import { useAnnotations } from './composables/useAnnotations'
-import { type ElementRole } from './composables/useElementClassification'
 import { useIframeManager } from './composables/useIframeManager'
 import { useCanvasDrawing } from './composables/useCanvasDrawing'
 import { useScreenshots } from './composables/useScreenshots'
 import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
 import { useA11yScanner } from './composables/useA11yScanner'
 import { usePerfMonitor } from './composables/usePerfMonitor'
+import { useErrorMonitor } from './composables/useErrorMonitor'
 import PerfTab from './components/PerfTab.vue'
+import ErrorsTab from './components/ErrorsTab.vue'
 import LibrariesPage from './components/LibrariesPage.vue'
 import FindingDrawer from './components/FindingDrawer.vue'
 import type { A11yViolation } from './composables/useA11yScanner'
@@ -31,6 +28,7 @@ import NotesTab from './components/NotesTab.vue'
 import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
 import ThemePage from './components/ThemePage.vue'
+import DesignPanel from './components/DesignPanel.vue'
 import ReportViewer from './components/ReportViewer.vue'
 import TaskDetailModal from './components/TaskDetailModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -44,7 +42,7 @@ import ViewportSelector from './components/ViewportSelector.vue'
 import { safeMd } from './utils/safeMd'
 
 const styleEditor = useStyleEditor()
-const { applyStyle, recordAnnotation, recordClassChange, removeAnnotationsByFile, changes, report } = styleEditor
+const { changes } = styleEditor
 
 async function doUndo() {
   const undoInfo = styleEditor.undo()
@@ -73,30 +71,67 @@ async function commitChangesAsTask() {
   const styleChanges = changes.value.filter(c => c.type === 'style_update') as import('./composables/useStyleEditor').StyleChangeRecord[]
   const classChanges = changes.value.filter(c => c.type === 'class_update') as import('./composables/useStyleEditor').ClassChangeRecord[]
 
-  // Build a description from the changes
-  const parts: string[] = []
+  // Deduplicate changes by property (apply-to-group creates one per eid, but they're the same change)
+  const seenProps = new Set<string>()
+  const dedupedStyleChanges: typeof styleChanges = []
   for (const c of styleChanges) {
+    const key = `${c.property}:${c.after}`
+    if (!seenProps.has(key)) {
+      seenProps.add(key)
+      dedupedStyleChanges.push(c)
+    }
+  }
+  const seenClassKeys = new Set<string>()
+  const dedupedClassChanges: typeof classChanges = []
+  for (const c of classChanges) {
+    const key = `${c.after.classes}`
+    if (!seenClassKeys.has(key)) {
+      seenClassKeys.add(key)
+      dedupedClassChanges.push(c)
+    }
+  }
+
+  // Build a description from the deduplicated changes
+  const parts: string[] = []
+  for (const c of dedupedStyleChanges) {
     parts.push(`${c.property}: ${c.after}`)
   }
-  for (const c of classChanges) {
+  for (const c of dedupedClassChanges) {
     parts.push(`classes: ${c.after.classes}`)
   }
-  const description = parts.length <= 3
-    ? `Update ${parts.join(', ')}`
-    : `Update ${parts.slice(0, 2).join(', ')} and ${parts.length - 2} more`
+
+  const sel = primarySelection.value
+  const elementDesc = sel ? `<${sel.tagName}>${sel.component ? ` in ${sel.component}` : ''}` : ''
+  const changeDesc = parts.length <= 3
+    ? parts.join(', ')
+    : `${parts.slice(0, 2).join(', ')} and ${parts.length - 2} more`
+  const description = elementDesc
+    ? `Update ${changeDesc} on ${elementDesc}`
+    : `Update ${changeDesc}`
 
   // Use the primary selection or first change for file/line
-  const file = primarySelection.value?.file || styleChanges[0]?.file || classChanges[0]?.file || ''
-  const line = primarySelection.value?.line ? parseInt(primarySelection.value.line) : (styleChanges[0]?.line || classChanges[0]?.line || 0)
-  const component = primarySelection.value?.component || styleChanges[0]?.component || classChanges[0]?.component || ''
+  const file = sel?.file || styleChanges[0]?.file || classChanges[0]?.file || ''
+  const line = sel?.line ? parseInt(sel.line) : (styleChanges[0]?.line || classChanges[0]?.line || 0)
+  const component = sel?.component || styleChanges[0]?.component || classChanges[0]?.component || ''
 
   const taskChanges: Array<Record<string, unknown>> = []
-  for (const c of styleChanges) {
+  for (const c of dedupedStyleChanges) {
     taskChanges.push({ property: c.property, before: c.before, after: c.after, file: c.file, line: c.line })
   }
-  for (const c of classChanges) {
+  for (const c of dedupedClassChanges) {
     taskChanges.push({ type: 'class', before: c.before.classes, after: c.after.classes, file: c.file, line: c.line })
   }
+
+  // Element context
+  const elementContext: Record<string, unknown> = {}
+  if (sel) {
+    elementContext.element_tag = sel.tagName
+    elementContext.element_classes = sel.classes
+    if (selectedElementRole.value) elementContext.element_role = selectedElementRole.value
+    if (templateGroupEids.value.length > 1) elementContext.template_instances = templateGroupEids.value.length
+  }
+
+  const eids = [...selectedEids.value]
 
   await createRouteTask({
     type: 'style_update',
@@ -104,7 +139,8 @@ async function commitChangesAsTask() {
     file,
     line,
     component,
-    context: { changes: taskChanges },
+    ...(eids.length ? { visual: { kind: 'select' as const, eids } } : {}),
+    context: { changes: taskChanges, ...elementContext },
   })
 
   // Clear changes after commit
@@ -126,14 +162,39 @@ function normalizeRoute(path: string): string {
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const { mode: interactionMode } = useInteractionMode()
 const { isInitialized: configInitialized } = useDesignSpec()
-const shellView = ref<'editor' | 'theme' | 'libraries'>(
-  (['editor', 'theme', 'libraries'].includes(localStorage.getItem('annotask:shellView') || ''))
-    ? localStorage.getItem('annotask:shellView') as 'editor' | 'theme' | 'libraries'
-    : 'editor'
+type ShellView = 'editor' | 'theme' | 'a11y' | 'perf' | 'context'
+const SHELL_VIEWS: ShellView[] = ['editor', 'theme', 'a11y', 'perf', 'context']
+
+function readStoredEnum<T extends string>(key: string, values: readonly T[], fallback: T): T {
+  const stored = localStorage.getItem(key)
+  return stored && values.includes(stored as T) ? stored as T : fallback
+}
+
+const shellView = ref<ShellView>(
+  readStoredEnum('annotask:shellView', SHELL_VIEWS, 'editor')
 )
+type PerfSection = 'vitals' | 'errors' | 'tasks'
+const PERF_SECTIONS: PerfSection[] = ['vitals', 'errors', 'tasks']
+const perfSection = ref<PerfSection>(
+  readStoredEnum('annotask:perfSection', PERF_SECTIONS, 'vitals')
+)
+let savedAnnotateMode: import('./composables/useInteractionMode').InteractionMode | null = null
 watch(shellView, (v, old) => {
   localStorage.setItem('annotask:shellView', v)
-  // no-op: libraries view is self-contained
+  const wasEditor = old === 'editor'
+  const isEditor = v === 'editor'
+  if (!isEditor && wasEditor) {
+    // Leaving editor — save mode, switch to interact (or select for theme)
+    savedAnnotateMode = interactionMode.value
+    interactionMode.value = v === 'theme' ? 'select' : 'interact'
+  } else if (isEditor && !wasEditor && savedAnnotateMode) {
+    // Returning to editor — restore saved mode
+    interactionMode.value = savedAnnotateMode
+    savedAnnotateMode = null
+  } else if (!isEditor && !wasEditor) {
+    // Switching between non-editor views
+    interactionMode.value = v === 'theme' ? 'select' : 'interact'
+  }
 })
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
@@ -142,43 +203,47 @@ const arrowColor = ref(localStorage.getItem('annotask:arrowColor') || '#ef4444')
 watch(arrowColor, (v) => localStorage.setItem('annotask:arrowColor', v))
 const highlightColor = ref(localStorage.getItem('annotask:highlightColor') || '#f59e0b')
 watch(highlightColor, (v) => localStorage.setItem('annotask:highlightColor', v))
-const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value)
+const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value, () => discardUncommittedAnnotations())
 const { drawingArrow, drawingRect, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
 // Sync mode to bridge + clear selection on interact + clean orphan annotations
 watch(interactionMode, (mode) => {
   iframe.setMode(mode)
-  // Cancel any pending task (removes orphan pin/arrow/highlight)
-  if (pendingTaskCreation.value) cancelPendingTask()
-  // Remove sections without submitted tasks
-  for (const s of [...annotations.drawnSections.value]) {
-    if (!sectionTaskMap.value[s.id]) annotations.removeDrawnSection(s.id)
+  discardUncommittedAnnotations()
+  if (mode !== 'select' && pendingTaskCreation.value?.kind === 'select') {
+    pendingTaskCreation.value = null
+    pendingTaskText.value = ''
   }
   if (mode === 'interact') {
     clearSelection()
     hoverRect.value = null
     hoverInfo.value = null
   }
-  if (mode === 'select') {
-    activeTab.value = 'notes'
-  }
 })
 const showWarning = ref(false)
 const showReportPanel = ref(false)
 const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
-const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes' | 'notes'>('notes')
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
-const activePanel = ref<'inspector' | 'tasks' | 'a11y' | 'perf'>(
-  (['inspector', 'tasks', 'a11y', 'perf'].includes(localStorage.getItem('annotask:activePanel') || ''))
-    ? localStorage.getItem('annotask:activePanel') as 'inspector' | 'tasks' | 'a11y' | 'perf'
-    : 'inspector'
+const activePanel = ref<'tasks' | 'inspector'>(
+  localStorage.getItem('annotask:activePanel') === 'inspector' ? 'inspector' : 'tasks'
 )
 watch(activePanel, (v) => {
   localStorage.setItem('annotask:activePanel', v)
+  if (shellView.value === 'perf' && v !== 'tasks' && perfSection.value === 'tasks') {
+    perfSection.value = 'vitals'
+  }
 })
-// Backward compat alias
-const showTaskPanel = computed(() => activePanel.value === 'tasks')
+watch(perfSection, (v) => {
+  localStorage.setItem('annotask:perfSection', v)
+  if (shellView.value !== 'perf') return
+  if (v === 'tasks') {
+    activePanel.value = 'tasks'
+  } else if (activePanel.value === 'tasks') {
+    activePanel.value = 'inspector'
+  }
+})
+const designSection = ref<'tokens' | 'inspector'>('tokens')
 const includeHistory = ref(localStorage.getItem('annotask:includeHistory') === 'true')
 watch(includeHistory, (v) => localStorage.setItem('annotask:includeHistory', String(v)))
 const includeElementContext = ref(localStorage.getItem('annotask:includeElementContext') === 'true')
@@ -203,20 +268,48 @@ const {
   clearSelection,
 } = selection
 
+watch(primarySelection, (sel, old) => {
+  if (shellView.value === 'theme') {
+    if (sel && !old) designSection.value = 'inspector'
+    if (!sel && old) designSection.value = 'tokens'
+  }
+})
+
 // A11y scanner (needs primarySelection and currentRoute)
 const a11yScanner = useA11yScanner(iframe, taskSystem, primarySelection as any, currentRoute)
-const { a11yViolations, a11yLoading, a11yError, a11yScanned, a11yScanTarget, a11yTaskRules, scanA11y, createA11yTask } = a11yScanner
+const { a11yViolations, a11yLoading, a11yError, a11yScanned, a11yTaskRules, scanA11y, createA11yTask } = a11yScanner
 const detailA11yViolation = ref<A11yViolation | null>(null)
 function onCreateA11yTask(v: A11yViolation) { createA11yTask(v); detailA11yViolation.value = null }
+
+const errorMonitor = useErrorMonitor(iframe, taskSystem, currentRoute)
+const { errors: capturedErrors, errorCount, warnCount, paused: errorsPaused,
+        taskErrorIds, clearErrors, createErrorTask } = errorMonitor
 
 const perfMonitor = usePerfMonitor(iframe, taskSystem, currentRoute)
 const { recording: perfRecording, recordingResult: perfRecordingResult, recordingError: perfRecordingError,
         scanResult: perfScanResult, scanLoading: perfScanLoading, scanError: perfScanError, hasData: perfHasData,
-        timeline: perfTimeline, vitals: perfVitals, perfScore, perfFindings, perfTaskFindings,
+        timeline: perfTimeline, vitals: perfVitals, perfScore, perfFindings, perfTaskFindings, packageGroups: perfPackageGroups,
         startRecording, stopRecording: stopPerfRecording, scanPerf: runPerfScan, createPerfTask } = perfMonitor
 function startPerfRecording() {
   interactionMode.value = 'interact'
   startRecording()
+}
+
+// ── Auto-scan on navigation ──────────────────────────
+let autoScanTimer: ReturnType<typeof setTimeout> | null = null
+const autoScanEnabled = ref(localStorage.getItem('annotask:auto-scan') !== 'false')
+watch(autoScanEnabled, (v) => localStorage.setItem('annotask:auto-scan', String(v)))
+
+function scheduleAutoScan() {
+  if (!autoScanEnabled.value || shellView.value !== 'perf') return
+  if (autoScanTimer) clearTimeout(autoScanTimer)
+  // Debounce 500ms — let SPA route transitions settle
+  autoScanTimer = setTimeout(() => {
+    if (perfSection.value === 'vitals' && !perfRecording.value) {
+      runPerfScan()
+    }
+    // A11y stays manual — too heavy for auto-scan
+  }, 500)
 }
 
 // ── Annotation rect refresh loop ──
@@ -240,6 +333,8 @@ async function onIframeLoad() {
     await resolveSelectTaskEids()
     // Rescan layout if overlay is active
     if (layoutOverlay.showOverlay.value) layoutOverlay.scan()
+    // Auto-scan on initial load
+    scheduleAutoScan()
   })
 }
 
@@ -262,16 +357,13 @@ function setupBridgeEvents() {
 
     // Pin mode: create pin at exact click position → open task creation panel
     if (interactionMode.value === 'pin') {
+      discardUncommittedAnnotations()
       const pinX = clientX
       const pinY = clientY
       const pin = annotations.addPin(
         { file, line, component, elementTag: tagName, elementClasses: classes },
         pinX, pinY
       )
-      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid }
-      selectedEids.value = [eid]
-      await readLiveStyles()
-      await refreshElementRole()
       pendingTaskCreation.value = {
         kind: 'pin',
         label: `Pin on ${describeElement({ file, line, component, tag: tagName, classes })}`,
@@ -290,11 +382,33 @@ function setupBridgeEvents() {
         if (selectedEids.value.length === 0) {
           primarySelection.value = null
           templateGroupEids.value = []
+          if (pendingTaskCreation.value?.kind === 'select') {
+            pendingTaskCreation.value = null
+            pendingTaskText.value = ''
+          }
         }
       } else {
         selectedEids.value.push(eid)
       }
       await refreshRects()
+      if (pendingTaskCreation.value?.kind === 'select' && selectedEids.value.length > 0) {
+        const elements = (pendingTaskCreation.value.meta.selectedElements as Array<Record<string, string>>) || []
+        if (idx >= 0) {
+          // Removed element — filter it out
+          pendingTaskCreation.value = {
+            ...pendingTaskCreation.value,
+            label: `${selectedEids.value.length} element${selectedEids.value.length === 1 ? '' : 's'} selected`,
+            meta: { ...pendingTaskCreation.value.meta, selectedElements: elements.filter(e => e.eid !== eid) },
+          }
+        } else {
+          // Added element
+          pendingTaskCreation.value = {
+            ...pendingTaskCreation.value,
+            label: `${selectedEids.value.length} element${selectedEids.value.length === 1 ? '' : 's'} selected`,
+            meta: { ...pendingTaskCreation.value.meta, selectedElements: [...elements, { eid, file, line, component, tag: tagName, classes }] },
+          }
+        }
+      }
     } else {
       primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid }
       selectedEids.value = [eid]
@@ -305,6 +419,19 @@ function setupBridgeEvents() {
       await readLiveStyles()
       await refreshElementRole()
       await refreshRects()
+
+      if (interactionMode.value === 'select' && shellView.value === 'editor') {
+        pendingTaskCreation.value = {
+          kind: 'select',
+          label: `1 element selected`,
+          file, line, component,
+          meta: {
+            elementTag: tagName, elementClasses: classes,
+            selectedElements: [{ eid, file, line, component, tag: tagName, classes }],
+          },
+        }
+        pendingTaskText.value = ''
+      }
     }
 
     hoverRect.value = null
@@ -325,6 +452,7 @@ function setupBridgeEvents() {
   })
 
   iframe.onBridgeEvent('selection:text', async (data: { text: string; eid: string; file: string; line: number; component: string; tag: string; rect?: { x: number; y: number; width: number; height: number } }) => {
+    discardUncommittedAnnotations()
     // Convert iframe-local rect to viewport coords
     const iframeEl = iframeRef.value
     const offsetX = iframeEl?.getBoundingClientRect().left || 0
@@ -362,6 +490,8 @@ function setupBridgeEvents() {
     localStorage.setItem('annotask:lastRoute', data.path)
     // Restore any tasks for the new route that haven't been loaded yet
     restoreAnnotationsFromTasks()
+    // Auto-scan: lightweight scans on navigation
+    scheduleAutoScan()
   })
 
   // User action tracking (interact mode — link/button clicks in the app)
@@ -369,6 +499,8 @@ function setupBridgeEvents() {
     interactionHistory.push('action', currentRoute.value, data)
   })
 
+  // Error monitor — passively captures console errors/warnings and unhandled exceptions
+  errorMonitor.init()
 }
 
 // ── Report ─────────────────────────────────────────────
@@ -393,7 +525,7 @@ const {
   confirmDeleteTaskId,
   sectionTaskMap, arrowDragTargetRect,
   restoredTaskIds,
-  removeTaskAnnotations, executeDeleteTask,
+  discardUncommittedAnnotations, removeTaskAnnotations, executeDeleteTask,
   acceptTask, submitDeny, submitNewTask,
   createRouteTask,
   onSectionSubmit,
@@ -438,6 +570,11 @@ onMounted(async () => {
   if (iframeRef.value?.contentWindow) onIframeLoad()
 })
 onUnmounted(() => {
+  if (autoScanTimer) {
+    clearTimeout(autoScanTimer)
+    autoScanTimer = null
+  }
+  iframeRef.value?.removeEventListener('load', onIframeLoad)
   iframe.unmountBridge()
 })
 
@@ -475,21 +612,70 @@ const appUrl = computed(() => {
       <div class="toolbar-left">
         <svg class="logo" viewBox="0 0 85.81 90.51" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="m72.02 90.31c-.17-.1-.43-.48-.57-.82-.37-.93-1.97-3.46-2.74-4.33-.66-.74-.77-.79-5.99-2.5-2.93-.96-5.52-1.85-5.77-1.98-.47-.25-.35.01-4.7-9.99-1.1-2.53-2.11-4.72-2.25-4.87-.22-.24-1.7-.26-11.7-.21-6.3.03-11.51.12-11.58.19-.11.11-2.06 4.98-4.34 10.84-.4 1.04-1.21 3.11-1.8 4.6-.58 1.49-1.52 3.88-2.08 5.32-.64 1.65-1.18 2.76-1.45 3.02l-.44.41H8.31 0l.49-1.22c4.92-12.33 8.69-21.78 9.54-23.94 1.22-3.09 4.33-10.89 6.52-16.32.82-2.03 1.72-4.3 2-5.05.28-.74 1.17-2.97 1.97-4.96 2.26-5.6 3-7.45 4.7-11.72 2.32-5.86 5.17-13 7.63-19.11 1.2-2.98 2.29-5.73 2.44-6.13.15-.4.45-.9.68-1.13l.42-.41h8.22c4.57 0 8.4.07 8.63.17.49.19.22-.38 3.81 8.22 1.57 3.77 3 7.18 3.17 7.57.73 1.72 6 14.31 7.22 17.22 1.71 4.1 5.73 13.7 6 14.34.17.4.66 1.58 1.09 2.61.43 1.04 1.63 3.94 2.68 6.46 1.05 2.51 1.9 4.63 1.9 4.71 0 .08-.14.2-.3.27-.17.07-2.89 1.13-6.05 2.37-3.16 1.23-6.39 2.5-7.17 2.81-.78.31-1.47.51-1.53.45-.06-.06-.47-1.07-.92-2.24-1.24-3.24-5.96-15.5-7.72-20.06-.86-2.23-2.45-6.33-3.52-9.11-1.07-2.78-2.93-7.6-4.14-10.73-1.2-3.12-2.4-6.25-2.67-6.94l-.48-1.26-.19.54c-.42 1.17-1.35 3.64-3.23 8.56-1.08 2.83-2.45 6.44-3.05 8.02-.6 1.59-2.24 5.89-3.65 9.56l-2.57 6.67 8.58.05 8.58.05.31.76c.17.42 1.14 2.91 2.16 5.54 6.49 16.81 6.66 17.24 6.88 17.18.08-.02 1.08-.41 2.21-.87 1.13-.46 3.45-1.39 5.15-2.06 5.12-2.03 14.4-5.73 14.68-5.85.14-.06.39-.01.55.12.32.25 2.19 4.68 2.19 5.19 0 .18-.14.48-.3.68-.27.32-5.46 2.61-10.94 4.83-4.74 1.92-6.58 2.65-7.29 2.92l-.77.29 1.94.34 1.94.34.77-.38c1.61-.79 3.36-1.45 7.27-2.71 2.22-.72 4.1-1.32 4.19-1.33.16-.02.94 1.75 2.24 5.12.41 1.04 1.36 3.49 2.13 5.45.77 1.96 1.39 3.71 1.39 3.89 0 .75-.14.76-6.94.76-4.33 0-6.64-.07-6.85-.2z"/></svg>
         <div class="view-toggle">
-          <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'" title="Annotate and inspect your UI">Annotate</button>
-          <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'" title="Edit design tokens (colors, typography, spacing)">Design</button>
-          <button :class="['toggle-btn', { active: shellView === 'libraries' }]" @click="shellView = 'libraries'" title="Browse installed component libraries">Libraries</button>
+          <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'" title="Annotate and inspect your UI">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+            Annotate
+          </button>
+          <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'" title="Edit design tokens (colors, typography, spacing)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>
+            Design
+          </button>
+          <button :class="['toggle-btn', { active: shellView === 'a11y' }]" @click="shellView = 'a11y'" title="Run accessibility checks (axe-core WCAG)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><path d="M7 9h10"/><path d="M12 9v9"/><path d="M9.5 18l2.5-4 2.5 4"/></svg>
+            Accessibility
+            <span v-if="a11yViolations.length" class="toggle-badge">{{ a11yViolations.length }}</span>
+          </button>
+          <button :class="['toggle-btn', { active: shellView === 'perf' }]" @click="shellView = 'perf'" title="Performance and errors">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Performance
+            <span v-if="perfFindings.length + errorCount + warnCount" class="toggle-badge">{{ perfFindings.length + errorCount + warnCount }}</span>
+          </button>
+          <button :class="['toggle-btn', { active: shellView === 'context' }]" @click="shellView = 'context'" title="Browse installed component libraries">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            Context
+          </button>
         </div>
         <template v-if="shellView === 'editor'">
           <ModeToolbar v-model="interactionMode" />
           <ArrowColorPicker v-if="interactionMode === 'arrow'" v-model="arrowColor" />
           <ArrowColorPicker v-if="interactionMode === 'highlight'" v-model="highlightColor" />
         </template>
+        <template v-else-if="shellView === 'theme'">
+          <button :class="['tool-btn', { active: layoutOverlay.showOverlay.value }]" @click="layoutOverlay.toggle()" title="Show Layout (L)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
+        </template>
+        <template v-else-if="shellView === 'a11y'">
+          <button class="scan-btn" :disabled="a11yLoading" @click="scanA11y('page')" title="Run axe-core WCAG accessibility scan on the page">
+            {{ a11yLoading ? 'Scanning...' : 'Scan Page' }}
+          </button>
+        </template>
+        <template v-else-if="shellView === 'perf'">
+          <template v-if="perfSection === 'vitals'">
+            <button v-if="!perfRecording" class="rec-btn" @click="startPerfRecording" title="Record a performance session">
+              <span class="rec-dot"></span> Record
+            </button>
+            <button v-else class="rec-btn recording" @click="stopPerfRecording" title="Stop recording">
+              <span class="rec-dot active"></span> Stop
+            </button>
+            <button class="scan-btn" :disabled="perfScanLoading || perfRecording" @click="runPerfScan" title="Scan page performance">
+              {{ perfScanLoading ? 'Scanning...' : 'Scan' }}
+            </button>
+          </template>
+        </template>
       </div>
       <div v-if="shellView === 'editor'" class="toolbar-center">
         <ViewportSelector />
-        <button :class="['tool-btn', { active: layoutOverlay.showOverlay.value }]" @click="layoutOverlay.toggle()" title="Show Layout (L)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-        </button>
+        <input
+          class="route-input"
+          :value="currentRoute"
+          title="Current route — edit to navigate"
+          @keydown.enter="navigateIframe(($event.target as HTMLInputElement).value)"
+          @blur="navigateIframe(($event.target as HTMLInputElement).value)"
+        />
+      </div>
+      <div v-else-if="shellView !== 'context'" class="toolbar-center">
+        <ViewportSelector />
         <input
           class="route-input"
           :value="currentRoute"
@@ -501,24 +687,10 @@ const appUrl = computed(() => {
       <div v-else class="toolbar-center" />
       <div v-if="shellView === 'editor'" class="toolbar-right">
         <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: activePanel === 'inspector' }]" @click="activePanel = 'inspector'" title="Inspect element styles, layout, and classes">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            Inspector
-          </button>
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = 'tasks'" title="View and manage design tasks for your AI agent (T)">
+          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'" title="View and manage design tasks for your AI agent (T)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
             Tasks
             <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
-          </button>
-          <button :class="['toggle-btn', { active: activePanel === 'a11y' }]" @click="activePanel = 'a11y'" title="Run accessibility checks (axe-core WCAG)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="4" r="2"/><path d="M4 8h16M6 12l3 8M18 12l-3 8"/></svg>
-            A11y
-            <span v-if="a11yViolations.length" class="toggle-badge">{{ a11yViolations.length }}</span>
-          </button>
-          <button :class="['toggle-btn', { active: activePanel === 'perf' }]" @click="activePanel = 'perf'" title="Page performance and Web Vitals">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-            Perf
-            <span v-if="perfFindings.length" class="toggle-badge">{{ perfFindings.length }}</span>
           </button>
         </div>
         <div class="visibility-toggles">
@@ -530,7 +702,64 @@ const appUrl = computed(() => {
         </div>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
-      <div v-else class="toolbar-right" />
+      <div v-else-if="shellView === 'theme'" class="toolbar-right">
+        <div class="panel-toggle">
+          <button :class="['toggle-btn', { active: designSection === 'tokens' && activePanel !== 'tasks' }]" @click="designSection = 'tokens'; activePanel = 'inspector'" title="Edit design tokens">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+            Tokens
+          </button>
+          <button :class="['toggle-btn', { active: designSection === 'inspector' && activePanel !== 'tasks' }]" @click="designSection = 'inspector'; activePanel = 'inspector'" title="Inspect element styles">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Inspector
+          </button>
+          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'" title="View and manage design tasks for your AI agent (T)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Tasks
+            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
+          </button>
+        </div>
+      </div>
+      <div v-else-if="shellView === 'a11y'" class="toolbar-right">
+        <div class="panel-toggle">
+          <button :class="['toggle-btn', { active: activePanel !== 'tasks' }]" @click="activePanel = 'inspector'" title="View report">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            Report
+          </button>
+          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = 'tasks'" title="View and manage design tasks for your AI agent (T)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Tasks
+            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
+          </button>
+        </div>
+      </div>
+      <div v-else-if="shellView === 'perf'" class="toolbar-right">
+        <div class="panel-toggle">
+          <button :class="['toggle-btn', { active: perfSection === 'vitals' }]" @click="perfSection = 'vitals'" title="Web Vitals and page performance">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            Audit
+            <span v-if="perfFindings.length" class="toggle-badge">{{ perfFindings.length }}</span>
+          </button>
+          <button :class="['toggle-btn', { active: perfSection === 'errors' }]" @click="perfSection = 'errors'" title="Console errors and warnings">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Errors
+            <span v-if="errorCount + warnCount" class="toggle-badge error-badge">{{ errorCount + warnCount }}</span>
+          </button>
+          <button :class="['toggle-btn', { active: perfSection === 'tasks' }]" @click="perfSection = 'tasks'" title="View and manage design tasks for your AI agent (T)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Tasks
+            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
+          </button>
+        </div>
+      </div>
+      <div v-else class="toolbar-right">
+        <div class="panel-toggle">
+          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'" title="View and manage design tasks for your AI agent (T)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            Tasks
+            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
+          </button>
+        </div>
+      </div>
     </header>
 
     <!-- Banners -->
@@ -553,8 +782,8 @@ const appUrl = computed(() => {
 
     <!-- Main -->
     <div class="main">
-      <!-- Libraries: full-width view replacing the canvas -->
-      <LibrariesPage v-if="shellView === 'libraries'" />
+      <!-- Context: full-width view replacing the canvas -->
+      <LibrariesPage v-if="shellView === 'context'" />
 
       <div v-else class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
         @pointerdown="shellView === 'editor' ? onCanvasPointerDown($event) : undefined"
@@ -562,13 +791,9 @@ const appUrl = computed(() => {
         @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined"
       >
         <iframe ref="iframeRef" :src="appUrl" class="app-iframe" :style="iframeStyle" />
-        <!-- Editor overlays: only in editor mode -->
-        <template v-if="shellView === 'editor'">
-        <!-- Drawing shield: captures pointer events for arrow/draw/sticky modes -->
-        <div v-if="interactionMode === 'arrow' || interactionMode === 'draw'"
-          class="drawing-shield" :class="interactionMode" />
 
-        <template v-if="showMarkup.inspector">
+        <!-- Hover + selection overlays (editor and theme modes) -->
+        <template v-if="shellView === 'editor' ? showMarkup.inspector : shellView === 'theme'">
         <!-- Hover highlight -->
         <div v-if="hoverRect" class="highlight hover" :style="{ left: hoverRect.x+'px', top: hoverRect.y+'px', width: hoverRect.width+'px', height: hoverRect.height+'px' }">
           <div v-if="hoverInfo" class="hover-label">
@@ -588,8 +813,13 @@ const appUrl = computed(() => {
             &lt;{{ primarySelection.tagName }}&gt; · {{ primarySelection.component }}
           </div>
         </div>
-
         </template>
+
+        <!-- Editor-only overlays -->
+        <template v-if="shellView === 'editor'">
+        <!-- Drawing shield: captures pointer events for arrow/draw/sticky modes -->
+        <div v-if="interactionMode === 'arrow' || interactionMode === 'draw'"
+          class="drawing-shield" :class="interactionMode" />
 
         <!-- Persistent task element highlights (always visible, outside inspector toggle) -->
         <div v-for="te in taskElementRects" :key="'te-'+te.taskId" class="highlight task-element"
@@ -600,7 +830,7 @@ const appUrl = computed(() => {
           :pins="annotations.routePins.value"
           :selectedPinId="annotations.selectedPinId.value"
           :iframeOffset="{ x: iframeRef?.getBoundingClientRect()?.left || 0, y: iframeRef?.getBoundingClientRect()?.top || 0 }"
-          @select-pin="id => { annotations.selectedPinId.value = id; activeTab = 'notes' }"
+          @select-pin="id => { annotations.selectedPinId.value = id }"
           @remove-pin="annotations.removePin"
         />
 
@@ -640,17 +870,36 @@ const appUrl = computed(() => {
           @update-prompt="(id, p) => annotations.updateHighlight(id, { prompt: p })"
         />
 
-        <!-- Layout overlay -->
+        </template><!-- end editor overlays -->
+
+        <!-- Layout overlay (design view) -->
         <LayoutOverlay
           v-if="layoutOverlay.showOverlay.value"
           :containers="layoutOverlay.containers.value"
         />
-        </template><!-- end editor overlays -->
       </div>
 
-      <!-- Theme panel -->
-      <aside v-if="shellView === 'theme'" class="theme-panel">
-        <ThemePage :iframeRef="iframeRef" />
+      <!-- Theme / Design panel -->
+      <aside v-if="shellView === 'theme' && activePanel !== 'tasks'" class="theme-panel">
+        <DesignPanel
+          :section="designSection"
+          :iframeRef="iframeRef"
+          :primarySelection="primarySelection"
+          :selectionSummary="selectionSummary"
+          :selectedElementRole="selectedElementRole"
+          :templateGroupEids="templateGroupEids"
+          :selectedEids="selectedEids"
+          :applyToGroup="applyToGroup"
+          :liveStyles="liveStyles"
+          :editingClasses="editingClasses"
+          :changes="changes"
+          @style-change="onStyleChange"
+          @class-change="applyClassChange"
+          @update:editingClasses="editingClasses = $event"
+          @update:applyToGroup="applyToGroup = $event"
+          @commit="commitChangesAsTask"
+          @discard="doClearChanges"
+        />
       </aside>
 
       <!-- Shortcuts Panel -->
@@ -686,7 +935,7 @@ const appUrl = computed(() => {
         </div>
       </aside>
 
-      <!-- Pending Task Creation Panel (after pin/arrow placement) -->
+      <!-- Pending Task Creation Panel (after pin/arrow/select placement — editor only) -->
       <aside class="panel" v-else-if="shellView === 'editor' && pendingTaskCreation">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Add Task</span>
@@ -696,11 +945,23 @@ const appUrl = computed(() => {
             <div class="pending-task-kind" :class="pendingTaskCreation.kind">
               <svg v-if="pendingTaskCreation.kind === 'pin'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 1 0-16 0c0 3 2.7 7 8 11.7z"/></svg>
               <svg v-else-if="pendingTaskCreation.kind === 'arrow'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-              <span>{{ pendingTaskCreation.label }}</span>
+              <svg v-else-if="pendingTaskCreation.kind === 'select'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V4a2 2 0 1 1 4 0v5"/><path d="M11 9a2 2 0 1 1 4 0v2"/><path d="M15 11a2 2 0 1 1 4 0v4a8 8 0 0 1-8 8 7 7 0 0 1-5-2l-3.3-3.3a2 2 0 0 1 2.8-2.8L7 16"/></svg>
+              <span>{{ selectedEids.length }} element{{ selectedEids.length === 1 ? '' : 's' }} selected</span>
             </div>
             <code class="pending-task-file">{{ pendingTaskCreation.file }}:{{ pendingTaskCreation.line }}</code>
           </div>
-          <span v-if="pendingTaskCreation.kind === 'highlight'" class="pending-task-title">Change text</span>
+          <!-- Element details for select tasks -->
+          <div v-if="pendingTaskCreation?.kind === 'select' && pendingTaskCreation.meta.selectedElements" class="select-element-details">
+            <div v-for="(el, i) in (pendingTaskCreation.meta.selectedElements as Array<Record<string, string>>)" :key="el.eid || i" class="selected-element-card">
+              <div class="selected-element-header">
+                <code class="selected-element-tag">&lt;{{ el.tag }}&gt;</code>
+                <span v-if="el.component" class="component-badge">{{ el.component }}</span>
+              </div>
+              <code class="selected-element-file">{{ el.file }}:{{ el.line }}</code>
+              <code v-if="el.classes" class="selected-element-classes">{{ el.classes }}</code>
+            </div>
+          </div>
+          <span v-if="pendingTaskCreation?.kind === 'highlight'" class="pending-task-title">Change text</span>
           <textarea
             v-model="pendingTaskText"
             class="pending-task-input"
@@ -727,7 +988,7 @@ const appUrl = computed(() => {
       </aside>
 
       <!-- Task Panel -->
-      <aside class="panel" v-else-if="shellView === 'editor' && activePanel === 'tasks'">
+      <aside class="panel" v-else-if="activePanel === 'tasks'">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Tasks</span>
           <span class="component-badge">{{ taskSystem.tasks.value.length }}</span>
@@ -817,12 +1078,9 @@ const appUrl = computed(() => {
       </aside>
 
       <!-- A11y Panel -->
-      <aside class="panel" v-else-if="shellView === 'editor' && activePanel === 'a11y'">
+      <aside class="panel" v-else-if="shellView === 'a11y'">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Accessibility</span>
-          <button class="scan-btn" :disabled="a11yLoading" @click="scanA11y('page')" style="margin-left:auto" title="Run axe-core WCAG accessibility scan on the page">
-            {{ a11yLoading ? 'Scanning...' : 'Scan Page' }}
-          </button>
         </div>
         <div class="tab-content">
           <div v-if="a11yError" class="a11y-error">{{ a11yError }}</div>
@@ -849,13 +1107,11 @@ const appUrl = computed(() => {
         </div>
       </aside>
 
-      <!-- Performance Panel -->
-      <aside class="panel" v-else-if="shellView === 'editor' && activePanel === 'perf'">
-        <div class="panel-source">
-          <span class="source-path" style="color:var(--text)">Performance</span>
-        </div>
+      <!-- Audit Panel (Performance / Errors / Images / DOM) -->
+      <aside class="panel" v-else-if="shellView === 'perf'">
         <div class="tab-content">
           <PerfTab
+            v-if="perfSection === 'vitals'"
             :recording="perfRecording"
             :recording-result="perfRecordingResult"
             :scan-result="perfScanResult"
@@ -866,110 +1122,27 @@ const appUrl = computed(() => {
             :score="perfScore"
             :findings="perfFindings"
             :task-findings="perfTaskFindings"
+            :package-groups="perfPackageGroups"
             :error="perfRecordingError || perfScanError"
             @start-recording="startPerfRecording"
             @stop-recording="stopPerfRecording"
             @scan="runPerfScan"
             @create-task="createPerfTask"
           />
-        </div>
-      </aside>
-
-
-
-      <!-- Property Panel -->
-      <aside class="panel" v-else-if="shellView === 'editor' && activePanel === 'inspector' && primarySelection">
-        <div class="panel-source">
-          <code class="source-path">{{ primarySelection.file }}:{{ primarySelection.line }}</code>
-          <span class="component-badge">{{ primarySelection.component }}</span>
-          <span v-if="selectedElementRole" class="role-badge" :class="selectedElementRole">{{ selectedElementRole }}</span>
-        </div>
-
-        <div v-if="selectionSummary" class="panel-group-bar">
-          <span class="group-summary">{{ selectionSummary }}</span>
-          <label v-if="templateGroupEids.length > 1 && selectedEids.length <= 1" class="group-toggle" title="Apply style changes to all instances of this element in the template">
-            <input type="checkbox" v-model="applyToGroup" />
-            <span class="toggle-label">Apply to all {{ templateGroupEids.length }}</span>
-          </label>
-        </div>
-
-        <div class="panel-tabs">
-          <button :class="['tab', { active: activeTab === 'notes' }]" @click="activeTab = 'notes'" title="Create tasks and annotations for this element">
-            Task <span v-if="annotations.routePins.value.length" class="tab-badge">{{ annotations.routePins.value.length }}</span>
-          </button>
-          <button :class="['tab', { active: activeTab === 'layout' }]" @click="activeTab = 'layout'" title="Edit display, flex, and grid properties">Layout</button>
-          <button :class="['tab', { active: activeTab === 'spacing' }]" @click="activeTab = 'spacing'" title="Edit padding and margin">Spacing</button>
-          <button :class="['tab', { active: activeTab === 'size' }]" @click="activeTab = 'size'" title="Edit width, height, and constraints">Size</button>
-          <button :class="['tab', { active: activeTab === 'style' }]" @click="activeTab = 'style'" title="Edit colors, typography, and appearance">Style</button>
-          <button :class="['tab', { active: activeTab === 'classes' }]" @click="activeTab = 'classes'" title="Edit CSS classes directly">Classes</button>
-        </div>
-
-        <div class="tab-content">
-          <LayoutControls v-if="activeTab === 'layout'" :computedStyles="liveStyles" @change="onStyleChange" />
-          <SpacingControls v-if="activeTab === 'spacing'" :computedStyles="liveStyles" @change="onStyleChange" />
-          <SizeControls v-if="activeTab === 'size'" :computedStyles="liveStyles" @change="onStyleChange" />
-          <AppearanceControls v-if="activeTab === 'style'" :computedStyles="liveStyles" :iframeDoc="null" @change="onStyleChange" />
-          <div v-if="activeTab === 'classes'" class="classes-tab">
-            <textarea v-model="editingClasses" class="class-editor" rows="4" @blur="applyClassChange" @keydown.enter.ctrl="applyClassChange" placeholder="Edit CSS classes..." />
-            <p class="hint">Ctrl+Enter or blur to apply</p>
-          </div>
-          <NotesTab
-            v-if="activeTab === 'notes'"
-            :pins="annotations.routePins.value"
-            :selectedPinId="annotations.selectedPinId.value"
-            :selectedElement="primarySelection"
-            :elementRole="selectedElementRole"
-            :tasks="taskSystem.tasks.value"
-            :includeHistory="includeHistory"
-            :includeElementContext="includeElementContext"
-            @update:includeHistory="includeHistory = $event"
-            @update:includeElementContext="includeElementContext = $event"
-            :pendingScreenshot="pendingScreenshot"
-            @start-snip="startSnip"
-            @remove-screenshot="removeScreenshot"
-            @add-note="onAddAnnotationNote"
-            @add-action="onAddAnnotationAction"
-            @add-task="onAddGeneralTask"
-            @select-pin="annotations.selectedPinId.value = $event"
-            @update-note="annotations.updatePinNote($event, '')"
-            @remove-pin="annotations.removePin($event)"
-            @accept-task="taskSystem.updateTaskStatus($event, 'accepted')"
-            @deny-task="(id, fb) => taskSystem.updateTaskStatus(id, 'denied', fb)"
-            @cancel-task="taskSystem.updateTaskStatus($event, 'accepted')"
+          <ErrorsTab
+            v-else-if="perfSection === 'errors'"
+            :errors="capturedErrors"
+            :error-count="errorCount"
+            :warn-count="warnCount"
+            :paused="errorsPaused"
+            :task-error-ids="taskErrorIds"
+            @create-task="createErrorTask"
+            @clear="clearErrors"
+            @toggle-pause="errorsPaused = !errorsPaused"
           />
         </div>
-
-        <div v-if="changes.length" class="changes-footer">
-          <div class="changes-list">
-            <div v-for="ch in changes" :key="ch.id" class="change-item">
-              <template v-if="ch.type === 'style_update'">
-                <code class="change-prop">{{ ch.property }}</code>
-                <span class="change-arrow">→</span>
-                <code class="change-val">{{ ch.after }}</code>
-              </template>
-              <template v-else-if="ch.type === 'class_update'">
-                <code class="change-prop">classes</code>
-                <span class="change-arrow">→</span>
-                <code class="change-val">{{ ch.after.classes.substring(0, 30) }}</code>
-              </template>
-            </div>
-          </div>
-          <div class="changes-actions">
-            <span class="changes-count">{{ changes.length }} change{{ changes.length === 1 ? '' : 's' }}</span>
-            <button class="changes-commit" @click="commitChangesAsTask" title="Save these visual changes as a task for your AI agent to apply to source code">Commit to Task</button>
-            <button class="changes-discard" @click="doClearChanges" title="Undo all visual changes (does not affect source code)">Discard</button>
-          </div>
-        </div>
       </aside>
 
-      <!-- Empty state (inspector with no selection) -->
-      <aside class="panel empty" v-else-if="shellView === 'editor' && activePanel === 'inspector'">
-        <div class="empty-content">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
-          <p>Click an element to inspect</p>
-          <p class="empty-hint">Use the toolbar modes: Select (V), Pin (P), Arrow (A), Draw (D), Highlight (H)</p>
-        </div>
-      </aside>
     </div>
 
     <!-- Context menu -->
@@ -1080,6 +1253,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   border-radius: 7px;
 }
 .toggle-btn:not(.active) .toggle-badge { background: var(--accent); color: white; }
+.toggle-btn:not(.active) .toggle-badge.error-badge { background: #ef4444; }
 
 /* View toggle (Editor/Theme) */
 .view-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-right: 8px; }
@@ -1314,6 +1488,14 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .pending-task-kind.arrow svg { stroke: #ef4444; }
 .pending-task-kind.highlight { color: #f59e0b; }
 .pending-task-kind.highlight svg { stroke: #f59e0b; }
+.pending-task-kind.select { color: var(--accent); }
+.pending-task-kind.select svg { stroke: var(--accent); }
+.select-element-details { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; max-height: 200px; overflow-y: auto; }
+.selected-element-card { padding: 6px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; }
+.selected-element-header { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.selected-element-tag { font-size: 12px; font-weight: 600; color: var(--text); }
+.selected-element-file { display: block; color: var(--text-muted); font-size: 10px; }
+.selected-element-classes { display: block; color: var(--text-muted); font-size: 10px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pending-task-file { font-size: 11px; color: var(--text-muted); font-family: monospace; }
 .pending-task-title { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 4px; display: block; }
 .pending-task-input {
@@ -1338,10 +1520,18 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 
 .task-toggles { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
 
-/* A11y panel */
+/* Toolbar action buttons (scan, record) */
 .scan-btn { padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; }
 .scan-btn:disabled { opacity: 0.5; cursor: default; }
 .scan-btn:hover:not(:disabled) { opacity: 0.9; }
+.rec-btn { display: flex; align-items: center; gap: 4px; padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.rec-btn:hover { background: var(--border); }
+.rec-btn.recording { background: rgba(239,68,68,0.15); border-color: #ef4444; color: #ef4444; }
+.rec-dot { width: 6px; height: 6px; border-radius: 50%; background: #ef4444; flex-shrink: 0; }
+.rec-dot.active { animation: pulse-dot 1s infinite; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* A11y panel */
 .a11y-error { font-size: 11px; color: #ef4444; padding: 6px 8px; background: rgba(239,68,68,0.1); border-radius: 5px; margin-bottom: 6px; }
 .a11y-pass {
   display: flex; align-items: center; gap: 6px;

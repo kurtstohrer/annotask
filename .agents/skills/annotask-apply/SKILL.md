@@ -30,27 +30,14 @@ If this fails, the Annotask dev server isn't running. Ask the user to start it.
 annotask tasks
 ```
 
-Response:
+Response (compact task summaries):
 ```json
-{
-  "version": "1.0",
-  "tasks": [
-    {
-      "id": "task-123",
-      "type": "annotation",
-      "status": "pending",
-      "description": "Change the header background to match the new brand colors",
-      "file": "src/components/Header.vue",
-      "line": 5,
-      "action": "text_edit",
-      "context": { "element_tag": "header" },
-      "screenshot": "screenshot-1711800000-ab3kf.png"
-    }
-  ]
-}
+{"version":"1.0","count":1,"tasks":[{"id":"task-123","type":"annotation","status":"pending","description":"Change the header background to match the new brand colors","file":"src/components/Header.vue","line":5,"action":"text_edit","screenshot":"screenshot-1711800000-ab3kf.png"}]}
 ```
 
-Each task has: `id`, `type`, `status`, `description` (what to do), `file`, `line`, `component`, and optionally `action`, `context` with element details, and `screenshot` with a filename.
+Each task summary has: `id`, `type`, `status`, `description`, `file`, `line`, and optionally `component`, `action`, `screenshot`, `feedback` (on denied tasks), `blocked_reason`, `resolution`.
+
+For full task details (context, element_context, viewport, interaction_history, agent_feedback), use the `annotask_get_task` MCP tool with a specific task ID. Only fetch full details when the summary doesn't provide enough context to apply the change.
 
 ### Screenshot reference
 
@@ -167,14 +154,6 @@ The user will review changes in Annotask and either **accept** (task removed) or
 
 Tasks with `status: "denied"` and a `feedback` field were rejected by the user. They are processed alongside pending tasks in step 2. Read the `feedback` carefully to understand what went wrong and re-apply with corrections.
 
-## Also check the live report
-
-```bash
-annotask report
-```
-
-This returns both the live report (current session markup) and tasks. Use it as additional context — it shows what's on the user's screen right now. But tasks are the source of truth for what to apply.
-
 ## Task lifecycle
 
 ```
@@ -187,7 +166,7 @@ pending → in_progress (agent working) → review (user checks) → accepted (r
 
 ## Important notes
 
-- Always fetch tasks, not just the report — tasks persist across sessions
+- Tasks are the source of truth — fetch tasks, not the report
 - The `feedback` field on denied tasks is critical — it tells you what the user didn't like
 - Tasks with `status: "review"` are waiting for user review — don't re-apply them
 - Tasks with `status: "needs_info"` are waiting for the user to answer your questions — skip them and check back later

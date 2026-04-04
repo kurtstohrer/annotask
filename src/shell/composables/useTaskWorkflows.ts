@@ -8,14 +8,15 @@ import type { useScreenshots } from './useScreenshots'
 import type { useViewportPreview } from './useViewportPreview'
 import type { useInteractionHistory } from './useInteractionHistory'
 import type { SelectionData } from './useSelectionModel'
+import type { Task } from './useTasks'
 
 export interface PendingTaskContext {
-  kind: 'pin' | 'arrow' | 'highlight'
+  kind: 'pin' | 'arrow' | 'highlight' | 'select'
   label: string
   file: string
   line: string | number
   component: string
-  annotationId: string
+  annotationId?: string
   meta: Record<string, unknown>
 }
 
@@ -139,7 +140,7 @@ export function useTaskWorkflows(deps: {
     showNewTaskForm.value = false
   }
 
-  async function createRouteTask(data: Record<string, unknown>) {
+  async function createRouteTask(data: Record<string, unknown>): Promise<Task | null> {
     const mfe = deps.primarySelection.value?.mfe || ''
     const vp = deps.viewport.effectiveViewport.value
     const vpData = (vp.width || vp.height) ? { viewport: { width: vp.width, height: vp.height } } : {}
@@ -179,7 +180,7 @@ export function useTaskWorkflows(deps: {
       placement: section.placement || '',
       visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height), nearEid: section.nearEid },
     })
-    if (task) sectionTaskMap.value = { ...sectionTaskMap.value, [id]: (task as any).id }
+    if (task) sectionTaskMap.value = { ...sectionTaskMap.value, [id]: task.id }
   }
 
   function onArrowDragMove(x: number, y: number) {
@@ -237,6 +238,16 @@ export function useTaskWorkflows(deps: {
     if (ctx.component && ctx.tag !== ctx.component.toLowerCase()) return `<${tag}> in ${ctx.component}`
     if (cls) return `<${tag}.${cls}>`
     return `<${tag}>`
+  }
+
+  /** Remove any uncommitted annotation (pending pin/arrow/highlight or orphan section). */
+  function discardUncommittedAnnotations() {
+    if (pendingTaskCreation.value && pendingTaskCreation.value.kind !== 'select') {
+      cancelPendingTask()
+    }
+    for (const s of [...deps.annotations.drawnSections.value]) {
+      if (!sectionTaskMap.value[s.id]) deps.annotations.removeDrawnSection(s.id)
+    }
   }
 
   function onArrowCreated(arrowId: string, fromCtx: { file: string; line: string; component: string; tag: string; classes?: string } | null, toCtx: { file: string; line: string; component: string; tag: string; classes?: string } | null) {
@@ -305,13 +316,13 @@ export function useTaskWorkflows(deps: {
     })
   }
 
-  function submitPendingTask() {
+  async function submitPendingTask() {
     const ctx = pendingTaskCreation.value
     if (!ctx || !pendingTaskText.value.trim()) return
 
     if (ctx.kind === 'pin') {
       const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number }
-      deps.annotations.updatePinNote(ctx.annotationId, pendingTaskText.value.trim())
+      deps.annotations.updatePinNote(ctx.annotationId!, pendingTaskText.value.trim())
       deps.styleEditor.recordAnnotation({
         file: ctx.file, line: String(ctx.line), component: ctx.component,
         intent: pendingTaskText.value.trim(),
@@ -321,18 +332,18 @@ export function useTaskWorkflows(deps: {
         type: 'annotation',
         description: pendingTaskText.value.trim(),
         file: ctx.file, line: parseInt(String(ctx.line)) || 0, component: ctx.component,
-        visual: { kind: 'pin', annotationId: ctx.annotationId, x: meta.pinX, y: meta.pinY },
+        visual: { kind: 'pin', annotationId: ctx.annotationId!, x: meta.pinX, y: meta.pinY },
         context: {
           element_tag: meta.elementTag,
           element_classes: meta.elementClasses,
         },
       })
     } else if (ctx.kind === 'arrow') {
-      submitPendingArrowTask(ctx.annotationId, pendingTaskText.value.trim())
+      submitPendingArrowTask(ctx.annotationId!, pendingTaskText.value.trim())
     } else if (ctx.kind === 'highlight') {
       const meta = ctx.meta as { selectedText: string; elementTag: string }
       const description = pendingTaskText.value.trim()
-      deps.annotations.updateHighlight(ctx.annotationId, { prompt: description })
+      deps.annotations.updateHighlight(ctx.annotationId!, { prompt: description })
       const hl = deps.annotations.highlights.value.find(h => h.id === ctx.annotationId)
       const intent = `Change "${meta.selectedText}" → ${description}`
       deps.styleEditor.recordAnnotation({
@@ -345,6 +356,28 @@ export function useTaskWorkflows(deps: {
         visual: { kind: 'highlight', annotationId: ctx.annotationId, eid: hl?.eid, rect: hl?.rect, color: hl?.color },
         context: { element_tag: meta.elementTag, selected_text: meta.selectedText },
       })
+    } else if (ctx.kind === 'select') {
+      const meta = ctx.meta as { elementTag: string; elementClasses: string }
+      const description = pendingTaskText.value.trim()
+      deps.styleEditor.recordAnnotation({
+        file: ctx.file, line: String(ctx.line), component: ctx.component,
+        intent: description, elementTag: meta.elementTag, elementClasses: meta.elementClasses,
+      })
+      const currentRects = [...deps.selectionRects.value]
+      const eids = [...deps.selectedEids.value]
+      const task = await createRouteTask({
+        type: 'annotation', description,
+        file: ctx.file, line: parseInt(String(ctx.line)) || 0, component: ctx.component,
+        visual: { kind: 'select', eids },
+        context: {
+          element_tag: meta.elementTag,
+          element_classes: meta.elementClasses,
+        },
+      })
+      if (task && currentRects.length) {
+        deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: task.id, rect }))]
+        deps.startAnnotationLoop()
+      }
     }
 
     pendingTaskCreation.value = null
@@ -353,10 +386,11 @@ export function useTaskWorkflows(deps: {
 
   function cancelPendingTask() {
     const ctx = pendingTaskCreation.value
-    if (ctx) {
+    if (ctx && ctx.annotationId) {
       if (ctx.kind === 'pin') deps.annotations.removePin(ctx.annotationId)
       if (ctx.kind === 'arrow') deps.annotations.removeArrow(ctx.annotationId)
       if (ctx.kind === 'highlight') deps.annotations.removeHighlight(ctx.annotationId)
+      deps.annotations.reclaimLastCounter()
     }
     pendingTaskCreation.value = null
     pendingTaskText.value = ''
@@ -394,8 +428,7 @@ export function useTaskWorkflows(deps: {
     })
     // Seed task element highlights immediately (rAF loop will take over)
     if (task && currentRects.length) {
-      const id = (task as any).id
-      deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: id, rect }))]
+      deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: task.id, rect }))]
       deps.startAnnotationLoop()
     }
   }
@@ -425,7 +458,6 @@ export function useTaskWorkflows(deps: {
   async function restoreAnnotationsFromTasks() {
     await deps.taskSystem.fetchTasks()
     const fallbackRoute = deps.annotations.activeRoute.value || '/'
-    console.log('[annotask] restoreAnnotationsFromTasks: tasks=%d, activeRoute=%s', deps.taskSystem.tasks.value.length, fallbackRoute)
 
     for (const task of deps.taskSystem.tasks.value) {
       if (restoredTaskIds.has(task.id)) continue
@@ -436,7 +468,6 @@ export function useTaskWorkflows(deps: {
 
       restoredTaskIds.add(task.id)
       const taskRoute = task.route || fallbackRoute
-      console.log('[annotask] restoring task %s kind=%s route=%s', task.id, v.kind, taskRoute)
 
       if (v.kind === 'pin' && v.x != null && v.y != null) {
         const ctx = (task as any).context || {}
@@ -476,10 +507,6 @@ export function useTaskWorkflows(deps: {
       }
       // kind === 'select' uses taskElementRects from rAF loop — eids re-resolved when bridge connects
     }
-    console.log('[annotask] restore done: pins=%d arrows=%d sections=%d highlights=%d routePins=%d routeArrows=%d',
-      deps.annotations.pins.value.length, deps.annotations.arrows.value.length,
-      deps.annotations.drawnSections.value.length, deps.annotations.highlights.value.length,
-      deps.annotations.routePins.value.length, deps.annotations.routeArrows.value.length)
   }
 
   async function resolveSelectTaskEids() {
@@ -514,8 +541,7 @@ export function useTaskWorkflows(deps: {
       ...(eids.length ? { visual: { kind: 'select', eids } } : {}),
     })
     if (task && currentRects.length) {
-      const id = (task as any).id
-      deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: id, rect }))]
+      deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: task.id, rect }))]
       deps.startAnnotationLoop()
     }
   }
@@ -529,6 +555,7 @@ export function useTaskWorkflows(deps: {
     confirmDeleteTaskId,
     sectionTaskMap, arrowDragTargetRect,
     restoredTaskIds,
+    discardUncommittedAnnotations,
     removeTaskAnnotations, executeDeleteTask,
     acceptTask, submitDeny, submitNewTask,
     createRouteTask,

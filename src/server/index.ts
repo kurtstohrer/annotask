@@ -37,13 +37,11 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
 
   const mcpMiddleware = createMcpMiddleware({
     projectRoot: options.projectRoot,
-    getReport: () => wsServer.getReport(),
     getDesignSpec: () => state.getDesignSpec(),
     getTasks: () => state.getTasks(),
     addTask: (task) => state.addTask(task),
     updateTask: (id, updates) => state.updateTask(id, updates),
     deleteTask: (id) => state.deleteTask(id),
-    getPerformance: () => state.getPerformanceSnapshot(),
   })
 
   const shellMiddleware = createShellMiddleware()

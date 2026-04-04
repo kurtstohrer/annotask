@@ -14,16 +14,16 @@ pnpm typecheck                # Type-check (tsc + vue-tsc)
 Then open:
 - App: http://localhost:5173/
 - Annotask: http://localhost:5173/__annotask/
-- API: http://localhost:5173/__annotask/api/report
+- API: http://localhost:5173/__annotask/api/tasks
 
 ## Annotask API
 
 When the Annotask design tool is running, you can interact with it:
 
-- **MCP**: `POST http://localhost:5173/__annotask/mcp` — MCP tools for tasks, report, design spec, components, screenshots
-- **HTTP**: `curl http://localhost:5173/__annotask/api/report` — get the current change report
+- **MCP**: `POST http://localhost:5173/__annotask/mcp` — MCP tools for tasks, design spec, components, screenshots
+- **HTTP**: `curl http://localhost:5173/__annotask/api/tasks` — get the current tasks
 - **WebSocket**: `ws://localhost:5173/__annotask/ws` — live change stream
-- **CLI**: `annotask watch` / `annotask report` — terminal tools
+- **CLI**: `annotask tasks` / `annotask watch` — terminal tools
 
 Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 

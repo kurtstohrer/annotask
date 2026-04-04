@@ -291,6 +291,24 @@ export interface CheckSourceMappingResult {
   hasMapping: boolean
 }
 
+// ── Console / Error Monitor ────────────────────────────
+
+export interface ConsoleErrorEvent {
+  level: 'error' | 'warn'
+  message: string
+  stack: string
+  /** Number of times this exact error has occurred */
+  count: number
+  timestamp: number
+}
+
+export interface UnhandledErrorEvent {
+  type: 'error' | 'rejection'
+  message: string
+  stack: string
+  timestamp: number
+}
+
 // ── Performance ────────────────────────────────────────
 
 export type WebVitalRating = 'good' | 'needs-improvement' | 'poor'

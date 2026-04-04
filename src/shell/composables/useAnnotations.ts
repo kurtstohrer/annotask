@@ -254,6 +254,11 @@ export function useAnnotations() {
     if (h) Object.assign(h, updates)
   }
 
+  /** Decrement the shared counter so the next annotation reuses the last number. */
+  function reclaimLastCounter() {
+    if (counter > 0) counter--
+  }
+
   function clearAll() {
     pins.value = []
     stickyNotes.value = []
@@ -273,6 +278,7 @@ export function useAnnotations() {
     activeRoute, setRoute,
     selectedPinId, selectedStickyId, selectedArrowId, selectedSectionId, selectedHighlightId,
     selectedPin,
+    reclaimLastCounter,
     addPin, removePin, updatePinNote, setPinAction, getPinsForElement,
     addStickyNote, removeStickyNote, updateStickyNote,
     addArrow, removeArrow, updateArrow,

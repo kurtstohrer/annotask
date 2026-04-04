@@ -228,6 +228,89 @@ export function bridgeEvents(): string {
 
   document.addEventListener('click', onUserAction, { capture: true });
 
+  // ── Console / Error Monitor ────────────────────────────
+  var errorCounts = {};
+  var errorCountKeys = 0;
+  var MAX_ERROR_KEYS = 500;
+  var MAX_ERROR_MESSAGE_LEN = 2000;
+  var MAX_ERROR_STACK_LEN = 4000;
+  var errorSending = false;  // re-entrancy guard
+
+  function errorKey(msg, stack) {
+    var first = '';
+    if (stack) {
+      var lines = stack.split(String.fromCharCode(10));
+      for (var i = 0; i < lines.length; i++) {
+        var l = lines[i].trim();
+        if (l && l !== msg && (l.indexOf('at ') === 0 || l.indexOf('@') !== -1)) { first = l; break; }
+      }
+    }
+    return msg + '||' + first;
+  }
+
+  function patchConsole(level) {
+    var orig = console[level];
+    if (typeof orig !== 'function') return;
+    console[level] = function() {
+      orig.apply(console, arguments);
+      if (errorSending) return;
+      errorSending = true;
+      try {
+        var parts = [];
+        for (var i = 0; i < arguments.length; i++) {
+          try { parts.push(typeof arguments[i] === 'string' ? arguments[i] : JSON.stringify(arguments[i])); }
+          catch(e) { parts.push(String(arguments[i])); }
+        }
+        var msg = parts.join(' ');
+        if (msg.length > MAX_ERROR_MESSAGE_LEN) msg = msg.slice(0, MAX_ERROR_MESSAGE_LEN) + '...';
+        var stack = '';
+        try { stack = new Error().stack || ''; } catch(e) {}
+        var slines = stack.split(String.fromCharCode(10));
+        stack = slines.slice(3).join(String.fromCharCode(10));
+        if (stack.length > MAX_ERROR_STACK_LEN) stack = stack.slice(0, MAX_ERROR_STACK_LEN) + '...';
+
+        var key = errorKey(msg, stack);
+        if (!errorCounts[key] && errorCountKeys < MAX_ERROR_KEYS) {
+          errorCounts[key] = 0;
+          errorCountKeys++;
+        }
+        var tracked = Object.prototype.hasOwnProperty.call(errorCounts, key);
+        var count = tracked ? (errorCounts[key] + 1) : 1;
+        if (tracked) errorCounts[key] = count;
+        sendToShell('error:console', { level: level, message: msg, stack: stack, count: count, timestamp: Date.now() });
+      } catch(e) {}
+      errorSending = false;
+    };
+  }
+  patchConsole('error');
+  patchConsole('warn');
+
+  window.addEventListener('error', function(e) {
+    try {
+      var msg = e.message || String(e);
+      var stack = e.error && e.error.stack ? e.error.stack : (e.filename ? e.filename + ':' + e.lineno + ':' + e.colno : '');
+      if (msg.length > MAX_ERROR_MESSAGE_LEN) msg = msg.slice(0, MAX_ERROR_MESSAGE_LEN) + '...';
+      if (stack.length > MAX_ERROR_STACK_LEN) stack = stack.slice(0, MAX_ERROR_STACK_LEN) + '...';
+      sendToShell('error:unhandled', { type: 'error', message: msg, stack: stack, timestamp: Date.now() });
+    } catch(err) {}
+  });
+
+  window.addEventListener('unhandledrejection', function(e) {
+    try {
+      var msg = '';
+      var stack = '';
+      if (e.reason) {
+        msg = e.reason.message || String(e.reason);
+        stack = e.reason.stack || '';
+      } else {
+        msg = 'Unhandled promise rejection';
+      }
+      if (msg.length > MAX_ERROR_MESSAGE_LEN) msg = msg.slice(0, MAX_ERROR_MESSAGE_LEN) + '...';
+      if (stack.length > MAX_ERROR_STACK_LEN) stack = stack.slice(0, MAX_ERROR_STACK_LEN) + '...';
+      sendToShell('error:unhandled', { type: 'rejection', message: msg, stack: stack, timestamp: Date.now() });
+    } catch(err) {}
+  });
+
   // ── Route Tracking ────────────────────────────────────
   var lastRoute = window.location.pathname;
 

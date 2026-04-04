@@ -11,6 +11,17 @@ const port = args.find(a => a.startsWith('--port='))?.split('=')[1] || '5173'
 const host = args.find(a => a.startsWith('--host='))?.split('=')[1] || 'localhost'
 const serverArg = args.find(a => a.startsWith('--server='))?.split('=')[1] || ''
 const mfeArg = args.find(a => a.startsWith('--mfe='))?.split('=')[1] || ''
+const prettyFlag = args.includes('--pretty')
+
+/** Compact JSON for agent-facing output; strips null/undefined/empty arrays */
+function fmt(data: unknown): string {
+  if (prettyFlag) return JSON.stringify(data, null, 2)
+  return JSON.stringify(data, (_key, value) => {
+    if (value === null || value === undefined) return undefined
+    if (Array.isArray(value) && value.length === 0) return undefined
+    return value
+  })
+}
 
 // Discover server URL and MFE from .annotask/server.json or CLI flags
 let baseUrl = ''
@@ -165,17 +176,12 @@ function watchChanges() {
 
 async function fetchReport() {
   try {
-    const tasksUrl = mfeFilter ? `${apiUrl}/tasks?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/tasks`
     const reportUrl = mfeFilter ? `${apiUrl}/report?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/report`
+    const res = await fetch(reportUrl)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const report = await res.json()
 
-    const [tasksRes, reportRes] = await Promise.all([
-      fetch(tasksUrl),
-      fetch(reportUrl),
-    ])
-    const tasks = await tasksRes.json()
-    const report = await reportRes.json()
-
-    console.log(JSON.stringify({ report, tasks }, null, 2))
+    console.log(fmt(report))
     if (mfeFilter) {
       console.error(`\x1b[36m[Annotask]\x1b[0m Filtered by MFE: ${mfeFilter}`)
     }
@@ -241,12 +247,28 @@ async function fetchScreenshot() {
 
 // ── Tasks: fetch task list ────────────────────────────────
 
+const SUMMARY_FIELDS = ['id', 'type', 'status', 'description', 'file', 'line', 'component', 'action', 'screenshot', 'mfe', 'route', 'feedback', 'blocked_reason', 'resolution'] as const
+
 async function fetchTasks() {
   try {
     const tasksUrl = mfeFilter ? `${apiUrl}/tasks?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/tasks`
     const res = await fetch(tasksUrl)
-    const data = await res.json()
-    console.log(JSON.stringify(data, null, 2))
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json() as { tasks?: Array<Record<string, unknown>>; [key: string]: unknown }
+
+    if (!prettyFlag) {
+      const tasks = Array.isArray(data.tasks) ? data.tasks : []
+      data.tasks = tasks.map((t) => {
+        const summary: Record<string, unknown> = {}
+        for (const key of SUMMARY_FIELDS) {
+          if (t[key] !== undefined && t[key] !== null) summary[key] = t[key]
+        }
+        return summary
+      })
+      data.count = tasks.length
+    }
+
+    console.log(fmt(data))
   } catch (err: any) {
     console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch tasks: ${err.message}`)
     process.exit(1)
@@ -311,7 +333,7 @@ async function updateTask() {
       console.error(`\x1b[31m[Annotask]\x1b[0m ${data.error}`)
       process.exit(1)
     }
-    console.log(JSON.stringify(data, null, 2))
+    console.log(fmt(data))
   } catch (err: any) {
     console.error(`\x1b[31m[Annotask]\x1b[0m Failed to update task: ${err.message}`)
     process.exit(1)
@@ -572,7 +594,8 @@ function printHelp() {
 
 \x1b[33mCommands:\x1b[0m
   watch           Live stream of design changes (default)
-  report          Fetch the current change report as JSON
+  tasks           Fetch task list (compact summaries by default)
+  report          Fetch the live change report (no tasks)
   status          Check if Annotask server is running
   components      List all available component library components
   component       Show detailed props for a specific component
@@ -585,14 +608,17 @@ function printHelp() {
   --host=H          Dev server host (default: localhost)
   --server=URL      Annotask server URL (overrides .annotask/server.json)
   --mfe=NAME        Filter tasks by MFE identity (overrides server.json mfe)
+  --pretty          Pretty-print JSON output (default: compact for agents)
   --force           Overwrite existing skills (for init-skills)
   --target=NAME     Comma-separated targets (default: claude,agents)
                     Built-in: claude, agents, copilot
                     Custom: --target=.my-tool/skills
 
 \x1b[33mExamples:\x1b[0m
+  annotask tasks                          # Compact task summaries
+  annotask tasks --pretty                 # Full task objects, pretty-printed
   annotask watch                          # Watch live changes
-  annotask report                         # Get current report JSON
+  annotask report                         # Get live change report
   annotask components                     # List all library components
   annotask components Button              # Filter by name
   annotask component Button               # Show Button props

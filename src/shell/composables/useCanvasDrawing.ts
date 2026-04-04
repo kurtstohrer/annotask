@@ -15,6 +15,7 @@ export function useCanvasDrawing(
   getInteractionMode: () => string,
   onArrowCreated?: (arrowId: string, fromCtx: ResolvedCtx, toCtx: ResolvedCtx) => void,
   getArrowColor?: () => string,
+  onBeforeAnnotation?: () => void,
 ) {
   const drawingArrow = ref<{
     fromX: number; fromY: number; toX: number; toY: number
@@ -73,6 +74,7 @@ export function useCanvasDrawing(
     if (mode === 'arrow' && drawingArrow.value) {
       const a = drawingArrow.value
       if (Math.abs(a.toX - a.fromX) > 20 || Math.abs(a.toY - a.fromY) > 20) {
+        onBeforeAnnotation?.()
         const fromCtx = await resolveElementAt(a.fromX, a.fromY)
         const toCtx = await resolveElementAt(a.toX, a.toY)
         const color = getArrowColor?.() || '#ef4444'
@@ -95,6 +97,7 @@ export function useCanvasDrawing(
     } else if (mode === 'draw' && drawingRect.value) {
       const r = drawingRect.value
       if (r.width > 30 && r.height > 30) {
+        onBeforeAnnotation?.()
         const nearCtx = await resolveElementAt(r.x + r.width / 2, r.y)
         const section = annotations.addDrawnSection(r.x, r.y, r.width, r.height)
         if (nearCtx) {

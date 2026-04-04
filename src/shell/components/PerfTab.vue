@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { PerfScanResult, PerfRecording, WebVitalMetric } from '../../shared/bridge-types'
-import type { PerfFinding, TimelineAction } from '../composables/usePerfMonitor'
+import type { PerfFinding, TimelineAction, PackageGroup } from '../composables/usePerfMonitor'
 import FindingDrawer from './FindingDrawer.vue'
 
 const props = defineProps<{
@@ -15,8 +15,11 @@ const props = defineProps<{
   score: { score: number; label: string; color: string }
   findings: PerfFinding[]
   taskFindings: Set<string>
+  packageGroups: PackageGroup[]
   error: string | null
 }>()
+
+const showPackages = ref(false)
 
 const emit = defineEmits<{
   'start-recording': []
@@ -126,22 +129,9 @@ function onCreateTask(f: PerfFinding) {
 
 <template>
   <div class="perf-tab">
-    <!-- Header -->
-    <div class="perf-header">
-      <div class="perf-header-left">
-        <span v-if="score.score >= 0" class="score-badge" :style="{ background: score.color }">{{ score.score }}</span>
-      </div>
-      <div class="perf-actions">
-        <button v-if="!recording" class="rec-btn" @click="emit('start-recording')">
-          <span class="rec-dot"></span> Record
-        </button>
-        <button v-else class="rec-btn recording" @click="emit('stop-recording')">
-          <span class="rec-dot active"></span> Stop
-        </button>
-        <button class="scan-btn" :disabled="scanLoading || recording" @click="emit('scan')">
-          {{ scanLoading ? 'Scanning...' : 'Scan' }}
-        </button>
-      </div>
+    <!-- Score -->
+    <div v-if="score.score >= 0" class="perf-header">
+      <span class="score-badge" :style="{ background: score.color }">{{ score.score }}</span>
     </div>
 
     <div v-if="error" class="perf-error">{{ error }}</div>
@@ -195,6 +185,29 @@ function onCreateTask(f: PerfFinding) {
         <span class="finding-title">{{ f.title }}</span>
         <span v-if="taskFindings.has(f.findingId)" class="finding-tasked-badge">tasked</span>
         <svg class="finding-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+    </div>
+
+    <!-- Package Groups (Bundle Analysis) -->
+    <div v-if="packageGroups.length > 0 && !recording" class="collapsible-section">
+      <button class="collapse-toggle" @click="showPackages = !showPackages">
+        <svg :class="{ rotated: showPackages }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        Packages ({{ packageGroups.length }})
+      </button>
+      <div v-if="showPackages" class="resource-table">
+        <div class="resource-header">
+          <span class="res-name">Package</span>
+          <span class="res-type">Modules</span>
+          <span class="res-size">Size</span>
+          <span class="res-dur">Alt?</span>
+        </div>
+        <div v-for="(pkg, i) in packageGroups.slice(0, 30)" :key="i"
+             class="resource-row" :class="{ heavy: pkg.totalSize > 100 * 1024 }">
+          <span class="res-name" :title="pkg.name">{{ pkg.name }}</span>
+          <span class="res-type">{{ pkg.modules }}</span>
+          <span class="res-size">{{ formatBytes(pkg.totalSize) }}</span>
+          <span class="res-dur pkg-alt" :title="pkg.alternative || ''">{{ pkg.alternative ? 'Yes' : '' }}</span>
+        </div>
       </div>
     </div>
 
@@ -296,6 +309,17 @@ function onCreateTask(f: PerfFinding) {
         <li>Move heavy computation to Web Workers</li>
         <li>Code-split and lazy-load non-critical JavaScript</li>
         <li>Defer third-party scripts with async or defer attributes</li>
+      </ul>
+    </div>
+
+    <!-- Bundle detail -->
+    <div v-if="detailFinding.category === 'bundle'" class="detail-section">
+      <span class="detail-label">How to improve</span>
+      <ul class="detail-fixes">
+        <li>Check if you're importing the full package when you only need a few functions</li>
+        <li>Use tree-shakeable ESM imports (import { x } from 'pkg') instead of default imports</li>
+        <li>Consider lighter alternatives if available</li>
+        <li>Use dynamic import() for packages only needed on specific routes</li>
       </ul>
     </div>
 
@@ -435,4 +459,5 @@ function onCreateTask(f: PerfFinding) {
 .res-type { color: var(--text-muted); }
 .res-size { text-align: right; }
 .res-dur { text-align: right; color: var(--text-muted); }
+.pkg-alt { color: #f59e0b; font-weight: 600; cursor: help; }
 </style>
