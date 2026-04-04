@@ -33,8 +33,8 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/server/` — HTTP API, WebSocket server, shell serving, project state
 - `src/webpack/` — Webpack plugin and transform loader
 - `src/shell/` — Design tool UI (Vue 3 app, pre-built into dist/shell/)
-- `src/shell/composables/` — Vue composables (style editor, tasks, screenshots, keyboard shortcuts, a11y scanner, annotations, viewport, interaction history, etc.)
-- `src/shell/components/` — UI components (TaskDetailModal, inspector tabs, overlays, viewport selector, a11y panel, report viewer, etc.)
+- `src/shell/composables/` — Vue composables (style editor, tasks, screenshots, keyboard shortcuts, a11y scanner, error monitor, perf monitor, annotations, viewport, interaction history, etc.)
+- `src/shell/components/` — UI components (TaskDetailModal, DesignPanel, ElementStyleEditor, ErrorsTab, PerfTab, inspector tabs, overlays, viewport selector, a11y panel, report viewer, etc.)
 - `src/shell/utils/` — Helpers (stripMarkdown)
 - `src/shared/` — Shared types (postMessage bridge protocol)
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
@@ -53,6 +53,8 @@ Key composables:
 - `useAnnotations` — Pin, arrow, section, highlight annotation state and route filtering
 - `useStyleEditor` — Style/class change recording, undo, report generation
 - `useIframeManager` — Bridge communication with the app iframe
+- `useErrorMonitor` — Console error/warn capture, deduplication, bounded tracking, error → task creation
+- `usePerfMonitor` — Web Vitals, performance scanning, interaction recording, bundle analysis, perf → task creation
 
 When adding new shell features, create a new composable that accepts its dependencies via constructor params and returns refs + methods. App.vue should only orchestrate (init composables, wire bridge events, pass props to components).
 
@@ -62,6 +64,8 @@ When adding new shell features, create a new composable that accepts its depende
 - **Interaction history** — Tracks user navigation and clicks in the app (optional, off by default)
 - **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
+- **Error monitoring** — Console error/warn capture with deduplication, bounded memory, one-click fix tasks
+- **Performance monitoring** — Web Vitals, DOM/resource/bundle analysis, interaction recording, perf score, one-click fix tasks
 - **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept (max 4MB)
 - **Task detail drawer** — Slide-out detail view with markdown rendering, inline editing, screenshot lightbox, element/file display, interaction log, JSON view, delete button
 - **Task lifecycle** — `pending → in_progress → review → accepted/denied` with `needs_info` (agent asks questions) and `blocked` (agent can't apply) statuses, resolution messages, live status updates

@@ -92,6 +92,10 @@ Key composables:
 | `useScreenshots` | Snipping tool, screenshot upload, and pending screenshot state |
 | `useKeyboardShortcuts` | Shell keyboard handler (undo, escape, toggle panels) |
 | `useA11yScanner` | Accessibility scanning and a11y task creation |
+| `useErrorMonitor` | Console error/warn capture, deduplication, bounded tracking |
+| `usePerfMonitor` | Web Vitals, performance scanning, interaction recording, bundle analysis |
+| `useTaskWorkflows` | Task creation flows (pin, arrow, highlight, section → task) |
+| `useAnnotationRects` | rAF loop keeping annotation overlays positioned during scroll/resize |
 
 ### Schema (`src/schema.ts`)
 

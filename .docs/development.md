@@ -99,14 +99,16 @@ src/
 │   └── bridge-types.ts     # postMessage protocol type definitions
 ├── shell/
 │   ├── main.ts             # Vue app entry
-│   ├── App.vue             # Main component
+│   ├── App.vue             # Main component (orchestrator — wires composables, no business logic)
 │   ├── index.html          # SPA template
-│   ├── components/         # UI components (TaskDetailModal, ReportViewer, overlays, controls)
-│   ├── composables/        # Vue composables (style editor, tasks, screenshots, a11y, keyboard, etc.)
+│   ├── components/         # UI components (TaskDetailModal, DesignPanel, ElementStyleEditor, ErrorsTab, PerfTab, overlays, controls)
+│   ├── composables/        # Vue composables (style editor, tasks, screenshots, a11y, keyboard, error monitor, perf monitor, etc.)
 │   ├── utils/              # Helpers (stripMarkdown)
 │   ├── services/           # iframe bridge & WebSocket client
 │   ├── data/               # Tailwind color palette data
 │   └── types.ts            # UI-specific types
+├── mcp/
+│   └── server.ts           # MCP server (Streamable HTTP, tools for tasks/design spec/screenshots)
 ├── cli/
 │   └── index.ts            # CLI entry (annotask command)
 └── schema.ts               # Canonical TypeScript types

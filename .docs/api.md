@@ -2,7 +2,7 @@
 
 All endpoints are served by the dev server (Vite or Webpack) at `/__annotask/`. They are only available in dev mode.
 
-CORS is restricted to localhost origins (`localhost`, `127.0.0.1`, `::1`). Mutating requests (POST, PATCH) from non-local origins are rejected with `403 Forbidden`.
+CORS is restricted to localhost origins (`localhost`, `127.0.0.1`, `::1`). Mutating requests (POST, PATCH, DELETE) from non-local origins are rejected with `403 Forbidden`.
 
 ## HTTP Endpoints
 
@@ -120,6 +120,27 @@ pending → in_progress (agent locks) → review (agent done) → accepted (remo
 
 Screenshots: max 4MB, uploaded via POST /api/screenshots.
 
+### DELETE /api/tasks/:id
+
+Delete a task and clean up its associated screenshot.
+
+**Response:** `200` with `{ "deleted": true }`.
+
+### POST /api/screenshots
+
+Upload a screenshot (base64-encoded PNG, max 4MB).
+
+**Request body:**
+```json
+{ "data": "data:image/png;base64,..." }
+```
+
+**Response:** `201` with `{ "filename": "screenshot-1711800000-ab3kf.png" }`.
+
+### GET /screenshots/:filename
+
+Serve a previously uploaded screenshot file.
+
 ### GET /api/design-spec
 
 Returns the current design spec (from `.annotask/design-spec.json`).
@@ -176,3 +197,20 @@ The `changes` array in a report can contain these types:
 | `component_delete` | Element removed (experimental) | `element` |
 
 See `src/schema.ts` for full TypeScript definitions.
+
+## MCP Server
+
+`POST /__annotask/mcp` — [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http). Accepts JSON-RPC 2.0 requests, returns tool results. This is the recommended way for AI agents to interact with Annotask.
+
+Available tools:
+
+| Tool | Description |
+|------|-------------|
+| `get_tasks` | List all pending tasks (supports `mfe` filter) |
+| `get_task` | Get a single task by ID |
+| `create_task` | Create a new task |
+| `update_task` | Update task fields (status, description, feedback, etc.) |
+| `delete_task` | Delete a task |
+| `get_design_spec` | Get the current design spec |
+| `get_components` | Query available components from the design system |
+| `get_screenshot` | Get a task's screenshot as base64 image |

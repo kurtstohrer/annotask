@@ -97,6 +97,21 @@ Start your dev server, then open `http://localhost:5173/__annotask/`.
 - **One-click fix tasks** — Create tasks from violations with full context (HTML snippets, CSS selectors, source file/line, and fix suggestions)
 - **Locally bundled** — axe-core and html2canvas are shipped with the package (no CDN dependency, works offline and under CSP)
 
+### Error monitoring
+- **Console capture** — Catches `console.error`, `console.warn`, and unhandled errors/rejections from the app iframe
+- **Deduplication** — Groups identical errors by message and first stack frame with occurrence counts
+- **Bounded capture** — Limits tracked error keys and truncates long messages/stacks to prevent memory bloat
+- **One-click fix tasks** — Create tasks from errors with full context (message, stack, route, timestamp)
+- **Pause/resume** — Toggle error capture without clearing the log
+
+### Performance monitoring
+- **Web Vitals** — Tracks CLS, LCP, FID, INP, and TTFB via the Performance API
+- **Performance scan** — Analyzes DOM size, resource loading, long tasks, and bundle sizes
+- **Interaction recording** — Record a session to capture a timeline of performance events grouped by user action
+- **Performance score** — Aggregated score with good/needs-improvement/poor ratings
+- **Bundle analysis** — Detects heavy packages and suggests lighter alternatives (e.g., moment → dayjs)
+- **One-click fix tasks** — Create tasks from performance findings with severity and metrics
+
 ### Task detail drawer
 - **Slide-out detail view** — Click any task to see full details, markdown description, screenshots, element context, and source files
 - **Inline editing** — Click the description to edit markdown in-place; Ctrl+Enter to save
@@ -181,10 +196,11 @@ pnpm test:e2e                 # Run E2E tests (all frameworks)
 - `src/server/` — HTTP API, WebSocket server, shell serving, project state
 - `src/webpack/` — Webpack plugin and transform loader
 - `src/shell/` — Design tool UI (Vue 3 app, pre-built into dist/shell/)
-- `src/shell/composables/` — Vue composables (style editor, tasks, screenshots, keyboard shortcuts, a11y scanner, etc.)
-- `src/shell/components/` — UI components (inspector tabs, overlays, task detail drawer, report viewer, etc.)
+- `src/shell/composables/` — Vue composables (style editor, tasks, screenshots, keyboard shortcuts, a11y scanner, error monitor, perf monitor, etc.)
+- `src/shell/components/` — UI components (inspector tabs, overlays, task detail drawer, design panel, error/perf tabs, report viewer, etc.)
 - `src/shared/` — Shared types (postMessage bridge protocol)
-- `src/schema.ts` — TypeScript types for change reports
+- `src/mcp/` — MCP server (Streamable HTTP transport, embedded in the Vite/Webpack server)
+- `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, performance snapshots
 - `src/cli/` — CLI tool for terminal interaction
 - `skills/` — Agent skill definitions (shipped with the npm package)
 - `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)

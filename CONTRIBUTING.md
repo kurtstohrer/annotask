@@ -11,6 +11,7 @@ Annotask has six main modules:
 | `src/webpack/` | Webpack plugin and SFC transform loader |
 | `src/shell/` | Design tool UI: Vue 3 app served at `/__annotask/` |
 | `src/cli/` | Terminal tool: `annotask watch`, `annotask report`, `annotask init-skills` |
+| `src/mcp/` | MCP server (Streamable HTTP transport, tools for tasks/design spec/screenshots) |
 | `src/schema.ts` | TypeScript types defining the report contract |
 
 The plugin injects source-mapping attributes into Vue SFC templates at compile time. The shell loads the user's app in an iframe and uses these attributes to map DOM elements back to source files.
