@@ -192,7 +192,7 @@ const colorOptions: { key: StickyNote['color']; label: string }[] = [
   cursor: pointer;
 }
 .color-option:hover { background: var(--surface-2, #1e1e1e); }
-.color-option.delete { color: #ef4444; margin-top: 2px; border-top: 1px solid var(--border, #2a2a2a); padding-top: 6px; }
+.color-option.delete { color: var(--danger); margin-top: 2px; border-top: 1px solid var(--border, #2a2a2a); padding-top: 6px; }
 .color-swatch { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid; flex-shrink: 0; }
 .color-menu-backdrop { position: fixed; inset: 0; z-index: 29999; }
 </style>

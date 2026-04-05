@@ -80,8 +80,9 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/server/` — HTTP API, WebSocket server, shell serving, project state
 - `src/webpack/` — Webpack plugin and transform loader
 - `src/shell/` — Design tool UI (Vue 3 app, pre-built into dist/shell/)
-- `src/shell/composables/` — Vue composables (style editor, tasks, screenshots, keyboard shortcuts, a11y scanner, error monitor, perf monitor, annotations, viewport, interaction history, etc.)
-- `src/shell/components/` — UI components (TaskDetailModal, DesignPanel, ElementStyleEditor, ErrorsTab, PerfTab, inspector tabs, overlays, viewport selector, a11y panel, report viewer, etc.)
+- `src/shell/themes/` — Shell theme system (types, 18 built-in themes, barrel export)
+- `src/shell/composables/` — Vue composables (shell theme, style editor, tasks, screenshots, keyboard shortcuts, a11y scanner, error monitor, perf monitor, annotations, viewport, interaction history, etc.)
+- `src/shell/components/` — UI components (TaskDetailModal, DesignPanel, ElementStyleEditor, ShellThemeEditor, ErrorsTab, PerfTab, inspector tabs, overlays, viewport selector, a11y panel, report viewer, etc.)
 - `src/shell/utils/` — Helpers (stripMarkdown)
 - `src/shared/` — Shared types (postMessage bridge protocol)
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
@@ -94,8 +95,9 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 `App.vue` is the shell orchestrator — it wires composables together and handles bridge events. **Do not add business logic directly to App.vue.** Extract new concerns into composables under `src/shell/composables/`.
 
 Key composables:
+- `useShellTheme` — Theme system: 62 CSS variables, 18 built-in themes, custom theme CRUD, system preference, localStorage persistence
 - `useSelectionModel` — Element selection state, rect tracking, hover, live styles, style/class change handlers
-- `useTaskWorkflows` — Task creation flows (pin, arrow, highlight, section → task), pending task panel, accept/deny, annotation restoration
+- `useTaskWorkflows` — Task creation flows (pin, arrow, highlight, section → task), pending task panel, accept/deny, annotation restoration, auto-opens task panel on create
 - `useAnnotationRects` — rAF loop keeping annotation overlays positioned during scroll/resize
 - `useAnnotations` — Pin, arrow, section, highlight annotation state and route filtering
 - `useStyleEditor` — Style/class change recording, undo, report generation
@@ -104,6 +106,89 @@ Key composables:
 - `usePerfMonitor` — Web Vitals, performance scanning, interaction recording, bundle analysis, perf → task creation
 
 When adding new shell features, create a new composable that accepts its dependencies via constructor params and returns refs + methods. App.vue should only orchestrate (init composables, wire bridge events, pass props to components).
+
+## Shell Theme System
+
+The shell has a VS Code-style theme system with 18 built-in themes and custom theme support. Themes control every color in the UI via 62 CSS custom properties.
+
+### Architecture
+
+- `src/shell/themes/types.ts` — `ShellThemeColors` (62 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
+- `src/shell/themes/builtin.ts` — 18 built-in theme definitions with `deriveDefaults()` helper
+- `src/shell/composables/useShellTheme.ts` — Core composable: applies themes at runtime via `style.setProperty()`, handles localStorage persistence, system preference detection, custom theme CRUD, migration from legacy `useThemeMode`
+- `src/shell/components/ShellThemeEditor.vue` — Full-screen custom theme creator with grouped color pickers and live preview
+- `src/shell/composables/useThemeMode.ts` — **Deprecated** thin wrapper around `useShellTheme`
+
+### How themes are applied
+
+Themes are applied at runtime via `document.documentElement.style.setProperty()` for each of the 62 CSS variables. The `:root` block in App.vue provides dark fallback values, and `:root.light` provides light fallback values — these are safety nets for first paint before JS runs. Once `useShellTheme` initializes, it overrides all variables via inline styles.
+
+### CSS variable categories (62 total)
+
+| Category | Variables | Purpose |
+|----------|-----------|---------|
+| Surfaces (7) | `--bg`, `--surface`, `--surface-2`, `--surface-3`, `--surface-elevated`, `--surface-glass`, `--surface-overlay` | Background layers |
+| Borders (2) | `--border`, `--border-strong` | Border colors |
+| Text (5) | `--text`, `--text-muted`, `--text-on-accent`, `--text-inverse`, `--text-link` | Text colors |
+| Accent (3) | `--accent`, `--accent-hover`, `--accent-muted` | Primary interactive color |
+| Semantic (5) | `--danger`, `--success`, `--warning`, `--info`, `--focus-ring` | Semantic indicators |
+| Palette (4) | `--purple`, `--orange`, `--cyan`, `--indigo` | Extended color palette |
+| Utility (2) | `--overlay`, `--shadow` | Overlays and shadows |
+| Status (7) | `--status-pending`, `--status-in-progress`, `--status-review`, `--status-denied`, `--status-accepted`, `--status-needs-info`, `--status-blocked` | Task lifecycle |
+| Severity (4) | `--severity-critical`, `--severity-serious`, `--severity-moderate`, `--severity-minor` | A11y/perf findings |
+| Modes (4) | `--mode-interact`, `--mode-arrow`, `--mode-draw`, `--mode-highlight` | Tool button active states |
+| Layout (2) | `--layout-flex`, `--layout-grid` | Layout visualization |
+| Roles (3) | `--role-container`, `--role-content`, `--role-component` | Element classification |
+| Syntax (7) | `--syntax-property`, `--syntax-string`, `--syntax-number`, `--syntax-boolean`, `--syntax-null`, `--syntax-operator`, `--syntax-punctuation` | Code highlighting |
+| Tool overlays (2) | `--pin-color`, `--highlight-color` | Pin dots and element selection |
+| Annotations (6) | `--annotation-red`, `--annotation-orange`, `--annotation-yellow`, `--annotation-green`, `--annotation-blue`, `--annotation-purple` | Arrow/highlight presets |
+
+### Built-in themes (18)
+
+**Default:** Dark, Light
+**High Contrast:** High Contrast Dark, High Contrast Light
+**Accessibility:** Deuteranopia (blue/orange, no red-green)
+**Editor:** Monokai, Solarized Dark, Solarized Light, Nord, One Dark, Dracula, GitHub Dark, GitHub Light, Catppuccin Mocha, Gruvbox Dark, Rosé Pine, Synthwave '84, Cobalt
+
+### Adding a new built-in theme
+
+In `src/shell/themes/builtin.ts`, use the `theme()` helper:
+
+```typescript
+const myTheme = theme('my-theme', 'My Theme', 'dark', 'editor', 'Description', {
+  // ~28 core colors (surfaces, borders, text, accent, semantic, palette, utility)
+  bg: '#...', surface: '#...', /* ... */
+}, {
+  // Optional overrides for derived values (status, severity, syntax, annotations)
+  // deriveDefaults() fills these from core colors if not specified
+  'annotation-red': '#...', 'annotation-orange': '#...', /* ... */
+})
+```
+
+Then add it to the `BUILTIN_THEMES` array. The `deriveDefaults()` helper automatically derives status, severity, mode, layout, role, syntax, and annotation colors from core colors — override only what needs to differ.
+
+**Important:** Each theme's 6 annotation colors must be visually distinct from each other (no overlapping shades). Use colors from the theme's native palette.
+
+### Using rgba/transparent variants in CSS
+
+Never hardcode `rgba()` with theme-dependent colors. Use `color-mix()`:
+
+```css
+/* Wrong: */ background: rgba(239, 68, 68, 0.15);
+/* Right: */ background: color-mix(in srgb, var(--danger) 15%, transparent);
+```
+
+### localStorage keys
+
+| Key | Purpose |
+|-----|---------|
+| `annotask:shellTheme` | Active theme ID (e.g. `'monokai'`, `'system'`) |
+| `annotask:shellSystemThemes` | JSON `[darkId, lightId]` pair for system preference |
+| `annotask:shellCustomThemes` | JSON array of user-created `ShellTheme` objects |
+
+### Custom themes
+
+Users create custom themes via Settings > Appearance > "+ Create Custom Theme". Custom themes are stored in localStorage with IDs prefixed `custom:`. The editor provides live preview — changes apply to the shell immediately. Missing keys inherit from the base theme.
 
 ## Key Shell Features
 

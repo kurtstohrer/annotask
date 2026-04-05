@@ -32,14 +32,18 @@ import DesignPanel from './components/DesignPanel.vue'
 import ReportViewer from './components/ReportViewer.vue'
 import TaskDetailModal from './components/TaskDetailModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import ShellThemeEditor from './components/ShellThemeEditor.vue'
 import { useTasks } from './composables/useTasks'
 import { useViewportPreview } from './composables/useViewportPreview'
 import { useInteractionHistory } from './composables/useInteractionHistory'
 import { useAnnotationRects } from './composables/useAnnotationRects'
 import { useSelectionModel } from './composables/useSelectionModel'
 import { useTaskWorkflows } from './composables/useTaskWorkflows'
+import { useShellTheme } from './composables/useShellTheme'
 import ViewportSelector from './components/ViewportSelector.vue'
 import { safeMd } from './utils/safeMd'
+
+const shellTheme = useShellTheme()
 
 const styleEditor = useStyleEditor()
 const { changes } = styleEditor
@@ -252,9 +256,12 @@ const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMo
 watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElementContext', String(v)))
 const showShortcuts = ref(false)
 const showContext = ref(false)
+const showSettings = ref(false)
+const showThemeEditor = ref(false)
 const helpSection = ref<'overview' | 'annotate' | 'design' | 'a11y' | 'perf'>('overview')
-function toggleShortcuts() { showShortcuts.value = !showShortcuts.value; if (showShortcuts.value) showContext.value = false }
-function toggleContext() { showContext.value = !showContext.value; if (showContext.value) showShortcuts.value = false }
+function toggleShortcuts() { showShortcuts.value = !showShortcuts.value; if (showShortcuts.value) { showContext.value = false; showSettings.value = false } }
+function toggleContext() { showContext.value = !showContext.value; if (showContext.value) { showShortcuts.value = false; showSettings.value = false } }
+function toggleSettings() { showSettings.value = !showSettings.value; if (showSettings.value) { showShortcuts.value = false; showContext.value = false } }
 
 
 
@@ -516,7 +523,7 @@ const contextMenu = ref({ visible: false, x: 0, y: 0 })
 const taskWorkflows = useTaskWorkflows({
   iframe, annotations, taskSystem, styleEditor, screenshots, viewport, interactionHistory,
   primarySelection, selectedEids, selectionRects, taskElementRects,
-  includeHistory, includeElementContext, currentRoute,
+  includeHistory, includeElementContext, currentRoute, activePanel,
   clearSelection, startAnnotationLoop,
 })
 const {
@@ -546,6 +553,7 @@ useKeyboardShortcuts({
   showReportPanel,
   showShortcuts,
   showContext,
+  showSettings,
   pendingTaskCreation,
   primarySelection,
   selectedEids,
@@ -695,6 +703,9 @@ const appUrl = computed(() => {
         <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
         </button>
+        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else-if="shellView === 'theme'" class="toolbar-right">
@@ -716,6 +727,9 @@ const appUrl = computed(() => {
         <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
         </button>
+        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else-if="shellView === 'a11y'" class="toolbar-right">
@@ -732,6 +746,9 @@ const appUrl = computed(() => {
         </div>
         <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        </button>
+        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
@@ -755,6 +772,9 @@ const appUrl = computed(() => {
         </div>
         <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        </button>
+        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
         <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
@@ -906,9 +926,10 @@ const appUrl = computed(() => {
           <div v-if="pendingTaskCreation.kind !== 'highlight'" class="pending-task-context">
             <div class="pending-task-kind" :class="pendingTaskCreation.kind">
               <svg v-if="pendingTaskCreation.kind === 'pin'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 1 0-16 0c0 3 2.7 7 8 11.7z"/></svg>
-              <svg v-else-if="pendingTaskCreation.kind === 'arrow'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              <svg v-else-if="pendingTaskCreation.kind === 'arrow'" width="12" height="12" viewBox="0 0 24 24" fill="none" :stroke="(pendingTaskCreation.meta.arrowColor as string) || 'currentColor'" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
               <svg v-else-if="pendingTaskCreation.kind === 'select'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V4a2 2 0 1 1 4 0v5"/><path d="M11 9a2 2 0 1 1 4 0v2"/><path d="M15 11a2 2 0 1 1 4 0v4a8 8 0 0 1-8 8 7 7 0 0 1-5-2l-3.3-3.3a2 2 0 0 1 2.8-2.8L7 16"/></svg>
-              <span>{{ selectedEids.length }} element{{ selectedEids.length === 1 ? '' : 's' }} selected</span>
+              <span v-if="pendingTaskCreation.kind === 'arrow'">{{ pendingTaskCreation.label }}</span>
+              <span v-else>{{ selectedEids.length }} element{{ selectedEids.length === 1 ? '' : 's' }} selected</span>
             </div>
             <code class="pending-task-file">{{ pendingTaskCreation.file }}:{{ pendingTaskCreation.line }}</code>
           </div>
@@ -1289,6 +1310,67 @@ const appUrl = computed(() => {
         <LibrariesPage />
       </div>
 
+      <!-- Settings -->
+      <div v-if="showSettings" class="fullscreen-overlay settings-overlay">
+        <div class="fullscreen-overlay-header">
+          <span class="fullscreen-overlay-title">Settings</span>
+          <button class="fullscreen-overlay-close" @click="showSettings = false">Esc to close</button>
+        </div>
+        <div class="settings-content">
+          <div class="settings-page">
+            <h2 class="settings-page-title">Appearance</h2>
+
+            <div class="settings-section">
+              <label class="settings-label">Theme</label>
+              <p class="settings-desc">Pick a shell theme that contrasts with your app.</p>
+
+              <!-- System preference toggle -->
+              <label class="settings-system-toggle">
+                <input type="checkbox" :checked="shellTheme.activeThemeId.value === 'system'" @change="shellTheme.setTheme(($event.target as HTMLInputElement).checked ? 'system' : shellTheme.resolvedTheme.value.id)" />
+                <span>Use system preference</span>
+              </label>
+
+              <!-- Theme grid grouped by category -->
+              <template v-for="group in [
+                { key: 'default', label: 'Default' },
+                { key: 'high-contrast', label: 'High Contrast' },
+                { key: 'accessibility', label: 'Accessibility' },
+                { key: 'editor', label: 'Editor Themes' },
+                { key: 'custom', label: 'Custom' },
+              ]" :key="group.key">
+                <template v-if="shellTheme.allThemes.value.filter(t => t.group === group.key).length">
+                  <div class="settings-group-label">{{ group.label }}</div>
+                  <div class="settings-theme-grid">
+                    <button
+                      v-for="t in shellTheme.allThemes.value.filter(t => t.group === group.key)"
+                      :key="t.id"
+                      :class="['settings-theme-card', {
+                        active: shellTheme.activeThemeId.value === 'system'
+                          ? shellTheme.resolvedTheme.value.id === t.id
+                          : shellTheme.activeThemeId.value === t.id
+                      }]"
+                      @click="shellTheme.setTheme(t.id)"
+                      :title="t.description"
+                    >
+                      <div class="theme-card-swatches">
+                        <span class="theme-swatch" :style="{ background: t.colors.bg }" />
+                        <span class="theme-swatch" :style="{ background: t.colors.surface }" />
+                        <span class="theme-swatch" :style="{ background: t.colors.accent }" />
+                        <span class="theme-swatch" :style="{ background: t.colors.danger }" />
+                        <span class="theme-swatch" :style="{ background: t.colors.text }" />
+                      </div>
+                      <span class="theme-card-name">{{ t.name }}</span>
+                    </button>
+                  </div>
+                </template>
+              </template>
+              <button class="settings-create-btn" @click="showThemeEditor = true">+ Create Custom Theme</button>
+            </div>
+          </div>
+        </div>
+        <ShellThemeEditor v-if="showThemeEditor" @close="showThemeEditor = false" />
+      </div>
+
     </div>
 
     <!-- Context menu -->
@@ -1348,20 +1430,69 @@ const appUrl = computed(() => {
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Dark fallback — overridden at runtime by useShellTheme via style.setProperty() */
 :root {
-  --bg: #0a0a0a;
-  --surface: #141414;
-  --surface-2: #1e1e1e;
-  --border: #2a2a2a;
-  --text: #e4e4e7;
-  --text-muted: #71717a;
-  --accent: #3b82f6;
-  --danger: #ef4444;
+  /* Surfaces */
+  --bg: #0a0a0a; --surface: #141414; --surface-2: #1e1e1e; --surface-3: #262626;
+  --surface-elevated: #1a1a1a; --surface-glass: rgba(24,24,27,0.95); --surface-overlay: rgba(255,255,255,0.05);
+  /* Borders */
+  --border: #2a2a2a; --border-strong: #404040;
+  /* Text */
+  --text: #e4e4e7; --text-muted: #71717a; --text-on-accent: #fff; --text-inverse: #000; --text-link: #60a5fa;
+  /* Accent */
+  --accent: #3b82f6; --accent-hover: #2563eb; --accent-muted: rgba(59,130,246,0.15);
+  /* Semantic */
+  --danger: #ef4444; --success: #22c55e; --warning: #f59e0b; --info: #60a5fa; --focus-ring: #3b82f6;
+  /* Extended palette */
+  --purple: #a855f7; --orange: #f97316; --cyan: #22d3ee; --indigo: #6366f1;
+  /* Utility */
+  --overlay: rgba(0,0,0,0.5); --shadow: rgba(0,0,0,0.4);
+  /* Status */
+  --status-pending: #71717a; --status-in-progress: #3b82f6; --status-review: #f59e0b;
+  --status-denied: #ef4444; --status-accepted: #22c55e; --status-needs-info: #a855f7; --status-blocked: #f97316;
+  /* Severity */
+  --severity-critical: #ef4444; --severity-serious: #ef4444; --severity-moderate: #f59e0b; --severity-minor: #71717a;
+  /* Modes */
+  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-draw: #71717a; --mode-highlight: #f59e0b;
+  /* Layout viz */
+  --layout-flex: #a855f7; --layout-grid: #22c55e;
+  /* Roles */
+  --role-container: #22c55e; --role-content: #3b82f6; --role-component: #a855f7;
+  /* Syntax */
+  --syntax-property: #7dd3fc; --syntax-string: #86efac; --syntax-number: #fbbf24;
+  --syntax-boolean: #c084fc; --syntax-null: #f87171; --syntax-operator: #71717a; --syntax-punctuation: #52525b;
+  /* Tool overlays */
+  --pin-color: #3b82f6; --highlight-color: #3b82f6;
+  /* Annotations */
+  --annotation-red: #ef4444; --annotation-orange: #f97316; --annotation-yellow: #eab308;
+  --annotation-green: #22c55e; --annotation-blue: #3b82f6; --annotation-purple: #8b5cf6;
+}
+/* Light fallback — kept for safe first paint before JS runs */
+:root.light {
+  --bg: #f8f9fa; --surface: #ffffff; --surface-2: #f0f1f3; --surface-3: #e5e7eb;
+  --surface-elevated: #ffffff; --surface-glass: rgba(255,255,255,0.95); --surface-overlay: rgba(0,0,0,0.04);
+  --border: #d4d6db; --border-strong: #9ca3af;
+  --text: #1a1a1a; --text-muted: #6b7280; --text-on-accent: #fff; --text-inverse: #fff; --text-link: #2563eb;
+  --accent: #2563eb; --accent-hover: #1d4ed8; --accent-muted: rgba(37,99,235,0.12);
+  --danger: #dc2626; --success: #16a34a; --warning: #d97706; --info: #2563eb; --focus-ring: #2563eb;
+  --purple: #9333ea; --orange: #ea580c; --cyan: #0891b2; --indigo: #4f46e5;
+  --overlay: rgba(0,0,0,0.3); --shadow: rgba(0,0,0,0.12);
+  --status-pending: #6b7280; --status-in-progress: #2563eb; --status-review: #d97706;
+  --status-denied: #dc2626; --status-accepted: #16a34a; --status-needs-info: #9333ea; --status-blocked: #ea580c;
+  --severity-critical: #dc2626; --severity-serious: #dc2626; --severity-moderate: #d97706; --severity-minor: #6b7280;
+  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-draw: #6b7280; --mode-highlight: #d97706;
+  --layout-flex: #9333ea; --layout-grid: #16a34a;
+  --role-container: #16a34a; --role-content: #2563eb; --role-component: #9333ea;
+  --syntax-property: #0369a1; --syntax-string: #15803d; --syntax-number: #b45309;
+  --syntax-boolean: #7e22ce; --syntax-null: #dc2626; --syntax-operator: #6b7280; --syntax-punctuation: #9ca3af;
+  --pin-color: #2563eb; --highlight-color: #2563eb;
+  --annotation-red: #dc2626; --annotation-orange: #ea580c; --annotation-yellow: #ca8a04;
+  --annotation-green: #16a34a; --annotation-blue: #2563eb; --annotation-purple: #7c3aed;
 }
 
 html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; }
 
-/* Custom scrollbars — dark theme */
+/* Custom scrollbars */
 * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -1378,7 +1509,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .tool-btn { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text); font-size: 12px; cursor: pointer; }
 .tool-btn:hover { background: var(--border); }
 .tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.tool-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+.tool-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 .tool-btn.danger { color: var(--danger); }
 /* Panel toggle (Inspector/Tasks) */
 .panel-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
@@ -1390,16 +1521,14 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .toggle-btn:first-child { border-right: 1px solid var(--border); }
 .toggle-btn:hover { background: var(--border); color: var(--text); }
-.toggle-btn.active { background: var(--accent); color: white; }
+.toggle-btn.active { background: var(--accent); color: var(--text-on-accent); }
 .toggle-badge {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 14px; height: 14px; padding: 0 3px;
   font-size: 8px; font-weight: 700;
-  background: rgba(255,255,255,0.25); color: white;
+  background: var(--danger); color: white;
   border-radius: 7px;
 }
-.toggle-btn:not(.active) .toggle-badge { background: var(--accent); color: white; }
-.toggle-btn:not(.active) .toggle-badge.error-badge { background: #ef4444; }
 
 /* View toggle (Editor/Theme) */
 .view-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-right: 8px; }
@@ -1420,10 +1549,10 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .change-count { font-size: 11px; color: var(--text-muted); }
 
 /* Banners */
-.warning-banner { padding: 8px 16px; background: rgba(234, 179, 8, 0.1); border-bottom: 1px solid rgba(234, 179, 8, 0.3); color: #eab308; font-size: 12px; }
-.warning-banner code { background: rgba(234, 179, 8, 0.15); padding: 1px 4px; border-radius: 3px; }
-.setup-banner { padding: 8px 16px; background: rgba(59, 130, 246, 0.08); border-bottom: 1px solid rgba(59, 130, 246, 0.2); color: #60a5fa; font-size: 12px; }
-.setup-banner code { background: rgba(59, 130, 246, 0.15); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+.warning-banner { padding: 8px 16px; background: color-mix(in srgb, var(--warning) 10%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); color: var(--warning); font-size: 12px; }
+.warning-banner code { background: color-mix(in srgb, var(--warning) 15%, transparent); padding: 1px 4px; border-radius: 3px; }
+.setup-banner { padding: 8px 16px; background: color-mix(in srgb, var(--accent) 8%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); font-size: 12px; }
+.setup-banner code { background: color-mix(in srgb, var(--accent) 15%, transparent); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
 
 /* Main */
 .main { display: flex; flex: 1; overflow: hidden; position: relative; }
@@ -1439,7 +1568,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 
 /* Full-screen overlays (help, context) */
 .fullscreen-overlay {
-  position: absolute; inset: 0; z-index: 50;
+  position: absolute; inset: 0; z-index: 10010;
   background: var(--surface);
   display: flex; flex-direction: column;
   overflow: hidden;
@@ -1459,6 +1588,53 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .fullscreen-overlay-close:hover { color: var(--text); background: var(--surface-2); }
 
 .help-overlay { flex-direction: row; }
+
+/* Settings page */
+.settings-content {
+  flex: 1; overflow-y: auto; padding: 32px 48px;
+}
+.settings-page { max-width: 560px; }
+.settings-page-title {
+  font-size: 16px; font-weight: 700; color: var(--text); margin: 0 0 20px;
+}
+.settings-section { margin-bottom: 28px; }
+.settings-label {
+  font-size: 12px; font-weight: 600; color: var(--text); display: block; margin-bottom: 4px;
+}
+.settings-desc {
+  font-size: 11px; color: var(--text-muted); margin: 0 0 12px; line-height: 1.5;
+}
+.settings-system-toggle {
+  display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text);
+  cursor: pointer; margin-bottom: 12px;
+}
+.settings-system-toggle input { accent-color: var(--accent); cursor: pointer; }
+.settings-group-label {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted); margin: 12px 0 6px;
+}
+.settings-theme-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px;
+}
+.settings-theme-card {
+  display: flex; flex-direction: column; gap: 5px; padding: 8px;
+  background: var(--surface-2); border: 2px solid var(--border); border-radius: 6px;
+  cursor: pointer; transition: border-color 0.12s;
+}
+.settings-theme-card:hover { border-color: var(--text-muted); }
+.settings-theme-card.active { border-color: var(--accent); }
+.theme-card-swatches { display: flex; gap: 2px; }
+.theme-swatch {
+  flex: 1; height: 14px; border-radius: 2px;
+  border: 1px solid rgba(128,128,128,0.2);
+}
+.theme-card-name { font-size: 10px; font-weight: 500; color: var(--text); }
+.settings-create-btn {
+  margin-top: 12px; padding: 6px 14px; font-size: 11px; font-weight: 600;
+  background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border);
+  border-radius: 6px; cursor: pointer;
+}
+.settings-create-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* Help page layout */
 .help-sidebar {
@@ -1531,13 +1707,13 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .canvas-area.viewport-active {
   display: flex; align-items: flex-start; justify-content: center;
-  overflow: auto; background: #0a0a0a; padding: 16px;
+  overflow: auto; background: var(--bg); padding: 16px;
 }
 .app-iframe { width: 100%; height: 100%; border: none; }
 .canvas-area.viewport-active .app-iframe {
   flex-shrink: 0;
   border-radius: 6px;
-  box-shadow: 0 0 0 1px var(--border), 0 4px 24px rgba(0,0,0,0.5);
+  box-shadow: 0 0 0 1px var(--border), 0 4px 24px var(--shadow);
 }
 .drawing-shield { position: absolute; inset: 0; z-index: 9999; }
 .drawing-shield.arrow { cursor: crosshair; }
@@ -1545,10 +1721,10 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 
 /* Highlights */
 .highlight { position: fixed; pointer-events: none; z-index: 10000; border-radius: 2px; }
-.highlight.hover { background: rgba(59,130,246,0.1); border: 1.5px solid rgba(59,130,246,0.5); }
-.highlight.group { background: rgba(168,85,247,0.08); border: 1.5px dashed rgba(168,85,247,0.4); }
-.highlight.select { background: rgba(59,130,246,0.08); border: 2px solid var(--accent); }
-.highlight.task-element { background: rgba(59,130,246,0.08); border: 2px solid rgba(59,130,246,0.5); }
+.highlight.hover { background: color-mix(in srgb, var(--highlight-color) 10%, transparent); border: 1.5px solid color-mix(in srgb, var(--highlight-color) 50%, transparent); }
+.highlight.group { background: color-mix(in srgb, var(--purple) 8%, transparent); border: 1.5px dashed color-mix(in srgb, var(--purple) 40%, transparent); }
+.highlight.select { background: color-mix(in srgb, var(--highlight-color) 8%, transparent); border: 2px solid var(--highlight-color); }
+.highlight.task-element { background: color-mix(in srgb, var(--highlight-color) 8%, transparent); border: 2px solid color-mix(in srgb, var(--highlight-color) 50%, transparent); }
 
 .hover-label, .select-label {
   position: absolute; bottom: 100%; left: -1px;
@@ -1556,10 +1732,10 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   padding: 2px 8px; font-size: 11px; font-weight: 500; white-space: nowrap;
   border-radius: 4px 4px 0 0;
 }
-.hover-label { background: var(--accent); color: white; }
+.hover-label { background: var(--highlight-color); color: white; }
 .hover-tag { font-family: monospace; }
 .hover-comp { opacity: 0.7; }
-.select-label { background: var(--accent); color: white; font-family: monospace; font-size: 10px; }
+.select-label { background: var(--highlight-color); color: white; font-family: monospace; font-size: 10px; }
 
 /* Panel */
 .panel { width: 320px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
@@ -1568,15 +1744,15 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .source-path { font-size: 12px; color: var(--accent); word-break: break-all; font-family: monospace; }
 .component-badge { font-size: 10px; padding: 2px 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); white-space: nowrap; }
 .role-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
-.role-badge.container { background: rgba(34,197,94,0.15); color: #22c55e; }
-.role-badge.content { background: rgba(59,130,246,0.15); color: #3b82f6; }
-.role-badge.component { background: rgba(168,85,247,0.15); color: #a855f7; }
+.role-badge.container { background: color-mix(in srgb, var(--role-container) 15%, transparent); color: var(--role-container); }
+.role-badge.content { background: color-mix(in srgb, var(--role-content) 15%, transparent); color: var(--role-content); }
+.role-badge.component { background: color-mix(in srgb, var(--role-component) 15%, transparent); color: var(--role-component); }
 
 /* Group bar */
-.panel-group-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; border-bottom: 1px solid var(--border); background: rgba(168, 85, 247, 0.06); }
-.group-summary { font-size: 11px; color: #a855f7; }
+.panel-group-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--purple) 6%, transparent); }
+.group-summary { font-size: 11px; color: var(--purple); }
 .group-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-.group-toggle input { accent-color: #a855f7; width: 14px; height: 14px; cursor: pointer; }
+.group-toggle input { accent-color: var(--purple); width: 14px; height: 14px; cursor: pointer; }
 .toggle-label { font-size: 11px; color: var(--text-muted); }
 
 /* Tabs */
@@ -1584,7 +1760,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .tab { flex: 1; padding: 8px 4px; font-size: 11px; font-weight: 500; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); cursor: pointer; transition: all 0.15s; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px; font-size: 9px; font-weight: 700; background: var(--accent); color: white; border-radius: 7px; margin-left: 3px; }
+.tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px; font-size: 9px; font-weight: 700; background: var(--danger); color: white; border-radius: 7px; margin-left: 3px; }
 
 /* Tab content */
 .tab-content { flex: 1; overflow-y: auto; padding: 14px; }
@@ -1605,12 +1781,12 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .change-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
 .change-prop { color: var(--text-muted); font-family: monospace; }
 .change-arrow { color: var(--text-muted); font-size: 10px; }
-.change-val { color: #22c55e; font-family: monospace; }
+.change-val { color: var(--success); font-family: monospace; }
 .changes-actions { display: flex; align-items: center; gap: 6px; }
 .changes-count { font-size: 10px; color: var(--text-muted); flex: 1; }
 .changes-commit {
   padding: 4px 12px; font-size: 11px; font-weight: 600;
-  background: var(--accent); color: white; border: none; border-radius: 5px; cursor: pointer;
+  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 5px; cursor: pointer;
 }
 .changes-commit:hover { opacity: 0.9; }
 .changes-discard {
@@ -1623,17 +1799,17 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 /* Task cards in sidebar */
 .task-card { padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; cursor: pointer; transition: border-color 0.12s; }
 .task-card:hover { border-color: var(--text-muted); }
-.task-card.in_progress { border-color: #3b82f6; }
-.task-card.review { border-color: #f59e0b; }
-.task-card.denied { border-color: #ef4444; }
+.task-card.in_progress { border-color: var(--accent); }
+.task-card.review { border-color: var(--warning); }
+.task-card.denied { border-color: var(--danger); }
 .task-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .task-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.task-status-dot.pending { background: #71717a; }
-.task-status-dot.in_progress { background: #3b82f6; }
-.task-status-dot.review { background: #f59e0b; }
-.task-status-dot.denied { background: #ef4444; }
-.task-status-dot.needs_info { background: #a855f7; }
-.task-status-dot.blocked { background: #f97316; }
+.task-status-dot.pending { background: var(--text-muted); }
+.task-status-dot.in_progress { background: var(--accent); }
+.task-status-dot.review { background: var(--warning); }
+.task-status-dot.denied { background: var(--danger); }
+.task-status-dot.needs_info { background: var(--status-needs-info); }
+.task-status-dot.blocked { background: var(--status-blocked); }
 .task-card-desc { font-size: 11px; color: var(--text); flex: 1; }
 .task-card-md {
   max-height: 40px; overflow: hidden; line-height: 1.4;
@@ -1644,32 +1820,32 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .task-card-md pre, .task-card-md blockquote, .task-card-md ul, .task-card-md ol { margin: 2px 0; }
 .task-card-md code { font-size: 10px; background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
 .task-card-close { width: 16px; height: 16px; border: none; background: none; color: var(--text-muted); font-size: 13px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 3px; }
-.task-card-close:hover { color: #ef4444; background: rgba(239,68,68,0.1); }
+.task-card-close:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .task-card-meta { display: flex; align-items: center; gap: 6px; }
 .task-card-file { font-size: 9px; color: var(--text-muted); }
-.task-route-badge { font-size: 8px; padding: 1px 5px; background: rgba(59,130,246,0.12); color: #60a5fa; border-radius: 3px; font-weight: 600; }
-.task-card-feedback { font-size: 10px; color: #ef4444; font-style: italic; margin-top: 3px; }
+.task-route-badge { font-size: 8px; padding: 1px 5px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); border-radius: 3px; font-weight: 600; }
+.task-card-feedback { font-size: 10px; color: var(--danger); font-style: italic; margin-top: 3px; }
 .task-card-resolution {
-  font-size: 10px; color: #86efac; margin-bottom: 4px; padding: 3px 8px;
-  background: rgba(34,197,94,0.08); border-radius: 4px; border-left: 2px solid #22c55e;
+  font-size: 10px; color: var(--success); margin-bottom: 4px; padding: 3px 8px;
+  background: color-mix(in srgb, var(--success) 8%, transparent); border-radius: 4px; border-left: 2px solid var(--success);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .task-card-agent-q {
-  font-size: 10px; color: #a5b4fc; margin-top: 3px;
+  font-size: 10px; color: var(--indigo); margin-top: 3px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .task-card-blocked {
-  font-size: 10px; color: #fb923c; margin-top: 3px;
+  font-size: 10px; color: var(--status-blocked); margin-top: 3px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* New task form */
 .new-task-toggle {
   margin-left: auto; padding: 2px 8px; font-size: 10px; font-weight: 600;
-  background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer;
+  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 4px; cursor: pointer;
 }
 .new-task-toggle:hover { opacity: 0.9; }
 .new-task-toggle.json-toggle { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
-.new-task-toggle.json-toggle.active { background: var(--accent); color: white; border-color: var(--accent); }
+.new-task-toggle.json-toggle.active { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
 .new-task-form { padding: 8px 14px; border-bottom: 1px solid var(--border); }
 .new-task-input {
   width: 100%; padding: 6px 8px; font-size: 12px;
@@ -1680,7 +1856,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .new-task-actions { display: flex; gap: 4px; margin-top: 4px; }
 .submit-btn {
   padding: 4px 12px; font-size: 11px; font-weight: 600;
-  background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer;
+  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 4px; cursor: pointer;
 }
 .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .cancel-btn {
@@ -1692,26 +1868,26 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .deny-form { display: flex; flex-direction: column; gap: 6px; width: 100%; }
 .deny-feedback-textarea {
   width: 100%; padding: 6px 8px; font-size: 11px;
-  background: var(--bg); border: 1px solid #ef4444; border-radius: 5px;
+  background: var(--bg); border: 1px solid var(--danger); border-radius: 5px;
   color: var(--text); outline: none; resize: vertical; font-family: inherit; line-height: 1.4;
 }
-.deny-feedback-textarea:focus { box-shadow: 0 0 0 2px rgba(239,68,68,0.2); }
+.deny-feedback-textarea:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 20%, transparent); }
 .deny-form-actions { display: flex; gap: 4px; align-items: center; }
 .task-card-actions .task-accept, .task-card-actions .task-deny {
   flex: 1; padding: 5px 0; font-size: 11px; font-weight: 600;
   border: none; border-radius: 5px; cursor: pointer; transition: all 0.12s;
   display: flex; align-items: center; justify-content: center; gap: 4px;
 }
-.task-card-actions .task-accept { background: rgba(34,197,94,0.15); color: #22c55e; }
-.task-card-actions .task-accept:hover { background: #22c55e; color: white; }
-.task-card-actions .task-deny { background: rgba(239,68,68,0.12); color: #ef4444; }
-.task-card-actions .task-deny:hover { background: #ef4444; color: white; }
+.task-card-actions .task-accept { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.task-card-actions .task-accept:hover { background: var(--success); color: var(--text-on-accent); }
+.task-card-actions .task-deny { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.task-card-actions .task-deny:hover { background: var(--danger); color: var(--text-on-accent); }
 .task-send-feedback {
   flex: 1; padding: 5px 0; font-size: 11px; font-weight: 600;
   border: none; border-radius: 5px; cursor: pointer; transition: all 0.12s;
-  background: rgba(161,161,170,0.15); color: #a1a1aa;
+  background: rgba(161,161,170,0.15); color: var(--text-muted);
 }
-.task-send-feedback:hover:not(:disabled) { background: rgba(161,161,170,0.3); color: #d4d4d8; }
+.task-send-feedback:hover:not(:disabled) { background: rgba(161,161,170,0.3); color: var(--text); }
 .task-send-feedback:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Pending task creation panel */
@@ -1723,10 +1899,8 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .pending-task-kind.pin { color: var(--accent); }
 .pending-task-kind.pin svg { stroke: var(--accent); }
-.pending-task-kind.arrow { color: #ef4444; }
-.pending-task-kind.arrow svg { stroke: #ef4444; }
-.pending-task-kind.highlight { color: #f59e0b; }
-.pending-task-kind.highlight svg { stroke: #f59e0b; }
+.pending-task-kind.highlight { color: var(--warning); }
+.pending-task-kind.highlight svg { stroke: var(--warning); }
 .pending-task-kind.select { color: var(--accent); }
 .pending-task-kind.select svg { stroke: var(--accent); }
 .select-element-details { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; max-height: 200px; overflow-y: auto; }
@@ -1747,7 +1921,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .pending-task-actions { display: flex; gap: 6px; }
 .pending-task-actions .submit-btn {
   flex: 1; padding: 6px 12px; font-size: 11px; font-weight: 600;
-  background: var(--accent); color: white; border: none; border-radius: 5px; cursor: pointer;
+  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 5px; cursor: pointer;
 }
 .pending-task-actions .submit-btn:disabled { opacity: 0.4; cursor: default; }
 .pending-task-actions .cancel-btn {
@@ -1760,28 +1934,28 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .task-toggles { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
 
 /* Toolbar action buttons (scan, record) */
-.scan-btn { padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; }
+.scan-btn { padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 4px; cursor: pointer; }
 .scan-btn:disabled { opacity: 0.5; cursor: default; }
 .scan-btn:hover:not(:disabled) { opacity: 0.9; }
 .rec-btn { display: flex; align-items: center; gap: 4px; padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
 .rec-btn:hover { background: var(--border); }
-.rec-btn.recording { background: rgba(239,68,68,0.15); border-color: #ef4444; color: #ef4444; }
-.rec-dot { width: 6px; height: 6px; border-radius: 50%; background: #ef4444; flex-shrink: 0; }
+.rec-btn.recording { background: color-mix(in srgb, var(--danger) 15%, transparent); border-color: var(--danger); color: var(--danger); }
+.rec-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
 .rec-dot.active { animation: pulse-dot 1s infinite; }
 @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 /* A11y panel */
-.a11y-error { font-size: 11px; color: #ef4444; padding: 6px 8px; background: rgba(239,68,68,0.1); border-radius: 5px; margin-bottom: 6px; }
+.a11y-error { font-size: 11px; color: var(--danger); padding: 6px 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); border-radius: 5px; margin-bottom: 6px; }
 .a11y-pass {
   display: flex; align-items: center; gap: 6px;
   padding: 8px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
-  background: rgba(34, 197, 94, 0.12); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.25);
+  background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 25%, transparent);
 }
 .a11y-empty { font-size: 11px; color: var(--text-muted); padding: 20px 0; text-align: center; }
 .a11y-summary {
-  font-size: 11px; font-weight: 600; color: #ef4444;
+  font-size: 11px; font-weight: 600; color: var(--danger);
   padding: 6px 8px; border-radius: 5px; margin-bottom: 4px;
-  background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
+  background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
 }
 .a11y-card {
   display: flex; align-items: center; gap: 6px;
@@ -1790,33 +1964,33 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   cursor: pointer; font-size: 11px;
 }
 .a11y-card:hover { background: var(--border); }
-.a11y-card.critical { border-left-color: #dc2626; }
-.a11y-card.serious { border-left-color: #ef4444; }
-.a11y-card.moderate { border-left-color: #f59e0b; }
-.a11y-card.minor { border-left-color: #6b7280; }
+.a11y-card.critical { border-left-color: var(--severity-critical); }
+.a11y-card.serious { border-left-color: var(--severity-serious); }
+.a11y-card.moderate { border-left-color: var(--severity-moderate); }
+.a11y-card.minor { border-left-color: var(--severity-minor); }
 .a11y-impact {
   font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 5px;
   border-radius: 3px; color: white; flex-shrink: 0;
 }
-.a11y-impact.critical { background: #dc2626; }
-.a11y-impact.serious { background: #ef4444; }
-.a11y-impact.moderate { background: #f59e0b; }
-.a11y-impact.minor { background: #6b7280; }
+.a11y-impact.critical { background: var(--severity-critical); }
+.a11y-impact.serious { background: var(--severity-serious); }
+.a11y-impact.moderate { background: var(--severity-moderate); }
+.a11y-impact.minor { background: var(--severity-minor); }
 .a11y-rule { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .a11y-count { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
-.a11y-tasked-badge { font-size: 9px; color: #22c55e; margin-left: auto; flex-shrink: 0; }
+.a11y-tasked-badge { font-size: 9px; color: var(--success); margin-left: auto; flex-shrink: 0; }
 .a11y-chevron { color: var(--text-muted); flex-shrink: 0; margin-left: auto; }
 .a11y-tasked-badge + .a11y-chevron { margin-left: 0; }
 
 /* Finding drawer detail styles */
 .fd-detail-section { display: flex; flex-direction: column; gap: 4px; }
-.fd-detail-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #a1a1aa; }
-.fd-detail-value { font-size: 13px; color: #fff; }
-.fd-detail-text { font-size: 12px; color: #e4e4e7; line-height: 1.5; margin: 0; }
+.fd-detail-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.fd-detail-value { font-size: 13px; color: var(--text); }
+.fd-detail-text { font-size: 12px; color: var(--text); line-height: 1.5; margin: 0; }
 .fd-a11y-element { padding: 8px; background: var(--surface-2); border-radius: 6px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
-.fd-a11y-html { font-size: 11px; color: #f59e0b; word-break: break-all; }
-.fd-a11y-selector { font-size: 10px; color: #a1a1aa; }
-.fd-a11y-fix { font-size: 11px; color: #fff; line-height: 1.4; margin: 0; }
+.fd-a11y-html { font-size: 11px; color: var(--warning); word-break: break-all; }
+.fd-a11y-selector { font-size: 10px; color: var(--text-muted); }
+.fd-a11y-fix { font-size: 11px; color: var(--text); line-height: 1.4; margin: 0; }
 .fd-a11y-source { font-size: 10px; color: var(--accent); }
 .fd-link { font-size: 12px; color: var(--accent); text-decoration: none; word-break: break-all; }
 .fd-link:hover { text-decoration: underline; }
@@ -1835,7 +2009,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   border: none; border-radius: 50%; background: rgba(0,0,0,0.6); color: white;
   font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
-.screenshot-remove:hover { background: #ef4444; }
+.screenshot-remove:hover { background: var(--danger); }
 
 /* Snipping overlay — macOS-style: selected area clear, surroundings dimmed */
 .snip-overlay {

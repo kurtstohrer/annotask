@@ -126,7 +126,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
   position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
   margin-top: 4px; min-width: 220px;
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  border-radius: 8px; box-shadow: 0 8px 24px var(--shadow);
   padding: 4px; z-index: 100;
   max-height: 400px; overflow-y: auto;
 }
@@ -145,7 +145,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
   font-size: 11px; cursor: pointer; transition: background 0.1s;
 }
 .vp-item:hover { background: var(--surface-2); }
-.vp-item.active { background: var(--accent); color: white; }
+.vp-item.active { background: var(--accent); color: var(--text-on-accent); }
 .vp-item-label { flex: 1; text-align: left; }
 .vp-item-dim { font-family: monospace; font-size: 10px; color: var(--text-muted); }
 .vp-item.active .vp-item-dim { color: rgba(255,255,255,0.7); }
@@ -161,7 +161,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 .vp-x { color: var(--text-muted); font-size: 10px; }
 .vp-apply {
   padding: 3px 8px; border: 1px solid var(--accent);
-  border-radius: 4px; background: var(--accent); color: white;
+  border-radius: 4px; background: var(--accent); color: var(--text-on-accent);
   font-size: 10px; font-weight: 600; cursor: pointer;
 }
 .vp-apply:hover { opacity: 0.9; }

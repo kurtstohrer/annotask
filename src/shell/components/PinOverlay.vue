@@ -37,7 +37,7 @@ const emit = defineEmits<{
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #3b82f6;
+  background: var(--pin-color);
   color: white;
   display: flex;
   align-items: center;
@@ -49,9 +49,9 @@ const emit = defineEmits<{
   border: 2px solid white;
 }
 .pin:hover { transform: translate(-11px, -11px) scale(1.2); }
-.pin.selected { background: #2563eb; box-shadow: 0 0 0 3px rgba(59,130,246,0.3), 0 2px 6px rgba(0,0,0,0.3); }
-.pin.has-action { background: #a855f7; }
-.pin.has-note.has-action { background: #7c3aed; }
+.pin.selected { background: var(--pin-color); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pin-color) 30%, transparent), 0 2px 6px rgba(0,0,0,0.3); }
+.pin.has-action { background: var(--purple); }
+.pin.has-note.has-action { background: var(--purple); }
 
 .pin-number { font-size: 10px; font-weight: 700; }
 

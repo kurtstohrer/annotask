@@ -108,7 +108,7 @@ function onKeydown(e: KeyboardEvent) {
   position: relative;
   width: min(720px, 80vw);
   height: 100%;
-  background: #0d0d0d;
+  background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -231,16 +231,16 @@ function onKeydown(e: KeyboardEvent) {
 .report-empty-hint { font-size: 12px; margin-top: 8px; opacity: 0.6; }
 
 /* Prism theme — dark, minimal */
-.report-code .token.property { color: #7dd3fc; }
-.report-code .token.string { color: #86efac; }
-.report-code .token.number { color: #fbbf24; }
-.report-code .token.boolean { color: #c084fc; }
-.report-code .token.null { color: #f87171; }
-.report-code .token.operator { color: #71717a; }
-.report-code .token.punctuation { color: #52525b; }
+.report-code .token.property { color: var(--syntax-property); }
+.report-code .token.string { color: var(--syntax-string); }
+.report-code .token.number { color: var(--syntax-number); }
+.report-code .token.boolean { color: var(--syntax-boolean); }
+.report-code .token.null { color: var(--syntax-null); }
+.report-code .token.operator { color: var(--syntax-operator); }
+.report-code .token.punctuation { color: var(--syntax-punctuation); }
 .report-code .token.key,
 .report-code .token.atrule,
-.report-code .token.tag { color: #7dd3fc; }
-.report-code .token.scalar { color: #86efac; }
-.report-code .token.important { color: #fbbf24; }
+.report-code .token.tag { color: var(--syntax-property); }
+.report-code .token.scalar { color: var(--syntax-string); }
+.report-code .token.important { color: var(--syntax-number); }
 </style>

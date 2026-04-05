@@ -85,26 +85,26 @@ const emit = defineEmits<{
   position: relative;
   margin: 4px 0;
   padding: 6px 8px;
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.2);
+  background: color-mix(in srgb, var(--mode-highlight) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mode-highlight) 20%, transparent);
   border-radius: 6px;
   cursor: pointer;
 }
-.text-highlight-card.selected { border-color: #f59e0b; }
+.text-highlight-card.selected { border-color: var(--mode-highlight); }
 .hl-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-.hl-badge { font-size: 9px; font-weight: 700; color: #f59e0b; }
+.hl-badge { font-size: 9px; font-weight: 700; color: var(--mode-highlight); }
 .hl-file { font-size: 9px; color: var(--text-muted, #71717a); }
 .hl-delete {
   margin-left: auto; width: 14px; height: 14px; border: none; background: none;
   color: var(--text-muted); font-size: 12px; cursor: pointer; padding: 0; display: none;
 }
 .text-highlight-card:hover .hl-delete { display: block; }
-.hl-text { font-size: 11px; color: #f59e0b; font-style: italic; margin-bottom: 2px; }
+.hl-text { font-size: 11px; color: var(--mode-highlight); font-style: italic; margin-bottom: 2px; }
 .hl-prompt { font-size: 11px; color: var(--text, #e4e4e7); }
 .hl-prompt-edit {
   width: 100%; margin-top: 4px; padding: 4px 6px;
   background: var(--bg, #0a0a0a); border: 1px solid var(--border, #2a2a2a);
   border-radius: 4px; color: var(--text); font-size: 11px; outline: none;
 }
-.hl-prompt-edit:focus { border-color: #f59e0b; }
+.hl-prompt-edit:focus { border-color: var(--mode-highlight); }
 </style>

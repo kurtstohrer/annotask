@@ -132,5 +132,5 @@ const weightOptions = ['100', '300', '400', '500', '600', '700', '900']
 .seg-btn:first-child { border-radius: 5px 0 0 5px; }
 .seg-btn:last-child { border-radius: 0 5px 5px 0; }
 .seg-btn:hover { background: var(--surface-2); color: var(--text); }
-.seg-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+.seg-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 </style>

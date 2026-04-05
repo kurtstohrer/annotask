@@ -134,6 +134,13 @@ function buildTimeline(events: PerfTimelineEvent[]): TimelineAction[] {
   return actions
 }
 
+function readCssVar(name: string, fallback: string): string {
+  try {
+    const style = getComputedStyle(document.documentElement)
+    return style.getPropertyValue(name).trim() || fallback
+  } catch { return fallback }
+}
+
 export function usePerfMonitor(
   iframe: IframeManager,
   taskSystem: TaskSystem,
@@ -162,7 +169,7 @@ export function usePerfMonitor(
 
   const perfScore = computed(() => {
     const v = vitals.value
-    if (v.length === 0) return { score: -1, label: 'N/A', color: '#6b7280' }
+    if (v.length === 0) return { score: -1, label: 'N/A', color: readCssVar('--severity-minor', '#6b7280') }
     let tw = 0, ws = 0
     for (const m of v) {
       const w = VITAL_WEIGHTS[m.name] || 0
@@ -170,9 +177,9 @@ export function usePerfMonitor(
       tw += w
       ws += w * (m.rating === 'good' ? 100 : m.rating === 'needs-improvement' ? 50 : 0)
     }
-    if (tw === 0) return { score: -1, label: 'N/A', color: '#6b7280' }
+    if (tw === 0) return { score: -1, label: 'N/A', color: readCssVar('--severity-minor', '#6b7280') }
     const score = Math.round(ws / tw)
-    return { score, label: score >= 90 ? 'Good' : score >= 50 ? 'Needs Work' : 'Poor', color: score >= 90 ? '#22c55e' : score >= 50 ? '#f59e0b' : '#ef4444' }
+    return { score, label: score >= 90 ? 'Good' : score >= 50 ? 'Needs Work' : 'Poor', color: score >= 90 ? readCssVar('--success', '#22c55e') : score >= 50 ? readCssVar('--warning', '#f59e0b') : readCssVar('--danger', '#ef4444') }
   })
 
   /** Group resources by npm package name */

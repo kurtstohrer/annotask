@@ -136,12 +136,12 @@ function isHorizontal(c: LayoutOverlayRect): boolean {
   border-radius: 3px;
 }
 .layout-outline.flex {
-  border: 1.5px dashed rgba(168, 85, 247, 0.4);
-  background: rgba(168, 85, 247, 0.03);
+  border: 1.5px dashed color-mix(in srgb, var(--purple) 40%, transparent);
+  background: color-mix(in srgb, var(--purple) 3%, transparent);
 }
 .layout-outline.grid {
-  border: 1.5px dashed rgba(34, 197, 94, 0.4);
-  background: rgba(34, 197, 94, 0.03);
+  border: 1.5px dashed color-mix(in srgb, var(--success) 40%, transparent);
+  background: color-mix(in srgb, var(--success) 3%, transparent);
 }
 
 .layout-label {
@@ -155,8 +155,8 @@ function isHorizontal(c: LayoutOverlayRect): boolean {
   white-space: nowrap;
   letter-spacing: 0.03em;
 }
-.flex .layout-label { background: rgba(168,85,247,0.15); color: #a855f7; }
-.grid .layout-label { background: rgba(34,197,94,0.15); color: #22c55e; }
+.flex .layout-label { background: color-mix(in srgb, var(--purple) 15%, transparent); color: var(--purple); }
+.grid .layout-label { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
 
 .grid-line {
   position: fixed;
@@ -170,7 +170,7 @@ function isHorizontal(c: LayoutOverlayRect): boolean {
   background: transparent;
 }
 .grid-line.col:hover, .grid-line.col:active {
-  background: rgba(34, 197, 94, 0.3);
+  background: color-mix(in srgb, var(--success) 30%, transparent);
 }
 .grid-line.row {
   height: 6px;
@@ -179,7 +179,7 @@ function isHorizontal(c: LayoutOverlayRect): boolean {
   background: transparent;
 }
 .grid-line.row:hover, .grid-line.row:active {
-  background: rgba(34, 197, 94, 0.3);
+  background: color-mix(in srgb, var(--success) 30%, transparent);
 }
 
 /* Add track/child buttons */
@@ -203,18 +203,18 @@ function isHorizontal(c: LayoutOverlayRect): boolean {
 }
 
 .add-track-btn {
-  background: rgba(34, 197, 94, 0.15);
-  color: #22c55e;
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
 }
 .add-track-btn:hover {
-  background: rgba(34, 197, 94, 0.3);
+  background: color-mix(in srgb, var(--success) 30%, transparent);
 }
 
 .add-child-btn {
-  background: rgba(168, 85, 247, 0.15);
-  color: #a855f7;
-  border: 1px solid rgba(168, 85, 247, 0.3);
+  background: color-mix(in srgb, var(--purple) 15%, transparent);
+  color: var(--purple);
+  border: 1px solid color-mix(in srgb, var(--purple) 30%, transparent);
   width: 22px;
   height: 22px;
   display: flex;
@@ -224,6 +224,6 @@ function isHorizontal(c: LayoutOverlayRect): boolean {
   padding: 0;
 }
 .add-child-btn:hover {
-  background: rgba(168, 85, 247, 0.3);
+  background: color-mix(in srgb, var(--purple) 30%, transparent);
 }
 </style>

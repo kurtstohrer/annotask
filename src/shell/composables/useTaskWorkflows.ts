@@ -35,6 +35,7 @@ export function useTaskWorkflows(deps: {
   includeHistory: Ref<boolean>
   includeElementContext: Ref<boolean>
   currentRoute: Ref<string>
+  activePanel: Ref<'tasks' | 'inspector'>
   clearSelection: () => void
   startAnnotationLoop: () => void
 }) {
@@ -153,7 +154,9 @@ export function useTaskWorkflows(deps: {
     }
     const screenshotFilename = deps.screenshots.consumeScreenshot()
     const screenshotData = screenshotFilename ? { screenshot: screenshotFilename } : {}
-    return deps.taskSystem.createTask({ ...data, route: deps.currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...historyData, ...elementContextData, ...screenshotData })
+    const task = await deps.taskSystem.createTask({ ...data, route: deps.currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...historyData, ...elementContextData, ...screenshotData })
+    if (task) deps.activePanel.value = 'tasks'
+    return task
   }
 
   async function onSectionSubmit(id: string) {
@@ -217,6 +220,7 @@ export function useTaskWorkflows(deps: {
         line: arrow.fromLine || fromCtx?.line || '',
         component: arrow.fromComponent || fromCtx?.component || '',
         meta: {
+          arrowColor: arrow.color || '',
           fromTag: fromCtx?.tag || '',
           fromClasses: fromCtx?.classes || '',
           fromComponent: fromCtx?.component || '',
@@ -265,6 +269,7 @@ export function useTaskWorkflows(deps: {
       component: arrow.fromComponent || fromCtx?.component || '',
       annotationId: arrowId,
       meta: {
+        arrowColor: arrow.color || '',
         fromTag: fromCtx?.tag || '',
         fromClasses: fromCtx?.classes || '',
         fromComponent: fromCtx?.component || '',

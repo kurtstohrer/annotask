@@ -140,9 +140,9 @@ export function useLayoutOverlay(
     const child = doc.createElement('div')
     child.style.minWidth = '60px'
     child.style.minHeight = '40px'
-    child.style.border = '2px dashed #a855f7'
+    child.style.border = '2px dashed var(--purple, #a855f7)'
     child.style.borderRadius = '4px'
-    child.style.background = 'rgba(168,85,247,0.05)'
+    child.style.background = 'color-mix(in srgb, var(--purple, #a855f7) 5%, transparent)'
     child.setAttribute('data-annotask-placeholder', 'true')
     el.appendChild(child)
 

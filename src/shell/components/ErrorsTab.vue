@@ -136,22 +136,22 @@ function onCreateTask(entry: ErrorEntry) {
 .errors-empty {
   display: flex; align-items: center; gap: 6px;
   padding: 8px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
-  background: rgba(34, 197, 94, 0.12); color: #22c55e;
-  border: 1px solid rgba(34, 197, 94, 0.25);
+  background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 25%, transparent);
 }
 .errors-empty.paused-msg {
-  background: rgba(245, 158, 11, 0.1); color: #f59e0b;
-  border-color: rgba(245, 158, 11, 0.25);
+  background: color-mix(in srgb, var(--warning) 10%, transparent); color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 25%, transparent);
 }
 
 .errors-summary {
   font-size: 11px; font-weight: 600;
   padding: 6px 8px; border-radius: 5px;
-  background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2);
+  background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
   display: flex; gap: 6px; align-items: center;
 }
-.summary-errors { color: #ef4444; }
-.summary-warns { color: #f59e0b; }
+.summary-errors { color: var(--danger); }
+.summary-warns { color: var(--warning); }
 .summary-sep { color: var(--text-muted); }
 
 .error-card {
@@ -161,17 +161,17 @@ function onCreateTask(entry: ErrorEntry) {
   transition: background 0.1s;
 }
 .error-card:hover { background: var(--surface-3, var(--border)); }
-.error-card.error { border-left-color: #ef4444; }
-.error-card.unhandled { border-left-color: #dc2626; }
-.error-card.warn { border-left-color: #f59e0b; }
+.error-card.error { border-left-color: var(--danger); }
+.error-card.unhandled { border-left-color: var(--severity-critical); }
+.error-card.warn { border-left-color: var(--warning); }
 
 .error-level {
   font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 5px;
   border-radius: 3px; color: white; flex-shrink: 0;
 }
-.error-level.error { background: #ef4444; }
-.error-level.unhandled { background: #dc2626; }
-.error-level.warn { background: #f59e0b; }
+.error-level.error { background: var(--danger); }
+.error-level.unhandled { background: var(--severity-critical); }
+.error-level.warn { background: var(--warning); }
 
 .error-msg {
   font-size: 11px; font-weight: 500; color: var(--text);
@@ -185,7 +185,7 @@ function onCreateTask(entry: ErrorEntry) {
 
 .error-tasked-badge {
   font-size: 9px; font-weight: 700; text-transform: uppercase;
-  color: #22c55e; background: rgba(34, 197, 94, 0.12);
+  color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent);
   padding: 1px 5px; border-radius: 3px; flex-shrink: 0;
 }
 

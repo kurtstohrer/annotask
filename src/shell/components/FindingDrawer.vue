@@ -60,14 +60,14 @@ function onKeydown(e: KeyboardEvent) {
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
   padding: 2px 8px; border-radius: 4px; color: white; flex-shrink: 0;
 }
-.fd-severity.sev-poor, .fd-severity.sev-critical, .fd-severity.sev-serious { background: #ef4444; }
-.fd-severity.sev-needs-improvement, .fd-severity.sev-moderate { background: #f59e0b; }
-.fd-severity.sev-good, .fd-severity.sev-minor { background: #6b7280; }
+.fd-severity.sev-poor, .fd-severity.sev-critical, .fd-severity.sev-serious { background: var(--danger); }
+.fd-severity.sev-needs-improvement, .fd-severity.sev-moderate { background: var(--warning); }
+.fd-severity.sev-good, .fd-severity.sev-minor { background: var(--severity-minor); }
 .fd-title { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fd-close { background: none; border: none; cursor: pointer; color: var(--text-muted); padding: 4px; border-radius: 4px; }
 .fd-close:hover { background: var(--surface-2); color: var(--text); }
 
-.fd-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; color: #fff; }
+.fd-body { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; color: var(--text); }
 
 .fd-footer {
   display: flex; gap: 8px; padding: 14px 18px;
@@ -75,8 +75,8 @@ function onKeydown(e: KeyboardEvent) {
 }
 .fd-fix-btn {
   padding: 6px 16px; font-size: 12px; font-weight: 600;
-  background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer;
+  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 6px; cursor: pointer;
 }
 .fd-fix-btn:hover { opacity: 0.9; }
-.fd-tasked { font-size: 12px; font-weight: 600; color: #22c55e; display: flex; align-items: center; gap: 4px; }
+.fd-tasked { font-size: 12px; font-weight: 600; color: var(--success); display: flex; align-items: center; gap: 4px; }
 </style>

@@ -199,7 +199,7 @@ function submitNote() {
   border: none; border-radius: 50%; background: rgba(0,0,0,0.6); color: white;
   font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
-.screenshot-remove:hover { background: #ef4444; }
+.screenshot-remove:hover { background: var(--danger); }
 
 /* Pin items */
 .pin-item {
@@ -217,7 +217,7 @@ function submitNote() {
 .pin-badge {
   width: 18px; height: 18px;
   border-radius: 50%;
-  background: #3b82f6;
+  background: var(--pin-color);
   color: white;
   font-size: 9px;
   font-weight: 700;
@@ -226,11 +226,11 @@ function submitNote() {
   justify-content: center;
   flex-shrink: 0;
 }
-.pin-badge.action { background: #a855f7; }
+.pin-badge.action { background: var(--purple); }
 
 .pin-content { flex: 1; min-width: 0; }
 .pin-file { font-size: 10px; color: var(--accent); display: block; margin-bottom: 2px; }
-.pin-action { font-size: 10px; color: #a855f7; font-weight: 600; display: block; }
+.pin-action { font-size: 10px; color: var(--purple); font-weight: 600; display: block; }
 .pin-note { font-size: 11px; color: var(--text); display: block; word-break: break-word; }
 .pin-empty { font-size: 10px; color: var(--text-muted); font-style: italic; }
 
@@ -255,31 +255,31 @@ function submitNote() {
 /* Task review */
 .task-review { border-top: 1px solid var(--border, #2a2a2a); padding-top: 10px; }
 .task-item { padding: 6px 8px; border-radius: 5px; margin-bottom: 4px; border: 1px solid var(--border, #2a2a2a); }
-.task-item.review { border-color: #f59e0b; background: rgba(245,158,11,0.05); }
-.task-item.denied { border-color: #ef4444; background: rgba(239,68,68,0.05); }
+.task-item.review { border-color: var(--status-review); background: color-mix(in srgb, var(--status-review) 5%, transparent); }
+.task-item.denied { border-color: var(--status-denied); background: color-mix(in srgb, var(--status-denied) 5%, transparent); }
 .task-item.pending { border-color: var(--border, #2a2a2a); }
 .task-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .task-status-badge { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px; text-transform: uppercase; }
-.task-status-badge.pending { background: rgba(113,113,122,0.2); color: #71717a; }
-.task-status-badge.review { background: rgba(245,158,11,0.2); color: #f59e0b; }
-.task-status-badge.denied { background: rgba(239,68,68,0.2); color: #ef4444; }
+.task-status-badge.pending { background: color-mix(in srgb, var(--status-pending) 20%, transparent); color: var(--status-pending); }
+.task-status-badge.review { background: color-mix(in srgb, var(--status-review) 20%, transparent); color: var(--status-review); }
+.task-status-badge.denied { background: color-mix(in srgb, var(--status-denied) 20%, transparent); color: var(--status-denied); }
 .task-desc { font-size: 11px; color: var(--text, #e4e4e7); }
 .task-file { font-size: 9px; color: var(--text-muted, #71717a); display: block; margin-bottom: 3px; }
-.task-feedback { font-size: 10px; color: #ef4444; font-style: italic; margin-bottom: 3px; }
+.task-feedback { font-size: 10px; color: var(--danger); font-style: italic; margin-bottom: 3px; }
 .task-actions { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
 .task-accept {
   padding: 4px 10px; font-size: 10px; font-weight: 600;
-  background: rgba(34,197,94,0.15); color: #22c55e;
+  background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success);
   border: none; border-radius: 4px; cursor: pointer; transition: all 0.12s;
 }
-.task-accept:hover { background: #22c55e; color: white; }
+.task-accept:hover { background: var(--success); color: var(--text-on-accent); }
 .task-deny {
   padding: 4px 10px; font-size: 10px; font-weight: 600;
-  background: rgba(239,68,68,0.12); color: #ef4444;
+  background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger);
   border: none; border-radius: 4px; cursor: pointer; transition: all 0.12s;
 }
-.task-deny:hover { background: #ef4444; color: white; }
+.task-deny:hover { background: var(--danger); color: var(--text-on-accent); }
 .deny-input { flex: 1; padding: 2px 6px; font-size: 10px; background: var(--bg, #0a0a0a); border: 1px solid var(--border); border-radius: 4px; color: var(--text); outline: none; }
 .task-cancel { width: 18px; height: 18px; border: none; background: none; color: var(--text-muted, #71717a); font-size: 14px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; margin-left: auto; border-radius: 3px; }
-.task-cancel:hover { color: #ef4444; background: rgba(239,68,68,0.1); }
+.task-cancel:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 </style>

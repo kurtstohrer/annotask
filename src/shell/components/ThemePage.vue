@@ -616,7 +616,7 @@ function discardChanges() {
   padding: 0 3px;
   font-size: 9px;
   font-weight: 700;
-  background: var(--accent);
+  background: var(--danger);
   color: white;
   border-radius: 7px;
   margin-left: 3px;

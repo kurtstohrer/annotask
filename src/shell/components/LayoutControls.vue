@@ -125,7 +125,7 @@ function parseNum(s: string): number {
 .seg-btn:first-child { border-radius: 5px 0 0 5px; }
 .seg-btn:last-child { border-radius: 0 5px 5px 0; }
 .seg-btn:hover { background: var(--surface-2); color: var(--text); }
-.seg-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+.seg-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 .icon-btn { font-size: 14px; padding: 4px 8px; }
 .num-input-group { display: flex; align-items: center; gap: 8px; }
 .range-input { flex: 1; accent-color: var(--accent); height: 4px; }

@@ -177,13 +177,20 @@ export function useAnnotations() {
   }
 
   // ── Arrows ──
+  function readVar(name: string, fallback: string): string {
+    try {
+      const style = getComputedStyle(document.documentElement)
+      return style.getPropertyValue(name).trim() || fallback
+    } catch { return fallback }
+  }
+
   function addArrow(fromX: number, fromY: number, toX: number, toY: number, label?: string, color?: string): Arrow {
     counter++
     const arrow: Arrow = {
       id: `arrow-${counter}`, number: counter,
       fromX, fromY, toX, toY,
       label: label || 'Move here',
-      color: color || '#ef4444',
+      color: color || readVar('--annotation-red', '#ef4444'),
       route: activeRoute.value, timestamp: Date.now(),
     }
     arrows.value.push(arrow)
@@ -232,7 +239,7 @@ export function useAnnotations() {
     const h: TextHighlight = {
       id: `hl-${counter}`, number: counter,
       selectedText: text, prompt: '',
-      color: color || '#f59e0b',
+      color: color || readVar('--mode-highlight', '#f59e0b'),
       ...(rect ? { rect } : {}),
       ...(eid ? { eid } : {}),
       file: source.file, line: source.line,

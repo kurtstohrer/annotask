@@ -11,10 +11,10 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
     </button>
     <span class="mode-sep" />
-    <button :class="['mode-btn', { active: modelValue === 'select' }]" @click="emit('update:modelValue', 'select')" title="Select (V)">
+    <button :class="['mode-btn mode-select', { active: modelValue === 'select' }]" @click="emit('update:modelValue', 'select')" title="Select (V)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V4a2 2 0 1 1 4 0v5"/><path d="M11 9a2 2 0 1 1 4 0v2"/><path d="M15 11a2 2 0 1 1 4 0v4a8 8 0 0 1-8 8 7 7 0 0 1-5-2l-3.3-3.3a2 2 0 0 1 2.8-2.8L7 16"/></svg>
     </button>
-    <button :class="['mode-btn', { active: modelValue === 'pin' }]" @click="emit('update:modelValue', 'pin')" title="Pin Note (P)">
+    <button :class="['mode-btn mode-pin', { active: modelValue === 'pin' }]" @click="emit('update:modelValue', 'pin')" title="Pin Note (P)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 1 0-16 0c0 3 2.7 7 8 11.7z"/></svg>
     </button>
     <button :class="['mode-btn arrow', { active: modelValue === 'arrow' }]" @click="emit('update:modelValue', 'arrow')" title="Arrow (A)">
@@ -43,10 +43,10 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
   transition: all 0.1s;
 }
 .mode-btn:hover { background: var(--border); color: var(--text); }
-.mode-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
-.mode-btn.mode-interact.active { background: #6366f1; border-color: #6366f1; }
-.mode-btn.arrow.active { background: #ef4444; border-color: #ef4444; }
-.mode-btn.draw.active { background: #6b7280; border-color: #6b7280; }
-.mode-btn.mode-highlight.active { background: #f59e0b; border-color: #f59e0b; }
+.mode-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
+.mode-btn.mode-pin.active { background: var(--pin-color); border-color: var(--pin-color); color: white; }
+.mode-btn.arrow.active { background: var(--mode-arrow); border-color: var(--mode-arrow); }
+.mode-btn.draw.active { background: var(--mode-draw); border-color: var(--mode-draw); }
+.mode-btn.mode-highlight.active { background: var(--mode-highlight); border-color: var(--mode-highlight); }
 .mode-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; align-self: center; }
 </style>
