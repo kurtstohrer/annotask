@@ -162,8 +162,8 @@ function normalizeRoute(path: string): string {
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const { mode: interactionMode } = useInteractionMode()
 const { isInitialized: configInitialized } = useDesignSpec()
-type ShellView = 'editor' | 'theme' | 'a11y' | 'perf' | 'context'
-const SHELL_VIEWS: ShellView[] = ['editor', 'theme', 'a11y', 'perf', 'context']
+type ShellView = 'editor' | 'theme' | 'a11y' | 'perf'
+const SHELL_VIEWS: ShellView[] = ['editor', 'theme', 'a11y', 'perf']
 
 function readStoredEnum<T extends string>(key: string, values: readonly T[], fallback: T): T {
   const stored = localStorage.getItem(key)
@@ -250,8 +250,11 @@ const includeElementContext = ref(localStorage.getItem('annotask:includeElementC
 const screenshots = useScreenshots(iframe)
 const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
 watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElementContext', String(v)))
-const showShortcuts = ref(localStorage.getItem('annotask:showShortcuts') === 'true')
-watch(showShortcuts, (v) => localStorage.setItem('annotask:showShortcuts', String(v)))
+const showShortcuts = ref(false)
+const showContext = ref(false)
+const helpSection = ref<'overview' | 'annotate' | 'design' | 'a11y' | 'perf'>('overview')
+function toggleShortcuts() { showShortcuts.value = !showShortcuts.value; if (showShortcuts.value) showContext.value = false }
+function toggleContext() { showContext.value = !showContext.value; if (showContext.value) showShortcuts.value = false }
 
 
 
@@ -542,6 +545,7 @@ useKeyboardShortcuts({
   snipActive,
   showReportPanel,
   showShortcuts,
+  showContext,
   pendingTaskCreation,
   primarySelection,
   selectedEids,
@@ -630,10 +634,6 @@ const appUrl = computed(() => {
             Performance
             <span v-if="perfFindings.length + errorCount + warnCount" class="toggle-badge">{{ perfFindings.length + errorCount + warnCount }}</span>
           </button>
-          <button :class="['toggle-btn', { active: shellView === 'context' }]" @click="shellView = 'context'" title="Browse installed component libraries">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-            Context
-          </button>
         </div>
         <template v-if="shellView === 'editor'">
           <ModeToolbar v-model="interactionMode" />
@@ -674,7 +674,7 @@ const appUrl = computed(() => {
           @blur="navigateIframe(($event.target as HTMLInputElement).value)"
         />
       </div>
-      <div v-else-if="shellView !== 'context'" class="toolbar-center">
+      <div v-else class="toolbar-center">
         <ViewportSelector />
         <input
           class="route-input"
@@ -684,7 +684,6 @@ const appUrl = computed(() => {
           @blur="navigateIframe(($event.target as HTMLInputElement).value)"
         />
       </div>
-      <div v-else class="toolbar-center" />
       <div v-if="shellView === 'editor'" class="toolbar-right">
         <div class="panel-toggle">
           <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'" title="View and manage design tasks for your AI agent (T)">
@@ -693,14 +692,10 @@ const appUrl = computed(() => {
             <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
           </button>
         </div>
-        <div class="visibility-toggles">
-          <button :class="['vis-btn', { off: !showMarkup.inspector }]" @click="showMarkup.inspector = !showMarkup.inspector" title="Toggle Inspector Highlights">I</button>
-          <button :class="['vis-btn', { off: !showMarkup.pins }]" @click="showMarkup.pins = !showMarkup.pins" title="Toggle Pins">P</button>
-          <button :class="['vis-btn', { off: !showMarkup.arrows }]" @click="showMarkup.arrows = !showMarkup.arrows" title="Toggle Arrows">A</button>
-          <button :class="['vis-btn', { off: !showMarkup.sections }]" @click="showMarkup.sections = !showMarkup.sections" title="Toggle Sections">D</button>
-          <button :class="['vis-btn', { off: !showMarkup.highlights }]" @click="showMarkup.highlights = !showMarkup.highlights" title="Toggle Highlights">H</button>
-        </div>
-        <button :class="['tool-btn', { active: showShortcuts }]" @click="showShortcuts = !showShortcuts" title="Keyboard Shortcuts (?)">?</button>
+        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        </button>
+        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else-if="shellView === 'theme'" class="toolbar-right">
         <div class="panel-toggle">
@@ -718,6 +713,10 @@ const appUrl = computed(() => {
             <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
           </button>
         </div>
+        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        </button>
+        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else-if="shellView === 'a11y'" class="toolbar-right">
         <div class="panel-toggle">
@@ -731,6 +730,10 @@ const appUrl = computed(() => {
             <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
           </button>
         </div>
+        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        </button>
+        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
       <div v-else-if="shellView === 'perf'" class="toolbar-right">
         <div class="panel-toggle">
@@ -750,15 +753,10 @@ const appUrl = computed(() => {
             <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
           </button>
         </div>
-      </div>
-      <div v-else class="toolbar-right">
-        <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Tasks
-            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
-          </button>
-        </div>
+        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        </button>
+        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
       </div>
     </header>
 
@@ -782,10 +780,7 @@ const appUrl = computed(() => {
 
     <!-- Main -->
     <div class="main">
-      <!-- Context: full-width view replacing the canvas -->
-      <LibrariesPage v-if="shellView === 'context'" />
-
-      <div v-else class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
+      <div class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
         @pointerdown="shellView === 'editor' ? onCanvasPointerDown($event) : undefined"
         @pointermove="shellView === 'editor' ? onCanvasPointerMove($event) : undefined"
         @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined"
@@ -902,41 +897,8 @@ const appUrl = computed(() => {
         />
       </aside>
 
-      <!-- Shortcuts Panel -->
-      <aside class="panel" v-if="shellView === 'editor' && showShortcuts">
-        <div class="panel-source">
-          <span class="source-path" style="color:var(--text)">Keyboard Shortcuts</span>
-          <button class="component-badge" style="cursor:pointer;margin-left:auto" @click="showShortcuts = false">Esc to close</button>
-        </div>
-        <div class="shortcuts-panel">
-          <div class="shortcut-group">
-            <div class="shortcut-group-title">Tools</div>
-            <div class="shortcut-row"><kbd>V</kbd><span>Select</span></div>
-            <div class="shortcut-row"><kbd>P</kbd><span>Pin</span></div>
-            <div class="shortcut-row"><kbd>A</kbd><span>Arrow</span></div>
-            <div class="shortcut-row"><kbd>D</kbd><span>Draw Section</span></div>
-            <div class="shortcut-row"><kbd>H</kbd><span>Highlight Text</span></div>
-            <div class="shortcut-row"><kbd>I</kbd><span>Interact Mode</span></div>
-          </div>
-          <div class="shortcut-group">
-            <div class="shortcut-group-title">View</div>
-            <div class="shortcut-row"><kbd>L</kbd><span>Toggle Layout Overlay</span></div>
-            <div class="shortcut-row"><kbd>T</kbd><span>Toggle Task Panel</span></div>
-            <div class="shortcut-row"><kbd>?</kbd><span>Toggle Shortcuts</span></div>
-            <div class="shortcut-row"><kbd>Esc</kbd><span>Deselect / Close Panel</span></div>
-          </div>
-          <div class="shortcut-group">
-            <div class="shortcut-group-title">Actions</div>
-            <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Z</kbd><span>Undo</span></div>
-            <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Enter</kbd><span>Submit Form</span></div>
-          </div>
-          <div class="shortcut-hint">On Mac, use <kbd class="mod">⌘</kbd> instead of <kbd class="mod">Ctrl</kbd></div>
-          <div class="shortcut-version">Annotask v{{ annotaskVersion }}</div>
-        </div>
-      </aside>
-
       <!-- Pending Task Creation Panel (after pin/arrow/select placement — editor only) -->
-      <aside class="panel" v-else-if="shellView === 'editor' && pendingTaskCreation">
+      <aside class="panel" v-if="shellView === 'editor' && pendingTaskCreation">
         <div class="panel-source">
           <span class="source-path" style="color:var(--text)">Add Task</span>
         </div>
@@ -1143,6 +1105,190 @@ const appUrl = computed(() => {
         </div>
       </aside>
 
+      <!-- Full-screen overlays -->
+      <div v-if="showShortcuts" class="fullscreen-overlay help-overlay">
+        <div class="help-sidebar">
+          <nav class="help-nav">
+            <button :class="['help-nav-btn', { active: helpSection === 'overview' }]" @click="helpSection = 'overview'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              Overview
+            </button>
+            <button :class="['help-nav-btn', { active: helpSection === 'annotate' }]" @click="helpSection = 'annotate'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              Annotate
+            </button>
+            <button :class="['help-nav-btn', { active: helpSection === 'design' }]" @click="helpSection = 'design'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>
+              Design
+            </button>
+            <button :class="['help-nav-btn', { active: helpSection === 'a11y' }]" @click="helpSection = 'a11y'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><path d="M7 9h10"/><path d="M12 9v9"/><path d="M9.5 18l2.5-4 2.5 4"/></svg>
+              Accessibility
+            </button>
+            <button :class="['help-nav-btn', { active: helpSection === 'perf' }]" @click="helpSection = 'perf'">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              Performance
+            </button>
+          </nav>
+          <div class="help-version">Annotask v{{ annotaskVersion }}</div>
+        </div>
+        <div class="help-content">
+          <!-- Overview -->
+          <div v-if="helpSection === 'overview'" class="help-page">
+            <h2 class="help-page-title">Quick Overview</h2>
+            <p class="help-intro">Annotask is a visual UI design tool that runs alongside your app. Make visual changes in the browser and Annotask generates structured tasks that AI agents can apply to your source code.</p>
+
+            <div class="help-cards">
+              <button class="help-card" @click="helpSection = 'annotate'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                <span class="help-card-title">Annotate</span>
+                <span class="help-card-desc">Pin, arrow, section, and highlight tools to mark up your UI and create tasks</span>
+              </button>
+              <button class="help-card" @click="helpSection = 'design'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>
+                <span class="help-card-title">Design</span>
+                <span class="help-card-desc">Edit design tokens, inspect element styles, and manage your design system</span>
+              </button>
+              <button class="help-card" @click="helpSection = 'a11y'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><path d="M7 9h10"/><path d="M12 9v9"/><path d="M9.5 18l2.5-4 2.5 4"/></svg>
+                <span class="help-card-title">Accessibility</span>
+                <span class="help-card-desc">Run WCAG audits with axe-core and create fix tasks from violations</span>
+              </button>
+              <button class="help-card" @click="helpSection = 'perf'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span class="help-card-title">Performance</span>
+                <span class="help-card-desc">Web Vitals, bundle analysis, interaction recording, and error monitoring</span>
+              </button>
+            </div>
+
+            <h3 class="help-section-title">Keyboard Shortcuts</h3>
+            <div class="help-shortcuts-grid">
+              <div class="help-shortcut-group">
+                <div class="shortcut-group-title">Tools</div>
+                <div class="shortcut-row"><kbd>V</kbd><span>Select</span></div>
+                <div class="shortcut-row"><kbd>P</kbd><span>Pin</span></div>
+                <div class="shortcut-row"><kbd>A</kbd><span>Arrow</span></div>
+                <div class="shortcut-row"><kbd>D</kbd><span>Draw Section</span></div>
+                <div class="shortcut-row"><kbd>H</kbd><span>Highlight Text</span></div>
+                <div class="shortcut-row"><kbd>I</kbd><span>Interact Mode</span></div>
+              </div>
+              <div class="help-shortcut-group">
+                <div class="shortcut-group-title">View</div>
+                <div class="shortcut-row"><kbd>L</kbd><span>Toggle Layout Overlay</span></div>
+                <div class="shortcut-row"><kbd>T</kbd><span>Toggle Task Panel</span></div>
+                <div class="shortcut-row"><kbd>?</kbd><span>Toggle Help</span></div>
+                <div class="shortcut-row"><kbd>Esc</kbd><span>Deselect / Close</span></div>
+              </div>
+              <div class="help-shortcut-group">
+                <div class="shortcut-group-title">Actions</div>
+                <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Z</kbd><span>Undo</span></div>
+                <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Enter</kbd><span>Submit Form</span></div>
+              </div>
+            </div>
+            <div class="shortcut-hint">On Mac, use <kbd class="mod">&#8984;</kbd> instead of <kbd class="mod">Ctrl</kbd></div>
+          </div>
+
+          <!-- Annotate -->
+          <div v-else-if="helpSection === 'annotate'" class="help-page">
+            <h2 class="help-page-title">Annotate</h2>
+            <p class="help-intro">Select elements, place annotations, and create tasks for your AI agent. Each annotation becomes a structured task with file location, component info, and your description.</p>
+
+            <h3 class="help-section-title">Tools</h3>
+            <div class="help-feature-list">
+              <div class="help-feature">
+                <div class="help-feature-header"><kbd>V</kbd> Select</div>
+                <p>Click any element to select it. The inspector panel shows computed styles, component info, and source file location. Multi-select with shift+click. Create a task from the selection with a description of your desired change.</p>
+              </div>
+              <div class="help-feature">
+                <div class="help-feature-header"><kbd>P</kbd> Pin</div>
+                <p>Click to drop a pin on any element. A task panel opens to describe the change you want. Pins track their target element during scroll and resize.</p>
+              </div>
+              <div class="help-feature">
+                <div class="help-feature-header"><kbd>A</kbd> Arrow</div>
+                <p>Draw arrows between elements to show relationships or flow. Arrows snap to element edges with bezier curves. Drag endpoints to reposition. Multiple colors available.</p>
+              </div>
+              <div class="help-feature">
+                <div class="help-feature-header"><kbd>D</kbd> Draw Section</div>
+                <p>Draw a rectangular area to describe a new content section. Includes a markdown editor for detailed descriptions. Sections are movable and resizable.</p>
+              </div>
+              <div class="help-feature">
+                <div class="help-feature-header"><kbd>H</kbd> Highlight Text</div>
+                <p>Select text in your app to highlight it. The highlight is attached to the DOM range and tracks scroll. Create tasks referencing the highlighted content.</p>
+              </div>
+              <div class="help-feature">
+                <div class="help-feature-header"><kbd>I</kbd> Interact</div>
+                <p>Switch to interact mode to use your app normally — click links, fill forms, scroll. No element selection or annotation occurs in this mode.</p>
+              </div>
+            </div>
+
+            <h3 class="help-section-title">Tasks</h3>
+            <p class="help-text">Every annotation creates a task with a lifecycle: <strong>pending</strong> &rarr; <strong>in_progress</strong> &rarr; <strong>review</strong> &rarr; <strong>accepted</strong> or <strong>denied</strong>. Tasks include source file, line number, component, route, and optional screenshots. Use the Tasks panel <kbd>T</kbd> to review, accept, deny, or delete tasks.</p>
+
+            <h3 class="help-section-title">Screenshots</h3>
+            <p class="help-text">Attach screenshots to any task. Use the snipping tool to capture a region or the full page. Screenshots are stored on the server and included in task reports for your AI agent.</p>
+          </div>
+
+          <!-- Design -->
+          <div v-else-if="helpSection === 'design'" class="help-page">
+            <h2 class="help-page-title">Design</h2>
+            <p class="help-intro">Inspect and edit your app's visual design. Changes are recorded as tasks that map back to your source code and design tokens.</p>
+
+            <h3 class="help-section-title">Design Tokens</h3>
+            <p class="help-text">View and edit your design system tokens — colors, typography, spacing, borders, shadows, and more. Annotask detects CSS custom properties and organizes them by category. Edits create <strong>theme_update</strong> tasks with the token name, category, before/after values, and CSS variable reference.</p>
+
+            <h3 class="help-section-title">Inspector</h3>
+            <p class="help-text">Click any element to inspect its computed styles. Edit properties inline — changes are applied live and recorded as <strong>style_update</strong> tasks. Class editing lets you add, remove, or toggle CSS classes. All changes can be undone with <kbd class="mod">Ctrl</kbd><kbd>Z</kbd>.</p>
+
+            <h3 class="help-section-title">Layout Overlay</h3>
+            <p class="help-text">Toggle the layout overlay <kbd>L</kbd> to visualize flex and grid containers. See container boundaries, alignment, and gaps. Scan the page to discover all layout containers at once.</p>
+
+            <h3 class="help-section-title">Color Palette</h3>
+            <p class="help-text">Scan your page to extract all CSS custom property colors into a visual palette. See which tokens are in use and quickly navigate to edit them.</p>
+          </div>
+
+          <!-- Accessibility -->
+          <div v-else-if="helpSection === 'a11y'" class="help-page">
+            <h2 class="help-page-title">Accessibility</h2>
+            <p class="help-intro">Run automated WCAG accessibility audits powered by axe-core. Scan the full page or a specific element to find violations.</p>
+
+            <h3 class="help-section-title">Scanning</h3>
+            <p class="help-text">Click <strong>Scan Page</strong> to run a full-page audit, or select an element first and scan just that subtree. Axe-core is loaded on demand from the local server — no external CDN required.</p>
+
+            <h3 class="help-section-title">Violations</h3>
+            <p class="help-text">Results are grouped by rule with impact levels: critical, serious, moderate, minor. Each violation shows the affected elements, their selectors, and a suggested fix. Click a violation to see full details including the WCAG rule reference.</p>
+
+            <h3 class="help-section-title">Creating Fix Tasks</h3>
+            <p class="help-text">Click the task button on any violation to create an <strong>a11y_fix</strong> task. The task includes the rule ID, impact, affected elements with their selectors, source file locations, and fix suggestions — everything your AI agent needs to resolve the issue.</p>
+          </div>
+
+          <!-- Performance -->
+          <div v-else-if="helpSection === 'perf'" class="help-page">
+            <h2 class="help-page-title">Performance</h2>
+            <p class="help-intro">Monitor Web Vitals, analyze bundles, record interactions, and track console errors. Create fix tasks from performance findings.</p>
+
+            <h3 class="help-section-title">Audit</h3>
+            <p class="help-text">Click <strong>Scan</strong> to capture a performance snapshot — Web Vitals (LCP, FID, CLS, TTFB), navigation timing, and resource breakdown. Resources are sorted by transfer size so you can spot large assets immediately.</p>
+
+            <h3 class="help-section-title">Recording</h3>
+            <p class="help-text">Click <strong>Record</strong> to capture a performance session. Interact with your app, then stop recording. The result includes a timeline of navigation and click events, vitals collected during the session, and a full resource list. Recordings are saved to the server for historical comparison.</p>
+
+            <h3 class="help-section-title">Findings</h3>
+            <p class="help-text">Annotask analyzes scan and recording results to surface actionable findings — slow vitals, large bundles, render-blocking resources, excessive DOM size. Each finding can be turned into a task for your AI agent.</p>
+
+            <h3 class="help-section-title">Errors</h3>
+            <p class="help-text">The Errors tab captures console errors and warnings from your app in real time. Errors are deduplicated and bounded to prevent memory issues. Click any error to create a fix task with the error message, stack trace, and source location.</p>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showContext" class="fullscreen-overlay">
+        <div class="fullscreen-overlay-header">
+          <span class="fullscreen-overlay-title">Component Context</span>
+          <button class="fullscreen-overlay-close" @click="showContext = false">Esc to close</button>
+        </div>
+        <LibrariesPage />
+      </div>
+
     </div>
 
     <!-- Context menu -->
@@ -1280,7 +1426,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .setup-banner code { background: rgba(59, 130, 246, 0.15); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
 
 /* Main */
-.main { display: flex; flex: 1; overflow: hidden; }
+.main { display: flex; flex: 1; overflow: hidden; position: relative; }
 .toolbar-center { display: flex; align-items: center; gap: 8px; }
 .route-input {
   font-size: 11px; color: var(--text-muted); background: var(--surface-2);
@@ -1290,6 +1436,99 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .route-input:focus { border-color: var(--accent); color: var(--text); }
 .canvas-area { flex: 1; position: relative; overflow: hidden; }
+
+/* Full-screen overlays (help, context) */
+.fullscreen-overlay {
+  position: absolute; inset: 0; z-index: 50;
+  background: var(--surface);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.fullscreen-overlay-header {
+  display: flex; align-items: center; padding: 10px 16px;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.fullscreen-overlay-title {
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
+.fullscreen-overlay-close {
+  margin-left: auto; background: none; border: 1px solid var(--border);
+  color: var(--text-muted); font-size: 11px; padding: 3px 10px;
+  border-radius: 4px; cursor: pointer;
+}
+.fullscreen-overlay-close:hover { color: var(--text); background: var(--surface-2); }
+
+.help-overlay { flex-direction: row; }
+
+/* Help page layout */
+.help-sidebar {
+  width: 180px; flex-shrink: 0; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 12px 0;
+}
+.help-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; flex: 1; }
+.help-nav-btn {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: none; border: none; border-radius: 6px; cursor: pointer;
+  font-size: 12px; color: var(--text); text-align: left; width: 100%;
+}
+.help-nav-btn:hover { background: var(--surface-2); }
+.help-nav-btn.active { background: var(--accent); color: #fff; }
+.help-version {
+  padding: 12px 20px 4px; font-size: 10px; color: var(--text-muted); opacity: 0.5;
+}
+.help-content {
+  flex: 1; overflow-y: auto; padding: 32px 48px;
+}
+.help-page { max-width: 720px; }
+.help-page-title {
+  font-size: 20px; font-weight: 700; color: var(--text); margin: 0 0 8px;
+}
+.help-intro {
+  font-size: 13px; color: var(--text); line-height: 1.6; margin: 0 0 28px;
+}
+.help-section-title {
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text); margin: 28px 0 12px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.help-text {
+  font-size: 12px; color: var(--text); line-height: 1.65; margin: 0 0 12px;
+}
+.help-text strong { color: var(--text); font-weight: 600; }
+.help-text kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 16px; padding: 0 4px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px;
+  font-family: inherit; font-size: 10px; font-weight: 600; color: var(--text);
+  vertical-align: middle;
+}
+
+/* Overview cards */
+.help-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 28px; }
+.help-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  padding: 16px; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; cursor: pointer; text-align: left;
+}
+.help-card:hover { border-color: var(--accent); }
+.help-card svg { color: var(--accent); }
+.help-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.help-card-desc { font-size: 11px; color: var(--text); line-height: 1.5; }
+
+/* Overview shortcuts grid */
+.help-shortcuts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.help-shortcut-group { }
+
+/* Feature list (annotate tools etc.) */
+.help-feature-list { display: flex; flex-direction: column; gap: 16px; }
+.help-feature { }
+.help-feature-header {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px;
+}
+.help-feature p {
+  font-size: 12px; color: var(--text); line-height: 1.6; margin: 0;
+}
 .canvas-area.viewport-active {
   display: flex; align-items: flex-start; justify-content: center;
   overflow: auto; background: #0a0a0a; padding: 16px;
@@ -1637,7 +1876,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .history-toggle span { user-select: none; }
 
 /* Shortcuts panel */
-.shortcuts-panel { padding: 14px; overflow-y: auto; flex: 1; }
+/* Shortcut rows (used in help overview) */
 .shortcut-group { margin-bottom: 16px; }
 .shortcut-group-title {
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
@@ -1648,7 +1887,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   display: flex; align-items: center; gap: 6px;
   padding: 4px 0; font-size: 12px; color: var(--text);
 }
-.shortcut-row span { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.shortcut-row span { margin-left: auto; color: var(--text); font-size: 11px; }
 .shortcut-row kbd {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 22px; height: 20px; padding: 0 5px;
@@ -1658,7 +1897,7 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 }
 .shortcut-row kbd.mod { font-size: 10px; color: var(--text-muted); }
 .shortcut-hint {
-  font-size: 11px; color: var(--text-muted); padding-top: 8px;
+  font-size: 11px; color: var(--text); margin-top: 16px; padding-top: 8px;
   border-top: 1px solid var(--border); display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
 }
 .shortcut-hint kbd {
@@ -1666,9 +1905,5 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   min-width: 18px; height: 16px; padding: 0 4px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px;
   font-family: inherit; font-size: 10px; font-weight: 600; color: var(--text-muted);
-}
-.shortcut-version {
-  margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border);
-  font-size: 10px; color: var(--text-muted); opacity: 0.6;
 }
 </style>

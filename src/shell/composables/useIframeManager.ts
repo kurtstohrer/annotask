@@ -262,13 +262,13 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   async function scanA11y(eid?: string): Promise<{ violations: any[]; error?: string }> {
     try {
-      return await bridge.request('a11y:scan', { eid }, 15000) // longer timeout for axe load
+      return await bridge.request('a11y:scan', { eid }, 30000) // longer timeout for axe load
     } catch { return { violations: [], error: 'timeout' } }
   }
 
   async function scanPerf(): Promise<PerfScanResult> {
     try {
-      return await bridge.request('perf:scan', {}, 5000)
+      return await bridge.request('perf:scan', {}, 15000)
     } catch { return { timestamp: 0, url: '', route: '', vitals: [], resources: [], error: 'timeout' } }
   }
 
@@ -278,7 +278,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   async function stopPerfRecording(): Promise<PerfRecording> {
     try {
-      return await bridge.request('perf:stop-recording', {}, 5000)
+      return await bridge.request('perf:stop-recording', {}, 15000)
     } catch { return { startTime: 0, endTime: 0, duration: 0, url: '', route: '', events: [], vitals: [], resources: [], error: 'timeout' } }
   }
 
