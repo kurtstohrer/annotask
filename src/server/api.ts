@@ -70,6 +70,7 @@ function sendError(res: ServerResponse, status: number, message: string) {
 
 import { isLocalOrigin } from './origin.js'
 import { scanComponentLibraries } from './component-scanner.js'
+import { filterTasksByMfe } from '../shared/task-summary.js'
 
 /** Build CORS origin value — reflect the request origin if it's local, otherwise omit */
 function getCorsOrigin(req: IncomingMessage): string | null {
@@ -169,7 +170,7 @@ export function createAPIMiddleware(options: APIOptions) {
       const mfeFilter = urlObj.searchParams.get('mfe')
       const taskData = options.getTasks()
       if (mfeFilter) {
-        const filtered = { ...taskData, tasks: taskData.tasks.filter(t => t.mfe === mfeFilter) }
+        const filtered = { ...taskData, tasks: filterTasksByMfe(taskData.tasks, mfeFilter) }
         res.end(JSON.stringify(filtered, null, 2))
       } else {
         res.end(JSON.stringify(taskData, null, 2))

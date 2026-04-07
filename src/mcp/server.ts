@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 import { isLocalOrigin } from '../server/origin.js'
 import { scanComponentLibraries } from '../server/component-scanner.js'
+import { filterTasksByMfe } from '../shared/task-summary.js'
 
 // ── Types ────────────────────────────────────────────
 
@@ -225,7 +226,7 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
       const taskData = deps.getTasks()
       let tasks = taskData.tasks
       if (typeof args.status === 'string') tasks = tasks.filter(t => t.status === args.status)
-      if (typeof args.mfe === 'string') tasks = tasks.filter(t => t.mfe === args.mfe)
+      if (typeof args.mfe === 'string') tasks = filterTasksByMfe(tasks, args.mfe)
 
       const output = args.detail === true
         ? tasks.map(stripVisual)
