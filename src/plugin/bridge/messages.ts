@@ -64,8 +64,9 @@ export function bridgeMessages(): string {
       }
       var eids = [];
       var rects = [];
+      var wantTag = (payload.tagName || '').toLowerCase();
       for (var i = 0; i < all.length; i++) {
-        if (all[i].tagName.toLowerCase() === payload.tagName) {
+        if (!wantTag || all[i].tagName.toLowerCase() === wantTag) {
           eids.push(getEid(all[i]));
           rects.push(getRect(all[i]));
         }

@@ -495,11 +495,13 @@ function setupBridgeEvents() {
     }
   })
 
-  iframe.onBridgeEvent('route:changed', (data: { path: string }) => {
+  iframe.onBridgeEvent('route:changed', async (data: { path: string }) => {
     annotations.setRoute(data.path)
     localStorage.setItem('annotask:lastRoute', data.path)
     // Restore any tasks for the new route that haven't been loaded yet
-    restoreAnnotationsFromTasks()
+    await restoreAnnotationsFromTasks()
+    // Re-resolve eids for the freshly mounted route's annotations so they track scroll/resize
+    resolveSelectTaskEids()
     // Auto-scan: lightweight scans on navigation
     scheduleAutoScan()
   })
@@ -836,6 +838,9 @@ const appUrl = computed(() => {
         <div v-if="interactionMode === 'arrow' || interactionMode === 'draw'"
           class="drawing-shield" :class="interactionMode" />
 
+        <!-- Annotation overlays: hidden in interact mode so the user can use their app normally -->
+        <template v-if="interactionMode !== 'interact'">
+
         <!-- Persistent task element highlights (always visible, outside inspector toggle) -->
         <div v-for="te in taskElementRects" :key="'te-'+te.taskId" class="highlight task-element"
           :style="{ left: te.rect.x+'px', top: te.rect.y+'px', width: te.rect.width+'px', height: te.rect.height+'px' }" />
@@ -885,6 +890,7 @@ const appUrl = computed(() => {
           @update-prompt="(id, p) => annotations.updateHighlight(id, { prompt: p })"
         />
 
+        </template><!-- end annotation overlays (hidden in interact mode) -->
         </template><!-- end editor overlays -->
 
         <!-- Layout overlay (design view) -->

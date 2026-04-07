@@ -35,7 +35,7 @@ const VALID_TRANSITIONS: Record<string, Set<string>> = {
 const POSTABLE_TASK_FIELDS = new Set([
   'type', 'description', 'file', 'line', 'component', 'mfe', 'route',
   'intent', 'action', 'context', 'viewport', 'interaction_history',
-  'element_context', 'screenshot',
+  'element_context', 'screenshot', 'visual',
 ])
 
 /** Fields that PATCH /tasks/:id is allowed to update */

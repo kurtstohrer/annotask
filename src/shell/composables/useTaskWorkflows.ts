@@ -485,10 +485,17 @@ export function useTaskWorkflows(deps: {
       } else if (v.kind === 'arrow') {
         const arrow = deps.annotations.addArrow(v.fromX, v.fromY, v.toX, v.toY, v.label || task.description, v.color)
         arrow.route = taskRoute
-        // Restore rects but NOT eids — eids are volatile across reloads
+        // Restore rects + source file/line so the rAF loop can re-resolve eids on bridge ready.
+        // Saved eids are NOT restored (they're volatile across reloads).
+        const ctx = (task as any).context || {}
+        const toEl = ctx.to_element || {}
         deps.annotations.updateArrow(arrow.id, {
           ...(v.fromRect ? { fromRect: v.fromRect } : {}),
           ...(v.toRect ? { toRect: v.toRect } : {}),
+          ...(task.file ? { fromFile: task.file } : {}),
+          ...(task.line ? { fromLine: task.line } : {}),
+          ...(toEl.file ? { toFile: toEl.file as string } : {}),
+          ...(toEl.line ? { toLine: toEl.line as number } : {}),
         })
       } else if (v.kind === 'section') {
         const section = deps.annotations.addDrawnSection(v.x, v.y, v.width, v.height)
@@ -514,21 +521,99 @@ export function useTaskWorkflows(deps: {
     }
   }
 
-  async function resolveSelectTaskEids() {
+  /** Returns true if any annotation still needs an eid resolved */
+  function hasUnresolvedAnnotations(): boolean {
+    for (const t of deps.taskSystem.tasks.value) {
+      const v = t.visual as any
+      if (v?.kind === 'select' && t.file && t.line && t.status !== 'accepted' && !(v.eids?.length)) return true
+    }
+    for (const a of deps.annotations.arrows.value) {
+      if (!a.fromEid && a.fromFile && a.fromLine) return true
+      if (!a.toEid && a.toFile && a.toLine) return true
+    }
+    for (const s of deps.annotations.drawnSections.value) {
+      if (!s.nearEid && s.nearFile && s.nearLine) return true
+    }
+    for (const h of deps.annotations.highlights.value) {
+      if (!h.eid && h.file && h.line) return true
+    }
+    return false
+  }
+
+  /** Single-pass eid resolution against the bridge */
+  async function resolveAnnotationEidsOnce() {
+    // Select tasks (multi-element highlights)
     for (const task of deps.taskSystem.tasks.value) {
       const v = task.visual as any
-      if (v?.kind === 'select' && task.file && task.line && task.status !== 'accepted') {
-        try {
-          const group = await deps.iframe.findTemplateGroup(task.file, String(task.line), '')
-          if (group.eids.length > 0) {
-            v.eids = group.eids
-            const rects = group.rects.filter((r: any): r is BridgeRect => r !== null)
-            for (const rect of rects) {
-              deps.taskElementRects.value = [...deps.taskElementRects.value, { taskId: task.id, rect }]
-            }
+      if (v?.kind === 'select' && task.file && task.line && task.status !== 'accepted' && !(v.eids?.length)) {
+        const group = await deps.iframe.findTemplateGroup(task.file, String(task.line), '')
+        if (group.eids.length > 0) {
+          v.eids = group.eids
+          const rects = group.rects.filter((r: any): r is BridgeRect => r !== null)
+          for (const rect of rects) {
+            deps.taskElementRects.value = [...deps.taskElementRects.value, { taskId: task.id, rect }]
           }
-        } catch { /* bridge not ready yet */ }
+        }
       }
+    }
+
+    // Restored arrows: re-resolve from/to eids by file+line
+    for (const arrow of deps.annotations.arrows.value) {
+      if (!arrow.fromEid && arrow.fromFile && arrow.fromLine) {
+        const g = await deps.iframe.findTemplateGroup(arrow.fromFile, String(arrow.fromLine), '')
+        if (g.eids.length > 0) {
+          const rect = g.rects[0] || undefined
+          deps.annotations.updateArrow(arrow.id, {
+            fromEid: g.eids[0],
+            ...(rect ? { fromRect: rect as BridgeRect } : {}),
+          })
+        }
+      }
+      if (!arrow.toEid && arrow.toFile && arrow.toLine) {
+        const g = await deps.iframe.findTemplateGroup(arrow.toFile, String(arrow.toLine), '')
+        if (g.eids.length > 0) {
+          const rect = g.rects[0] || undefined
+          deps.annotations.updateArrow(arrow.id, {
+            toEid: g.eids[0],
+            ...(rect ? { toRect: rect as BridgeRect } : {}),
+          })
+        }
+      }
+    }
+
+    // Restored drawn sections
+    for (const section of deps.annotations.drawnSections.value) {
+      if (!section.nearEid && section.nearFile && section.nearLine) {
+        const g = await deps.iframe.findTemplateGroup(section.nearFile, String(section.nearLine), '')
+        if (g.eids.length > 0) {
+          deps.annotations.updateDrawnSection(section.id, { nearEid: g.eids[0] })
+        }
+      }
+    }
+
+    // Restored text highlights
+    for (const hl of deps.annotations.highlights.value) {
+      if (!hl.eid && hl.file && hl.line) {
+        const g = await deps.iframe.findTemplateGroup(hl.file, String(hl.line), '')
+        if (g.eids.length > 0) {
+          hl.eid = g.eids[0]
+          const rect = g.rects[0]
+          if (rect) hl.rect = rect as BridgeRect
+        }
+      }
+    }
+  }
+
+  async function resolveSelectTaskEids() {
+    // The iframe app may mount its components after bridge:ready fires, so we
+    // retry resolution a few times until all annotations have eids or we give up.
+    // Each retry waits a frame to let Vue/React/Svelte render the next batch.
+    const MAX_ATTEMPTS = 8
+    const RETRY_DELAY_MS = 150
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try { await resolveAnnotationEidsOnce() } catch { /* bridge hiccup, retry */ }
+      if (!hasUnresolvedAnnotations()) break
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
     }
     deps.startAnnotationLoop()
   }
