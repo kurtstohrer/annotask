@@ -19,7 +19,7 @@ Annotask is a visual markup tool that integrates with Vite and Webpack. The user
 ### 0. Check server status
 
 ```bash
-annotask status
+npx annotask status
 ```
 
 If this fails, the Annotask dev server isn't running. Ask the user to start it.
@@ -27,7 +27,7 @@ If this fails, the Annotask dev server isn't running. Ask the user to start it.
 ### 1. Fetch pending tasks
 
 ```bash
-annotask tasks
+npx annotask tasks
 ```
 
 Response (compact task summaries):
@@ -44,7 +44,7 @@ For full task details (context, element_context, viewport, interaction_history, 
 Some tasks include a `screenshot` field. The screenshot shows exactly what the user sees in the browser. To view it:
 
 ```bash
-annotask screenshot TASK_ID
+npx annotask screenshot TASK_ID
 ```
 
 This downloads the PNG to `.annotask/screenshots/`. Use it as visual context alongside the task description and source code.
@@ -58,7 +58,7 @@ Filter for `status: "pending"` and `status: "denied"` (with `feedback`) tasks. A
 Mark it `in_progress` so the user sees you're working on it:
 
 ```bash
-annotask update-task TASK_ID --status=in_progress
+npx annotask update-task TASK_ID --status=in_progress
 ```
 
 #### b. Apply the change
@@ -98,7 +98,7 @@ Read the task type and apply accordingly:
 If you are **genuinely stuck** — missing API context, unclear library usage, ambiguous intent that could lead to a wrong implementation — ask the user for clarification instead of guessing:
 
 ```bash
-annotask update-task TASK_ID --ask='{"message":"Optional markdown context","questions":[{"id":"q1","text":"Which auth library should I use?","type":"choice","options":["NextAuth","Clerk","Custom"]},{"id":"q2","text":"Where is the session config located?","type":"text"}]}'
+npx annotask update-task TASK_ID --ask='{"message":"Optional markdown context","questions":[{"id":"q1","text":"Which auth library should I use?","type":"choice","options":["NextAuth","Clerk","Custom"]},{"id":"q2","text":"Where is the session config located?","type":"text"}]}'
 ```
 
 This sets the task to `needs_info` status. The user sees your questions in the Annotask UI and responds there. When answered, the task returns to `in_progress` with answers in `agent_feedback`.
@@ -111,14 +111,14 @@ This sets the task to `needs_info` status. The user sees your questions in the A
 - Only ask when you truly cannot proceed — do not ask for confirmation on straightforward tasks
 - Be specific: "Which CSS framework should I use for the grid?" is better than "How should I do this?"
 - Combine related questions into a single ask rather than multiple rounds
-- After asking, move on to the next task. Come back to check answers later via `annotask tasks`
+- After asking, move on to the next task. Come back to check answers later via `npx annotask tasks`
 
 #### d. Mark as blocked (when the task can't be done)
 
 If the task is **fundamentally outside your control** — a performance issue in a third-party library, an accessibility bug in a dependency, a config change that requires infrastructure access, etc. — mark it as blocked with an explanation:
 
 ```bash
-annotask update-task TASK_ID --blocked-reason="This layout shift is caused by vue-router v4's async route loading. Needs upstream fix or a loading skeleton wrapper — cannot be resolved by editing component code alone."
+npx annotask update-task TASK_ID --blocked-reason="This layout shift is caused by vue-router v4's async route loading. Needs upstream fix or a loading skeleton wrapper — cannot be resolved by editing component code alone."
 ```
 
 This sets the task to `blocked` status automatically. The user sees your explanation and can either **dismiss** the task or **push back** (deny it with feedback asking you to try a different approach).
@@ -132,7 +132,7 @@ This sets the task to `blocked` status automatically. The user sees your explana
 As soon as you finish applying **this** task, mark it for review with a brief resolution note:
 
 ```bash
-annotask update-task TASK_ID --status=review --resolution="Swapped grid to flexbox, added gap-4 for spacing"
+npx annotask update-task TASK_ID --status=review --resolution="Swapped grid to flexbox, added gap-4 for spacing"
 ```
 
 Keep resolutions short — one sentence describing what you changed, not why. The user sees it in the Annotask shell alongside the diff.

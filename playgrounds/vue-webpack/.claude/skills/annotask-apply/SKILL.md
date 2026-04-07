@@ -19,7 +19,7 @@ Annotask is a visual markup tool that integrates with Vite and Webpack. The user
 ### 0. Check server status
 
 ```bash
-annotask status
+npx annotask status
 ```
 
 If this fails, the Annotask dev server isn't running. Ask the user to start it.
@@ -27,37 +27,24 @@ If this fails, the Annotask dev server isn't running. Ask the user to start it.
 ### 1. Fetch pending tasks
 
 ```bash
-annotask tasks
+npx annotask tasks
 ```
 
-Response:
+Response (compact task summaries):
 ```json
-{
-  "version": "1.0",
-  "tasks": [
-    {
-      "id": "task-123",
-      "type": "annotation",
-      "status": "pending",
-      "description": "Change the header background to match the new brand colors",
-      "file": "src/components/Header.vue",
-      "line": 5,
-      "action": "text_edit",
-      "context": { "element_tag": "header" },
-      "screenshot": "screenshot-1711800000-ab3kf.png"
-    }
-  ]
-}
+{"version":"1.0","count":1,"tasks":[{"id":"task-123","type":"annotation","status":"pending","description":"Change the header background to match the new brand colors","file":"src/components/Header.vue","line":5,"action":"text_edit","screenshot":"screenshot-1711800000-ab3kf.png"}]}
 ```
 
-Each task has: `id`, `type`, `status`, `description` (what to do), `file`, `line`, `component`, and optionally `action`, `context` with element details, and `screenshot` with a filename.
+Each task summary has: `id`, `type`, `status`, `description`, `file`, `line`, and optionally `component`, `action`, `screenshot`, `feedback` (on denied tasks), `blocked_reason`, `resolution`.
+
+For full task details (context, element_context, viewport, interaction_history, agent_feedback), use the `annotask_get_task` MCP tool with a specific task ID. Only fetch full details when the summary doesn't provide enough context to apply the change.
 
 ### Screenshot reference
 
 Some tasks include a `screenshot` field. The screenshot shows exactly what the user sees in the browser. To view it:
 
 ```bash
-annotask screenshot TASK_ID
+npx annotask screenshot TASK_ID
 ```
 
 This downloads the PNG to `.annotask/screenshots/`. Use it as visual context alongside the task description and source code.
@@ -71,7 +58,7 @@ Filter for `status: "pending"` and `status: "denied"` (with `feedback`) tasks. A
 Mark it `in_progress` so the user sees you're working on it:
 
 ```bash
-annotask update-task TASK_ID --status=in_progress
+npx annotask update-task TASK_ID --status=in_progress
 ```
 
 #### b. Apply the change
@@ -111,7 +98,7 @@ Read the task type and apply accordingly:
 If you are **genuinely stuck** — missing API context, unclear library usage, ambiguous intent that could lead to a wrong implementation — ask the user for clarification instead of guessing:
 
 ```bash
-annotask update-task TASK_ID --ask='{"message":"Optional markdown context","questions":[{"id":"q1","text":"Which auth library should I use?","type":"choice","options":["NextAuth","Clerk","Custom"]},{"id":"q2","text":"Where is the session config located?","type":"text"}]}'
+npx annotask update-task TASK_ID --ask='{"message":"Optional markdown context","questions":[{"id":"q1","text":"Which auth library should I use?","type":"choice","options":["NextAuth","Clerk","Custom"]},{"id":"q2","text":"Where is the session config located?","type":"text"}]}'
 ```
 
 This sets the task to `needs_info` status. The user sees your questions in the Annotask UI and responds there. When answered, the task returns to `in_progress` with answers in `agent_feedback`.
@@ -124,14 +111,14 @@ This sets the task to `needs_info` status. The user sees your questions in the A
 - Only ask when you truly cannot proceed — do not ask for confirmation on straightforward tasks
 - Be specific: "Which CSS framework should I use for the grid?" is better than "How should I do this?"
 - Combine related questions into a single ask rather than multiple rounds
-- After asking, move on to the next task. Come back to check answers later via `annotask tasks`
+- After asking, move on to the next task. Come back to check answers later via `npx annotask tasks`
 
 #### d. Mark as blocked (when the task can't be done)
 
 If the task is **fundamentally outside your control** — a performance issue in a third-party library, an accessibility bug in a dependency, a config change that requires infrastructure access, etc. — mark it as blocked with an explanation:
 
 ```bash
-annotask update-task TASK_ID --blocked-reason="This layout shift is caused by vue-router v4's async route loading. Needs upstream fix or a loading skeleton wrapper — cannot be resolved by editing component code alone."
+npx annotask update-task TASK_ID --blocked-reason="This layout shift is caused by vue-router v4's async route loading. Needs upstream fix or a loading skeleton wrapper — cannot be resolved by editing component code alone."
 ```
 
 This sets the task to `blocked` status automatically. The user sees your explanation and can either **dismiss** the task or **push back** (deny it with feedback asking you to try a different approach).
@@ -145,7 +132,7 @@ This sets the task to `blocked` status automatically. The user sees your explana
 As soon as you finish applying **this** task, mark it for review with a brief resolution note:
 
 ```bash
-annotask update-task TASK_ID --status=review --resolution="Swapped grid to flexbox, added gap-4 for spacing"
+npx annotask update-task TASK_ID --status=review --resolution="Swapped grid to flexbox, added gap-4 for spacing"
 ```
 
 Keep resolutions short — one sentence describing what you changed, not why. The user sees it in the Annotask shell alongside the diff.
@@ -167,14 +154,6 @@ The user will review changes in Annotask and either **accept** (task removed) or
 
 Tasks with `status: "denied"` and a `feedback` field were rejected by the user. They are processed alongside pending tasks in step 2. Read the `feedback` carefully to understand what went wrong and re-apply with corrections.
 
-## Also check the live report
-
-```bash
-annotask report
-```
-
-This returns both the live report (current session markup) and tasks. Use it as additional context — it shows what's on the user's screen right now. But tasks are the source of truth for what to apply.
-
 ## Task lifecycle
 
 ```
@@ -187,7 +166,7 @@ pending → in_progress (agent working) → review (user checks) → accepted (r
 
 ## Important notes
 
-- Always fetch tasks, not just the report — tasks persist across sessions
+- Tasks are the source of truth — fetch tasks, not the report
 - The `feedback` field on denied tasks is critical — it tells you what the user didn't like
 - Tasks with `status: "review"` are waiting for user review — don't re-apply them
 - Tasks with `status: "needs_info"` are waiting for the user to answer your questions — skip them and check back later
