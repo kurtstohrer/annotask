@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue'
+import Prism from 'prismjs'
+import 'prismjs/components/prism-json'
 import { safeMd } from '../utils/safeMd'
 import type { Task } from '../composables/useTasks'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -26,6 +28,16 @@ const jsonCopied = ref(false)
 const showDeleteConfirm = ref(false)
 
 const taskJson = computed(() => JSON.stringify(props.task, null, 2))
+
+function escapeHtml(str: string) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+const taskJsonHighlighted = computed(() => {
+  if (!showJson.value) return ''
+  const grammar = Prism.languages.json
+  return grammar ? Prism.highlight(taskJson.value, grammar, 'json') : escapeHtml(taskJson.value)
+})
 
 function copyJson() {
   navigator.clipboard.writeText(taskJson.value)
@@ -291,7 +303,7 @@ function onKeydown(e: KeyboardEvent) {
         <div class="td-json-toolbar">
           <button class="td-json-copy" @click="copyJson">{{ jsonCopied ? 'Copied!' : 'Copy' }}</button>
         </div>
-        <pre class="td-json-pre"><code>{{ taskJson }}</code></pre>
+        <pre class="td-json-pre"><code v-html="taskJsonHighlighted" /></pre>
       </div>
 
       <!-- Body -->
@@ -836,8 +848,16 @@ function onKeydown(e: KeyboardEvent) {
 .td-json-pre {
   margin: 0; padding: 16px; flex: 1; overflow: auto;
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 11px; line-height: 1.6; color: var(--syntax-string); tab-size: 2;
+  font-size: 11px; line-height: 1.6; color: var(--text); tab-size: 2;
 }
+.td-json-pre .token.property,
+.td-json-pre .token.key { color: var(--syntax-property); }
+.td-json-pre .token.string { color: var(--syntax-string); }
+.td-json-pre .token.number { color: var(--syntax-number); }
+.td-json-pre .token.boolean { color: var(--syntax-boolean); }
+.td-json-pre .token.null { color: var(--syntax-null); }
+.td-json-pre .token.operator { color: var(--syntax-operator); }
+.td-json-pre .token.punctuation { color: var(--syntax-punctuation); }
 
 /* Resolution */
 .td-resolution {
