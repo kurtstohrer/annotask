@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { ErrorEntry } from '../composables/useErrorMonitor'
 import FindingDrawer from './FindingDrawer.vue'
 
-defineProps<{
+const props = defineProps<{
   errors: ErrorEntry[]
   errorCount: number
   warnCount: number
@@ -18,6 +18,15 @@ const emit = defineEmits<{
 }>()
 
 const detailEntry = ref<ErrorEntry | null>(null)
+const showErrors = ref(true)
+const showWarnings = ref(true)
+
+const filteredErrors = computed(() => {
+  return props.errors.filter(e => {
+    if (e.level === 'warn') return showWarnings.value
+    return showErrors.value
+  })
+})
 
 function severityForDrawer(level: string): string {
   if (level === 'unhandled') return 'critical'
@@ -48,15 +57,35 @@ function onCreateTask(entry: ErrorEntry) {
 <template>
   <div class="errors-tab">
     <div class="errors-header">
+      <div class="errors-filters">
+        <button
+          class="filter-btn errors"
+          :class="{ active: showErrors }"
+          @click="showErrors = !showErrors"
+          :title="showErrors ? 'Hide errors' : 'Show errors'"
+        >
+          <span class="filter-dot errors-dot" />
+          Errors
+          <span class="filter-count">{{ errorCount }}</span>
+        </button>
+        <button
+          class="filter-btn warns"
+          :class="{ active: showWarnings }"
+          @click="showWarnings = !showWarnings"
+          :title="showWarnings ? 'Hide warnings' : 'Show warnings'"
+        >
+          <span class="filter-dot warns-dot" />
+          Warnings
+          <span class="filter-count">{{ warnCount }}</span>
+        </button>
+      </div>
       <div class="errors-actions">
-        <button class="action-btn" @click="emit('toggle-pause')" :title="paused ? 'Resume capture' : 'Pause capture'">
+        <button class="action-btn icon-only" @click="emit('toggle-pause')" :title="paused ? 'Resume capture' : 'Pause capture'">
           <svg v-if="paused" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
           <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-          {{ paused ? 'Resume' : 'Pause' }}
         </button>
-        <button class="action-btn" @click="emit('clear')" :disabled="errors.length === 0" title="Clear all captured errors">
+        <button class="action-btn icon-only" @click="emit('clear')" :disabled="errors.length === 0" title="Clear all captured errors">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-          Clear
         </button>
       </div>
     </div>
@@ -68,6 +97,9 @@ function onCreateTask(entry: ErrorEntry) {
     <div v-else-if="errors.length === 0 && paused" class="errors-empty paused-msg">
       Capture paused
     </div>
+    <div v-else-if="filteredErrors.length === 0" class="errors-empty filtered-msg">
+      All entries hidden by filters
+    </div>
 
     <div v-if="errors.length" class="errors-summary">
       <span v-if="errorCount" class="summary-errors">{{ errorCount }} error{{ errorCount === 1 ? '' : 's' }}</span>
@@ -75,7 +107,7 @@ function onCreateTask(entry: ErrorEntry) {
       <span v-if="warnCount" class="summary-warns">{{ warnCount }} warning{{ warnCount === 1 ? '' : 's' }}</span>
     </div>
 
-    <div v-for="entry in errors" :key="entry.id" class="error-card" :class="entry.level" @click="detailEntry = entry">
+    <div v-for="entry in filteredErrors" :key="entry.id" class="error-card" :class="entry.level" @click="detailEntry = entry">
       <span class="error-level" :class="entry.level">{{ entry.level === 'unhandled' ? 'uncaught' : entry.level }}</span>
       <span class="error-msg">{{ truncate(entry.message, 80) }}</span>
       <span class="error-count" v-if="entry.count > 1">{{ entry.count }}x</span>
@@ -121,9 +153,30 @@ function onCreateTask(entry: ErrorEntry) {
 <style scoped>
 .errors-tab { display: flex; flex-direction: column; gap: 8px; }
 
-.errors-header { display: flex; align-items: center; justify-content: space-between; }
+.errors-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 
-.errors-actions { display: flex; gap: 4px; }
+.filter-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 8px; font-size: 10px; font-weight: 600;
+  background: var(--surface-2); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+  opacity: 0.5;
+}
+.filter-btn:hover { background: var(--border); color: var(--text); }
+.filter-btn.active { opacity: 1; color: var(--text); }
+.filter-btn.errors.active { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.filter-btn.warns.active { border-color: color-mix(in srgb, var(--warning) 40%, transparent); }
+.filter-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.errors-dot { background: var(--danger); }
+.warns-dot { background: var(--warning); }
+.filter-count {
+  font-size: 9px; font-weight: 700; padding: 0 4px;
+  background: var(--surface); border-radius: 3px; color: var(--text-muted);
+}
+
+.errors-filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.errors-actions { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
 .action-btn {
   display: flex; align-items: center; gap: 4px;
   padding: 3px 10px; font-size: 10px; font-weight: 600;
@@ -132,6 +185,7 @@ function onCreateTask(entry: ErrorEntry) {
 }
 .action-btn:hover:not(:disabled) { background: var(--border); color: var(--text); }
 .action-btn:disabled { opacity: 0.5; cursor: default; }
+.action-btn.icon-only { padding: 4px 6px; }
 
 .errors-empty {
   display: flex; align-items: center; gap: 6px;
@@ -142,6 +196,10 @@ function onCreateTask(entry: ErrorEntry) {
 .errors-empty.paused-msg {
   background: color-mix(in srgb, var(--warning) 10%, transparent); color: var(--warning);
   border-color: color-mix(in srgb, var(--warning) 25%, transparent);
+}
+.errors-empty.filtered-msg {
+  background: var(--surface-2); color: var(--text-muted);
+  border-color: var(--border);
 }
 
 .errors-summary {
