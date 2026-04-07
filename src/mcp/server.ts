@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 import { isLocalOrigin } from '../server/origin.js'
 import { scanComponentLibraries } from '../server/component-scanner.js'
-import { filterTasksByMfe } from '../shared/task-summary.js'
+import { buildTaskSummary, filterTasksByMfe } from '../shared/task-summary.js'
 
 // ── Types ────────────────────────────────────────────
 
@@ -56,7 +56,6 @@ function stripVisual(task: unknown): Record<string, unknown> {
 
 const PROTOCOL_VERSION = '2025-03-26'
 const SERVER_INFO = { name: 'annotask', version: '0.0.16' }
-const SUMMARY_FIELDS = ['id', 'type', 'status', 'description', 'file', 'line', 'component', 'action', 'screenshot', 'mfe', 'route', 'feedback', 'blocked_reason', 'resolution'] as const
 
 const VALID_TRANSITIONS: Record<string, Set<string>> = {
   pending:     new Set(['in_progress', 'denied']),
@@ -230,13 +229,7 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
 
       const output = args.detail === true
         ? tasks.map(stripVisual)
-        : tasks.map((t) => {
-            const summary: Record<string, unknown> = {}
-            for (const key of SUMMARY_FIELDS) {
-              if (t[key] !== undefined && t[key] !== null) summary[key] = t[key]
-            }
-            return summary
-          })
+        : tasks.map(buildTaskSummary)
 
       return { content: [{ type: 'text', text: compact({ version: taskData.version, count: output.length, tasks: output }) }] }
     }

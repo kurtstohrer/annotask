@@ -4,6 +4,7 @@ import { resolve, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readFileSync } from 'node:fs'
+import { buildTaskSummary } from '../shared/task-summary.js'
 
 const args = process.argv.slice(2)
 const command = args[0] || 'watch'
@@ -247,8 +248,6 @@ async function fetchScreenshot() {
 
 // ── Tasks: fetch task list ────────────────────────────────
 
-const SUMMARY_FIELDS = ['id', 'type', 'status', 'description', 'file', 'line', 'component', 'action', 'screenshot', 'mfe', 'route', 'feedback', 'blocked_reason', 'resolution'] as const
-
 async function fetchTasks() {
   try {
     const tasksUrl = mfeFilter ? `${apiUrl}/tasks?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/tasks`
@@ -258,13 +257,7 @@ async function fetchTasks() {
 
     if (!prettyFlag) {
       const tasks = Array.isArray(data.tasks) ? data.tasks : []
-      data.tasks = tasks.map((t) => {
-        const summary: Record<string, unknown> = {}
-        for (const key of SUMMARY_FIELDS) {
-          if (t[key] !== undefined && t[key] !== null) summary[key] = t[key]
-        }
-        return summary
-      })
+      data.tasks = tasks.map(buildTaskSummary)
       data.count = tasks.length
     }
 
