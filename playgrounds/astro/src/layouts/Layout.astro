@@ -17,10 +17,24 @@ const { title } = Astro.props
 </body>
 </html>
 
+<script is:inline>
+  // Apply theme before paint to avoid flash of wrong theme
+  (function() {
+    try {
+      var stored = localStorage.getItem('astro-solar-theme')
+      var theme = stored === 'light' ? 'light' : 'dark'
+      document.documentElement.setAttribute('data-theme', theme)
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'dark')
+    }
+  })()
+</script>
+
 <style is:global>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  :root {
+  :root,
+  :root[data-theme="dark"] {
     --bg: #121212;
     --surface: #1a1a1a;
     --surface-alt: #242424;
@@ -30,16 +44,66 @@ const { title } = Astro.props
     --accent: #a0a0a0;
   }
 
+  :root[data-theme="light"] {
+    --bg: #f6f7fb;
+    --surface: #ffffff;
+    --surface-alt: #eef0f7;
+    --border: #d8dbe6;
+    --text: #15172b;
+    --text-muted: #5a607a;
+    --accent: #6366f1;
+  }
+
   body {
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
     background: var(--bg);
     color: var(--text);
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
   }
+
+  .theme-toggle {
+    width: 30px;
+    height: 30px;
+    margin-left: 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .theme-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
 </style>
+
+<script is:inline>
+  document.addEventListener('DOMContentLoaded', function() {
+    var btn = document.getElementById('theme-toggle')
+    if (!btn) return
+    function sync() {
+      var theme = document.documentElement.getAttribute('data-theme') || 'dark'
+      btn.textContent = theme === 'dark' ? '☀' : '☾'
+    }
+    sync()
+    btn.addEventListener('click', function() {
+      var current = document.documentElement.getAttribute('data-theme') || 'dark'
+      var next = current === 'dark' ? 'light' : 'dark'
+      document.documentElement.setAttribute('data-theme', next)
+      try { localStorage.setItem('astro-solar-theme', next) } catch (e) {}
+      sync()
+    })
+  })
+</script>

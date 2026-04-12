@@ -312,13 +312,15 @@ export function usePerfMonitor(
     }
   }
 
-  function createPerfTask(finding: PerfFinding) {
+  async function createPerfTask(finding: PerfFinding) {
     const snapshot = recordingResult.value
       ? buildSnapshot(recordingResult.value.vitals, recordingResult.value.resources, recordingResult.value)
       : scanResult.value ? buildSnapshot(scanResult.value.vitals, scanResult.value.resources) : undefined
+    const colorScheme = await iframe.getColorScheme()
     taskSystem.createTask({
       type: 'perf_fix', description: `Improve performance: ${finding.title}`,
       file: '', line: 0, component: '', route: currentRoute.value,
+      ...(colorScheme ? { color_scheme: colorScheme } : {}),
       context: {
         findingId: finding.findingId, category: finding.category, severity: finding.severity,
         detail: finding.detail, value: finding.value, unit: finding.unit,

@@ -3,11 +3,12 @@ import { ref, computed, type Ref, type MaybeRef, toRef } from 'vue'
 import { useDesignSpec } from '../composables/useDesignSpec'
 import { useThemePreview } from '../composables/useThemePreview'
 import { useTasks } from '../composables/useTasks'
-import type { DesignSpecToken } from '../../schema'
+import type { DesignSpecToken, ColorSchemeInfo } from '../../schema'
 import ColorPalettePicker from './ColorPalettePicker.vue'
 
 const props = defineProps<{
   iframeRef: HTMLIFrameElement | null
+  getColorScheme: () => Promise<ColorSchemeInfo | null>
 }>()
 
 const { designSpec, isInitialized, isLoading } = useDesignSpec()
@@ -204,8 +205,9 @@ function buildTasks() {
 
 async function commitChanges() {
   const tasks = buildTasks()
+  const colorScheme = await props.getColorScheme()
   for (const task of tasks) {
-    await taskSystem.createTask(task)
+    await taskSystem.createTask(colorScheme ? { ...task, color_scheme: colorScheme } : task)
   }
   // Clear all edits
   editedColors.value = new Map()

@@ -905,6 +905,7 @@ const appUrl = computed(() => {
         <DesignPanel
           :section="designSection"
           :iframeRef="iframeRef"
+          :getColorScheme="iframe.getColorScheme"
           :primarySelection="primarySelection"
           :selectionSummary="selectionSummary"
           :selectedElementRole="selectedElementRole"

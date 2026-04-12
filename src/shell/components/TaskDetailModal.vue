@@ -455,6 +455,22 @@ function onKeydown(e: KeyboardEvent) {
           <code class="td-meta-val">{{ task.viewport.width || 'auto' }} &times; {{ task.viewport.height || 'auto' }}</code>
         </section>
 
+        <!-- Color scheme -->
+        <section v-if="task.color_scheme" class="td-section">
+          <h4 class="td-label">Color scheme</h4>
+          <code class="td-meta-val">{{ task.color_scheme.scheme }}</code>
+          <span class="td-meta-hint">via {{ task.color_scheme.source }}</span>
+          <div v-if="task.color_scheme.marker" class="td-meta-marker">
+            <template v-if="task.color_scheme.marker.kind === 'attribute'">
+              &lt;{{ task.color_scheme.marker.host }} {{ task.color_scheme.marker.name }}="{{ task.color_scheme.marker.value }}"&gt;
+            </template>
+            <template v-else>
+              &lt;{{ task.color_scheme.marker.host }} class="{{ task.color_scheme.marker.name }}"&gt;
+              <span class="td-meta-hint">({{ task.color_scheme.marker.framework }})</span>
+            </template>
+          </div>
+        </section>
+
         <!-- Context (remaining fields) -->
         <section v-if="contextEntries.length" class="td-section">
           <h4 class="td-label">Context</h4>
@@ -725,6 +741,8 @@ function onKeydown(e: KeyboardEvent) {
 .td-meta-item { display: flex; flex-direction: column; gap: 2px; }
 .td-meta-key { font-size: 10px; color: var(--text-muted); }
 .td-meta-val { font-size: 12px; color: var(--text); }
+.td-meta-hint { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+.td-meta-marker { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono, monospace); margin-top: 4px; }
 
 /* Screenshots */
 .td-screenshots { display: flex; flex-wrap: wrap; gap: 8px; }

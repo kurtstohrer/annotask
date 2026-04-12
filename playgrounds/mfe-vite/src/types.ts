@@ -1,36 +1,30 @@
-export interface Planet {
+export interface Product {
   id: number
   name: string
-  type: 'Terrestrial' | 'Gas Giant' | 'Ice Giant'
-  radius_km: number
-  gravity_ms2: number
-  avg_temp_c: number
-  moons: number
-  distance_from_sun_mkm: number
-  orbital_period_days: number
-  discovered_by: string | null
-  description: string
-  color: string
+  category: string
+  price_cents: number
+  image_emoji: string
+  in_stock: boolean
+  rating: number
+  review_count: number
+  summary: string
 }
 
-export interface Moon {
-  id: number
+export interface Category {
+  id: string
   name: string
-  planet: string
-  radius_km: number
-  distance_km: number
-  orbital_period_days: number
-  discovered_by: string | null
-  year_discovered: number | null
-  description: string
-  color: string
+  icon: string
 }
 
-export interface Stats {
-  total_planets: number
-  total_moons: number
-  largest_planet: string
-  smallest_planet: string
-  hottest_planet: string
-  coldest_planet: string
+export interface ProductListResponse {
+  products: Product[]
+  total: number
+}
+
+export interface CatalogStats {
+  total_products: number
+  in_stock: number
+  total_reviews: number
+  best_seller: string
+  highest_rated: string
 }

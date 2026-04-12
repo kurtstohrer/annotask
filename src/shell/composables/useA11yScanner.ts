@@ -57,9 +57,10 @@ export function useA11yScanner(
     a11yScanned.value = true
   }
 
-  function createA11yTask(violation: A11yViolation) {
+  async function createA11yTask(violation: A11yViolation) {
     const elements = violation.elements || []
     const firstWithSource = elements.find(e => e.file)
+    const colorScheme = await iframe.getColorScheme()
     taskSystem.createTask({
       type: 'a11y_fix',
       description: `Fix accessibility: ${violation.help}`,
@@ -67,6 +68,7 @@ export function useA11yScanner(
       line: firstWithSource?.line ? parseInt(firstWithSource.line) : 0,
       component: firstWithSource?.component || '',
       route: currentRoute.value,
+      ...(colorScheme ? { color_scheme: colorScheme } : {}),
       context: {
         rule: violation.id,
         impact: violation.impact,

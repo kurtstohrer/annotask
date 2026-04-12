@@ -34,14 +34,14 @@ const VALID_TRANSITIONS: Record<string, Set<string>> = {
 /** Fields that POST /tasks is allowed to set (server controls id, status, timestamps) */
 const POSTABLE_TASK_FIELDS = new Set([
   'type', 'description', 'file', 'line', 'component', 'mfe', 'route',
-  'intent', 'action', 'context', 'viewport', 'interaction_history',
+  'intent', 'action', 'context', 'viewport', 'color_scheme', 'interaction_history',
   'element_context', 'screenshot', 'visual',
 ])
 
 /** Fields that PATCH /tasks/:id is allowed to update */
 const PATCHABLE_TASK_FIELDS = new Set([
   'status', 'description', 'notes', 'screenshot', 'feedback',
-  'intent', 'action', 'context', 'viewport', 'interaction_history',
+  'intent', 'action', 'context', 'viewport', 'color_scheme', 'interaction_history',
   'element_context', 'mfe', 'agent_feedback', 'blocked_reason', 'resolution',
 ])
 

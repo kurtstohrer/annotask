@@ -1,36 +1,63 @@
-export interface Planet {
-  id: number
-  name: string
-  type: 'Terrestrial' | 'Gas Giant' | 'Ice Giant'
-  radius_km: number
-  gravity_ms2: number
-  avg_temp_c: number
-  moons: number
-  distance_from_sun_mkm: number
-  orbital_period_days: number
-  discovered_by: string | null
-  description: string
-  color: string
+export interface MetricSeries {
+  value: number
+  change_pct: number
+  trend: number[]
 }
 
-export interface Moon {
-  id: number
-  name: string
-  planet: string
-  radius_km: number
-  distance_km: number
-  orbital_period_days: number
-  discovered_by: string | null
-  year_discovered: number | null
-  description: string
-  color: string
+export interface DashboardMetrics {
+  active_users: MetricSeries
+  mrr: MetricSeries
+  error_rate: MetricSeries
+  p95_latency_ms: MetricSeries
 }
 
-export interface Stats {
-  total_planets: number
-  total_moons: number
-  largest_planet: string
-  smallest_planet: string
-  hottest_planet: string
-  coldest_planet: string
+export interface User {
+  id: number
+  name: string
+  email: string
+  role: string
+  status: 'active' | 'invited' | 'suspended'
+  plan: 'Solo' | 'Team' | 'Enterprise'
+  joined: string
+  last_seen: string | null
+}
+
+export interface UserListResponse {
+  users: User[]
+  total: number
+}
+
+export interface Order {
+  id: string
+  customer: string
+  plan: string
+  seats: number
+  amount_usd: number
+  status: 'paid' | 'pending' | 'free' | 'refunded'
+  created: string
+}
+
+export interface OrderListResponse {
+  orders: Order[]
+  total: number
+}
+
+export interface ActivityEntry {
+  id: number
+  ts: string
+  actor: string
+  action: string
+  target: string
+}
+
+export interface AnalyticsBucket {
+  day: string
+  users: number
+  sessions: number
+  tasks: number
+}
+
+export interface AnalyticsResponse {
+  range: string
+  buckets: AnalyticsBucket[]
 }

@@ -1,0 +1,122 @@
+/*
+ * Annotask marketing site — design tokens.
+ *
+ * Every color, space, radius, and shadow lives here so annotask's theme inspector
+ * sees real, editable design tokens. Components reference var(--*), never hex.
+ */
+
+:root,
+:root[data-theme="dark"] {
+  /* Surfaces */
+  --bg:                 #0a0b14;
+  --surface:            #11131f;
+  --surface-2:          #181b2c;
+  --surface-elevated:   #1f2338;
+  --surface-glass:      rgba(24, 27, 44, 0.72);
+
+  /* Borders */
+  --border:             #232842;
+  --border-strong:      #353c5e;
+
+  /* Text */
+  --text:               #f1f3fb;
+  --text-muted:         #a4abc7;
+  --text-subtle:        #6e7490;
+  --text-on-accent:     #ffffff;
+
+  /* Accent — annotask brand */
+  --accent:             #007bff;
+  --accent-strong:      #004cff;
+  --accent-soft:        color-mix(in srgb, var(--accent) 18%, transparent);
+  --accent-glow:        color-mix(in srgb, var(--accent) 35%, transparent);
+
+  /* Semantic */
+  --success:            #22c55e;
+  --warning:            #f59e0b;
+  --danger:             #ef4444;
+  --info:               #06b6d4;
+
+  /* Status colors for changelog/integration badges */
+  --status-stable:      #22c55e;
+  --status-beta:        #f59e0b;
+  --status-experimental: #06b6d4;
+
+  /* Radii */
+  --radius-xs:          4px;
+  --radius-sm:          8px;
+  --radius-md:          12px;
+  --radius-lg:          18px;
+  --radius-xl:          28px;
+  --radius-pill:        999px;
+
+  /* Spacing scale (4px base) */
+  --space-1:            4px;
+  --space-2:            8px;
+  --space-3:            12px;
+  --space-4:            16px;
+  --space-5:            20px;
+  --space-6:            24px;
+  --space-8:            32px;
+  --space-10:           40px;
+  --space-12:           48px;
+  --space-16:           64px;
+  --space-20:           80px;
+  --space-24:           96px;
+
+  /* Shadows */
+  --shadow-sm:          0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md:          0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg:          0 20px 60px rgba(0, 0, 0, 0.45);
+  --shadow-glow:        0 0 60px var(--accent-glow);
+
+  /* Typography */
+  --font-display:       "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body:          "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:          "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --weight-regular:     400;
+  --weight-medium:      500;
+  --weight-semibold:    600;
+  --weight-bold:        700;
+
+  /* Layout */
+  --container-max:      1180px;
+  --content-max:        720px;
+
+  /* Motion */
+  --duration-fast:      120ms;
+  --duration-normal:    220ms;
+  --duration-slow:      400ms;
+  --easing-standard:    cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Focus ring */
+  --focus-ring:         0 0 0 3px var(--accent-glow);
+
+  /* Hero gradient */
+  --hero-gradient:      radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 60%);
+}
+
+:root[data-theme="light"] {
+  --bg:                 #fbfafd;
+  --surface:            #ffffff;
+  --surface-2:          #f4f3fa;
+  --surface-elevated:   #ffffff;
+  --surface-glass:      rgba(255, 255, 255, 0.78);
+
+  --border:             #e6e3f0;
+  --border-strong:      #cfc9e0;
+
+  --text:               #15172b;
+  --text-muted:         #5a607a;
+  --text-subtle:        #8a90a8;
+  --text-on-accent:     #ffffff;
+
+  --accent:             #7c3aed;
+  --accent-strong:      #6d28d9;
+  --accent-soft:        color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-glow:        color-mix(in srgb, var(--accent) 22%, transparent);
+
+  --shadow-sm:          0 1px 2px rgba(20, 16, 40, 0.06);
+  --shadow-md:          0 12px 32px rgba(20, 16, 40, 0.10);
+  --shadow-lg:          0 24px 64px rgba(20, 16, 40, 0.14);
+}

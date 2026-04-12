@@ -1,0 +1,60 @@
+.strip {
+  padding: var(--space-12) var(--space-6);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.label {
+  text-align: center;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-subtle);
+  font-weight: var(--weight-semibold);
+  margin-bottom: var(--space-6);
+}
+
+.logos {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-width: var(--container-max);
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  justify-content: center;
+  align-items: center;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  transition: color var(--duration-fast) var(--easing-standard);
+}
+
+.logo:hover {
+  color: var(--text);
+}
+
+.logoBadge {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--weight-bold);
+  font-family: var(--font-display);
+  color: var(--accent);
+}
+
+.logoName {
+  font-weight: var(--weight-medium);
+  font-size: 1rem;
+}

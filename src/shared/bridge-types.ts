@@ -227,6 +227,33 @@ export interface ColorSwatch {
   value: string
 }
 
+// ── Color Scheme ────────────────────────────────────────
+
+export type ColorScheme = 'light' | 'dark'
+
+/** How the color scheme was detected in the user's app */
+export type ColorSchemeSource =
+  | 'attribute'           // theme attribute on <html> or <body>
+  | 'class'               // theme class on <html> or <body>
+  | 'css-color-scheme'    // CSS color-scheme property on <html>
+  | 'background-luminance'// computed background luminance — universal fallback
+  | 'media-query'         // prefers-color-scheme media query
+  | 'fallback'            // no signal — defaulted to light
+
+/**
+ * A DOM marker that indicates the user's theming convention. Lets agents
+ * locate the theme control even when scheme was inferred from luminance.
+ */
+export type ColorSchemeMarker =
+  | { kind: 'attribute'; host: 'html' | 'body'; name: string; value: string }
+  | { kind: 'class'; host: 'html' | 'body'; name: string; framework: string }
+
+export interface ColorSchemeResult {
+  scheme: ColorScheme
+  source: ColorSchemeSource
+  marker?: ColorSchemeMarker
+}
+
 // ── Insert / Move ───────────────────────────────────────
 
 export interface InsertPlaceholderPayload {

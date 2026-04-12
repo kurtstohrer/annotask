@@ -4,10 +4,12 @@ import ElementStyleEditor from './ElementStyleEditor.vue'
 import type { SelectionData } from '../composables/useSelectionModel'
 import type { ElementRole } from '../composables/useElementClassification'
 import type { ChangeRecord } from '../composables/useStyleEditor'
+import type { ColorSchemeInfo } from '../../schema'
 
 defineProps<{
   section: 'tokens' | 'inspector'
   iframeRef: HTMLIFrameElement | null
+  getColorScheme: () => Promise<ColorSchemeInfo | null>
   primarySelection: SelectionData | null
   selectionSummary: string | null
   selectedElementRole: ElementRole | null
@@ -31,7 +33,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="design-panel">
-    <ThemePage v-if="section === 'tokens'" :iframeRef="iframeRef" />
+    <ThemePage v-if="section === 'tokens'" :iframeRef="iframeRef" :getColorScheme="getColorScheme" />
     <ElementStyleEditor
       v-else-if="section === 'inspector' && primarySelection"
       :primarySelection="primarySelection"

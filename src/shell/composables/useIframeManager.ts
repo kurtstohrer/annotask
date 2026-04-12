@@ -5,7 +5,7 @@ import type {
   StyleGetComputedResult, StyleApplyResult,
   ClassSetResult, ElementClassificationData,
   LayoutContainerData, LayoutAddTrackResult, LayoutAddChildResult,
-  CheckSourceMappingResult, ColorSwatch,
+  CheckSourceMappingResult, ColorSwatch, ColorSchemeResult,
   InsertPlaceholderResult, InsertVueComponentResult,
   InteractionMode, PerfScanResult, PerfRecording,
 } from '../../shared/bridge-types'
@@ -215,6 +215,12 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     } catch { return '/' }
   }
 
+  async function getColorScheme(): Promise<ColorSchemeResult | null> {
+    try {
+      return await bridge.request<ColorSchemeResult>('color-scheme:get')
+    } catch { return null }
+  }
+
   async function insertPlaceholder(
     targetEid: string, position: string, tag: string,
     opts?: { classes?: string; textContent?: string; category?: string; library?: string; defaultProps?: Record<string, unknown> }
@@ -330,6 +336,8 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     scanColorVars,
     // Route
     getCurrentRoute,
+    // Color scheme
+    getColorScheme,
     // Insert/Move
     insertPlaceholder,
     removePlaceholder,

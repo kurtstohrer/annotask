@@ -2,7 +2,8 @@
 import { ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
-defineProps<{ title: string }>()
+defineProps<{ title: string; theme: 'dark' | 'light' }>()
+defineEmits<{ 'toggle-theme': [] }>()
 
 const menuOpen = ref(false)
 </script>
@@ -10,29 +11,36 @@ const menuOpen = ref(false)
 <template>
   <header class="header">
     <div class="header-brand">
-      <i class="pi pi-globe brand-icon"></i>
+      <i class="pi pi-chart-line brand-icon"></i>
       <h1 class="brand-title">{{ title }}</h1>
     </div>
     <button class="menu-toggle" @click="menuOpen = !menuOpen" aria-label="Toggle menu">
       <i :class="menuOpen ? 'pi pi-times' : 'pi pi-bars'"></i>
     </button>
     <nav class="header-nav" :class="{ open: menuOpen }">
-      <RouterLink to="/sun" class="nav-link" @click="menuOpen = false">
-        <i class="pi pi-sun"></i> Sun
+      <RouterLink to="/overview" class="nav-link" @click="menuOpen = false">
+        <i class="pi pi-th-large"></i> Overview
       </RouterLink>
-      <RouterLink to="/planets" class="nav-link" @click="menuOpen = false">
-        <i class="pi pi-globe"></i> Planets
+      <RouterLink to="/users" class="nav-link" @click="menuOpen = false">
+        <i class="pi pi-users"></i> Users
       </RouterLink>
-      <RouterLink to="/moons" class="nav-link" @click="menuOpen = false">
-        <i class="pi pi-moon"></i> Moons
+      <RouterLink to="/orders" class="nav-link" @click="menuOpen = false">
+        <i class="pi pi-shopping-cart"></i> Orders
       </RouterLink>
-      <RouterLink to="/orbits" class="nav-link" @click="menuOpen = false">
-        <i class="pi pi-sun"></i> Orbits
+      <RouterLink to="/analytics" class="nav-link" @click="menuOpen = false">
+        <i class="pi pi-chart-bar"></i> Analytics
       </RouterLink>
       <RouterLink to="/api-docs" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-book"></i> API Docs
       </RouterLink>
     </nav>
+    <button
+      class="theme-toggle"
+      @click="$emit('toggle-theme')"
+      :aria-label="`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`"
+    >
+      <i :class="theme === 'dark' ? 'pi pi-sun' : 'pi pi-moon'"></i>
+    </button>
   </header>
 </template>
 
@@ -62,7 +70,7 @@ const menuOpen = ref(false)
 .brand-title {
   font-size: 18px;
   font-weight: 700;
-  color: #f8fafc;
+  color: var(--text);
   letter-spacing: -0.02em;
 }
 
@@ -91,8 +99,8 @@ const menuOpen = ref(false)
 }
 
 .nav-link.router-link-active {
-  background: rgba(156, 163, 175, 0.1);
-  color: #d1d5db;
+  background: var(--surface-alt);
+  color: var(--text);
 }
 
 .menu-toggle {
@@ -111,6 +119,27 @@ const menuOpen = ref(false)
 
 .menu-toggle:hover {
   background: var(--surface-alt);
+  color: var(--text);
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-left: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.theme-toggle:hover {
+  border-color: var(--text-muted);
   color: var(--text);
 }
 

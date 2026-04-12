@@ -5,13 +5,13 @@
 [private]
 ensure-api:
     #!/usr/bin/env bash
-    if curl -s http://localhost:8888/api/stats > /dev/null 2>&1; then
+    if curl -s http://localhost:8888/api/marketing/stats > /dev/null 2>&1; then
         echo "[API] Already running on port 8888"
     else
         echo "[API] Starting Planet Explorer API on port 8888..."
         cd api && nohup uvicorn main:app --port 8888 > /tmp/annotask-api.log 2>&1 &
         for i in {1..10}; do
-            if curl -s http://localhost:8888/api/stats > /dev/null 2>&1; then
+            if curl -s http://localhost:8888/api/marketing/stats > /dev/null 2>&1; then
                 echo "[API] Ready"
                 break
             fi

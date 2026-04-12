@@ -196,6 +196,33 @@ describe('transformJSX', () => {
     expect(result).toContain('data-annotask-file')
   })
 
+  it('handles JSX expression with template literal containing ${} substitutions', () => {
+    // Regression: backtick inside a JSX `{...}` expression must save/restore
+    // braceDepth so the closing backtick is recognized.
+    const code = [
+      'function App() {',
+      '  const isOpen = true',
+      '  return (',
+      '    <li className={`${styles.item} ${isOpen ? styles.itemOpen : \'\'}`}>',
+      '      <span>hi</span>',
+      '    </li>',
+      '  )',
+      '}',
+    ].join('\n')
+    const result = transform(code)!
+    const matches = result.match(/data-annotask-file/g)
+    expect(matches).toHaveLength(2) // li, span
+    expect(result).toContain('${styles.item}')
+    expect(result).toContain('${isOpen ? styles.itemOpen')
+  })
+
+  it('handles nested template literal inside JSX expression', () => {
+    const code = '<div title={`outer ${`inner ${x}`} end`}>hi</div>'
+    const result = transform(code)!
+    expect(result).toContain('data-annotask-file')
+    expect(result).toContain('`outer ${`inner ${x}`} end`')
+  })
+
   it('handles multiple components in one file', () => {
     const code = [
       'function Header() { return <header>head</header> }',

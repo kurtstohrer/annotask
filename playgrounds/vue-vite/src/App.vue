@@ -1,10 +1,44 @@
 <script setup lang="ts">
+import { ref, onMounted, watch } from 'vue'
 import Header from './components/Header.vue'
+
+type Theme = 'dark' | 'light'
+
+const STORAGE_KEY = 'annotask-admin-theme'
+const theme = ref<Theme>('dark')
+
+onMounted(() => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored === 'light' || stored === 'dark') theme.value = stored
+  } catch {
+    /* noop */
+  }
+  applyTheme(theme.value)
+})
+
+function applyTheme(t: Theme) {
+  const root = document.documentElement
+  root.setAttribute('data-theme', t)
+  if (t === 'dark') root.classList.add('dark')
+  else root.classList.remove('dark')
+  try {
+    localStorage.setItem(STORAGE_KEY, t)
+  } catch {
+    /* noop */
+  }
+}
+
+watch(theme, applyTheme)
+
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark'
+}
 </script>
 
 <template>
-  <div class="app dark">
-    <Header title="Solar System Explorer" />
+  <div class="app" :class="theme">
+    <Header title="Annotask Admin" :theme="theme" @toggle-theme="toggleTheme" />
 
     <main class="content">
       <router-view />
@@ -15,7 +49,8 @@ import Header from './components/Header.vue'
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-:root {
+:root,
+:root[data-theme="dark"] {
   --bg: #121212;
   --surface: #1a1a1a;
   --surface-alt: #242424;
@@ -25,11 +60,22 @@ import Header from './components/Header.vue'
   --accent: #a0a0a0;
 }
 
+:root[data-theme="light"] {
+  --bg: #f6f7fb;
+  --surface: #ffffff;
+  --surface-alt: #eef0f7;
+  --border: #d8dbe6;
+  --text: #15172b;
+  --text-muted: #5a607a;
+  --accent: #6366f1;
+}
+
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 .app { min-height: 100vh; }
@@ -47,14 +93,14 @@ body {
   margin-bottom: 16px;
 }
 
-.dark .p-selectbutton {
+.p-selectbutton {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
 }
 
-.dark .p-selectbutton .p-togglebutton {
+.p-selectbutton .p-togglebutton {
   background: transparent;
   border: none;
   color: var(--text-muted);
@@ -65,11 +111,11 @@ body {
   transition: all 0.15s;
 }
 
-.dark .p-selectbutton .p-togglebutton .p-togglebutton-content {
+.p-selectbutton .p-togglebutton .p-togglebutton-content {
   background: transparent;
 }
 
-.dark .p-selectbutton .p-togglebutton.p-togglebutton-checked {
+.p-selectbutton .p-togglebutton.p-togglebutton-checked {
   background: var(--surface-alt);
   color: var(--text);
 }
@@ -90,20 +136,20 @@ body {
   gap: 10px;
   padding: 14px 18px;
   margin-bottom: 20px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
   border-radius: 10px;
-  color: #fca5a5;
+  color: #ef4444;
   font-size: 14px;
 }
 
-/* PrimeVue dark overrides for consistency */
-.dark .p-datatable {
+/* PrimeVue overrides — work in both themes via the var() system */
+.p-datatable {
   background: var(--surface);
   border-radius: 10px;
   overflow: hidden;
 }
-.dark .p-datatable-thead > tr > th {
+.p-datatable-thead > tr > th {
   background: var(--surface-alt) !important;
   border-color: var(--border) !important;
   color: var(--text-muted) !important;
@@ -111,40 +157,40 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.dark .p-datatable-tbody > tr {
+.p-datatable-tbody > tr {
   background: var(--surface) !important;
   border-color: var(--border) !important;
 }
-.dark .p-datatable-tbody > tr:hover {
+.p-datatable-tbody > tr:hover {
   background: var(--surface-alt) !important;
 }
-.dark .p-datatable-tbody > tr > td {
+.p-datatable-tbody > tr > td {
   border-color: var(--border) !important;
   color: var(--text);
 }
-.dark .p-inputtext {
+.p-inputtext {
   background: var(--surface-alt);
   border-color: var(--border);
   color: var(--text);
 }
-.dark .p-inputtext:focus {
+.p-inputtext:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(160, 160, 160, 0.15);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
-.dark .p-card {
+.p-card {
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
 }
-.dark .p-menubar {
+.p-menubar {
   background: transparent;
   border: none;
 }
-.dark .p-progressbar {
+.p-progressbar {
   background: var(--surface-alt);
   border-radius: 4px;
 }
-.dark .p-progressbar-value {
+.p-progressbar-value {
   background: var(--accent);
 }
 

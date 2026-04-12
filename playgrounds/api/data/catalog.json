@@ -1,0 +1,30 @@
+{
+  "categories": [
+    { "id": "audio", "name": "Audio", "icon": "🎧" },
+    { "id": "wearables", "name": "Wearables", "icon": "⌚" },
+    { "id": "cameras", "name": "Cameras", "icon": "📸" },
+    { "id": "computing", "name": "Computing", "icon": "💻" },
+    { "id": "home", "name": "Smart Home", "icon": "🏠" },
+    { "id": "gaming", "name": "Gaming", "icon": "🎮" }
+  ],
+  "products": [
+    { "id": 1, "name": "Aurora Headphones Pro", "category": "audio", "price_cents": 34900, "image_emoji": "🎧", "in_stock": true, "rating": 4.8, "review_count": 1284, "summary": "Active noise-cancelling over-ear headphones with 40h battery." },
+    { "id": 2, "name": "Drift Earbuds", "category": "audio", "price_cents": 14900, "image_emoji": "🎵", "in_stock": true, "rating": 4.5, "review_count": 642, "summary": "Featherweight true-wireless earbuds with adaptive EQ." },
+    { "id": 3, "name": "Atlas Studio Monitor", "category": "audio", "price_cents": 59900, "image_emoji": "🔊", "in_stock": false, "rating": 4.9, "review_count": 211, "summary": "Reference-grade studio monitor with custom waveguide." },
+    { "id": 4, "name": "Pulse Smartwatch S5", "category": "wearables", "price_cents": 39900, "image_emoji": "⌚", "in_stock": true, "rating": 4.6, "review_count": 904, "summary": "Always-on display, 7-day battery, GPS, blood-oxygen sensor." },
+    { "id": 5, "name": "Pulse Band Lite", "category": "wearables", "price_cents": 8900, "image_emoji": "📟", "in_stock": true, "rating": 4.2, "review_count": 1812, "summary": "Slim fitness tracker with sleep insights and 14-day battery." },
+    { "id": 6, "name": "Halo Mirrorless Camera", "category": "cameras", "price_cents": 129900, "image_emoji": "📷", "in_stock": true, "rating": 4.7, "review_count": 318, "summary": "26MP full-frame mirrorless body with in-body stabilization." },
+    { "id": 7, "name": "Halo 35mm f/1.4", "category": "cameras", "price_cents": 79900, "image_emoji": "🔭", "in_stock": true, "rating": 4.9, "review_count": 142, "summary": "Wide-aperture prime lens for the Halo mount." },
+    { "id": 8, "name": "Halo Action Cam", "category": "cameras", "price_cents": 24900, "image_emoji": "📹", "in_stock": true, "rating": 4.4, "review_count": 558, "summary": "Pocketable 5.3K action cam with magnetic mounts." },
+    { "id": 9, "name": "Nimbus Laptop 14", "category": "computing", "price_cents": 159900, "image_emoji": "💻", "in_stock": true, "rating": 4.8, "review_count": 762, "summary": "14-inch ultraportable, 22h battery, OLED panel." },
+    { "id": 10, "name": "Nimbus Laptop 16 Pro", "category": "computing", "price_cents": 249900, "image_emoji": "🖥️", "in_stock": false, "rating": 4.9, "review_count": 412, "summary": "16-inch workstation with discrete GPU and 64GB RAM." },
+    { "id": 11, "name": "Nimbus Wireless Mouse", "category": "computing", "price_cents": 8900, "image_emoji": "🖱️", "in_stock": true, "rating": 4.3, "review_count": 2188, "summary": "Low-latency wireless mouse with magnetic charging." },
+    { "id": 12, "name": "Nimbus Mechanical Keyboard", "category": "computing", "price_cents": 18900, "image_emoji": "⌨️", "in_stock": true, "rating": 4.6, "review_count": 1042, "summary": "Hot-swap mechanical keyboard with PBT keycaps." },
+    { "id": 13, "name": "Hearth Smart Bulb", "category": "home", "price_cents": 2900, "image_emoji": "💡", "in_stock": true, "rating": 4.4, "review_count": 5310, "summary": "16M-color smart bulb with adaptive scheduling." },
+    { "id": 14, "name": "Hearth Doorbell Cam", "category": "home", "price_cents": 19900, "image_emoji": "🔔", "in_stock": true, "rating": 4.5, "review_count": 1467, "summary": "Wireless doorbell camera with 2K HDR video." },
+    { "id": 15, "name": "Hearth Thermostat", "category": "home", "price_cents": 22900, "image_emoji": "🌡️", "in_stock": true, "rating": 4.7, "review_count": 982, "summary": "Self-learning thermostat with energy reports." },
+    { "id": 16, "name": "Quasar Console X", "category": "gaming", "price_cents": 49900, "image_emoji": "🎮", "in_stock": false, "rating": 4.8, "review_count": 2341, "summary": "Next-gen console with ray tracing and 4K@120 output." },
+    { "id": 17, "name": "Quasar Pro Controller", "category": "gaming", "price_cents": 8900, "image_emoji": "🕹️", "in_stock": true, "rating": 4.6, "review_count": 1789, "summary": "Hall-effect sticks, remappable back buttons, USB-C." },
+    { "id": 18, "name": "Quasar VR Headset", "category": "gaming", "price_cents": 59900, "image_emoji": "🥽", "in_stock": true, "rating": 4.5, "review_count": 612, "summary": "Standalone VR with pancake lenses and inside-out tracking." }
+  ]
+}

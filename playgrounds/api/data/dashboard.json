@@ -1,0 +1,49 @@
+{
+  "metrics": {
+    "active_users": { "value": 12483, "change_pct": 8.4, "trend": [11420, 11680, 11910, 12010, 12183, 12351, 12483] },
+    "mrr": { "value": 184250, "change_pct": 12.1, "trend": [162400, 167800, 171200, 174900, 178300, 181400, 184250] },
+    "error_rate": { "value": 0.42, "change_pct": -23.5, "trend": [0.61, 0.58, 0.53, 0.49, 0.47, 0.44, 0.42] },
+    "p95_latency_ms": { "value": 184, "change_pct": -6.7, "trend": [203, 198, 194, 191, 188, 186, 184] }
+  },
+  "users": [
+    { "id": 1, "name": "Maya Chen", "email": "maya@lattice.app", "role": "Designer", "status": "active", "plan": "Team", "joined": "2025-09-12", "last_seen": "2026-04-08T09:14:22Z" },
+    { "id": 2, "name": "Diego Romero", "email": "diego@notable.io", "role": "Engineer", "status": "active", "plan": "Team", "joined": "2025-08-03", "last_seen": "2026-04-08T11:02:11Z" },
+    { "id": 3, "name": "Priya Subramanian", "email": "priya@hearth.dev", "role": "Engineer", "status": "active", "plan": "Solo", "joined": "2025-11-22", "last_seen": "2026-04-07T22:48:09Z" },
+    { "id": 4, "name": "Tomás Werner", "email": "tomas@bondi.gg", "role": "Manager", "status": "active", "plan": "Enterprise", "joined": "2025-06-18", "last_seen": "2026-04-08T07:33:50Z" },
+    { "id": 5, "name": "Aïsha Bell", "email": "aisha@loom.com", "role": "Designer", "status": "invited", "plan": "Team", "joined": "2026-04-01", "last_seen": null },
+    { "id": 6, "name": "Henry Okafor", "email": "henry@driftboard.app", "role": "Founder", "status": "active", "plan": "Team", "joined": "2025-12-09", "last_seen": "2026-04-08T10:55:42Z" },
+    { "id": 7, "name": "Zoë Lambert", "email": "zoe@studio.cool", "role": "Designer", "status": "active", "plan": "Solo", "joined": "2026-01-14", "last_seen": "2026-04-06T18:21:03Z" },
+    { "id": 8, "name": "Karim Haddad", "email": "karim@onemind.dev", "role": "Engineer", "status": "suspended", "plan": "Team", "joined": "2025-10-30", "last_seen": "2026-03-12T14:09:18Z" },
+    { "id": 9, "name": "Lena Maric", "email": "lena@frame.studio", "role": "Designer", "status": "active", "plan": "Team", "joined": "2025-07-25", "last_seen": "2026-04-08T08:01:44Z" },
+    { "id": 10, "name": "Bao Nguyen", "email": "bao@axis.dev", "role": "Engineer", "status": "active", "plan": "Enterprise", "joined": "2025-05-04", "last_seen": "2026-04-08T11:38:27Z" },
+    { "id": 11, "name": "Sofia Marchetti", "email": "sofia@palette.run", "role": "Designer", "status": "active", "plan": "Team", "joined": "2025-09-29", "last_seen": "2026-04-07T15:22:05Z" },
+    { "id": 12, "name": "Reza Tehrani", "email": "reza@drift.cloud", "role": "Manager", "status": "active", "plan": "Enterprise", "joined": "2025-04-18", "last_seen": "2026-04-08T09:48:33Z" }
+  ],
+  "orders": [
+    { "id": "ord-1042", "customer": "Lattice", "plan": "Team", "seats": 18, "amount_usd": 216, "status": "paid", "created": "2026-04-07T14:22:00Z" },
+    { "id": "ord-1041", "customer": "Notable", "plan": "Team", "seats": 9, "amount_usd": 108, "status": "paid", "created": "2026-04-07T11:08:33Z" },
+    { "id": "ord-1040", "customer": "Bondi", "plan": "Enterprise", "seats": 142, "amount_usd": 4260, "status": "paid", "created": "2026-04-06T22:46:11Z" },
+    { "id": "ord-1039", "customer": "Loom", "plan": "Team", "seats": 24, "amount_usd": 288, "status": "pending", "created": "2026-04-06T18:01:42Z" },
+    { "id": "ord-1038", "customer": "Driftboard", "plan": "Team", "seats": 6, "amount_usd": 72, "status": "paid", "created": "2026-04-06T09:14:30Z" },
+    { "id": "ord-1037", "customer": "Hearth", "plan": "Solo", "seats": 1, "amount_usd": 0, "status": "free", "created": "2026-04-05T20:18:55Z" },
+    { "id": "ord-1036", "customer": "Frame Studio", "plan": "Team", "seats": 11, "amount_usd": 132, "status": "paid", "created": "2026-04-05T13:33:27Z" },
+    { "id": "ord-1035", "customer": "Axis", "plan": "Enterprise", "seats": 87, "amount_usd": 2610, "status": "paid", "created": "2026-04-04T19:09:08Z" },
+    { "id": "ord-1034", "customer": "Palette", "plan": "Team", "seats": 14, "amount_usd": 168, "status": "refunded", "created": "2026-04-04T10:01:14Z" },
+    { "id": "ord-1033", "customer": "Drift Cloud", "plan": "Enterprise", "seats": 220, "amount_usd": 6600, "status": "paid", "created": "2026-04-03T15:47:50Z" }
+  ],
+  "activity": [
+    { "id": 1, "ts": "2026-04-08T11:38:27Z", "actor": "Bao Nguyen", "action": "applied 4 tasks", "target": "axis-frontend" },
+    { "id": 2, "ts": "2026-04-08T11:02:11Z", "actor": "Diego Romero", "action": "denied a task", "target": "notable-app" },
+    { "id": 3, "ts": "2026-04-08T10:55:42Z", "actor": "Henry Okafor", "action": "created a section_request", "target": "driftboard-marketing" },
+    { "id": 4, "ts": "2026-04-08T09:48:33Z", "actor": "Reza Tehrani", "action": "ran an a11y scan", "target": "drift-control-plane" },
+    { "id": 5, "ts": "2026-04-08T09:14:22Z", "actor": "Maya Chen", "action": "edited theme tokens", "target": "lattice-perf" },
+    { "id": 6, "ts": "2026-04-08T08:01:44Z", "actor": "Lena Maric", "action": "pinned a task", "target": "frame-studio-app" },
+    { "id": 7, "ts": "2026-04-08T07:33:50Z", "actor": "Tomás Werner", "action": "accepted 12 tasks", "target": "bondi-dashboard" },
+    { "id": 8, "ts": "2026-04-07T22:48:09Z", "actor": "Priya Subramanian", "action": "joined as Engineer", "target": "hearth.dev" }
+  ],
+  "analytics": {
+    "7d":  [{"day": "Mon", "users": 11420, "sessions": 28430, "tasks": 142}, {"day": "Tue", "users": 11680, "sessions": 29110, "tasks": 167}, {"day": "Wed", "users": 11910, "sessions": 29840, "tasks": 184}, {"day": "Thu", "users": 12010, "sessions": 30205, "tasks": 192}, {"day": "Fri", "users": 12183, "sessions": 30580, "tasks": 173}, {"day": "Sat", "users": 12351, "sessions": 28940, "tasks": 88}, {"day": "Sun", "users": 12483, "sessions": 28200, "tasks": 76}],
+    "30d": [{"day": "Wk1", "users": 10840, "sessions": 198400, "tasks": 920}, {"day": "Wk2", "users": 11220, "sessions": 204100, "tasks": 1010}, {"day": "Wk3", "users": 11760, "sessions": 211200, "tasks": 1097}, {"day": "Wk4", "users": 12350, "sessions": 219800, "tasks": 1158}],
+    "90d": [{"day": "Jan", "users": 9320, "sessions": 821300, "tasks": 3840}, {"day": "Feb", "users": 10410, "sessions": 891500, "tasks": 4220}, {"day": "Mar", "users": 11920, "sessions": 968400, "tasks": 4710}]
+  }
+}

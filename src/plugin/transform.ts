@@ -421,13 +421,21 @@ const DEFAULT_SKIP_TAGS = new Set(['script', 'style', 'template', 'slot'])
 export function findTagEnd(template: string, i: number, jsxMode = false): number {
   let inQuote: string | null = null
   let braceDepth = 0
+  // Stack of saved (inQuote, braceDepth) pairs for nested template literals.
+  // When a backtick opens inside a JSX expression, the surrounding brace depth
+  // must be restored when the template literal closes — otherwise the closing
+  // backtick check (braceDepth === 0) is wrong.
+  const stack: Array<{ inQuote: string | null; braceDepth: number }> = []
 
   while (i < template.length) {
     const ch = template[i]
 
     if (inQuote === '`') {
       if (ch === '`' && braceDepth === 0) {
-        inQuote = null
+        // Exit template literal — restore prior context.
+        const prev = stack.pop()
+        inQuote = prev ? prev.inQuote : null
+        braceDepth = prev ? prev.braceDepth : 0
       } else if (ch === '$' && i + 1 < template.length && template[i + 1] === '{') {
         braceDepth++
         i++ // skip past '{'
@@ -435,10 +443,19 @@ export function findTagEnd(template: string, i: number, jsxMode = false): number
         braceDepth--
       }
     } else if (inQuote) {
-      if (ch === inQuote) inQuote = null
+      if (ch === '\\') {
+        i++ // skip escaped character
+      } else if (ch === inQuote) {
+        inQuote = null
+      }
     } else {
-      if (ch === '"' || ch === "'" || ch === '`') {
+      if (ch === '"' || ch === "'") {
         inQuote = ch
+      } else if (ch === '`') {
+        // Save current context before entering template literal.
+        stack.push({ inQuote, braceDepth })
+        inQuote = '`'
+        braceDepth = 0
       } else if (jsxMode && ch === '{') {
         braceDepth++
       } else if (jsxMode && ch === '}' && braceDepth > 0) {

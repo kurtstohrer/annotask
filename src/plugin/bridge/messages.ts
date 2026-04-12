@@ -463,18 +463,24 @@ export function bridgeMessages(): string {
       var clipRect = payload.rect;
 
       function doCapture(clip) {
-        if (!window.html2canvas) {
+        // html2canvas-pro v2 UMD exposes window.html2canvas as { default, ... }
+        // whereas the legacy html2canvas v1 exposed it as a callable function.
+        var h2c = window.html2canvas;
+        if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
+        if (typeof h2c !== 'function') {
           respond(id, { error: 'html2canvas not loaded' });
           return;
         }
         var opts = { useCORS: true, logging: false, allowTaint: true };
         if (clip) {
-          opts.x = clip.x;
-          opts.y = clip.y;
+          // clip coords are viewport-relative; html2canvas crops relative
+          // to the full document body, so add scroll offsets.
+          opts.x = clip.x + (window.scrollX || 0);
+          opts.y = clip.y + (window.scrollY || 0);
           opts.width = clip.width;
           opts.height = clip.height;
         }
-        window.html2canvas(document.body, opts).then(function(canvas) {
+        h2c(document.body, opts).then(function(canvas) {
           var dataUrl = canvas.toDataURL('image/png');
           respond(id, { dataUrl: dataUrl });
         }).catch(function(err) {
@@ -709,6 +715,141 @@ export function bridgeMessages(): string {
 
     if (type === 'route:current') {
       respond(id, { path: window.location.pathname });
+      return;
+    }
+
+    if (type === 'color-scheme:get') {
+      // Detect what scheme the user is currently looking at, in a way that
+      // works across frameworks (Tailwind, Bootstrap, MUI, Mantine, Vuetify,
+      // Quasar, Chakra, daisyUI, custom systems, plain CSS, …).
+      //
+      // Strategy:
+      //   1. Compute a ground-truth scheme from background luminance — this
+      //      reflects what the viewport is actually painting and works for any
+      //      app regardless of theming convention.
+      //   2. Fall back to the standard CSS color-scheme property, then to the
+      //      OS prefers-color-scheme media query if no background is paintable.
+      //   3. Independently sniff for common DOM markers (class / data-attr) so
+      //      the agent has a hint about WHERE to apply theme-related changes.
+      //      A recognized marker overrides luminance only when the marker
+      //      itself is unambiguous (e.g. data-bs-theme="dark"), since explicit
+      //      developer intent should win over a heuristic.
+      var scheme = 'light';
+      var source = 'fallback';
+      var marker = null;
+
+      try {
+        var html = document.documentElement;
+        var body = document.body;
+
+        // ── Step 1: Background luminance (universal ground truth) ──
+        function readBg(el) {
+          if (!el) return null;
+          var bg = '';
+          try { bg = window.getComputedStyle(el).backgroundColor || ''; } catch(e) { return null; }
+          if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return null;
+          var parts = bg.match(/[0-9.]+/g);
+          if (!parts || parts.length < 3) return null;
+          var alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
+          if (!alpha) return null;
+          return { r: parseFloat(parts[0]), g: parseFloat(parts[1]), b: parseFloat(parts[2]) };
+        }
+
+        var bg = readBg(html) || readBg(body);
+        if (bg) {
+          // Perceptual luminance approximation in sRGB
+          var lum = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b) / 255;
+          scheme = lum < 0.5 ? 'dark' : 'light';
+          source = 'background-luminance';
+        } else {
+          var declared = '';
+          try { declared = (window.getComputedStyle(html).colorScheme || '').toLowerCase(); } catch(e) {}
+          var hasDark = declared.indexOf('dark') !== -1;
+          var hasLight = declared.indexOf('light') !== -1;
+          if (hasDark && !hasLight) {
+            scheme = 'dark';
+            source = 'css-color-scheme';
+          } else if (hasLight && !hasDark) {
+            scheme = 'light';
+            source = 'css-color-scheme';
+          } else if (window.matchMedia) {
+            scheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            source = 'media-query';
+          }
+        }
+
+        // ── Step 2: Sniff for explicit DOM markers (enrichment) ──
+        // Attribute markers — covers Bootstrap 5.3+, MUI, Mantine, Joy UI,
+        // daisyUI, Radix, shadcn, and plain "data-theme" / "data-mode" patterns.
+        var ATTR_NAMES = [
+          'data-theme',
+          'data-color-scheme',
+          'data-color-mode',
+          'data-mode',
+          'data-bs-theme',
+          'data-mui-color-scheme',
+          'data-joy-color-scheme',
+          'data-mantine-color-scheme'
+        ];
+        var hosts = [{ el: html, name: 'html' }];
+        if (body) hosts.push({ el: body, name: 'body' });
+
+        outer: for (var hi = 0; hi < hosts.length; hi++) {
+          var hostEl = hosts[hi].el;
+          for (var ai = 0; ai < ATTR_NAMES.length; ai++) {
+            var attrName = ATTR_NAMES[ai];
+            var raw = hostEl.getAttribute && hostEl.getAttribute(attrName);
+            if (raw) {
+              var val = (raw + '').toLowerCase();
+              marker = { kind: 'attribute', host: hosts[hi].name, name: attrName, value: raw };
+              if (val === 'dark' || val === 'light') {
+                scheme = val;
+                source = 'attribute';
+              }
+              break outer;
+            }
+          }
+        }
+
+        // Class markers — covers Tailwind, Vuetify, Quasar, Chakra, generic.
+        // Each entry is { dark: <className>, light: <className>, framework }.
+        if (!marker) {
+          var CLASS_PAIRS = [
+            { dark: 'dark', light: 'light', framework: 'tailwind/generic' },
+            { dark: 'theme-dark', light: 'theme-light', framework: 'generic' },
+            { dark: 'mode-dark', light: 'mode-light', framework: 'generic' },
+            { dark: 'is-dark', light: 'is-light', framework: 'bulma/generic' },
+            { dark: 'v-theme--dark', light: 'v-theme--light', framework: 'vuetify' },
+            { dark: 'body--dark', light: 'body--light', framework: 'quasar' },
+            { dark: 'chakra-ui-dark', light: 'chakra-ui-light', framework: 'chakra' },
+            { dark: 'dark-theme', light: 'light-theme', framework: 'generic' },
+            { dark: 'dark-mode', light: 'light-mode', framework: 'generic' }
+          ];
+          classOuter: for (var ci = 0; ci < CLASS_PAIRS.length; ci++) {
+            var pair = CLASS_PAIRS[ci];
+            for (var hj = 0; hj < hosts.length; hj++) {
+              var hEl = hosts[hj].el;
+              if (!hEl || !hEl.classList) continue;
+              if (hEl.classList.contains(pair.dark)) {
+                marker = { kind: 'class', host: hosts[hj].name, name: pair.dark, framework: pair.framework };
+                scheme = 'dark';
+                source = 'class';
+                break classOuter;
+              }
+              if (hEl.classList.contains(pair.light)) {
+                marker = { kind: 'class', host: hosts[hj].name, name: pair.light, framework: pair.framework };
+                scheme = 'light';
+                source = 'class';
+                break classOuter;
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      var result = { scheme: scheme, source: source };
+      if (marker) result.marker = marker;
+      respond(id, result);
       return;
     }
 

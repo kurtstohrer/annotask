@@ -1,0 +1,63 @@
+{
+  "features": [
+    { "id": 1, "icon": "wand", "category": "visual", "title": "Visual element inspector", "description": "Click any element in your running app to see its component, file, line, and computed styles. No DevTools spelunking." },
+    { "id": 2, "icon": "palette", "category": "visual", "title": "Live style editor", "description": "Tweak padding, color, and typography in the browser. Annotask records the diff and turns it into a structured task your agent can apply." },
+    { "id": 3, "icon": "pin", "category": "visual", "title": "Pin notes & arrows", "description": "Drop pins, draw arrows, and highlight regions on your live UI. Each annotation becomes a task with element context attached." },
+    { "id": 4, "icon": "scissors", "category": "visual", "title": "Section requests", "description": "Draw a section anywhere on the page and write what should go there. Your agent gets a placement-aware request, not a guess." },
+    { "id": 5, "icon": "robot", "category": "agent", "title": "MCP server built in", "description": "Every annotask install ships an MCP server. Claude, Cursor, and any MCP-compatible agent can list, lock, and resolve tasks." },
+    { "id": 6, "icon": "loop", "category": "agent", "title": "Round-trip review", "description": "Agents post resolutions back to annotask. You accept, deny, or ask follow-up questions without leaving the browser." },
+    { "id": 7, "icon": "chip", "category": "framework", "title": "Vue, React, Svelte, Astro", "description": "First-class transform support across major frameworks. Same UX everywhere, framework-aware element labels." },
+    { "id": 8, "icon": "boxes", "category": "framework", "title": "Vite & Webpack", "description": "Drop-in plugins for both bundlers. Zero config in the common case." },
+    { "id": 9, "icon": "shield", "category": "framework", "title": "MFE-aware", "description": "Annotations route to the correct micro-frontend so a host app and embedded children stay sane during reviews." },
+    { "id": 10, "icon": "eye", "category": "integration", "title": "A11y scanner", "description": "Bundled axe-core scan with one-click fix tasks. Keyboard, contrast, semantics — all surfaced inline." },
+    { "id": 11, "icon": "gauge", "category": "integration", "title": "Performance monitor", "description": "Web Vitals, bundle analysis, interaction timing. Perf regressions become tasks the same way design changes do." },
+    { "id": 12, "icon": "bug", "category": "integration", "title": "Error capture", "description": "Console errors and warnings deduplicate, group, and convert into fix tasks with full stack context." }
+  ],
+  "testimonials": [
+    { "id": 1, "name": "Maya Chen", "role": "Staff Designer", "company": "Lattice", "avatar_url": "https://i.pravatar.cc/120?img=47", "quote": "We replaced four tools with annotask. Designers comment on the live app, my agent applies it overnight, and we wake up to a clean PR.", "rating": 5 },
+    { "id": 2, "name": "Diego Romero", "role": "Frontend Lead", "company": "Notable", "avatar_url": "https://i.pravatar.cc/120?img=12", "quote": "The MCP integration is the cheat code. Our coding agent picks up tasks straight from the browser annotations.", "rating": 5 },
+    { "id": 3, "name": "Priya Subramanian", "role": "Product Engineer", "company": "Hearth", "avatar_url": "https://i.pravatar.cc/120?img=32", "quote": "Annotask cut our design QA cycle from a week to a day. The element context it captures is uncanny.", "rating": 5 },
+    { "id": 4, "name": "Tomás Werner", "role": "Engineering Manager", "company": "Bondi", "avatar_url": "https://i.pravatar.cc/120?img=68", "quote": "I love that it lives next to the dev server. No SaaS, no logins, no shipping screenshots over Slack.", "rating": 4 },
+    { "id": 5, "name": "Aïsha Bell", "role": "Senior Designer", "company": "Loom", "avatar_url": "https://i.pravatar.cc/120?img=20", "quote": "The style editor lets me actually try the change before describing it. The agent reads my edits, not my prose.", "rating": 5 },
+    { "id": 6, "name": "Henry Okafor", "role": "Founder", "company": "Driftboard", "avatar_url": "https://i.pravatar.cc/120?img=58", "quote": "We onboarded annotask in an afternoon. Two weeks later it's the only tool everyone agrees we shouldn't remove.", "rating": 5 }
+  ],
+  "pricing": [
+    { "id": 1, "name": "Solo", "price_monthly": 0, "billing": "Free forever", "highlighted": false, "cta_label": "Get started", "features": ["Local-first, runs on your dev server", "All visual tools", "MCP server included", "Single user"] },
+    { "id": 2, "name": "Team", "price_monthly": 12, "billing": "per developer / month", "highlighted": true, "cta_label": "Start free trial", "features": ["Everything in Solo", "Shared task review queue", "Slack & GitHub integrations", "SSO (Google, Okta)", "Priority support"] },
+    { "id": 3, "name": "Enterprise", "price_monthly": null, "billing": "Custom", "highlighted": false, "cta_label": "Contact sales", "features": ["Everything in Team", "Self-hosted control plane", "SAML & SCIM", "Audit logs", "Dedicated solutions engineer"] }
+  ],
+  "integrations": [
+    { "id": 1, "name": "Vue", "logo": "vue", "status": "stable", "category": "framework" },
+    { "id": 2, "name": "React", "logo": "react", "status": "stable", "category": "framework" },
+    { "id": 3, "name": "Svelte", "logo": "svelte", "status": "stable", "category": "framework" },
+    { "id": 4, "name": "Vite", "logo": "vite", "status": "stable", "category": "bundler" },
+    { "id": 5, "name": "Webpack", "logo": "webpack", "status": "stable", "category": "bundler" },
+    { "id": 6, "name": "Astro", "logo": "astro", "status": "experimental", "category": "framework" },
+    { "id": 7, "name": "htmx", "logo": "htmx", "status": "experimental", "category": "framework" },
+    { "id": 8, "name": "Claude", "logo": "claude", "status": "stable", "category": "agent" },
+    { "id": 9, "name": "Cursor", "logo": "cursor", "status": "stable", "category": "agent" },
+    { "id": 10, "name": "Cline", "logo": "cline", "status": "beta", "category": "agent" },
+    { "id": 11, "name": "GitHub", "logo": "github", "status": "beta", "category": "ci" },
+    { "id": 12, "name": "Linear", "logo": "linear", "status": "beta", "category": "tracker" },
+    { "id": 13, "name": "Slack", "logo": "slack", "status": "beta", "category": "chat" },
+    { "id": 14, "name": "Storybook", "logo": "storybook", "status": "experimental", "category": "tooling" }
+  ],
+  "changelog": [
+    { "version": "0.0.22", "date": "2026-04-08", "headline": "Richer compact task summaries", "highlights": ["Type-specific context surfaced in summary view", "Agent feedback handling improved", "Smaller default payloads for MCP listings"] },
+    { "version": "0.0.21", "date": "2026-04-02", "headline": "Page-wide perf & a11y filtering", "highlights": ["Fixed mfe filter dropping page-wide perf/error/a11y tasks", "Astro and htmx now marked experimental in package metadata"] },
+    { "version": "0.0.20", "date": "2026-03-27", "headline": "Syntax-highlighted JSON view", "highlights": ["JSON view in task detail is now syntax highlighted", "annotask-apply skill now uses npx prefix in CLI commands"] },
+    { "version": "0.0.19", "date": "2026-03-19", "headline": "Shell theme system v2", "highlights": ["62 CSS variables across 18 built-in themes", "Custom theme editor with live preview", "color-mix() helper for tinted variants"] },
+    { "version": "0.0.18", "date": "2026-03-12", "headline": "Performance scanner", "highlights": ["Web Vitals dashboard", "Interaction recording", "Perf score and bundle analysis"] },
+    { "version": "0.0.17", "date": "2026-03-04", "headline": "Section tool & arrow tool", "highlights": ["Drawn sections become section_request tasks", "Arrows redrawn during scroll & resize", "Multi-color highlights"] },
+    { "version": "0.0.16", "date": "2026-02-25", "headline": "MCP Streamable HTTP", "highlights": ["MCP server now uses Streamable HTTP transport", "JSON-RPC batch support", "agent_feedback round-trip"] },
+    { "version": "0.0.15", "date": "2026-02-17", "headline": "Element context capture", "highlights": ["Ancestor layout chain on tasks", "DOM subtree snapshot opt-in", "Interaction history opt-in"] },
+    { "version": "0.0.14", "date": "2026-02-10", "headline": "Module Federation support", "highlights": ["MFE child mode for embedded apps", "Annotations route to the correct child", "Cross-MFE task filtering"] },
+    { "version": "0.0.13", "date": "2026-02-03", "headline": "A11y scanner GA", "highlights": ["axe-core bundled locally (no CDN)", "One-click fix tasks", "Severity-coded UI"] }
+  ],
+  "stats": {
+    "installs": 18234,
+    "github_stars": 2987,
+    "contributors": 41,
+    "frameworks_supported": 7
+  }
+}

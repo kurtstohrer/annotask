@@ -117,7 +117,7 @@ export function useErrorMonitor(
     return ids
   })
 
-  function createErrorTask(entry: ErrorEntry) {
+  async function createErrorTask(entry: ErrorEntry) {
     const shortMsg = entry.message.length > 100 ? entry.message.slice(0, 100) + '...' : entry.message
     const title = entry.level === 'warn'
       ? `Fix warning: ${shortMsg}`
@@ -137,6 +137,8 @@ export function useErrorMonitor(
       }
     }
 
+    const colorScheme = await iframe.getColorScheme()
+
     taskSystem.createTask({
       type: 'error_fix',
       description: title,
@@ -144,6 +146,7 @@ export function useErrorMonitor(
       line,
       component,
       route: currentRoute.value,
+      ...(colorScheme ? { color_scheme: colorScheme } : {}),
       context: {
         errorId: entry.id,
         level: entry.level,

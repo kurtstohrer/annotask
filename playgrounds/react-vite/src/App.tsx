@@ -1,37 +1,38 @@
 import { Routes, Route } from 'react-router-dom'
-import Header from './components/Header'
-import PlanetsPage from './pages/PlanetsPage'
-import MoonsPage from './pages/MoonsPage'
-import StatsPage from './pages/StatsPage'
+import { useEffect, useState } from 'react'
+import Nav from './components/Nav'
+import Footer from './components/Footer'
+import Landing from './pages/Landing'
+import Changelog from './pages/Changelog'
+import Integrations from './pages/Integrations'
 
-const appStyle: React.CSSProperties = {
-  minHeight: '100vh',
-  backgroundColor: '#0a0e1a',
-  color: '#e0e6f0',
-  fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif",
-  margin: 0,
-  padding: 0,
-}
-
-const mainStyle: React.CSSProperties = {
-  maxWidth: '1100px',
-  margin: '0 auto',
-  padding: '32px 24px',
-}
+type Theme = 'dark' | 'light'
 
 function App() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const stored = localStorage.getItem('annotask-marketing-theme')
+    return stored === 'light' ? 'light' : 'dark'
+  })
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('annotask-marketing-theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
+
   return (
-    <div style={appStyle}>
-      <Header />
-      <main style={mainStyle}>
+    <>
+      <Nav theme={theme} onToggleTheme={toggleTheme} />
+      <main>
         <Routes>
-          <Route path="/" element={<PlanetsPage />} />
-          <Route path="/planets" element={<PlanetsPage />} />
-          <Route path="/moons" element={<MoonsPage />} />
-          <Route path="/stats" element={<StatsPage />} />
+          <Route path="/" element={<Landing />} />
+          <Route path="/changelog" element={<Changelog />} />
+          <Route path="/integrations" element={<Integrations />} />
         </Routes>
       </main>
-    </div>
+      <Footer />
+    </>
   )
 }
 

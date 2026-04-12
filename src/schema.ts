@@ -3,6 +3,21 @@ export interface ViewportInfo {
   height: number | null
 }
 
+/** Color scheme of the user's app at the moment a task was captured */
+export interface ColorSchemeInfo {
+  /** Effective scheme: 'light' or 'dark' */
+  scheme: 'light' | 'dark'
+  /** How the scheme was detected — useful for judging reliability */
+  source: 'attribute' | 'class' | 'css-color-scheme' | 'background-luminance' | 'media-query' | 'fallback'
+  /**
+   * Detected DOM marker (data attribute or class) indicating the theming
+   * convention in use. Agents can use this to locate the theme control.
+   */
+  marker?:
+    | { kind: 'attribute'; host: 'html' | 'body'; name: string; value: string }
+    | { kind: 'class'; host: 'html' | 'body'; name: string; framework: string }
+}
+
 export interface InteractionEntry {
   event: string
   route?: string
@@ -226,6 +241,7 @@ export interface AnnotaskTask {
   action?: string
   context?: Record<string, unknown>
   viewport?: ViewportInfo
+  color_scheme?: ColorSchemeInfo
   interaction_history?: InteractionSnapshot
   element_context?: ElementContext
   screenshot?: string       // Screenshot filename, served at /__annotask/screenshots/{filename}

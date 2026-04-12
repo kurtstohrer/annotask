@@ -1,116 +1,191 @@
 <script lang="ts">
+  import { navigate } from '../lib/router.svelte'
+
   interface Props {
-    currentPage: string
-    onNavigate: (page: string) => void
+    currentPath: string
+    compareCount: number
+    theme: 'dark' | 'light'
+    onToggleTheme: () => void
   }
 
-  let { currentPage, onNavigate }: Props = $props()
+  let { currentPath, compareCount, theme, onToggleTheme }: Props = $props()
 
-  const navItems = [
-    { id: 'planets', label: 'Planets', icon: 'planets' },
-    { id: 'moons', label: 'Moons', icon: 'moons' },
-    { id: 'stats', label: 'Stats', icon: 'stats' },
-  ]
+  function go(path: string) {
+    return (e: MouseEvent) => {
+      e.preventDefault()
+      navigate(path)
+    }
+  }
+
+  const isExplore = $derived(currentPath === '/' || currentPath === '/country/:cca2')
+  const isCompare = $derived(currentPath === '/compare')
 </script>
 
 <header class="header">
-  <div class="header-inner">
-    <div class="logo">
-      <span class="logo-icon">&#9790;</span>
-      <h1 class="logo-text">Planet Explorer</h1>
-    </div>
-    <nav class="nav">
-      {#each navItems as item}
-        <button
-          class="nav-btn"
-          class:active={currentPage === item.id}
-          onclick={() => onNavigate(item.id)}
-        >
-          {#if item.icon === 'planets'}
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><ellipse cx="12" cy="12" rx="16" ry="4" transform="rotate(-30 12 12)"/></svg>
-          {:else if item.icon === 'moons'}
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-          {:else if item.icon === 'stats'}
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-          {/if}
-          {item.label}
-        </button>
-      {/each}
+  <div class="inner">
+    <a href="#/" class="brand" onclick={go('/')}>
+      <span class="logo-mark" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+          <circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="2.5" fill="none" />
+          <ellipse cx="16" cy="16" rx="6" ry="14" stroke="currentColor" stroke-width="2" fill="none" />
+          <line x1="2" y1="16" x2="30" y2="16" stroke="currentColor" stroke-width="2" />
+        </svg>
+      </span>
+      <span class="brand-text">Atlas</span>
+    </a>
+
+    <nav class="nav" aria-label="Primary">
+      <a
+        href="#/"
+        class="nav-link"
+        class:active={isExplore}
+        onclick={go('/')}
+      >
+        Explore
+      </a>
+      <a
+        href="#/compare"
+        class="nav-link"
+        class:active={isCompare}
+        onclick={go('/compare')}
+      >
+        Compare
+        {#if compareCount > 0}
+          <span class="badge">{compareCount}</span>
+        {/if}
+      </a>
     </nav>
+
+    <div class="right">
+      <span class="hint">Country data explorer</span>
+      <button
+        type="button"
+        class="theme-toggle"
+        onclick={onToggleTheme}
+        aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+      >
+        {theme === 'dark' ? '☀' : '☾'}
+      </button>
+    </div>
   </div>
 </header>
 
 <style>
   .header {
-    background-color: #271d2f;
-    border-bottom: 1px solid #2e1c4f;
-    padding: 0 2rem;
     position: sticky;
     top: 0;
-    z-index: 100;
+    z-index: 50;
+    background: var(--surface-glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
   }
 
-  .header-inner {
-    max-width: 1200px;
+  .inner {
+    max-width: var(--container-max);
     margin: 0 auto;
+    padding: var(--space-4) var(--space-6);
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    height: 64px;
+    gap: var(--space-8);
   }
 
-  .logo {
+  .brand {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-3);
+    color: var(--text);
+    font-weight: var(--weight-semibold);
+    font-size: 1.15rem;
+    letter-spacing: -0.01em;
   }
 
-  .logo-icon {
-    font-size: 1.75rem;
-    color: #7020b1;
+  .logo-mark {
+    color: var(--accent);
+    display: inline-flex;
+    filter: drop-shadow(0 4px 12px var(--accent-glow));
   }
 
-  .logo-text {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #e2e8f0;
-    margin: 0;
+  .brand-text {
+    font-family: var(--font-display);
   }
 
   .nav {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
+    flex: 1;
+    margin-left: var(--space-4);
   }
 
-  .nav-btn {
-    background: transparent;
-    border: 1px solid transparent;
-    color: #8899aa;
-    padding: 0.5rem 1.25rem;
-    border-radius: 6px;
+  .nav-link {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-pill);
+    color: var(--text-muted);
     font-size: 0.95rem;
-    cursor: pointer;
-    transition: all 0.2s ease;
+    font-weight: var(--weight-medium);
+    transition: all var(--duration-fast) var(--easing-standard);
+  }
+
+  .nav-link:hover {
+    color: var(--text);
+    background: var(--surface-2);
+  }
+
+  .nav-link.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    color: var(--text-on-accent);
+    font-size: 0.7rem;
+    font-weight: var(--weight-bold);
+  }
+
+  .right {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-3);
   }
 
-  .nav-icon {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
+  .hint {
+    font-size: 0.85rem;
+    color: var(--text-subtle);
   }
 
-  .nav-btn:hover {
-    color: #c8d6e5;
-    background-color: #162d50;
-    border-color: #2e1c4f;
+  .theme-toggle {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 1rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--duration-fast) var(--easing-standard);
   }
 
-  .nav-btn.active {
-    color: #7020b1;
-    background-color: #6a6b43;
-    border-color: #1e1330;
+  .theme-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  @media (max-width: 640px) {
+    .hint {
+      display: none;
+    }
   }
 </style>

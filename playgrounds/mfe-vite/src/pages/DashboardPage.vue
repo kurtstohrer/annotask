@@ -1,67 +1,77 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import type { Planet, Moon, Stats } from '../types'
+import type { Product, Category } from '../types'
 import StatCard from '../components/StatCard.vue'
-import PlanetRanking from '../components/PlanetRanking.vue'
+import ProductRanking from '../components/ProductRanking.vue'
 
-const planets = ref<Planet[]>([])
-const moons = ref<Moon[]>([])
-const stats = ref<Stats | null>(null)
+const products = ref<Product[]>([])
+const categories = ref<Category[]>([])
 const error = ref('')
 
 onMounted(async () => {
   try {
-    const [pRes, mRes, sRes] = await Promise.all([
-      fetch('/api/planets'),
-      fetch('/api/moons'),
-      fetch('/api/stats'),
+    const [pRes, cRes] = await Promise.all([
+      fetch('/api/catalog/products'),
+      fetch('/api/catalog/categories'),
     ])
-    planets.value = (await pRes.json()).planets
-    moons.value = (await mRes.json()).moons
-    stats.value = await sRes.json()
+    products.value = (await pRes.json()).products
+    categories.value = await cRes.json()
   } catch {
     error.value = 'Failed to load data — is the API running on port 8888?'
   }
 })
 
-const typeBreakdown = computed(() => {
+const inStockCount = computed(() => products.value.filter((p) => p.in_stock).length)
+const totalReviews = computed(() => products.value.reduce((sum, p) => sum + p.review_count, 0))
+const bestSeller = computed(
+  () => [...products.value].sort((a, b) => b.review_count - a.review_count)[0],
+)
+const highestRated = computed(
+  () => [...products.value].sort((a, b) => b.rating - a.rating)[0],
+)
+
+const categoryBreakdown = computed(() => {
   const counts: Record<string, number> = {}
-  for (const p of planets.value) {
-    counts[p.type] = (counts[p.type] || 0) + 1
+  for (const p of products.value) {
+    counts[p.category] = (counts[p.category] || 0) + 1
   }
   return counts
 })
 
-const totalMoons = computed(() => planets.value.reduce((sum, p) => sum + p.moons, 0))
+function categoryName(id: string): string {
+  return categories.value.find((c) => c.id === id)?.name ?? id
+}
 </script>
 
 <template>
   <div class="dashboard">
-    <h1 class="page-title">Mission Dashboard</h1>
+    <h1 class="page-title">Storefront Overview</h1>
 
     <div v-if="error" class="error">{{ error }}</div>
 
-    <div v-else-if="stats" class="grid">
-      <StatCard label="Planets" :value="stats.total_planets" icon="🪐" />
-      <StatCard label="Known Moons" :value="totalMoons" icon="🌙" />
-      <StatCard label="Largest" :value="stats.largest_planet" icon="📏" />
-      <StatCard label="Hottest" :value="stats.hottest_planet" icon="🔥" />
-    </div>
+    <template v-else-if="products.length">
+      <div class="grid">
+        <StatCard label="Products" :value="products.length" icon="📦" />
+        <StatCard label="In stock" :value="inStockCount" icon="✅" />
+        <StatCard label="Total reviews" :value="totalReviews.toLocaleString()" icon="💬" />
+        <StatCard label="Best seller" :value="bestSeller?.name ?? '—'" icon="🏆" />
+      </div>
 
-    <div v-if="planets.length" class="section">
-      <h2 class="section-title">Planet Types</h2>
-      <div class="type-badges">
-        <div v-for="(count, type) in typeBreakdown" :key="type" class="type-badge">
-          <span class="type-count">{{ count }}</span>
-          <span class="type-name">{{ type }}</span>
+      <div class="section">
+        <h2 class="section-title">Catalog by Category</h2>
+        <div class="type-badges">
+          <div v-for="(count, cat) in categoryBreakdown" :key="cat" class="type-badge">
+            <span class="type-count">{{ count }}</span>
+            <span class="type-name">{{ categoryName(cat) }}</span>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div v-if="planets.length" class="section">
-      <h2 class="section-title">Ranking by Radius</h2>
-      <PlanetRanking :planets="planets" />
-    </div>
+      <div class="section">
+        <h2 class="section-title">Top rated products</h2>
+        <ProductRanking :products="products" />
+      </div>
+    </template>
   </div>
 </template>
 

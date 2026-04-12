@@ -120,6 +120,8 @@ export function useTaskWorkflows(deps: {
     if (screenshotFilename) extra.screenshot = screenshotFilename
     const vp = deps.viewport.effectiveViewport.value
     if (vp.width || vp.height) extra.viewport = { width: vp.width, height: vp.height }
+    const cs = await deps.iframe.getColorScheme()
+    if (cs) extra.color_scheme = cs
     if (deps.includeHistory.value) {
       const snapshot = deps.interactionHistory.snapshotForChange(deps.currentRoute.value)
       if (snapshot.recent_actions.length > 0) extra.interaction_history = snapshot
@@ -145,6 +147,8 @@ export function useTaskWorkflows(deps: {
     const mfe = deps.primarySelection.value?.mfe || ''
     const vp = deps.viewport.effectiveViewport.value
     const vpData = (vp.width || vp.height) ? { viewport: { width: vp.width, height: vp.height } } : {}
+    const colorScheme = await deps.iframe.getColorScheme()
+    const colorSchemeData = colorScheme ? { color_scheme: colorScheme } : {}
     const historySnapshot = deps.includeHistory.value ? deps.interactionHistory.snapshotForChange(deps.currentRoute.value) : null
     const historyData = historySnapshot && historySnapshot.recent_actions.length > 0 ? { interaction_history: historySnapshot } : {}
     let elementContextData: Record<string, unknown> = {}
@@ -154,7 +158,7 @@ export function useTaskWorkflows(deps: {
     }
     const screenshotFilename = deps.screenshots.consumeScreenshot()
     const screenshotData = screenshotFilename ? { screenshot: screenshotFilename } : {}
-    const task = await deps.taskSystem.createTask({ ...data, route: deps.currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...historyData, ...elementContextData, ...screenshotData })
+    const task = await deps.taskSystem.createTask({ ...data, route: deps.currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...colorSchemeData, ...historyData, ...elementContextData, ...screenshotData })
     if (task) deps.activePanel.value = 'tasks'
     return task
   }
