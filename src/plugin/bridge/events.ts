@@ -33,9 +33,12 @@ export function bridgeEvents(): string {
   }
 
   // ── Interaction Mode ──────────────────────────────────
+  var insideIframe = false;
+  try { insideIframe = window.self !== window.top; } catch(e) { insideIframe = true; }
+
   var storedMode = '';
   try { storedMode = localStorage.getItem('annotask:mode') || ''; } catch(e) {}
-  var currentMode = storedMode || 'select';
+  var currentMode = insideIframe ? (storedMode || 'interact') : 'interact';
   var inspectModes = { select: true, pin: true };
 
   var styleEl = document.createElement('style');
