@@ -61,7 +61,7 @@ async function respondToAgent(id: string, answers: Array<{ id: string; value: st
   if (last.answered_at) return // already answered
   last.answered_at = Date.now()
   last.answers = answers
-  return updateTask(id, { status: 'in_progress', agent_feedback: thread })
+  return updateTask(id, { status: 'in_progress', agent_feedback: thread, ...(task.mfe ? { mfe: task.mfe } : {}) })
 }
 
 let initialized = false

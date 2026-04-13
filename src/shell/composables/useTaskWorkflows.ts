@@ -116,6 +116,9 @@ export function useTaskWorkflows(deps: {
   async function submitDeny(taskId: string) {
     if (!denyFeedbackText.value.trim()) return
     const extra: Record<string, unknown> = {}
+    // Preserve MFE context through the deny so it isn't lost on round-trip
+    const task = deps.taskSystem.tasks.value.find(t => t.id === taskId)
+    if (task?.mfe) extra.mfe = task.mfe
     const screenshotFilename = deps.screenshots.consumeScreenshot()
     if (screenshotFilename) extra.screenshot = screenshotFilename
     const vp = deps.viewport.effectiveViewport.value

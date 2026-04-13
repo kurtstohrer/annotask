@@ -160,6 +160,7 @@ const TOOLS: ToolDef[] = [
         file: { type: 'string', description: 'Source file path' },
         line: { type: 'number', description: 'Line number in file' },
         component: { type: 'string', description: 'Component name' },
+        mfe: { type: 'string', description: 'MFE identity (e.g. "@myorg/my-mfe") for multi-project setups' },
         context: { type: 'object', description: 'Arbitrary context data' },
       },
       required: ['type', 'description'],
@@ -309,6 +310,7 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (args.file) task.file = args.file
       if (args.line != null) task.line = args.line
       if (args.component) task.component = args.component
+      if (args.mfe) task.mfe = args.mfe
       if (args.context) task.context = args.context
       const result = deps.addTask(task)
       return { content: [{ type: 'text', text: compact(stripVisual(result)) }] }
