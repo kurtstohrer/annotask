@@ -23,6 +23,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm audit --prod --audit-level=high
+        continue-on-error: true
+
       - run: pnpm build
 
       - run: pnpm typecheck
