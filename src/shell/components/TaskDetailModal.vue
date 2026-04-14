@@ -25,6 +25,7 @@ const editText = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const showJson = ref(false)
 const jsonCopied = ref(false)
+const jsonWrap = ref(false)
 const showDeleteConfirm = ref(false)
 
 const taskJson = computed(() => JSON.stringify(props.task, null, 2))
@@ -221,6 +222,10 @@ const pendingExchange = computed(() => {
   return last.answered_at ? null : last
 })
 
+function updateReply(questionId: string, value: string) {
+  replyDraft.value[questionId] = value
+}
+
 function selectChoice(questionId: string, value: string) {
   replyDraft.value[questionId] = value
 }
@@ -301,9 +306,12 @@ function onKeydown(e: KeyboardEvent) {
       <!-- JSON view -->
       <div v-if="showJson" class="td-body td-json-body">
         <div class="td-json-toolbar">
+          <button :class="['td-json-wrap', { active: jsonWrap }]" @click="jsonWrap = !jsonWrap" title="Wrap lines">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="13 15 10 18 13 21"/><path d="M3 18h4"/></svg>
+          </button>
           <button class="td-json-copy" @click="copyJson">{{ jsonCopied ? 'Copied!' : 'Copy' }}</button>
         </div>
-        <pre class="td-json-pre"><code v-html="taskJsonHighlighted" /></pre>
+        <pre :class="['td-json-pre', { 'td-json-wrap-lines': jsonWrap }]"><code v-html="taskJsonHighlighted" /></pre>
       </div>
 
       <!-- Body -->
@@ -418,7 +426,7 @@ function onKeydown(e: KeyboardEvent) {
                   v-else
                   class="td-reply-textarea"
                   :value="replyDraft[q.id] || ''"
-                  @input="replyDraft[q.id] = ($event.target as HTMLTextAreaElement).value"
+                  @input="updateReply(q.id, ($event.target as HTMLTextAreaElement).value)"
                   placeholder="Type your answer..."
                   rows="2"
                 />
@@ -533,7 +541,7 @@ function onKeydown(e: KeyboardEvent) {
 
       <!-- Footer actions -->
       <div v-if="task.status === 'needs_info' && pendingExchange" class="td-footer">
-        <button class="td-reply-btn" :disabled="pendingExchange.questions.some(q => !replyDraft[q.id])" @click="submitReply">Reply &amp; Resume</button>
+        <button class="td-reply-btn" :disabled="pendingExchange.questions.some(q => !replyDraft[q.id])" @click="submitReply">Reply</button>
       </div>
       <div v-else-if="task.status === 'blocked'" class="td-footer">
         <button class="td-deny-btn" @click="emit('deny', task.id)">Push Back</button>
@@ -854,9 +862,17 @@ function onKeydown(e: KeyboardEvent) {
 /* JSON view */
 .td-json-body { padding: 0; display: flex; flex-direction: column; }
 .td-json-toolbar {
-  display: flex; justify-content: flex-end; padding: 8px 12px;
+  display: flex; justify-content: flex-end; gap: 6px; padding: 8px 12px;
   border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
 }
+.td-json-wrap {
+  display: flex; align-items: center; justify-content: center;
+  padding: 4px 6px;
+  background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
+  border-radius: 5px; cursor: pointer;
+}
+.td-json-wrap:hover { color: var(--text); background: var(--border); }
+.td-json-wrap.active { color: var(--accent); border-color: var(--accent); }
 .td-json-copy {
   padding: 4px 12px; font-size: 11px; font-weight: 500;
   background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
@@ -868,6 +884,7 @@ function onKeydown(e: KeyboardEvent) {
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 11px; line-height: 1.6; color: var(--text); tab-size: 2;
 }
+.td-json-pre.td-json-wrap-lines { white-space: pre-wrap; word-break: break-all; }
 .td-json-pre .token.property,
 .td-json-pre .token.key { color: var(--syntax-property); }
 .td-json-pre .token.string { color: var(--syntax-string); }

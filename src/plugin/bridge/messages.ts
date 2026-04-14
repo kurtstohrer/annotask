@@ -282,8 +282,9 @@ export function bridgeMessages(): string {
             var nodeDetails = [];
             for (var ni = 0; ni < v.nodes.length && ni < 5; ni++) {
               var node = v.nodes[ni];
+              var rawHtml = (node.html || '').replace(/ data-annotask-[a-z-]+="[^"]*"/g, '');
               var detail = {
-                html: (node.html || '').substring(0, 200),
+                html: rawHtml.substring(0, 200),
                 target: node.target ? node.target[0] : '',
                 failureSummary: node.failureSummary || ''
               };

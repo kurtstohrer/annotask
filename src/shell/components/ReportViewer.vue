@@ -15,6 +15,7 @@ const emit = defineEmits<{
 
 const format = ref<'json' | 'yaml'>('json')
 const copied = ref(false)
+const wrapLines = ref(false)
 
 const taskData = computed(() => {
   if (!props.tasks.length) return null
@@ -71,6 +72,9 @@ function onKeydown(e: KeyboardEvent) {
             <button :class="['fmt-btn', { active: format === 'json' }]" @click="format = 'json'">JSON</button>
             <button :class="['fmt-btn', { active: format === 'yaml' }]" @click="format = 'yaml'">YAML</button>
           </div>
+          <button :class="['wrap-btn', { active: wrapLines }]" @click="wrapLines = !wrapLines" title="Wrap lines">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="13 15 10 18 13 21"/><path d="M3 18h4"/></svg>
+          </button>
           <button class="copy-btn" @click="copy" :disabled="!taskData">
             <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             {{ copied ? 'Copied!' : 'Copy' }}
@@ -81,7 +85,7 @@ function onKeydown(e: KeyboardEvent) {
         </div>
       </header>
       <div class="report-body">
-        <pre v-if="taskData" class="report-code"><code v-html="highlighted" /></pre>
+        <pre v-if="taskData" :class="['report-code', { 'report-wrap-lines': wrapLines }]"><code v-html="highlighted" /></pre>
         <div v-else class="report-empty">
           <p>No tasks yet.</p>
           <p class="report-empty-hint">Pin elements, draw sections, or add annotations to create tasks for your coding agent.</p>
@@ -172,6 +176,21 @@ function onKeydown(e: KeyboardEvent) {
 .fmt-btn:hover:not(.active) {
   color: var(--text);
 }
+.wrap-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.wrap-btn:hover { color: var(--text); background: var(--border); }
+.wrap-btn.active { color: var(--accent); border-color: var(--accent); }
 .copy-btn {
   display: flex;
   align-items: center;
@@ -219,6 +238,7 @@ function onKeydown(e: KeyboardEvent) {
 .report-code code {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
 }
+.report-code.report-wrap-lines { white-space: pre-wrap; word-break: break-all; }
 .report-empty {
   display: flex;
   flex-direction: column;
