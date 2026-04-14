@@ -55,11 +55,7 @@ htmx: ensure-api
 mfe:
     cd mfe-vite && pnpm dev
 
-# Start Antenna + Vite playground (custom component library)
-antenna: ensure-api
-    cd antenna-vite && pnpm dev
-
-# Start any playground by directory name (e.g. just start antenna-vite)
+# Start any playground by directory name (e.g. just start react-vite)
 start name:
     cd {{name}} && pnpm dev
 
@@ -90,7 +86,6 @@ list:
     @echo "  just astro        — Astro                (port 5177)"
     @echo "  just htmx         — htmx + Vite          (port 5178)"
     @echo "  just mfe          — MFE + Vite           (port 5180, MFE mode)"
-    @echo "  just antenna      — Antenna + Vite       (custom component lib)"
     @echo "  just start <dir>  — Any playground by directory name"
     @echo "  just stop-api     — Stop background API"
     @echo ""

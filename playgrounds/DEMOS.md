@@ -15,8 +15,6 @@ feel distinct.
 | `svelte-vite` | Atlas country explorer | Svelte 5 runes | 5175 | `/api/countries/*` |
 | `vue-vite` | Annotask Admin dashboard | Vue 3 + PrimeVue | 5173 | `/api/dashboard/*` |
 | `mfe-vite` | Storefront widget (MFE child) | Vue 3 (MFE) | 5180 | `/api/catalog/*` |
-| `antenna-vite` | Catalog Browser | Vue 3 + Antenna lib | varies | `/api/catalog/*` |
-
 Run any of them with `just react`, `just svelte`, etc. — the API auto-starts
 on `:8888` if it isn't already running.
 
@@ -198,31 +196,6 @@ land in this child's `.annotask/tasks.json`, not the host's.
 3. **Detail-row drill in**
    - Open the Products page. Click a row to open the detail panel.
    - Annotate the panel → "Move the price into the title row."
-
----
-
-## Antenna — Catalog Browser (varies)
-
-Vue 3 playground that consumes a custom file-linked component library
-(`antenna-component-library`) instead of PrimeVue. Demonstrates that
-annotask discovers components from any library, not just the popular ones.
-
-### Demo scenarios
-
-1. **External component library discovery**
-   - Run `annotask_get_components` and confirm Antenna's `dataTable`,
-     `pill`, `box`, `icon`, `alertBanner` show up alongside your local
-     components.
-
-2. **Style edits on a library component**
-   - Inspect an Antenna `pill` element on the Products table. Change its
-     `border-radius` and `font-size` via the style editor.
-   - The diff targets the host playground's CSS overrides, not the library
-     source — important for consumers of locked-down design systems.
-
-3. **Category browser layout**
-   - On the Categories page, annotate the grid → "Two columns on desktop
-     instead of three, with bigger icons."
 
 ---
 

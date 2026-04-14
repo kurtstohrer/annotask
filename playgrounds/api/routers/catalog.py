@@ -1,4 +1,4 @@
-"""Catalog API — e-commerce playground (mfe-vite + antenna-vite)."""
+"""Catalog API — e-commerce playground (mfe-vite)."""
 
 import json
 from pathlib import Path

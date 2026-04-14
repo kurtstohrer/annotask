@@ -41,7 +41,6 @@
     "dev:astro": "pnpm --filter @annotask/playground-astro dev",
     "dev:htmx-vite": "pnpm --filter @annotask/playground-htmx-vite dev",
     "dev:mfe-vite": "pnpm --filter @annotask/playground-mfe-vite dev",
-    "dev:antenna-vite": "pnpm --filter @annotask/playground-antenna-vite dev",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p src/shell/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
