@@ -87,7 +87,11 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!/^[a-zA-Z0-9_-]+\.png$/.test(filename)) {
         res.statusCode = 400; res.end('Invalid filename'); return
       }
-      const filePath = nodePath.join(options.projectRoot, '.annotask', 'screenshots', filename)
+      const screenshotsDir = nodePath.resolve(options.projectRoot, '.annotask', 'screenshots')
+      const filePath = nodePath.resolve(screenshotsDir, filename)
+      if (!filePath.startsWith(screenshotsDir + nodePath.sep)) {
+        res.statusCode = 403; res.end('Forbidden'); return
+      }
       try {
         const data = await fsp.readFile(filePath)
         res.setHeader('Content-Type', 'image/png')
