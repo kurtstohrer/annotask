@@ -13,7 +13,7 @@ test.describe('HTML + Vite smoke', () => {
     const frame = page.frameLocator('.app-iframe')
     await expect(frame.locator('.logo')).toBeVisible({ timeout: 10_000 })
 
-    await expect(page.locator('.route-indicator')).toBeVisible()
+    await expect(page.locator('.route-input')).toBeVisible()
   })
 
   test('transform injects data-annotask attributes', async ({ page }) => {

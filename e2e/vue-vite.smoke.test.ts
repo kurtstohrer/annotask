@@ -16,8 +16,8 @@ test.describe('Vue + Vite smoke', () => {
     const frame = page.frameLocator('.app-iframe')
     await expect(frame.locator('.brand-title')).toBeVisible({ timeout: 10_000 })
 
-    // Route indicator shows current path
-    await expect(page.locator('.route-indicator')).toBeVisible()
+    // Route input shows current path
+    await expect(page.locator('.route-input')).toBeVisible()
   })
 
   test('transform injects data-annotask attributes', async ({ page }) => {

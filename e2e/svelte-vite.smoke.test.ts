@@ -15,7 +15,7 @@ test.describe('Svelte + Vite smoke', () => {
     await expect(frame.locator('.header')).toBeVisible({ timeout: 10_000 })
     await expect(frame.locator('.logo-text', { hasText: 'Planet Explorer' })).toBeVisible()
 
-    await expect(page.locator('.route-indicator')).toBeVisible()
+    await expect(page.locator('.route-input')).toBeVisible()
   })
 
   test('transform injects data-annotask attributes', async ({ page }) => {

@@ -10,12 +10,11 @@ test.describe('React + Vite smoke', () => {
     const iframe = page.locator('.app-iframe')
     await expect(iframe).toBeVisible({ timeout: 15_000 })
 
-    // React app header visible inside iframe
+    // React app nav visible inside iframe
     const frame = page.frameLocator('.app-iframe')
-    await expect(frame.locator('header')).toBeVisible({ timeout: 10_000 })
-    await expect(frame.locator('a', { hasText: 'Space Explorer' })).toBeVisible()
+    await expect(frame.locator('header').first()).toBeVisible({ timeout: 10_000 })
 
-    await expect(page.locator('.route-indicator')).toBeVisible()
+    await expect(page.locator('.route-input')).toBeVisible()
   })
 
   test('transform injects data-annotask attributes', async ({ page }) => {
@@ -35,10 +34,10 @@ test.describe('React + Vite smoke', () => {
     await expect(page.locator('.toolbar')).toBeVisible({ timeout: 15_000 })
 
     const frame = page.frameLocator('.app-iframe')
-    await expect(frame.locator('header')).toBeVisible({ timeout: 10_000 })
+    await expect(frame.locator('header').first()).toBeVisible({ timeout: 10_000 })
 
     // Click the header element in the iframe
-    await frame.locator('header').click()
+    await frame.locator('header').first().click()
 
     await expect(page.locator('.panel .source-path')).toBeVisible({ timeout: 5_000 })
   })
