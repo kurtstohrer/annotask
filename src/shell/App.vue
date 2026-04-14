@@ -48,6 +48,14 @@ const shellTheme = useShellTheme()
 const styleEditor = useStyleEditor()
 const { changes } = styleEditor
 
+// Changes scoped to the currently selected element (for the inspector panel)
+const selectionChanges = computed(() => {
+  const sel = primarySelection.value
+  if (!sel) return []
+  const line = parseInt(sel.line) || 0
+  return changes.value.filter(c => c.file === sel.file && c.line === line)
+})
+
 async function doUndo() {
   const undoInfo = styleEditor.undo()
   if (!undoInfo) return
@@ -62,18 +70,28 @@ async function doUndo() {
 }
 
 async function doClearChanges() {
-  const placeholderEids = styleEditor.clearChanges()
-  for (const eid of placeholderEids) {
-    await iframe.removePlaceholder(eid)
+  const sel = primarySelection.value
+  if (sel && shellView.value === 'theme') {
+    const placeholderEids = styleEditor.removeChangesFor(sel.file, parseInt(sel.line) || 0)
+    for (const eid of placeholderEids) {
+      await iframe.removePlaceholder(eid)
+    }
+  } else {
+    const placeholderEids = styleEditor.clearChanges()
+    for (const eid of placeholderEids) {
+      await iframe.removePlaceholder(eid)
+    }
   }
 }
 
 async function commitChangesAsTask() {
-  if (changes.value.length === 0) return
+  const sel = primarySelection.value
+  const scope = selectionChanges.value.length > 0 ? selectionChanges.value : changes.value
+  if (scope.length === 0) return
 
   // Group changes by file:line
-  const styleChanges = changes.value.filter(c => c.type === 'style_update') as import('./composables/useStyleEditor').StyleChangeRecord[]
-  const classChanges = changes.value.filter(c => c.type === 'class_update') as import('./composables/useStyleEditor').ClassChangeRecord[]
+  const styleChanges = scope.filter(c => c.type === 'style_update') as import('./composables/useStyleEditor').StyleChangeRecord[]
+  const classChanges = scope.filter(c => c.type === 'class_update') as import('./composables/useStyleEditor').ClassChangeRecord[]
 
   // Deduplicate changes by property (apply-to-group creates one per eid, but they're the same change)
   const seenProps = new Set<string>()
@@ -104,7 +122,6 @@ async function commitChangesAsTask() {
     parts.push(`classes: ${c.after.classes}`)
   }
 
-  const sel = primarySelection.value
   const elementDesc = sel ? `<${sel.tagName}>${sel.component ? ` in ${sel.component}` : ''}` : ''
   const changeDesc = parts.length <= 3
     ? parts.join(', ')
@@ -147,8 +164,12 @@ async function commitChangesAsTask() {
     context: { changes: taskChanges, ...elementContext },
   })
 
-  // Clear changes after commit
-  await doClearChanges()
+  // Remove only this selection's changes after commit
+  if (sel && shellView.value === 'theme') {
+    styleEditor.removeChangesFor(file, typeof line === 'number' ? line : parseInt(line) || 0)
+  } else {
+    await doClearChanges()
+  }
 }
 const annotations = useAnnotations()
 const taskSystem = useTasks()
@@ -651,6 +672,14 @@ const appUrl = computed(() => {
           <ArrowColorPicker v-if="interactionMode === 'highlight'" v-model="highlightColor" />
         </template>
         <template v-else-if="shellView === 'theme'">
+          <div class="mode-toolbar">
+            <button :class="['mode-btn mode-interact', { active: interactionMode === 'interact' }]" @click="interactionMode = 'interact'" title="Interact (I)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
+            </button>
+            <button :class="['mode-btn mode-select', { active: interactionMode === 'select' }]" @click="interactionMode = 'select'" title="Select (V)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V4a2 2 0 1 1 4 0v5"/><path d="M11 9a2 2 0 1 1 4 0v2"/><path d="M15 11a2 2 0 1 1 4 0v4a8 8 0 0 1-8 8 7 7 0 0 1-5-2l-3.3-3.3a2 2 0 0 1 2.8-2.8L7 16"/></svg>
+            </button>
+          </div>
           <button :class="['tool-btn', { active: layoutOverlay.showOverlay.value }]" @click="layoutOverlay.toggle()" title="Show Layout (L)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
           </button>
@@ -914,7 +943,7 @@ const appUrl = computed(() => {
           :applyToGroup="applyToGroup"
           :liveStyles="liveStyles"
           :editingClasses="editingClasses"
-          :changes="changes"
+          :changes="selectionChanges"
           @style-change="onStyleChange"
           @class-change="applyClassChange"
           @update:editingClasses="editingClasses = $event"
@@ -1518,6 +1547,20 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 .tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .tool-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 .tool-btn.danger { color: var(--danger); }
+/* Interact / Select toggle for Design view */
+.mode-toolbar { display: flex; gap: 2px; align-items: center; }
+.mode-btn {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.1s;
+}
+.mode-btn:hover { background: var(--border); color: var(--text); }
+.mode-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 /* Panel toggle (Inspector/Tasks) */
 .panel-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .toggle-btn {

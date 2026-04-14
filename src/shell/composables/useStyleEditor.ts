@@ -282,6 +282,29 @@ export function useStyleEditor() {
     eidRefs.delete(id)
   }
 
+  /**
+   * Remove all changes for a specific file:line (element).
+   * Returns placeholder eids that need to be removed via bridge.
+   */
+  function removeChangesFor(file: string, line: number): string[] {
+    const placeholderEids: string[] = []
+    const removed: string[] = []
+    changes.value = changes.value.filter(c => {
+      if (c.file === file && c.line === line) {
+        removed.push(c.id)
+        if (c.type === 'component_insert') {
+          const eid = eidRefs.get(c.id)
+          if (eid) placeholderEids.push(eid)
+        }
+        return false
+      }
+      return true
+    })
+    for (const id of removed) eidRefs.delete(id)
+    broadcast('report:updated', report.value)
+    return placeholderEids
+  }
+
   function removeAnnotationsByFile(file: string, line: number) {
     changes.value = changes.value.filter(c => {
       if (c.type !== 'annotation') return true
@@ -388,5 +411,5 @@ export function useStyleEditor() {
     { deep: true }
   )
 
-  return { changes, applyStyle, recordInsert, recordAnnotation, recordClassChange, removeChange, removeAnnotationsByFile, undo, clearChanges, report, broadcast }
+  return { changes, applyStyle, recordInsert, recordAnnotation, recordClassChange, removeChange, removeChangesFor, removeAnnotationsByFile, undo, clearChanges, report, broadcast }
 }
