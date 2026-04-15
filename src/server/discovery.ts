@@ -12,10 +12,12 @@ export interface ServerInfo {
   mfe?: string
 }
 
-export function writeServerInfo(projectRoot: string, port: number) {
+export function writeServerInfo(projectRoot: string, port: number, host?: string) {
   const dir = path.join(projectRoot, '.annotask')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  const info: ServerInfo = { url: `http://localhost:${port}`, port, pid: process.pid }
+  // Wildcard/unspecified addresses aren't routable — resolve to localhost
+  const resolvedHost = (host && host !== '0.0.0.0' && host !== '::' && host !== '::1') ? host : 'localhost'
+  const info: ServerInfo = { url: `http://${resolvedHost}:${port}`, port, pid: process.pid }
   fs.writeFileSync(path.join(dir, 'server.json'), JSON.stringify(info, null, 2))
 }
 

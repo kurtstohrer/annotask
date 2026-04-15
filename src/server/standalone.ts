@@ -31,8 +31,8 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         httpServer.listen(0, '127.0.0.1', () => {
-          const addr = httpServer.address() as { port: number }
-          writeServerInfo(options.projectRoot, addr.port)
+          const addr = httpServer.address() as { port: number; address: string }
+          writeServerInfo(options.projectRoot, addr.port, addr.address)
           resolve({
             port: addr.port,
             close: () => { removeServerInfo(options.projectRoot); uiServer.dispose(); httpServer.close() },
@@ -44,7 +44,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
     })
 
     httpServer.listen(port, '127.0.0.1', () => {
-      writeServerInfo(options.projectRoot, port)
+      writeServerInfo(options.projectRoot, port, '127.0.0.1')
       resolve({
         port,
         close: () => { removeServerInfo(options.projectRoot); uiServer.dispose(); httpServer.close() },

@@ -55,7 +55,7 @@ function stripVisual(task: unknown): Record<string, unknown> {
 }
 
 const PROTOCOL_VERSION = '2025-03-26'
-const SERVER_INFO = { name: 'annotask', version: '0.0.16' }
+const SERVER_INFO = { name: 'annotask', version: '0.0.28' }
 
 const VALID_TRANSITIONS: Record<string, Set<string>> = {
   pending:     new Set(['in_progress', 'denied']),
@@ -498,6 +498,9 @@ export function createMcpMiddleware(deps: McpDeps) {
       res.end()
       return
     }
+
+    // Prevent caching of MCP responses
+    res.setHeader('Cache-Control', 'no-store')
 
     let raw: string
     try { raw = await readBody(req) } catch {

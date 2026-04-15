@@ -7,16 +7,38 @@ export interface AnnotaskWSServer {
   handleUpgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => void
   broadcast: (event: string, data: unknown) => void
   getReport: () => unknown
+  dispose: () => void
   clients: Set<WebSocket>
 }
+
+const PING_INTERVAL = 30_000 // 30s
 
 export function createWSServer(): AnnotaskWSServer {
   let currentReport: unknown = null
   const clients = new Set<WebSocket>()
+  const alive = new WeakSet<WebSocket>()
   const wss = new WebSocketServer({ noServer: true })
+
+  // Ping all clients periodically; terminate any that didn't pong since last ping
+  const pingTimer = setInterval(() => {
+    for (const client of clients) {
+      if (!alive.has(client)) {
+        client.terminate()
+        clients.delete(client)
+        continue
+      }
+      alive.delete(client)
+      client.ping()
+    }
+  }, PING_INTERVAL)
+  pingTimer.unref()
 
   wss.on('connection', (ws) => {
     clients.add(ws)
+    alive.add(ws)
+
+    ws.on('pong', () => { alive.add(ws) })
+
     if (currentReport) {
       ws.send(JSON.stringify({ event: 'report:current', data: currentReport, timestamp: Date.now() }))
     }
@@ -65,6 +87,7 @@ export function createWSServer(): AnnotaskWSServer {
       }
     },
     getReport() { return currentReport },
+    dispose() { clearInterval(pingTimer) },
     clients,
   }
 }

@@ -60,7 +60,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     handleUpgrade: (req, socket, head) => wsServer.handleUpgrade(req, socket, head),
     broadcast: (event, data) => wsServer.broadcast(event, data),
     getReport: () => wsServer.getReport(),
-    dispose: () => state.dispose(),
+    dispose: () => { state.dispose(); wsServer.dispose() },
   }
 }
 

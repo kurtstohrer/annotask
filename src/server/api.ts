@@ -119,7 +119,7 @@ export function createAPIMiddleware(options: APIOptions) {
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Cache-Control', 'no-store')
 
     if (req.method === 'OPTIONS') { res.statusCode = 200; res.end(); return }
 

@@ -107,7 +107,8 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       server.httpServer?.once('listening', () => {
         const addr = server.httpServer?.address()
         const port = typeof addr === 'object' && addr ? addr.port : 5173
-        writeServerInfo(projectRoot, port)
+        const host = typeof addr === 'object' && addr ? addr.address : undefined
+        writeServerInfo(projectRoot, port, host)
       })
 
       console.log('[Annotask] Design tool available at /__annotask/')
