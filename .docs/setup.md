@@ -4,7 +4,7 @@
 
 - Node.js >= 18
 - A Vite (v4+) or Webpack (v5+) project
-- Vue 3, React, Svelte, Astro, or plain HTML/htmx
+- Vue 3, React, Svelte, SolidJS, Astro, or plain HTML/htmx
 
 ## Install
 

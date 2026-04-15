@@ -49,6 +49,8 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
           injection = `\n;import { createElement as __uf_createElement } from 'react';\nimport { createRoot as __uf_createRoot } from 'react-dom/client';\nwindow.__ANNOTASK_REACT__ = { createElement: __uf_createElement, createRoot: __uf_createRoot };\n`
         } else if (code.includes("from 'svelte'") || code.includes('from "svelte"')) {
           injection = `\n;import { mount as __uf_mount, unmount as __uf_unmount } from 'svelte';\nwindow.__ANNOTASK_SVELTE__ = { mount: __uf_mount, unmount: __uf_unmount };\n`
+        } else if (code.includes("from 'solid-js") || code.includes('from "solid-js')) {
+          injection = `\n;import { render as __uf_render } from 'solid-js/web';\nwindow.__ANNOTASK_SOLID__ = { render: __uf_render };\n`
         }
         if (injection) {
           return { code: code + injection, map: null }

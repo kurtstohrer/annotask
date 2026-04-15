@@ -48,7 +48,7 @@ export interface PerformanceSnapshot {
 export interface AnnotaskReport {
   version: '1.0'
   project: {
-    framework: 'vue' | 'react' | 'svelte' | 'astro' | 'html' | 'htmx'
+    framework: 'vue' | 'react' | 'svelte' | 'solid' | 'astro' | 'html' | 'htmx'
     styling: string[]
     root: string
   }

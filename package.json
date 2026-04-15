@@ -1,7 +1,7 @@
 {
   "name": "annotask",
-  "version": "0.0.30",
-  "description": "Visual UI design tool for web apps. Make changes in the browser and generate structured reports that AI agents can apply to source code. Works with Vue, React, Svelte, and plain HTML via Vite or Webpack.",
+  "version": "0.0.31",
+  "description": "Visual UI design tool for web apps. Make changes in the browser and generate structured reports that AI agents can apply to source code. Works with Vue, React, Svelte, SolidJS, and plain HTML via Vite or Webpack.",
   "license": "MIT",
   "type": "module",
   "module": "./dist/index.js",
@@ -39,6 +39,7 @@
     "dev:svelte-vite": "pnpm --filter @annotask/playground-svelte-vite dev",
     "dev:html-vite": "pnpm --filter @annotask/playground-html-vite dev",
     "dev:astro": "pnpm --filter @annotask/playground-astro dev",
+    "dev:solid-vite": "pnpm --filter @annotask/playground-solid-vite dev",
     "dev:htmx-vite": "pnpm --filter @annotask/playground-htmx-vite dev",
     "dev:mfe-vite": "pnpm --filter @annotask/playground-mfe-vite dev",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p src/shell/tsconfig.json",

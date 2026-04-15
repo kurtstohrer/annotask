@@ -13,6 +13,7 @@ feel distinct.
 |---|---|---|---|---|
 | `react-vite` | Annotask marketing site | React 19 + CSS Modules | 5174 | `/api/marketing/*` |
 | `svelte-vite` | Atlas country explorer | Svelte 5 runes | 5175 | `/api/countries/*` |
+| `solid-vite` | SolidJS showcase | SolidJS + CSS Modules | 5179 | — |
 | `vue-vite` | Annotask Admin dashboard | Vue 3 + PrimeVue | 5173 | `/api/dashboard/*` |
 | `mfe-vite` | Storefront widget (MFE child) | Vue 3 (MFE) | 5180 | `/api/catalog/*` |
 Run any of them with `just react`, `just svelte`, etc. — the API auto-starts
@@ -129,6 +130,49 @@ router so detail pages are real URLs (`#/country/JP`).
    - Open the theme page and change `--accent` from teal to a coral.
    - The compare badge, the active filter chip, the focus ring, and the
      compare-button "active" state all recolor instantly.
+
+---
+
+## SolidJS — Showcase (`pnpm dev:solid-vite`, http://localhost:5179)
+
+A landing page built with idiomatic SolidJS: fine-grained reactivity via
+`createSignal`, control-flow components (`<Show>`, `<For>`), and `class`
+attributes (not React's `className`). CSS Modules with the same design token
+system as the React playground.
+
+### Demo scenarios
+
+1. **Verify attribute injection on Solid's compiled templates**
+   - Open `/__annotask/` alongside the page.
+   - Click any element. Confirm the inspector shows the correct source file
+     (`src/components/Hero.tsx`, `src/components/FeatureGrid.tsx`, etc.).
+   - Solid compiles JSX to `_$template()` calls — the `data-annotask-*`
+     attributes should be baked into the template strings.
+
+2. **Theme token swap**
+   - Open the annotask theme page and edit `--accent` from the default blue
+     to a warm orange.
+   - The nav CTA, hero badge, stat row numbers, and feature card hovers all
+     recolor.
+
+3. **Pin annotation on the hero CTA**
+   - Pin a note on "Get started — it's free" → "Make this button wider and
+     add a subtle glow on hover."
+   - Confirm the task includes `file: "src/components/Hero.tsx"`.
+
+4. **Conditional rendering (Show)**
+   - Click "Learn more →" in the hero to expand the info panel.
+   - Inspect the expanded panel — confirm annotask still maps it to
+     `Hero.tsx` even though `<Show>` conditionally mounts it.
+
+5. **List rendering (For)**
+   - Inspect any feature card in the grid. Confirm source mapping points to
+     `src/components/FeatureGrid.tsx`.
+   - All 6 cards should have distinct `data-annotask-line` values.
+
+6. **A11y scan**
+   - Run the a11y panel. Check for any contrast or label findings on the
+     hero gradient text or stat row.
 
 ---
 

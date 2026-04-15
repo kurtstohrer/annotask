@@ -13,7 +13,7 @@ Annotask ships three Claude Code skills that let AI agents interact with the des
 ## /annotask-init
 
 Scans the project to detect:
-- Framework (Vue, React, Svelte)
+- Framework (Vue, React, Svelte, SolidJS)
 - Styling methods (Tailwind, scoped CSS, CSS modules)
 - Color tokens (CSS variables, Tailwind config, `@theme` blocks)
 - Typography (families, scale, weights)

@@ -1,0 +1,24 @@
+.footer {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding: var(--space-6);
+}
+
+.inner {
+  max-width: var(--container-max);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-bold);
+  font-size: 15px;
+}
+
+.copy {
+  font-size: 13px;
+  color: var(--text-muted);
+}

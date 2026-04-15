@@ -8,16 +8,28 @@ npm install -D annotask
 
 ## 2. Add the plugin
 
-### Vite (Vue, React, Svelte, or plain HTML)
+### Vite (Vue, React, Svelte, SolidJS, or plain HTML)
 
 ```ts
 import { annotask } from 'annotask'
 
 export default defineConfig({
   plugins: [
-    vue(),    // or react() or svelte() — omit for plain HTML/htmx
+    vue(),    // or react() or svelte() or solid() — omit for plain HTML/htmx
     annotask(),
   ],
+})
+```
+
+### SolidJS
+
+```ts
+import { defineConfig } from 'vite'
+import solid from 'vite-plugin-solid'
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  plugins: [solid(), annotask()],
 })
 ```
 
@@ -204,7 +216,7 @@ Tasks created from MFE elements carry the `mfe` field. Filter them with `annotas
 
 ## Troubleshooting
 
-**Elements don't show source info**: Make sure your framework plugin (Vue, React, or Svelte) is installed and the Annotask plugin is listed after it in your Vite config. For Astro, source mapping is automatic. For plain HTML/htmx, source mapping is injected via `transformIndexHtml`.
+**Elements don't show source info**: Make sure your framework plugin (Vue, React, Svelte, or SolidJS) is installed and the Annotask plugin is listed after it in your Vite config. For Astro, source mapping is automatic. For plain HTML/htmx, source mapping is injected via `transformIndexHtml`.
 
 **MCP not connecting**: The dev server must be running. The MCP endpoint is at `/__annotask/mcp` on the same port as your dev server. Check `annotask status` to verify.
 

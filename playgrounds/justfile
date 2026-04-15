@@ -47,6 +47,10 @@ html: ensure-api
 astro: ensure-api
     cd astro && pnpm dev
 
+# Start SolidJS + Vite playground (port 5179)
+solid:
+    cd solid-vite && pnpm dev
+
 # Start htmx + Vite playground (port 5178)
 htmx: ensure-api
     cd htmx-vite && pnpm dev
@@ -84,6 +88,7 @@ list:
     @echo "  just svelte       — Svelte + Vite        (port 5175)"
     @echo "  just html         — HTML + Vite          (port 5176)"
     @echo "  just astro        — Astro                (port 5177)"
+    @echo "  just solid        — SolidJS + Vite       (port 5179)"
     @echo "  just htmx         — htmx + Vite          (port 5178)"
     @echo "  just mfe          — MFE + Vite           (port 5180, MFE mode)"
     @echo "  just start <dir>  — Any playground by directory name"

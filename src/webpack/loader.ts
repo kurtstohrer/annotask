@@ -1,6 +1,6 @@
 /**
  * Webpack loader for Annotask source file transform.
- * Injects data-annotask-* attributes into Vue, React, and Svelte templates.
+ * Injects data-annotask-* attributes into Vue, React, Svelte, and SolidJS templates.
  * Must run BEFORE framework-specific loaders (enforce: 'pre').
  */
 import { transformFile } from '../plugin/transform.js'
@@ -21,6 +21,9 @@ export default function annotaskLoader(this: any, source: string): string {
     }
     if (source.includes("from 'svelte'") || source.includes('from "svelte"')) {
       return source + `\n;import { mount as __uf_mount, unmount as __uf_unmount } from 'svelte';\nwindow.__ANNOTASK_SVELTE__ = { mount: __uf_mount, unmount: __uf_unmount };\n`
+    }
+    if (source.includes("from 'solid-js") || source.includes('from "solid-js')) {
+      return source + `\n;import { render as __uf_render } from 'solid-js/web';\nwindow.__ANNOTASK_SOLID__ = { render: __uf_render };\n`
     }
   }
 

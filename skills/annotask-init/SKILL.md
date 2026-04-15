@@ -44,6 +44,7 @@ Check `package.json` dependencies:
 - `vue` → name "vue", read version
 - `react` / `react-dom` → name "react"
 - `svelte` → name "svelte"
+- `solid-js` → name "solid"
 
 Check for styling:
 - `tailwindcss` in devDependencies or dependencies → add "tailwind" to styling array

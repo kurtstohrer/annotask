@@ -1,6 +1,6 @@
 # Annotask
 
-Visual UI design tool for web apps (Vue, React, Svelte, Astro, plain HTML/htmx). Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
+Visual UI design tool for web apps (Vue, React, Svelte, SolidJS, Astro, plain HTML/htmx). Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
 
 ## MCP Server
 
@@ -88,7 +88,7 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
 - `src/mcp/` — MCP server (Streamable HTTP transport, embedded in the Vite/Webpack server)
 - `src/cli/` — CLI tool for terminal interaction
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
+- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
 
 ## Shell Architecture
 

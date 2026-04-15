@@ -156,7 +156,7 @@ function isFrameworkLibrary(pkgDir: string): boolean {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8'))
     const allDeps = { ...pkg.dependencies, ...pkg.peerDependencies }
-    return ['vue', 'react', 'react-dom', 'svelte', '@angular/core'].some(fw => fw in allDeps)
+    return ['vue', 'react', 'react-dom', 'svelte', 'solid-js', '@angular/core'].some(fw => fw in allDeps)
   } catch { return false }
 }
 

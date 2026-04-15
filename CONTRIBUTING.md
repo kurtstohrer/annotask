@@ -52,7 +52,7 @@ Schema-only types (not yet emitted at runtime):
 
 ## Framework Support
 
-Annotask supports **Vue 3**, **React**, and **Svelte**. The transform layer (`src/plugin/transform.ts`) has per-framework extraction logic that feeds into a shared HTML/JSX attribute injection scanner. The bridge client detects the active framework at runtime for component mounting.
+Annotask supports **Vue 3**, **React**, **Svelte**, and **SolidJS**. The transform layer (`src/plugin/transform.ts`) has per-framework extraction logic that feeds into a shared HTML/JSX attribute injection scanner. SolidJS and React share the same JSX transform path. The bridge client detects the active framework at runtime for component mounting.
 
 ## Feature Freeze
 

@@ -1,0 +1,124 @@
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: var(--space-24) var(--space-6) var(--space-16);
+  text-align: center;
+}
+
+.gradient {
+  position: absolute;
+  inset: 0;
+  background: var(--hero-gradient);
+  pointer-events: none;
+}
+
+.inner {
+  position: relative;
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
+.eyebrow {
+  display: inline-block;
+  padding: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-5);
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-pill);
+  letter-spacing: 0.02em;
+}
+
+.headline {
+  font-size: clamp(36px, 6vw, 64px);
+  margin-bottom: var(--space-5);
+}
+
+.subhead {
+  font-size: 18px;
+  color: var(--text-muted);
+  max-width: 540px;
+  margin: 0 auto var(--space-8);
+  line-height: 1.6;
+}
+
+.ctaRow {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-10);
+}
+
+.primary {
+  padding: var(--space-3) var(--space-6);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-semibold);
+  font-size: 15px;
+  transition: background var(--duration-fast) var(--easing-standard);
+}
+
+.primary:hover {
+  background: var(--accent-strong);
+  color: var(--text-on-accent);
+}
+
+.secondary {
+  padding: var(--space-3) var(--space-6);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-semibold);
+  font-size: 15px;
+  color: var(--text-muted);
+  transition: border-color var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard);
+}
+
+.secondary:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.expandedInfo {
+  max-width: 540px;
+  margin: 0 auto var(--space-8);
+  padding: var(--space-4) var(--space-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-align: left;
+  color: var(--text-muted);
+  line-height: 1.6;
+  font-size: 15px;
+}
+
+.statRow {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-10);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.statRow li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.statRow strong {
+  font-size: 28px;
+  font-weight: var(--weight-bold);
+  color: var(--accent);
+}
+
+.statRow span {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}

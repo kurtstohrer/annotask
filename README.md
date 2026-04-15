@@ -4,7 +4,7 @@
 
 <h1 align="center">Annotask</h1>
 
-Visual markup tool for web apps. Annotate your UI in the browser — pins, arrows, drawn sections, notes — and Annotask generates structured tasks that AI coding agents apply to your source code. Supports Vue, React, Svelte, and plain HTML with Vite and Webpack. Astro and htmx are experimental.
+Visual markup tool for web apps. Annotate your UI in the browser — pins, arrows, drawn sections, notes — and Annotask generates structured tasks that AI coding agents apply to your source code. Supports Vue, React, Svelte, SolidJS, and plain HTML with Vite and Webpack. Astro and htmx are experimental.
 
 ## Workflow
 
@@ -169,6 +169,7 @@ CORS is restricted to localhost origins. Mutating requests (POST, PATCH, DELETE)
 | Vue 3          | Yes          | Yes     |
 | React          | Yes          | Yes     |
 | Svelte         | Yes          | Yes     |
+| SolidJS        | Yes          | Yes     |
 | Plain HTML     | Yes          | —       |
 | Astro          | Experimental | —       |
 | htmx           | Experimental | —       |
@@ -177,7 +178,7 @@ CORS is restricted to localhost origins. Mutating requests (POST, PATCH, DELETE)
 
 - **Dev mode only** — Annotask only runs in dev servers (Vite or Webpack), never in production builds
 - **Local only** — API and WebSocket endpoints are localhost-restricted (CORS enforced, same model as Vite HMR)
-- **Source mapping** — Works best with component files (`.vue`, `.tsx`, `.svelte`, `.astro`, `.html`); dynamic components and render functions may not map correctly
+- **Source mapping** — Works best with component files (`.vue`, `.tsx`, `.jsx`, `.svelte`, `.astro`, `.html`); dynamic components and render functions may not map correctly
 
 ## Development
 
@@ -203,7 +204,7 @@ pnpm test:e2e                 # Run E2E tests (all frameworks)
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, performance snapshots
 - `src/cli/` — CLI tool for terminal interaction
 - `skills/` — Agent skill definitions (shipped with the npm package)
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, mfe-vite)
+- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
 
 ## Troubleshooting
 

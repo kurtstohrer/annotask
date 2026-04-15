@@ -1,8 +1,9 @@
 /**
  * Source file transform — injects data-annotask-* attributes on HTML elements.
  *
- * Supports Vue SFC (.vue), React JSX (.jsx/.tsx), Svelte (.svelte),
- * Astro (.astro), Lit/Web Components (html`` in .ts/.js), and plain HTML.
+ * Supports Vue SFC (.vue), React JSX (.jsx/.tsx), SolidJS (.jsx/.tsx),
+ * Svelte (.svelte), Astro (.astro), Lit/Web Components (html`` in .ts/.js),
+ * and plain HTML.
  * The core HTML scanner (injectAttributes + findTagEnd) is shared across
  * all frameworks. Each framework has its own extraction logic to locate
  * the markup regions within a source file.
