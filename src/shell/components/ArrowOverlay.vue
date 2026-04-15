@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { Arrow, ElementRect } from '../composables/useAnnotations'
+import type { HoverElement } from '../composables/useCanvasDrawing'
 
 const props = defineProps<{
   arrows: Arrow[]
@@ -8,9 +9,12 @@ const props = defineProps<{
   drawingArrow: {
     fromX: number; fromY: number; toX: number; toY: number
     fromRect?: ElementRect; toRect?: ElementRect
+    fromTag?: string; fromComponent?: string
+    toTag?: string; toComponent?: string
   } | null
   drawingColor: string
   dragTargetRect: ElementRect | null
+  hoverElement: HoverElement
 }>()
 
 const emit = defineEmits<{
@@ -132,6 +136,17 @@ function onEndpointMove(e: PointerEvent) {
   emit('drag-move', e.clientX, e.clientY)
 }
 
+function elementLabel(tag?: string, component?: string): string {
+  const parts: string[] = []
+  if (tag) parts.push(`<${tag}>`)
+  if (component) parts.push(component)
+  return parts.join(' · ')
+}
+
+function labelPos(rect: ElementRect): { x: number; y: number } {
+  return { x: rect.x - 4, y: rect.y - 10 }
+}
+
 function onEndpointUp(e: PointerEvent) {
   if (endpointDrag.value) {
     const { arrowId, endpoint } = endpointDrag.value
@@ -202,22 +217,59 @@ function onEndpointUp(e: PointerEvent) {
       stroke-dasharray="4 2" rx="3" opacity="0.7"
     />
 
+    <!-- Hover preview (before drawing starts) -->
+    <g v-if="!drawingArrow && hoverElement" class="hover-preview">
+      <rect
+        :x="hoverElement.rect.x - 4" :y="hoverElement.rect.y - 4"
+        :width="hoverElement.rect.width + 8" :height="hoverElement.rect.height + 8"
+        :fill="drawingColor + '0c'" :stroke="drawingColor" stroke-width="2"
+        stroke-dasharray="6 3" rx="3" opacity="0.8"
+      />
+      <g v-if="elementLabel(hoverElement.tag, hoverElement.component)"
+        :transform="`translate(${labelPos(hoverElement.rect).x}, ${labelPos(hoverElement.rect).y})`">
+        <rect :width="elementLabel(hoverElement.tag, hoverElement.component).length * 7 + 12" height="20"
+          rx="4" :fill="drawingColor" opacity="0.85" />
+        <text x="6" y="14" class="element-label" fill="white">{{ elementLabel(hoverElement.tag, hoverElement.component) }}</text>
+      </g>
+    </g>
+
     <!-- Drawing preview -->
-    <g v-if="drawingArrow" opacity="0.7">
-      <!-- Source element outline -->
-      <path v-if="drawingArrow.fromRect" :d="rectPath(drawingArrow.fromRect)"
-        fill="none" :stroke="drawingColor" stroke-width="2" stroke-dasharray="4 2" opacity="0.6" />
-      <!-- Target element outline -->
-      <path v-if="drawingArrow.toRect" :d="rectPath(drawingArrow.toRect)"
-        :fill="drawingColor + '0a'" :stroke="drawingColor" stroke-width="2" stroke-dasharray="4 2" opacity="0.6" />
+    <g v-if="drawingArrow" opacity="0.85">
+      <!-- Source element outline + label -->
+      <g v-if="drawingArrow.fromRect">
+        <rect
+          :x="drawingArrow.fromRect.x - 4" :y="drawingArrow.fromRect.y - 4"
+          :width="drawingArrow.fromRect.width + 8" :height="drawingArrow.fromRect.height + 8"
+          fill="none" :stroke="drawingColor" stroke-width="2" stroke-dasharray="4 2" rx="3" opacity="0.7" />
+        <g v-if="elementLabel(drawingArrow.fromTag, drawingArrow.fromComponent)"
+          :transform="`translate(${labelPos(drawingArrow.fromRect).x}, ${labelPos(drawingArrow.fromRect).y})`">
+          <rect :width="elementLabel(drawingArrow.fromTag, drawingArrow.fromComponent).length * 7 + 12" height="20"
+            rx="4" :fill="drawingColor" opacity="0.7" />
+          <text x="6" y="14" class="element-label" fill="white">{{ elementLabel(drawingArrow.fromTag, drawingArrow.fromComponent) }}</text>
+        </g>
+      </g>
+      <!-- Target element outline + label -->
+      <g v-if="drawingArrow.toRect">
+        <rect
+          :x="drawingArrow.toRect.x - 4" :y="drawingArrow.toRect.y - 4"
+          :width="drawingArrow.toRect.width + 8" :height="drawingArrow.toRect.height + 8"
+          :fill="lighten(drawingColor, 0.2) + '18'" :stroke="drawingColor" stroke-width="2"
+          stroke-dasharray="4 2" rx="3" opacity="0.8" />
+        <g v-if="elementLabel(drawingArrow.toTag, drawingArrow.toComponent)"
+          :transform="`translate(${labelPos(drawingArrow.toRect).x}, ${labelPos(drawingArrow.toRect).y})`">
+          <rect :width="elementLabel(drawingArrow.toTag, drawingArrow.toComponent).length * 7 + 12" height="20"
+            rx="4" :fill="drawingColor" opacity="0.7" />
+          <text x="6" y="14" class="element-label" fill="white">{{ elementLabel(drawingArrow.toTag, drawingArrow.toComponent) }}</text>
+        </g>
+      </g>
       <!-- Arrow line (edge-to-edge) -->
       <path
         :d="edgePath(drawingArrow.fromX, drawingArrow.fromY, drawingArrow.toX, drawingArrow.toY, drawingArrow.fromRect, drawingArrow.toRect)"
         fill="none" :stroke="drawingColor" stroke-width="2.5" stroke-dasharray="6 3"
         :marker-end="`url(#${markerId(drawingColor)})`"
       />
-      <circle :cx="drawingArrow.fromX" :cy="drawingArrow.fromY" r="5" :fill="drawingColor" opacity="0.6" />
-      <circle :cx="drawingArrow.toX" :cy="drawingArrow.toY" r="5" :fill="drawingColor" opacity="0.6" />
+      <circle :cx="drawingArrow.fromX" :cy="drawingArrow.fromY" r="5" :fill="drawingColor" opacity="0.7" />
+      <circle :cx="drawingArrow.toX" :cy="drawingArrow.toY" r="5" :fill="drawingColor" opacity="0.7" />
     </g>
   </svg>
 </template>
@@ -235,4 +287,6 @@ function onEndpointUp(e: PointerEvent) {
 .arrow-delete { cursor: pointer; pointer-events: auto; }
 .endpoint-handle { cursor: grab; pointer-events: auto; }
 .endpoint-handle:active { cursor: grabbing; }
+.element-label { font: 11px/1 system-ui, sans-serif; pointer-events: none; }
+.hover-preview { transition: opacity 0.15s ease; }
 </style>

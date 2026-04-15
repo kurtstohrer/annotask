@@ -229,7 +229,7 @@ watch(arrowColor, (v) => localStorage.setItem('annotask:arrowColor', v))
 const highlightColor = ref(localStorage.getItem('annotask:highlightColor') || '#f59e0b')
 watch(highlightColor, (v) => localStorage.setItem('annotask:highlightColor', v))
 const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value, () => discardUncommittedAnnotations())
-const { drawingArrow, drawingRect, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
+const { drawingArrow, drawingRect, hoverElement: arrowHoverElement, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
 // Sync mode to bridge + clear selection on interact + clean orphan annotations
 watch(interactionMode, (mode) => {
@@ -238,6 +238,9 @@ watch(interactionMode, (mode) => {
   if (mode !== 'select' && pendingTaskCreation.value?.kind === 'select') {
     pendingTaskCreation.value = null
     pendingTaskText.value = ''
+  }
+  if (mode !== 'arrow') {
+    arrowHoverElement.value = null
   }
   if (mode === 'interact') {
     clearSelection()
@@ -894,6 +897,7 @@ const appUrl = computed(() => {
           :selectedId="annotations.selectedArrowId.value"
           :drawingArrow="drawingArrow"
           :drawingColor="arrowColor"
+          :hoverElement="arrowHoverElement"
           @select="annotations.selectedArrowId.value = $event"
           @remove="annotations.removeArrow"
           :dragTargetRect="arrowDragTargetRect"
