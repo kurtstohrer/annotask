@@ -302,6 +302,17 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
     path.join(pkgDir, 'components', 'index.d.ts'),
   ]
 
+  // Also check the `types` field from package.json as a fallback
+  // (handles single-barrel packages like @va-bip/bip-ui-components)
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8'))
+    const typesField: string | undefined =
+      pkg.exports?.['.']?.types ?? pkg.types ?? pkg.typings
+    if (typeof typesField === 'string' && typesField.endsWith('.d.ts')) {
+      candidatePaths.push(path.join(pkgDir, typesField))
+    }
+  } catch { /* no package.json */ }
+
   let indexPath: string | null = null
   let componentsDir: string | null = null
   for (const p of candidatePaths) {
@@ -356,6 +367,31 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
       }
 
       components.push({ name: componentName, module: name, props })
+    }
+  }
+
+  // Fallback: single-barrel .d.ts with inline declarations (no per-file re-exports).
+  // Parse `export { Name1, Name2, ... };` lines and match to `interface NameProps` in the same file.
+  if (components.length === 0) {
+    const inlineExportRe = /export\s*\{([^}]+)\}\s*;/g
+    let m: RegExpExecArray | null
+    while ((m = inlineExportRe.exec(indexContent)) !== null) {
+      for (const token of m[1].split(',')) {
+        const trimmed = token.trim().replace(/^type\s+/, '')
+        if (!trimmed) continue
+        const exportName = trimmed.split(/\s+as\s+/).pop()!.trim()
+        // Only PascalCase component names
+        if (exportName[0] !== exportName[0].toUpperCase() || exportName[0] === exportName[0].toLowerCase()) continue
+        if (exportName.endsWith('Props') || exportName.endsWith('Emits') || exportName.endsWith('Icon')) continue
+        if (exportName === exportName.toUpperCase()) continue
+        if (/^(use|create|get|set|is|has|with|to|from)[A-Z]/.test(exportName)) continue
+        if (seen.has(exportName)) continue
+        seen.add(exportName)
+
+        // Extract props from inline interface in the same file
+        const dtsResult = await extractPropsFromDts(indexPath!, exportName)
+        components.push({ name: exportName, module: name, props: dtsResult.props })
+      }
     }
   }
 
@@ -573,7 +609,30 @@ async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: stri
   // Bundled ESM files end with export{internalName as exportName, ...}.
   // We can extract component names (no props) from this.
   const distEntry = findPackageEntry(pkgDir)
-  if (distEntry) return extractExportNames(distEntry, name)
+  if (distEntry) {
+    const nameOnly = await extractExportNames(distEntry, name)
+    // Try to hydrate props from the types .d.ts file
+    if (nameOnly.length > 0) {
+      let typesPath: string | null = null
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8'))
+        const typesField: string | undefined = pkg.exports?.['.']?.types ?? pkg.types ?? pkg.typings
+        if (typeof typesField === 'string' && typesField.endsWith('.d.ts')) {
+          const candidate = path.join(pkgDir, typesField)
+          if (fs.existsSync(candidate)) typesPath = candidate
+        }
+      } catch { /* no package.json */ }
+      if (typesPath) {
+        for (const comp of nameOnly) {
+          if (comp.props.length === 0) {
+            const dtsResult = await extractPropsFromDts(typesPath, comp.name)
+            comp.props = dtsResult.props
+          }
+        }
+      }
+    }
+    return nameOnly
+  }
 
   return []
 }

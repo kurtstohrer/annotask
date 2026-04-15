@@ -354,8 +354,13 @@ async function onIframeLoad() {
   iframe.onBridgeReady(async () => {
     // Sync mode
     iframe.setMode(interactionMode.value)
-    // Check source mapping
-    showWarning.value = !(await iframe.checkSourceMapping())
+    // Check source mapping — defer to allow frameworks (React, Svelte) to render first
+    const hasMapping = await iframe.checkSourceMapping()
+    if (!hasMapping) {
+      // Retry after a delay: frameworks may not have rendered yet on bridge ready
+      await new Promise(r => setTimeout(r, 2000))
+      showWarning.value = !(await iframe.checkSourceMapping())
+    }
     // Get actual route from bridge and persist it
     const route = await iframe.getCurrentRoute()
     annotations.setRoute(route)
@@ -813,7 +818,7 @@ const appUrl = computed(() => {
 
     <!-- Banners -->
     <div v-if="showWarning" class="warning-banner">
-      Source mapping unavailable — add <code>annotask()</code> to your Vite plugins.
+      Source mapping unavailable — ensure the Annotask plugin is configured in your build tool.
     </div>
     <div v-if="!configInitialized" class="setup-banner">
       Annotask not initialized — run <code>/annotask-init</code> in your AI assistant to set up project tokens and component detection.

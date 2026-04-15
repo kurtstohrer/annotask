@@ -62,6 +62,12 @@ export class AnnotaskWebpackPlugin {
           const { port } = await startStandaloneServer({ projectRoot, port: this.options.port })
           this.serverUrl = `http://localhost:${port}`
           console.log(`[Annotask] Server running at ${this.serverUrl}/__annotask/`)
+
+          // Auto-inject devServer proxy so /__annotask routes are forwarded
+          // to the standalone server (webpack-dev-server doesn't know about them)
+          const devServer = compiler.options.devServer = compiler.options.devServer || {}
+          const proxyRule = { context: ['/__annotask'], target: `http://127.0.0.1:${port}`, ws: true }
+          devServer.proxy = [...(Array.isArray(devServer.proxy) ? devServer.proxy : []), proxyRule]
         } catch (err) {
           console.error('[Annotask] Failed to start server:', err)
         }

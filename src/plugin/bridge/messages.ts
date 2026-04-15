@@ -335,7 +335,7 @@ export function bridgeMessages(): string {
         };
         script.onerror = function() {
           if (savedDefine !== undefined) window.define = savedDefine;
-          respond(id, { violations: [], error: 'failed to load axe-core — run: pnpm build:vendor' });
+          respond(id, { violations: [], error: 'failed to load axe-core — check that /__annotask/ routes are accessible from the app origin' });
         };
         document.head.appendChild(script);
       }
@@ -505,7 +505,7 @@ export function bridgeMessages(): string {
         };
         h2cScript.onerror = function() {
           if (savedDefine2 !== undefined) window.define = savedDefine2;
-          respond(id, { error: 'failed to load html2canvas — run: pnpm build:vendor' });
+          respond(id, { error: 'failed to load html2canvas — check that /__annotask/ routes are accessible from the app origin' });
         };
         document.head.appendChild(h2cScript);
       }
