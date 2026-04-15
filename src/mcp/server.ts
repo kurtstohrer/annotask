@@ -55,7 +55,7 @@ function stripVisual(task: unknown): Record<string, unknown> {
 }
 
 const PROTOCOL_VERSION = '2025-03-26'
-const SERVER_INFO = { name: 'annotask', version: '0.0.28' }
+const SERVER_INFO = { name: 'annotask', version: '0.0.29' }
 
 const VALID_TRANSITIONS: Record<string, Set<string>> = {
   pending:     new Set(['in_progress', 'denied']),

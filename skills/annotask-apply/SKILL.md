@@ -14,9 +14,15 @@ Use this skill when the user says:
 
 Annotask is a visual markup tool that integrates with Vite and Webpack. The user annotates the page with pins, sticky notes, arrows, text highlights, and drawn sections. These become **tasks** stored in `.annotask/tasks.json` and served via API. This skill fetches pending tasks, applies them, and marks them for review.
 
+## MCP preference
+
+If you have `annotask_*` MCP tools available, prefer them over CLI commands — they return structured data directly, are faster, and avoid shell/npx issues. If MCP tools are not available, use the CLI commands shown below.
+
 ## Steps
 
 ### 0. Check server status
+
+**MCP:** If you have MCP tools, the server is already running — skip this step.
 
 ```bash
 npx annotask status
@@ -25,6 +31,8 @@ npx annotask status
 If this fails, the Annotask dev server isn't running. Ask the user to start it.
 
 ### 1. Fetch pending tasks
+
+**MCP:** `annotask_get_tasks(status: "pending")` — returns compact summaries. Use `detail: true` for full objects.
 
 ```bash
 npx annotask tasks
@@ -37,11 +45,13 @@ Response (compact task summaries):
 
 Each task summary has: `id`, `type`, `status`, `description`, `file`, `line`, and optionally `component`, `action`, `screenshot`, `feedback` (on denied tasks), `blocked_reason`, `resolution`.
 
-For full task details (context, element_context, viewport, interaction_history, agent_feedback), use the `annotask_get_task` MCP tool with a specific task ID. Only fetch full details when the summary doesn't provide enough context to apply the change.
+For full task details (context, element_context, viewport, interaction_history, agent_feedback), use `annotask_get_task` MCP tool or `npx annotask tasks --pretty`. Only fetch full details when the summary doesn't provide enough context to apply the change.
 
 ### Screenshot reference
 
 Some tasks include a `screenshot` field. The screenshot shows exactly what the user sees in the browser. To view it:
+
+**MCP:** `annotask_get_screenshot(task_id: "TASK_ID")` — returns base64-encoded PNG directly.
 
 ```bash
 npx annotask screenshot TASK_ID
@@ -56,6 +66,8 @@ Filter for `status: "pending"` and `status: "denied"` (with `feedback`) tasks. A
 #### a. Lock the task
 
 Mark it `in_progress` so the user sees you're working on it:
+
+**MCP:** `annotask_update_task(task_id: "TASK_ID", status: "in_progress")`
 
 ```bash
 npx annotask update-task TASK_ID --status=in_progress
@@ -97,6 +109,8 @@ Read the task type and apply accordingly:
 
 If you are **genuinely stuck** — missing API context, unclear library usage, ambiguous intent that could lead to a wrong implementation — ask the user for clarification instead of guessing:
 
+**MCP:** `annotask_update_task(task_id: "TASK_ID", questions: [{"id":"q1","text":"Which auth library should I use?","type":"choice","options":["NextAuth","Clerk","Custom"]},{"id":"q2","text":"Where is the session config located?","type":"text"}])`
+
 ```bash
 npx annotask update-task TASK_ID --ask='{"message":"Optional markdown context","questions":[{"id":"q1","text":"Which auth library should I use?","type":"choice","options":["NextAuth","Clerk","Custom"]},{"id":"q2","text":"Where is the session config located?","type":"text"}]}'
 ```
@@ -111,11 +125,13 @@ This sets the task to `needs_info` status. The user sees your questions in the A
 - Only ask when you truly cannot proceed — do not ask for confirmation on straightforward tasks
 - Be specific: "Which CSS framework should I use for the grid?" is better than "How should I do this?"
 - Combine related questions into a single ask rather than multiple rounds
-- After asking, move on to the next task. Come back to check answers later via `npx annotask tasks`
+- After asking, move on to the next task. Come back to check answers later via `annotask_get_tasks` MCP tool or `npx annotask tasks`
 
 #### d. Mark as blocked (when the task can't be done)
 
 If the task is **fundamentally outside your control** — a performance issue in a third-party library, an accessibility bug in a dependency, a config change that requires infrastructure access, etc. — mark it as blocked with an explanation:
+
+**MCP:** `annotask_update_task(task_id: "TASK_ID", blocked_reason: "This layout shift is caused by vue-router v4's async route loading. Needs upstream fix or a loading skeleton wrapper — cannot be resolved by editing component code alone.")`
 
 ```bash
 npx annotask update-task TASK_ID --blocked-reason="This layout shift is caused by vue-router v4's async route loading. Needs upstream fix or a loading skeleton wrapper — cannot be resolved by editing component code alone."
@@ -130,6 +146,8 @@ This sets the task to `blocked` status automatically. The user sees your explana
 #### e. Mark for review immediately
 
 As soon as you finish applying **this** task, mark it for review with a brief resolution note:
+
+**MCP:** `annotask_update_task(task_id: "TASK_ID", status: "review", resolution: "Swapped grid to flexbox, added gap-4 for spacing")`
 
 ```bash
 npx annotask update-task TASK_ID --status=review --resolution="Swapped grid to flexbox, added gap-4 for spacing"
