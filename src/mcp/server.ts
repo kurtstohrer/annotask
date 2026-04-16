@@ -13,6 +13,7 @@ import {
   McpDeleteTaskArgs,
   McpGetDesignSpecArgs,
   McpGetComponentsArgs,
+  McpGetComponentArgs,
   McpGetScreenshotArgs,
   parseWith,
   assertTransition,
@@ -66,6 +67,38 @@ function stripVisual(task: unknown): Record<string, unknown> {
   if (!task || typeof task !== 'object' || Array.isArray(task)) return {}
   const { visual, ...rest } = task as Record<string, unknown>
   return rest
+}
+
+// Minimal shapes so we don't drag the full scanner types through the MCP layer.
+interface ScannedComponentLike {
+  name: string
+  module: string
+  description?: string | null
+  category?: string | null
+  tags?: string[]
+  deprecated?: boolean
+  props?: Array<{ name: string }>
+  slots?: Array<{ name: string }>
+  events?: Array<{ name: string }>
+}
+interface ScannedLibraryLike {
+  name: string
+  version?: string
+  components?: ScannedComponentLike[]
+}
+
+/** Compact summary for an agent-facing component list — no props/slots/events bodies. */
+function componentSummary(c: ScannedComponentLike) {
+  return {
+    name: c.name,
+    module: c.module,
+    category: c.category ?? null,
+    description: c.description ?? null,
+    propCount: c.props?.length ?? 0,
+    slotCount: c.slots?.length ?? 0,
+    eventCount: c.events?.length ?? 0,
+    deprecated: c.deprecated ? true : undefined,
+  }
 }
 
 const PROTOCOL_VERSION = '2025-03-26'
@@ -202,13 +235,34 @@ const TOOLS: ToolDef[] = [
   {
     name: 'annotask_get_components',
     description:
-      'Search component library components detected in node_modules. Returns component names, import paths, and prop definitions. ' +
-      'Without a search query, returns up to 20 components per library with a total count.',
+      'Search component libraries detected in node_modules. By default returns compact summaries (name, module, category) — set detail=true for full props/slots/events/description. ' +
+      'Filters: `search` (name substring), `library` (exact library name), `category` (e.g. "button", "form"), `used_only` (restrict to components actually imported in this codebase — highest-signal filter). ' +
+      'Paginate with `limit` (default 50, max 500) and `offset`. For a single component use annotask_get_component.',
     inputSchema: {
       type: 'object',
       properties: {
         search: { type: 'string', description: 'Filter components by name (case-insensitive substring match)' },
+        library: { type: 'string', description: 'Exact library name (e.g. "primevue")' },
+        category: { type: 'string', description: 'Category filter (e.g. "button", "form", "overlay", "data", "layout")' },
+        used_only: { type: 'boolean', description: 'Return only components that are actually imported in the codebase (from design-spec.components.used)' },
+        detail: { type: 'boolean', description: 'Include full props, slots, events, and description. Default false returns compact summaries.' },
+        limit: { type: 'number', description: 'Max results per library. Default 50, max 500.' },
+        offset: { type: 'number', description: 'Skip the first N results (pagination). Default 0.' },
       },
+    },
+  },
+  {
+    name: 'annotask_get_component',
+    description:
+      'Get full detail for a single component by name: props, slots, events, description, category, import module. ' +
+      'Use after annotask_get_components identifies candidates. Provide `library` to disambiguate when the same name exists in multiple libraries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Component name (e.g. "Button", "DataTable")' },
+        library: { type: 'string', description: 'Library name to disambiguate (e.g. "primevue")' },
+      },
+      required: ['name'],
     },
   },
   {
@@ -374,26 +428,64 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
     case 'annotask_get_components': {
       const parsed = parseWith(McpGetComponentsArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
-      const catalog = await scanComponentLibraries(deps.projectRoot) as { libraries?: Array<{ name: string; version?: string; components?: Array<{ name: string }> }> }
-      const search = (parsed.data.search ?? '').toLowerCase()
-      const MAX_RESULTS = 20
+      const { search = '', library, category, used_only, detail = false, limit = 50, offset = 0 } = parsed.data
+      const catalog = await scanComponentLibraries(deps.projectRoot) as { libraries?: ScannedLibraryLike[] }
 
-      const result = {
-        libraries: (catalog.libraries || []).map((lib) => {
-          let components = lib.components || []
-          if (search) {
-            components = components.filter(c => c.name.toLowerCase().includes(search))
-          }
+      // Resolve the "used" set once, from design-spec, when used_only is requested.
+      let usedSet: Set<string> | null = null
+      if (used_only) {
+        const spec = deps.getDesignSpec() as { components?: { used?: unknown } } | null
+        const used = Array.isArray(spec?.components?.used) ? spec!.components!.used as unknown[] : []
+        usedSet = new Set(used.filter((u): u is string => typeof u === 'string'))
+      }
+
+      const searchLc = search.toLowerCase()
+      const libraries = (catalog.libraries || [])
+        .filter(lib => !library || lib.name === library)
+        .map((lib) => {
+          let components = (lib.components || []).filter(c => {
+            if (searchLc && !c.name.toLowerCase().includes(searchLc)) return false
+            if (category && c.category !== category) return false
+            if (usedSet && !usedSet.has(c.name)) return false
+            return true
+          })
           const total = components.length
+          const paged = components.slice(offset, offset + limit)
           return {
             name: lib.name,
             version: lib.version,
             total,
-            components: components.slice(0, MAX_RESULTS),
+            components: paged.map(c => detail ? c : componentSummary(c)),
           }
-        }).filter(lib => lib.components.length > 0),
+        }).filter(lib => lib.components.length > 0)
+
+      return { content: [{ type: 'text', text: compact({ libraries }) }] }
+    }
+
+    case 'annotask_get_component': {
+      const parsed = parseWith(McpGetComponentArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { name, library } = parsed.data
+      const catalog = await scanComponentLibraries(deps.projectRoot) as { libraries?: ScannedLibraryLike[] }
+      const matches: Array<{ library: string; version: string | undefined; component: ScannedComponentLike }> = []
+      for (const lib of catalog.libraries || []) {
+        if (library && lib.name !== library) continue
+        for (const c of lib.components || []) {
+          if (c.name === name) matches.push({ library: lib.name, version: lib.version, component: c })
+        }
       }
-      return { content: [{ type: 'text', text: compact(result) }] }
+      if (matches.length === 0) return toolError(`Component not found: ${name}${library ? ` (library: ${library})` : ''}`)
+      if (matches.length > 1 && !library) {
+        return {
+          content: [{ type: 'text', text: compact({
+            ambiguous: true,
+            message: `Found ${matches.length} components named ${name}. Pass \`library\` to disambiguate.`,
+            candidates: matches.map(m => ({ library: m.library, module: m.component.module })),
+          }) }],
+        }
+      }
+      const { library: libName, version, component } = matches[0]
+      return { content: [{ type: 'text', text: compact({ library: libName, version, ...component }) }] }
     }
 
     case 'annotask_get_screenshot': {

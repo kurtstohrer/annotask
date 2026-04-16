@@ -4,7 +4,7 @@ import Header from './components/Header.vue'
 
 type Theme = 'dark' | 'light'
 
-const STORAGE_KEY = 'annotask-admin-theme'
+const STORAGE_KEY = 'annotask-solar-theme'
 const theme = ref<Theme>('dark')
 
 onMounted(() => {
@@ -38,7 +38,7 @@ function toggleTheme() {
 
 <template>
   <div class="app" :class="theme">
-    <Header title="Annotask Admin" :theme="theme" @toggle-theme="toggleTheme" />
+    <Header title="Solar System Explorer" :theme="theme" @toggle-theme="toggleTheme" />
 
     <main class="content">
       <router-view />
@@ -86,50 +86,6 @@ body {
   padding: 20px;
 }
 
-.view-toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-.p-selectbutton {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.p-selectbutton .p-togglebutton {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 500;
-  padding: 3px 14px;
-  gap: 6px;
-  transition: all 0.15s;
-}
-
-.p-selectbutton .p-togglebutton .p-togglebutton-content {
-  background: transparent;
-}
-
-.p-selectbutton .p-togglebutton.p-togglebutton-checked {
-  background: var(--surface-alt);
-  color: var(--text);
-}
-
-.layout {
-  display: flex;
-  gap: 20px;
-  align-items: flex-start;
-}
-
-@media (max-width: 900px) {
-  .layout { flex-direction: column; }
-}
-
 .error-banner {
   display: flex;
   align-items: center;
@@ -141,57 +97,6 @@ body {
   border-radius: 10px;
   color: #ef4444;
   font-size: 14px;
-}
-
-/* PrimeVue overrides — work in both themes via the var() system */
-.p-datatable {
-  background: var(--surface);
-  border-radius: 10px;
-  overflow: hidden;
-}
-.p-datatable-thead > tr > th {
-  background: var(--surface-alt) !important;
-  border-color: var(--border) !important;
-  color: var(--text-muted) !important;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.p-datatable-tbody > tr {
-  background: var(--surface) !important;
-  border-color: var(--border) !important;
-}
-.p-datatable-tbody > tr:hover {
-  background: var(--surface-alt) !important;
-}
-.p-datatable-tbody > tr > td {
-  border-color: var(--border) !important;
-  color: var(--text);
-}
-.p-inputtext {
-  background: var(--surface-alt);
-  border-color: var(--border);
-  color: var(--text);
-}
-.p-inputtext:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
-}
-.p-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
-}
-.p-menubar {
-  background: transparent;
-  border: none;
-}
-.p-progressbar {
-  background: var(--surface-alt);
-  border-radius: 4px;
-}
-.p-progressbar-value {
-  background: var(--accent);
 }
 
 /* Custom scrollbar */

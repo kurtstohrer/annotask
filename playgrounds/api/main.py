@@ -3,13 +3,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import marketing, countries, dashboard, catalog
+from routers import marketing, countries, dashboard, catalog, solar
 
 app = FastAPI(
     title="Annotask Playgrounds API",
     description=(
         "Themed backend for the annotask playgrounds. Each domain backs a different "
-        "kind of site: marketing (React), countries (Svelte), dashboard (Vue), catalog (MFE/Antenna)."
+        "kind of site: marketing (React), countries (Svelte), solar (Vue), catalog (MFE/Antenna)."
     ),
     version="2.0.0",
 )
@@ -25,3 +25,4 @@ app.include_router(marketing.router)
 app.include_router(countries.router)
 app.include_router(dashboard.router)
 app.include_router(catalog.router)
+app.include_router(solar.router)

@@ -1,63 +1,69 @@
-export interface MetricSeries {
-  value: number
-  change_pct: number
-  trend: number[]
-}
+export type PlanetType = 'Terrestrial' | 'Gas Giant' | 'Ice Giant'
 
-export interface DashboardMetrics {
-  active_users: MetricSeries
-  mrr: MetricSeries
-  error_rate: MetricSeries
-  p95_latency_ms: MetricSeries
-}
-
-export interface User {
+export interface Planet {
   id: number
   name: string
-  email: string
-  role: string
-  status: 'active' | 'invited' | 'suspended'
-  plan: 'Solo' | 'Team' | 'Enterprise'
-  joined: string
-  last_seen: string | null
+  type: PlanetType
+  radius_km: number
+  gravity_ms2: number
+  avg_temp_c: number
+  moons: number
+  distance_from_sun_mkm: number
+  orbital_period_days: number
+  day_length_hours: number
+  discovered_by: string | null
+  description: string
+  color: string
 }
 
-export interface UserListResponse {
-  users: User[]
+export interface PlanetListResponse {
+  planets: Planet[]
   total: number
 }
 
-export interface Order {
-  id: string
-  customer: string
-  plan: string
-  seats: number
-  amount_usd: number
-  status: 'paid' | 'pending' | 'free' | 'refunded'
-  created: string
-}
-
-export interface OrderListResponse {
-  orders: Order[]
-  total: number
-}
-
-export interface ActivityEntry {
+export interface Moon {
   id: number
-  ts: string
-  actor: string
-  action: string
-  target: string
+  name: string
+  planet: string
+  radius_km: number
+  distance_km: number
+  orbital_period_days: number
+  discovered_by: string | null
+  year_discovered: number | null
+  description: string
+  color: string
 }
 
-export interface AnalyticsBucket {
-  day: string
-  users: number
-  sessions: number
-  tasks: number
+export interface MoonListResponse {
+  moons: Moon[]
+  total: number
 }
 
-export interface AnalyticsResponse {
-  range: string
-  buckets: AnalyticsBucket[]
+export interface SunLayer {
+  name: string
+  depth: string
+  temp: string
+  color: string
+}
+
+export interface Sun {
+  type: string
+  age_years: number
+  radius_km: number
+  surface_temp_c: number
+  core_temp_c: number
+  mass_kg: number
+  luminosity_w: number
+  composition: { hydrogen_pct: number; helium_pct: number; other_pct: number }
+  layers: SunLayer[]
+}
+
+export interface SolarStats {
+  total_planets: number
+  total_moons: number
+  largest_planet: string
+  smallest_planet: string
+  hottest_planet: string
+  coldest_planet: string
+  planet_with_most_moons: string
 }

@@ -1,0 +1,22 @@
+{
+  "name": "@annotask/playground-react-radix",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@radix-ui/themes": "^3.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "annotask": "workspace:*",
+    "typescript": "^5.5.0",
+    "vite": "^6.4.2"
+  }
+}

@@ -143,6 +143,17 @@ export const McpGetDesignSpecArgs = z.object({
 
 export const McpGetComponentsArgs = z.object({
   search: z.string().optional(),
+  library: z.string().optional(),
+  category: z.string().optional(),
+  used_only: z.boolean().optional(),
+  detail: z.boolean().optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+  offset: z.number().int().min(0).optional(),
+})
+
+export const McpGetComponentArgs = z.object({
+  name: z.string().min(1, 'Missing required parameter: name'),
+  library: z.string().optional(),
 })
 
 export const McpGetScreenshotArgs = z.object({

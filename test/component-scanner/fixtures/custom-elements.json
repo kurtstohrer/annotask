@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "1.0.0",
+  "readme": "",
+  "modules": [
+    {
+      "kind": "javascript-module",
+      "path": "src/my-button.ts",
+      "declarations": [
+        {
+          "kind": "class",
+          "name": "MyButton",
+          "tagName": "my-button",
+          "description": "A custom-element button.",
+          "deprecated": false,
+          "attributes": [
+            {
+              "name": "variant",
+              "type": { "text": "'primary' | 'secondary' | 'ghost'" },
+              "default": "'primary'",
+              "description": "Visual style."
+            },
+            {
+              "name": "disabled",
+              "type": { "text": "boolean" },
+              "default": "false",
+              "description": "Disable interaction."
+            }
+          ],
+          "members": [
+            {
+              "kind": "field",
+              "name": "loading",
+              "type": { "text": "boolean" },
+              "default": "false",
+              "description": "Show a spinner."
+            },
+            {
+              "kind": "field",
+              "name": "_internal",
+              "privacy": "private",
+              "type": { "text": "unknown" }
+            }
+          ],
+          "slots": [
+            { "name": "", "description": "Default slot." },
+            { "name": "icon", "description": "Leading icon." }
+          ],
+          "events": [
+            { "name": "click", "type": { "text": "MouseEvent" }, "description": "Fires on click." },
+            { "name": "change", "type": { "text": "CustomEvent<{ value: string }>" } }
+          ]
+        }
+      ]
+    }
+  ]
+}

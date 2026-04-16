@@ -1,5 +1,5 @@
 {
-  "name": "@annotask/playground-vue-vite",
+  "name": "@annotask/playground-vue-primevue",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -7,9 +7,10 @@
     "dev": "vite"
   },
   "dependencies": {
+    "@primevue/themes": "^4.5.4",
     "primeicons": "^7.0.0",
-    "vue": "^3.5.0",
-    "vue-router": "^5.0.4"
+    "primevue": "^4.5.4",
+    "vue": "^3.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",

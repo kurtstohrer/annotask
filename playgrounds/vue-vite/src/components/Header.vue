@@ -11,7 +11,7 @@ const menuOpen = ref(false)
 <template>
   <header class="header">
     <div class="header-brand">
-      <i class="pi pi-chart-line brand-icon"></i>
+      <i class="pi pi-globe brand-icon"></i>
       <h1 class="brand-title">{{ title }}</h1>
     </div>
     <button class="menu-toggle" @click="menuOpen = !menuOpen" aria-label="Toggle menu">
@@ -21,14 +21,14 @@ const menuOpen = ref(false)
       <RouterLink to="/overview" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-th-large"></i> Overview
       </RouterLink>
-      <RouterLink to="/users" class="nav-link" @click="menuOpen = false">
-        <i class="pi pi-users"></i> Users
+      <RouterLink to="/planets" class="nav-link" @click="menuOpen = false">
+        <i class="pi pi-globe"></i> Planets
       </RouterLink>
-      <RouterLink to="/orders" class="nav-link" @click="menuOpen = false">
-        <i class="pi pi-shopping-cart"></i> Orders
+      <RouterLink to="/moons" class="nav-link" @click="menuOpen = false">
+        <i class="pi pi-circle"></i> Moons
       </RouterLink>
-      <RouterLink to="/analytics" class="nav-link" @click="menuOpen = false">
-        <i class="pi pi-chart-bar"></i> Analytics
+      <RouterLink to="/sun" class="nav-link" @click="menuOpen = false">
+        <i class="pi pi-sun"></i> Sun
       </RouterLink>
       <RouterLink to="/api-docs" class="nav-link" @click="menuOpen = false">
         <i class="pi pi-book"></i> API Docs

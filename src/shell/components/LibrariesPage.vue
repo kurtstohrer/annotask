@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import ComponentPreview from './ComponentPreview.vue'
+import { useTasks } from '../composables/useTasks'
 
 interface LibraryProp {
   name: string
@@ -9,10 +11,29 @@ interface LibraryProp {
   description?: string | null
 }
 
+interface LibrarySlot {
+  name: string
+  description?: string | null
+  scoped?: boolean
+}
+
+interface LibraryEvent {
+  name: string
+  payloadType?: string | null
+  description?: string | null
+}
+
 interface LibraryComponent {
   name: string
   module?: string
+  description?: string | null
+  category?: string | null
+  tags?: string[]
+  deprecated?: boolean
   props: LibraryProp[]
+  slots?: LibrarySlot[]
+  events?: LibraryEvent[]
+  sourceFile?: string | null
 }
 
 interface LibraryCatalog {
@@ -20,6 +41,8 @@ interface LibraryCatalog {
   version: string
   components: LibraryComponent[]
 }
+
+const { createTask } = useTasks()
 
 const libraries = ref<LibraryCatalog[]>([])
 const usedComponents = ref<Set<string>>(new Set())
@@ -56,6 +79,20 @@ const totalUsed = computed(() => {
 
 function showContextPage() {
   selectedComponent.value = null
+}
+
+async function handleInsert(snippet: string) {
+  if (!selectedComponent.value) return
+  await createTask({
+    type: 'annotation',
+    description: `Insert ${selectedComponent.value.name} component`,
+    component: selectedComponent.value.name,
+    context: {
+      module: selectedComponent.value.module,
+      snippet,
+      source: 'component-preview',
+    },
+  })
 }
 
 async function refresh() {
@@ -146,40 +183,11 @@ onMounted(refresh)
       <!-- Detail panel -->
       <div class="detail-panel">
         <template v-if="selectedComponent">
-          <div class="detail-header">
-            <h2 class="detail-name">{{ selectedComponent.name }}</h2>
-            <pre v-if="selectedComponent.module" class="import-snippet"><span class="syn-kw">import</span> { <span class="syn-name">{{ selectedComponent.name }}</span> } <span class="syn-kw">from</span> <span class="syn-str">'{{ selectedComponent.module }}'</span></pre>
-          </div>
-
-          <div class="detail-section">
-            <div class="section-header">
-              <span class="section-label">Props</span>
-              <span class="section-count">{{ selectedComponent.props.length }}</span>
-            </div>
-
-            <div v-if="selectedComponent.props.length === 0" class="no-props">
-              No props detected for this component.
-            </div>
-
-            <table v-else class="props-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Required</th>
-                  <th>Default</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="p in selectedComponent.props" :key="p.name">
-                  <td><code class="prop-name">{{ p.name }}</code></td>
-                  <td><code v-if="p.type" class="prop-type">{{ p.type }}</code></td>
-                  <td><span v-if="p.required" class="req-badge">required</span></td>
-                  <td><code v-if="p.default != null" class="prop-default">{{ p.default }}</code></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <ComponentPreview
+            :component="selectedComponent"
+            @back="showContextPage"
+            @insert="handleInsert"
+          />
         </template>
 
         <!-- Context explanation (default view) -->

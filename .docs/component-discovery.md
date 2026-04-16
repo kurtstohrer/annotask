@@ -1,6 +1,46 @@
 # Component Discovery
 
-Annotask automatically detects component libraries installed in your project and extracts their component names, props, types, and defaults. This data is available via the `GET /__annotask/api/components` endpoint and the `annotask_get_components` MCP tool.
+Annotask automatically detects component libraries installed in your project and extracts their component names, props, types, defaults, **slots, events, category, and component-level descriptions**. The data drives the shell's Libraries page (with live component previews) and is available to agents via the `annotask_get_components` / `annotask_get_component` MCP tools.
+
+## Discovered fields
+
+Every component entry contains:
+
+```ts
+{
+  name: string                // 'Button'
+  module: string              // 'primevue/button' — what agents import from
+  description: string | null  // Component-level JSDoc, one-line
+  category: string | null     // Heuristic: 'button' | 'form' | 'overlay' | 'layout' | ...
+  tags: string[]              // Reserved for future heuristics
+  deprecated: boolean
+  props: { name, type, required, default, description }[]
+  slots: { name, description, scoped }[]  // 'default' for the default slot
+  events: { name, payloadType, description }[]
+  sourceFile: string | null   // Populated only for local components
+}
+```
+
+Slots and events are extracted from `.vue` source files alongside the existing `.d.ts` prop extraction — so PrimeVue components show up with 0–10 slots and 0–40 events without any config.
+
+## Category heuristic
+
+The scanner assigns a rough category based on the component name + module path. Matching is first-hit-wins against these patterns:
+
+| Category | Matches |
+|----------|---------|
+| `button` | `button`, `btn` |
+| `form` | `input`, `textfield`, `textarea`, `select`, `radio`, `checkbox`, `switch`, `slider`, `form`, `picker` |
+| `overlay` | `dialog`, `modal`, `drawer`, `popover`, `tooltip`, `menu`, `dropdown`, `overlay`, `sheet` |
+| `data` | `table`, `datatable`, `datagrid`, `list`, `tree` |
+| `container` | `card`, `panel`, `tab`, `accordion`, `collapse`, `splitter` |
+| `navigation` | `nav`, `breadcrumb`, `sidebar`, `menubar`, `pagination`, `stepper` |
+| `feedback` | `alert`, `toast`, `banner`, `notification`, `message`, `badge`, `tag`, `chip` |
+| `display` | `avatar`, `icon`, `image`, `img`, `skeleton`, `spinner`, `progress`, `loader` |
+| `layout` | `grid`, `flex`, `stack`, `row`, `col`, `column`, `container`, `layout`, `section` |
+| `chart` | `chart`, `graph`, `plot`, `sparkline` |
+
+Agents use `category` to narrow "find me a button-ish thing" down to just button-ish components without scanning the full library.
 
 ## How it works
 
@@ -187,6 +227,15 @@ export default {
 }
 ```
 
+### Vue slots and events
+
+Alongside props, the scanner parses any `.vue` source it finds for:
+
+- **Slots** — every `<slot>` or `<slot name="…">` in the template. Scoped slots are flagged when the slot tag carries any non-`name` attribute (e.g. `<slot name="row" :row="row">`).
+- **Events** — `defineEmits<T>()`, `defineEmits(['name'])`, Options API `emits: [...]` / `emits: { name }`, and fallback detection of `emit('name')` / `this.$emit('name')` calls.
+
+This runs even when `.d.ts` is the primary source for props — you get the full picture when both are available.
+
 ### React (`.tsx` / `.jsx`)
 
 Looks for a TypeScript interface referenced by the component function:
@@ -224,6 +273,29 @@ A detected package must pass two filters to appear in the component catalog:
 1. **Minimum 3 components** — packages with fewer are likely not component libraries
 2. **Props or framework dependency** — at least one component must have extractable props, OR the package must list `vue`, `react`, `react-dom`, `svelte`, or `@angular/core` as a dependency or peer dependency. This prevents utility packages (lodash, ajv, marked) from appearing as component libraries when their exports happen to pass the name extraction.
 
+## TypeScript Compiler API fallback
+
+When the `.d.ts` regex extractor finds zero props but the file exists, the scanner falls back to a **TypeScript Compiler API parser** that walks the AST directly. This kicks in for:
+
+- Complex generics: `DataTableProps<T extends Record<string, unknown> = any>`
+- Multi-line property types: `options: Array<{ label: string; value: string }>`
+- Nested intersection types and mapped types
+- Interfaces that `extends` other `*Props` interfaces in the same file (inherited members are flattened in)
+
+The TypeScript package is loaded dynamically via `await import('typescript')`. It's externalized in the Annotask bundle, so projects without TypeScript installed (rare) silently skip the fallback and continue with regex-only extraction. No install-time cost for users who already have TS.
+
+## Shell UI
+
+The shell's Libraries page shows each discovered component with:
+
+- A prop table (name · type · req · default · value-editor).
+- Toggle to JSON or YAML view of the same data (syntax-highlighted via the theme's `--syntax-*` vars).
+- Slot and event lists.
+- A generated code snippet that reflects the current prop values.
+- An "Insert as task" button that creates an `annotation` task containing the snippet.
+
+No live iframe render — component metadata is the product, not interactive preview. (An earlier version shipped a preview iframe but was removed due to framework-config brittleness; prop editing still works, it just produces snippets rather than live DOM.)
+
 ## Caching
 
 Results are cached in memory for the lifetime of the dev server. The cache is cleared when the server restarts. There is no file-watching on `node_modules` — if you install a new component library, restart the dev server.
@@ -239,8 +311,23 @@ curl http://localhost:5173/__annotask/api/components
 ### MCP
 
 ```
-annotask_get_components
+annotask_get_components          # List (summaries by default; set detail=true for full data)
+annotask_get_component           # Full detail for one component by name
 ```
+
+`annotask_get_components` accepts:
+
+| Param | Description |
+|-------|-------------|
+| `search` | Case-insensitive substring match on component name |
+| `library` | Exact library name (e.g. `"primevue"`) |
+| `category` | Heuristic category (`"button"`, `"form"`, `"overlay"`, …) |
+| `used_only` | When `true`, restrict to components actually imported in this codebase (from design-spec's `components.used` list). **Highest-signal filter for agents.** |
+| `detail` | Include full props/slots/events/description bodies. Default `false` returns compact summaries. |
+| `limit` | Max results per library. Default 50, max 500. Was previously a silent cap of 20. |
+| `offset` | Skip the first N results (pagination). |
+
+`annotask_get_component` accepts `{ name, library? }`. If `name` matches multiple libraries and `library` isn't given, the response returns `{ ambiguous: true, candidates: [...] }` so the agent can pick.
 
 ### CLI
 

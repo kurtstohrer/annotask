@@ -49,7 +49,9 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
   const shellMiddleware = createShellMiddleware()
 
   const middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => {
-    // MCP first, then API, then shell (shell is SPA fallback)
+    // MCP → API → shell (shell is SPA fallback).
+    // The `/__annotask/preview` route is handled in the Vite plugin itself so Vite's
+    // `transformIndexHtml` pipeline can rewrite bare specifiers in the inline module script.
     mcpMiddleware(req, res, () => {
       apiMiddleware(req, res, () => {
         shellMiddleware(req, res, next)
