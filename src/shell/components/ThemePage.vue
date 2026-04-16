@@ -5,6 +5,8 @@ import { useThemePreview } from '../composables/useThemePreview'
 import { useTasks } from '../composables/useTasks'
 import type { DesignSpecToken, ColorSchemeInfo } from '../../schema'
 import ColorPalettePicker from './ColorPalettePicker.vue'
+import ThemeLibrariesTab from './ThemeLibrariesTab.vue'
+import ThemeAddTokenForm from './ThemeAddTokenForm.vue'
 
 const props = defineProps<{
   iframeRef: HTMLIFrameElement | null
@@ -34,11 +36,8 @@ const newScale = ref<DesignSpecToken[]>([])
 const newSpacing = ref<DesignSpecToken[]>([])
 const newRadius = ref<DesignSpecToken[]>([])
 
-// Adding state
+// Adding state — which section's "add new" form is visible.
 const addingNew = ref<string | null>(null)
-const newRole = ref('')
-const newValue = ref('')
-const newCssVar = ref('')
 
 const iframeDoc = computed(() => {
   try {
@@ -93,23 +92,14 @@ function isEdited(token: DesignSpecToken, editMap: MaybeRef<Map<string, string>>
 }
 
 // ── Add new token ──
-function startAdd(section: string) {
-  addingNew.value = section
-  newRole.value = ''
-  newValue.value = ''
-  newCssVar.value = ''
-}
+function startAdd(section: string) { addingNew.value = section }
+function cancelAdd() { addingNew.value = null }
 
-function cancelAdd() {
-  addingNew.value = null
-}
-
-function confirmAdd() {
-  if (!newRole.value.trim() || !newValue.value.trim()) return
+function confirmAdd(payload: { role: string; value: string; cssVar?: string }) {
   const token: DesignSpecToken = {
-    role: newRole.value.trim(),
-    value: newValue.value.trim(),
-    cssVar: newCssVar.value.trim() || undefined,
+    role: payload.role,
+    value: payload.value,
+    cssVar: payload.cssVar,
     source: 'new',
   }
   switch (addingNew.value) {
@@ -318,17 +308,15 @@ function discardChanges() {
               <button class="token-remove" @click="removeNew(newColors, i)">&times;</button>
             </div>
           </div>
-          <!-- Add new form -->
-          <div v-if="addingNew === 'colors'" class="add-token-form">
-            <input v-model="newRole" class="add-input" placeholder="Role (e.g. info)" />
-            <input v-model="newValue" class="add-input" placeholder="Value (e.g. #3b82f6)" />
-            <input v-model="newCssVar" class="add-input" placeholder="CSS var (optional, e.g. --color-info)" />
-            <div class="add-actions">
-              <button class="theme-btn commit small" @click="confirmAdd" :disabled="!newRole.trim() || !newValue.trim()">Add</button>
-              <button class="theme-btn discard small" @click="cancelAdd">Cancel</button>
-            </div>
-          </div>
-          <button v-else class="add-token-btn" @click="startAdd('colors')">+ Add Color</button>
+          <ThemeAddTokenForm
+            :active="addingNew === 'colors'"
+            role-placeholder="Role (e.g. info)"
+            value-placeholder="Value (e.g. #3b82f6)"
+            css-var-placeholder="CSS var (optional, e.g. --color-info)"
+            @add="confirmAdd"
+            @cancel="cancelAdd"
+          />
+          <button v-if="addingNew !== 'colors'" class="add-token-btn" @click="startAdd('colors')">+ Add Color</button>
         </div>
 
         <!-- TYPOGRAPHY -->
@@ -355,16 +343,14 @@ function discardChanges() {
               <button class="token-remove" @click="removeNew(newFamilies, i)">&times;</button>
             </div>
           </div>
-          <div v-if="addingNew === 'families'" class="add-token-form">
-            <input v-model="newRole" class="add-input" placeholder="Role (e.g. display)" />
-            <input v-model="newValue" class="add-input" placeholder="Value (e.g. Poppins, sans-serif)" />
-            <input v-model="newCssVar" class="add-input" placeholder="CSS var (optional)" />
-            <div class="add-actions">
-              <button class="theme-btn commit small" @click="confirmAdd" :disabled="!newRole.trim() || !newValue.trim()">Add</button>
-              <button class="theme-btn discard small" @click="cancelAdd">Cancel</button>
-            </div>
-          </div>
-          <button v-else class="add-token-btn" @click="startAdd('families')">+ Add Family</button>
+          <ThemeAddTokenForm
+            :active="addingNew === 'families'"
+            role-placeholder="Role (e.g. display)"
+            value-placeholder="Value (e.g. Poppins, sans-serif)"
+            @add="confirmAdd"
+            @cancel="cancelAdd"
+          />
+          <button v-if="addingNew !== 'families'" class="add-token-btn" @click="startAdd('families')">+ Add Family</button>
 
           <h4 class="section-subtitle" style="margin-top: 16px">Font Scale</h4>
           <div v-if="scale.length === 0 && newScale.length === 0" class="theme-section-empty">No font sizes detected</div>
@@ -389,16 +375,14 @@ function discardChanges() {
               <button class="token-remove" @click="removeNew(newScale, i)">&times;</button>
             </div>
           </div>
-          <div v-if="addingNew === 'scale'" class="add-token-form">
-            <input v-model="newRole" class="add-input" placeholder="Role (e.g. 2xl)" />
-            <input v-model="newValue" class="add-input" placeholder="Value (e.g. 1.5rem)" />
-            <input v-model="newCssVar" class="add-input" placeholder="CSS var (optional)" />
-            <div class="add-actions">
-              <button class="theme-btn commit small" @click="confirmAdd" :disabled="!newRole.trim() || !newValue.trim()">Add</button>
-              <button class="theme-btn discard small" @click="cancelAdd">Cancel</button>
-            </div>
-          </div>
-          <button v-else class="add-token-btn" @click="startAdd('scale')">+ Add Size</button>
+          <ThemeAddTokenForm
+            :active="addingNew === 'scale'"
+            role-placeholder="Role (e.g. 2xl)"
+            value-placeholder="Value (e.g. 1.5rem)"
+            @add="confirmAdd"
+            @cancel="cancelAdd"
+          />
+          <button v-if="addingNew !== 'scale'" class="add-token-btn" @click="startAdd('scale')">+ Add Size</button>
 
           <h4 v-if="weights.length" class="section-subtitle" style="margin-top: 16px">Weights</h4>
           <div v-if="weights.length" class="weight-chips">
@@ -432,16 +416,14 @@ function discardChanges() {
               <button class="token-remove" @click="removeNew(newSpacing, i)">&times;</button>
             </div>
           </div>
-          <div v-if="addingNew === 'spacing'" class="add-token-form">
-            <input v-model="newRole" class="add-input" placeholder="Role (e.g. 2xl)" />
-            <input v-model="newValue" class="add-input" placeholder="Value (e.g. 32px)" />
-            <input v-model="newCssVar" class="add-input" placeholder="CSS var (optional)" />
-            <div class="add-actions">
-              <button class="theme-btn commit small" @click="confirmAdd" :disabled="!newRole.trim() || !newValue.trim()">Add</button>
-              <button class="theme-btn discard small" @click="cancelAdd">Cancel</button>
-            </div>
-          </div>
-          <button v-else class="add-token-btn" @click="startAdd('spacing')">+ Add Spacing</button>
+          <ThemeAddTokenForm
+            :active="addingNew === 'spacing'"
+            role-placeholder="Role (e.g. 2xl)"
+            value-placeholder="Value (e.g. 32px)"
+            @add="confirmAdd"
+            @cancel="cancelAdd"
+          />
+          <button v-if="addingNew !== 'spacing'" class="add-token-btn" @click="startAdd('spacing')">+ Add Spacing</button>
         </div>
 
         <!-- BORDERS -->
@@ -469,46 +451,18 @@ function discardChanges() {
               <button class="token-remove" @click="removeNew(newRadius, i)">&times;</button>
             </div>
           </div>
-          <div v-if="addingNew === 'radius'" class="add-token-form">
-            <input v-model="newRole" class="add-input" placeholder="Role (e.g. xl)" />
-            <input v-model="newValue" class="add-input" placeholder="Value (e.g. 16px)" />
-            <input v-model="newCssVar" class="add-input" placeholder="CSS var (optional)" />
-            <div class="add-actions">
-              <button class="theme-btn commit small" @click="confirmAdd" :disabled="!newRole.trim() || !newValue.trim()">Add</button>
-              <button class="theme-btn discard small" @click="cancelAdd">Cancel</button>
-            </div>
-          </div>
-          <button v-else class="add-token-btn" @click="startAdd('radius')">+ Add Radius</button>
+          <ThemeAddTokenForm
+            :active="addingNew === 'radius'"
+            role-placeholder="Role (e.g. xl)"
+            value-placeholder="Value (e.g. 16px)"
+            @add="confirmAdd"
+            @cancel="cancelAdd"
+          />
+          <button v-if="addingNew !== 'radius'" class="add-token-btn" @click="startAdd('radius')">+ Add Radius</button>
         </div>
 
         <!-- LIBRARIES -->
-        <div v-if="activeSection === 'libraries'" class="theme-section">
-          <h4 class="section-subtitle">Icons</h4>
-          <div v-if="!icons" class="theme-section-empty">No icon library detected</div>
-          <div v-else class="library-card">
-            <span class="library-name">{{ icons.library }}</span>
-            <span v-if="icons.version" class="library-version">v{{ icons.version }}</span>
-          </div>
-
-          <h4 class="section-subtitle" style="margin-top: 16px">Components</h4>
-          <div v-if="!components" class="theme-section-empty">No component library detected</div>
-          <template v-else>
-            <div class="library-card">
-              <span class="library-name">{{ components.library }}</span>
-              <span v-if="components.version" class="library-version">v{{ components.version }}</span>
-            </div>
-            <div v-if="components.used.length" class="library-components">
-              <span v-for="c in components.used" :key="c" class="component-chip">{{ c }}</span>
-            </div>
-          </template>
-
-          <h4 class="section-subtitle" style="margin-top: 16px">Framework</h4>
-          <div v-if="designSpec?.framework" class="library-card">
-            <span class="library-name">{{ designSpec.framework.name }}</span>
-            <span class="library-version">v{{ designSpec.framework.version }}</span>
-            <span v-for="s in designSpec.framework.styling" :key="s" class="styling-chip">{{ s }}</span>
-          </div>
-        </div>
+        <ThemeLibrariesTab v-if="activeSection === 'libraries'" :design-spec="designSpec ?? null" />
 
       </div>
     </template>

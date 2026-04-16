@@ -22,9 +22,20 @@ export function useErrorMonitor(
   taskSystem: TaskSystem,
   currentRoute: Ref<string>,
 ) {
+  const MAX_ERRORS = 256
   const errors = ref<ErrorEntry[]>([])
   const errorById = new Map<string, ErrorEntry>()
   const paused = ref(false)
+
+  /** Insert a new entry at the head while keeping the buffer bounded.
+   *  Drops the oldest entries (and their dedup keys) once we exceed MAX_ERRORS. */
+  function pushEntry(entry: ErrorEntry) {
+    errors.value.unshift(entry)
+    if (errors.value.length > MAX_ERRORS) {
+      const trimmed = errors.value.splice(MAX_ERRORS)
+      for (const t of trimmed) errorById.delete(t.id)
+    }
+  }
 
   /** Strip prop values from Vue component traces to avoid massive serialized data.
    *  "at <Pill label=\"Ice Giant\" color=\"blue\" ... >" → "at <Pill>" */
@@ -67,7 +78,7 @@ export function useErrorMonitor(
         lastSeen: data.timestamp,
       }
       errorById.set(key, entry)
-      errors.value.unshift(entry)
+      pushEntry(entry)
     }
   }
 
@@ -91,7 +102,7 @@ export function useErrorMonitor(
         lastSeen: data.timestamp,
       }
       errorById.set(key, entry)
-      errors.value.unshift(entry)
+      pushEntry(entry)
     }
   }
 

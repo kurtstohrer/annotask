@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import os from 'node:os'
+import { isSafeScreenshot } from './validation.js'
 
 const DEFAULT_DESIGN_SPEC = {
   initialized: false,
@@ -19,11 +19,13 @@ export interface ProjectState {
   getDesignSpec: () => unknown
   getConfig: () => unknown
   getTasks: () => { version: string; tasks: any[] }
-  addTask: (task: Record<string, unknown>) => unknown
-  updateTask: (id: string, updates: Record<string, unknown>) => unknown
-  deleteTask: (id: string) => unknown
+  addTask: (task: Record<string, unknown>) => Promise<unknown>
+  updateTask: (id: string, updates: Record<string, unknown>) => Promise<unknown>
+  deleteTask: (id: string) => Promise<unknown>
   getPerformanceSnapshot: () => unknown
   setPerformanceSnapshot: (data: unknown) => void
+  /** Wait for any pending writes to complete. Use before process shutdown. */
+  flush: () => Promise<void>
   dispose: () => void
 }
 
@@ -40,28 +42,51 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
   let cachedDesignSpec: unknown = null
   let specWatcher: fs.FSWatcher | null = null
   const tasksPath = path.join(projectRoot, '.annotask', 'tasks.json')
+  const screenshotsDir = path.join(projectRoot, '.annotask', 'screenshots')
 
-  // In-memory task cache — loaded once from disk, written back atomically on mutation
+  // In-memory task cache — all mutations serialize through taskLock so reads and writes can't interleave.
   let taskCache: { version: string; tasks: any[] } | null = null
-  let writeQueue: Promise<void> = Promise.resolve()
+  let taskLock: Promise<unknown> = Promise.resolve()
+  // Watcher fires on our own rename; skip events within this window after a self-write.
+  let selfWriteUntil = 0
 
-  function loadTasksSync(): { version: string; tasks: any[] } {
-    if (taskCache) return taskCache
+  function loadTasksFromDisk(): { version: string; tasks: any[] } {
     try {
-      taskCache = JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
+      return JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
     } catch {
-      taskCache = { version: '1.0', tasks: [] }
+      return { version: '1.0', tasks: [] }
     }
-    return taskCache!
   }
 
-  /** Queue an atomic write so concurrent mutations don't race */
-  function flushTasks() {
-    const data = taskCache
-    if (!data) return
-    writeQueue = writeQueue
-      .then(() => atomicWrite(tasksPath, JSON.stringify(data, null, 2)))
-      .catch(() => { /* write errors are non-fatal for the in-memory state */ })
+  function getTasksSnapshot(): { version: string; tasks: any[] } {
+    if (!taskCache) taskCache = loadTasksFromDisk()
+    return taskCache
+  }
+
+  /** Serialize mutations. Each op sees the final state of the previous op. */
+  function withTaskLock<T>(fn: () => Promise<T> | T): Promise<T> {
+    const run = taskLock.then(() => fn())
+    taskLock = run.catch(() => { /* isolate: next op should still run */ })
+    return run
+  }
+
+  async function flushTasks(data: { version: string; tasks: any[] }) {
+    // Reserve a window during which the fs.watch callback should ignore its own write event.
+    // rename() can emit watch events asynchronously, so widen the window a bit past the write.
+    selfWriteUntil = Date.now() + 500
+    await atomicWrite(tasksPath, JSON.stringify(data, null, 2))
+    selfWriteUntil = Date.now() + 500
+  }
+
+  function screenshotPathIfSafe(name: unknown): string | null {
+    if (!isSafeScreenshot(name)) return null
+    return path.join(screenshotsDir, name)
+  }
+
+  async function unlinkScreenshot(name: unknown): Promise<void> {
+    const p = screenshotPathIfSafe(name)
+    if (!p) return
+    try { await fsp.unlink(p) } catch { /* file may already be gone */ }
   }
 
   function getDesignSpec(): unknown {
@@ -77,10 +102,14 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
       try {
         if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true })
         specWatcher = fs.watch(configDir, (_, filename) => {
-          cachedDesignSpec = null
-          if (filename === 'design-spec.json') broadcast('designspec:updated', null)
+          if (filename === 'design-spec.json') {
+            cachedDesignSpec = null
+            broadcast('designspec:updated', null)
+          }
           if (filename === 'tasks.json') {
-            // External edit — reload from disk
+            // Ignore events caused by our own atomic writes.
+            if (Date.now() < selfWriteUntil) return
+            // External edit — drop cache so the next read picks up the disk version.
             taskCache = null
           }
         })
@@ -94,50 +123,55 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     return { initialized: !!spec?.initialized, ...spec }
   }
 
-  function addTask(task: Record<string, unknown>) {
-    const data = loadTasksSync()
-    const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-    const newTask = { ...task, id, status: 'pending' as const, createdAt: Date.now(), updatedAt: Date.now() }
-    data.tasks.push(newTask)
-    flushTasks()
-    broadcast('tasks:updated', data)
-    return newTask
+  async function addTask(task: Record<string, unknown>) {
+    return withTaskLock(async () => {
+      const data = getTasksSnapshot()
+      const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      const newTask = { ...task, id, status: 'pending' as const, createdAt: Date.now(), updatedAt: Date.now() }
+      data.tasks.push(newTask)
+      await flushTasks(data)
+      broadcast('tasks:updated', data)
+      return newTask
+    })
   }
 
-  function updateTask(id: string, updates: Record<string, unknown>) {
-    const data = loadTasksSync()
-    const task = data.tasks.find((t: any) => t.id === id)
-    if (!task) return { error: 'Task not found' }
-    Object.assign(task, updates, { updatedAt: Date.now() })
-    if (updates.status === 'accepted') {
-      if (task.screenshot && /^[a-zA-Z0-9_-]+\.png$/.test(task.screenshot)) {
-        const screenshotPath = path.join(projectRoot, '.annotask', 'screenshots', task.screenshot)
-        fsp.unlink(screenshotPath).catch(() => {})
+  async function updateTask(id: string, updates: Record<string, unknown>) {
+    return withTaskLock(async () => {
+      const data = getTasksSnapshot()
+      const task = data.tasks.find((t: any) => t.id === id)
+      if (!task) return { error: 'Task not found' }
+      Object.assign(task, updates, { updatedAt: Date.now() })
+      let screenshotToUnlink: unknown = null
+      if (updates.status === 'accepted') {
+        screenshotToUnlink = task.screenshot
+        data.tasks = data.tasks.filter((t: any) => t.id !== id)
       }
-      data.tasks = data.tasks.filter((t: any) => t.id !== id)
-    }
-    flushTasks()
-    broadcast('tasks:updated', data)
-    return task
+      await flushTasks(data)
+      // Unlink after the write succeeds so the screenshot isn't deleted if the write fails.
+      if (screenshotToUnlink) await unlinkScreenshot(screenshotToUnlink)
+      broadcast('tasks:updated', data)
+      return task
+    })
   }
 
-  function deleteTask(id: string) {
-    const data = loadTasksSync()
-    const task = data.tasks.find((t: any) => t.id === id)
-    if (!task) return { error: 'Task not found' }
-    if (task.screenshot && /^[a-zA-Z0-9_-]+\.png$/.test(task.screenshot)) {
-      const screenshotPath = path.join(projectRoot, '.annotask', 'screenshots', task.screenshot)
-      fsp.unlink(screenshotPath).catch(() => {})
-    }
-    data.tasks = data.tasks.filter((t: any) => t.id !== id)
-    flushTasks()
-    broadcast('tasks:updated', data)
-    return { deleted: id }
+  async function deleteTask(id: string) {
+    return withTaskLock(async () => {
+      const data = getTasksSnapshot()
+      const task = data.tasks.find((t: any) => t.id === id)
+      if (!task) return { error: 'Task not found' }
+      const screenshotToUnlink = task.screenshot
+      data.tasks = data.tasks.filter((t: any) => t.id !== id)
+      await flushTasks(data)
+      if (screenshotToUnlink) await unlinkScreenshot(screenshotToUnlink)
+      broadcast('tasks:updated', data)
+      return { deleted: id }
+    })
   }
 
   // ── Performance snapshot ──
   const perfPath = path.join(projectRoot, '.annotask', 'performance.json')
   let perfSnapshot: unknown = null
+  let perfLock: Promise<unknown> = Promise.resolve()
 
   function getPerformanceSnapshot(): unknown {
     if (perfSnapshot !== null) return perfSnapshot
@@ -147,14 +181,28 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
 
   function setPerformanceSnapshot(data: unknown) {
     perfSnapshot = data
-    writeQueue = writeQueue
-      .then(() => atomicWrite(perfPath, JSON.stringify(data, null, 2)))
-      .catch(() => {})
+    const run = perfLock.then(() => atomicWrite(perfPath, JSON.stringify(data, null, 2)))
+    perfLock = run.catch(() => {})
+  }
+
+  async function flush() {
+    await Promise.allSettled([taskLock, perfLock])
   }
 
   function dispose() {
     if (specWatcher) { specWatcher.close(); specWatcher = null }
   }
 
-  return { getDesignSpec, getConfig, getTasks: loadTasksSync, addTask, updateTask, deleteTask, getPerformanceSnapshot, setPerformanceSnapshot, dispose }
+  return {
+    getDesignSpec,
+    getConfig,
+    getTasks: getTasksSnapshot,
+    addTask,
+    updateTask,
+    deleteTask,
+    getPerformanceSnapshot,
+    setPerformanceSnapshot,
+    flush,
+    dispose,
+  }
 }

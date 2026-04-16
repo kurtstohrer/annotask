@@ -11,6 +11,8 @@ export interface AnnotaskServer {
   handleUpgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => void
   broadcast: (event: string, data: unknown) => void
   getReport: () => unknown
+  /** Await any pending task/perf writes. Call before dispose to avoid losing the last write. */
+  flush: () => Promise<void>
   dispose: () => void
 }
 
@@ -60,6 +62,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     handleUpgrade: (req, socket, head) => wsServer.handleUpgrade(req, socket, head),
     broadcast: (event, data) => wsServer.broadcast(event, data),
     getReport: () => wsServer.getReport(),
+    flush: () => state.flush(),
     dispose: () => { state.dispose(); wsServer.dispose() },
   }
 }

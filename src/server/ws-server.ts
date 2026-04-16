@@ -12,12 +12,13 @@ export interface AnnotaskWSServer {
 }
 
 const PING_INTERVAL = 30_000 // 30s
+const MAX_WS_FRAME_BYTES = 1_048_576 // 1 MiB — reports rarely exceed this; guard against DoS
 
 export function createWSServer(): AnnotaskWSServer {
   let currentReport: unknown = null
   const clients = new Set<WebSocket>()
   const alive = new WeakSet<WebSocket>()
-  const wss = new WebSocketServer({ noServer: true })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_FRAME_BYTES })
 
   // Ping all clients periodically; terminate any that didn't pong since last ping
   const pingTimer = setInterval(() => {

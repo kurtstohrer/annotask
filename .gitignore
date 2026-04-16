@@ -15,3 +15,6 @@ plan/
 
 # Local-only (references external repos)
 playgrounds/antenna-vite/
+
+# Claude Code session state
+.claude/worktrees/

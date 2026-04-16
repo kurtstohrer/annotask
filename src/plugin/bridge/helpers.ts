@@ -2,6 +2,25 @@
 export function bridgeHelpers(): string {
   return `
   // ── Helpers ───────────────────────────────────────────
+  /** Extract an element's visible label text for agent disambiguation.
+   *  Normalizes whitespace, trims, and caps length — agents need "Sign In",
+   *  not the whole text subtree of a large container. */
+  function getVisibleText(el, limit) {
+    if (!el) return '';
+    limit = limit || 200;
+    try {
+      var aria = el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'));
+      if (aria) {
+        var a = String(aria).replace(/\\s+/g, ' ').trim();
+        if (a) return a.length > limit ? a.slice(0, limit) : a;
+      }
+      var raw = el.textContent || '';
+      var t = raw.replace(/\\s+/g, ' ').trim();
+      if (!t) return '';
+      return t.length > limit ? t.slice(0, limit) : t;
+    } catch (e) { return ''; }
+  }
+
   function isColor(val) {
     if (val.startsWith('#') || val.startsWith('rgb') || val.startsWith('hsl')) return true;
     try {

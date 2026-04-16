@@ -8,6 +8,8 @@ import type { useStyleEditor } from './useStyleEditor'
 export interface SelectionData {
   file: string; line: string; component: string; mfe: string
   tagName: string; classes: string; eid: string
+  /** Visible label text, used for agent disambiguation in task context. */
+  text?: string
 }
 
 /**
@@ -68,6 +70,10 @@ export function useSelectionModel(
     rectLoopRunning = true
     function tick() {
       if (!selectedEids.value.length) { rectLoopRunning = false; return }
+      if (typeof document !== 'undefined' && document.hidden) {
+        requestAnimationFrame(tick)
+        return
+      }
       refreshRects()
       requestAnimationFrame(tick)
     }

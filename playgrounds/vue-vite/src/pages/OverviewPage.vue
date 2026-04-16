@@ -33,11 +33,11 @@ onMounted(async () => {
 
     <div v-if="metrics" class="kpi-grid">
       <KpiCard
-        label="Active users"
-        :value="metrics.active_users.value"
-        :change-pct="metrics.active_users.change_pct"
-        :trend="metrics.active_users.trend"
-        format="number"
+        label="Error rate"
+        :value="metrics.error_rate.value"
+        :change-pct="metrics.error_rate.change_pct"
+        :trend="metrics.error_rate.trend"
+        format="percent"
       />
       <KpiCard
         label="MRR"
@@ -47,11 +47,11 @@ onMounted(async () => {
         format="currency"
       />
       <KpiCard
-        label="Error rate"
-        :value="metrics.error_rate.value"
-        :change-pct="metrics.error_rate.change_pct"
-        :trend="metrics.error_rate.trend"
-        format="percent"
+        label="Active users"
+        :value="metrics.active_users.value"
+        :change-pct="metrics.active_users.change_pct"
+        :trend="metrics.active_users.trend"
+        format="number"
       />
       <KpiCard
         label="P95 latency"

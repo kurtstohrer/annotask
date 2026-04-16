@@ -117,6 +117,12 @@ export function useAnnotationRects(deps: {
         || annotations.drawnSections.value.some(s => s.nearEid)
         || taskSystem.tasks.value.some(t => { const v = t.visual as any; return v?.kind === 'select' && (v.eids?.length || v.eid) && t.status !== 'accepted' })
       if (!hasWork) { loopRunning = false; return }
+      // Skip work while the tab is hidden — the browser still fires rAF at reduced rate,
+      // but there's nothing for the user to see and no reason to thrash the iframe bridge.
+      if (typeof document !== 'undefined' && document.hidden) {
+        requestAnimationFrame(tick)
+        return
+      }
       refreshAnnotationRects()
       requestAnimationFrame(tick)
     }

@@ -14,8 +14,7 @@ export default function Hero() {
 
         <p className={styles.subhead}>
           Click any element in your dev server. Edit it. Annotate it. Annotask captures the
-          intent and your coding agent applies the change. No screenshots, no Slack threads,
-          no guesswork.
+          intent and your coding agent applies the change.
         </p>
 
         <div className={styles.ctaRow}>
@@ -46,42 +45,6 @@ export default function Hero() {
           </li>
         </ul>
 
-        <div className={styles.mockup} aria-hidden="true">
-          <div className={styles.mockupChrome}>
-            <span className={styles.dot} style={{ background: '#ff5f57' }} />
-            <span className={styles.dot} style={{ background: '#febc2e' }} />
-            <span className={styles.dot} style={{ background: '#28c840' }} />
-            <span className={styles.url}>localhost:5174</span>
-          </div>
-          <div className={styles.mockupBody}>
-            <div className={styles.mockupSidebar}>
-              <div className={styles.sidebarHeader}>Tasks</div>
-              <div className={styles.sidebarItem}>
-                <span className={styles.statusPin}>📌</span>
-                Make hero CTA larger
-              </div>
-              <div className={styles.sidebarItem}>
-                <span className={styles.statusReview}>✓</span>
-                Soften card shadows
-              </div>
-              <div className={styles.sidebarItem}>
-                <span className={styles.statusInProgress}>⟳</span>
-                Fix focus ring contrast
-              </div>
-            </div>
-            <div className={styles.mockupCanvas}>
-              <div className={styles.canvasHero}>
-                <div className={styles.canvasHeading}>Your live app</div>
-                <div className={styles.canvasButton}>Click me</div>
-                <div className={styles.selectionRing} />
-                <div className={styles.pinNote}>
-                  <span className={styles.pinDot}>1</span>
-                  Make this 24px taller
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </section>
   )

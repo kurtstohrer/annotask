@@ -4,6 +4,20 @@ import nodePath from 'node:path'
 import { isLocalOrigin } from '../server/origin.js'
 import { scanComponentLibraries } from '../server/component-scanner.js'
 import { buildTaskSummary, filterTasksByMfe } from '../shared/task-summary.js'
+import { isSafeScreenshot } from '../server/validation.js'
+import {
+  McpGetTasksArgs,
+  McpGetTaskArgs,
+  McpUpdateTaskArgs,
+  McpCreateTaskArgs,
+  McpDeleteTaskArgs,
+  McpGetDesignSpecArgs,
+  McpGetComponentsArgs,
+  McpGetScreenshotArgs,
+  parseWith,
+  assertTransition,
+  AgentFeedbackSchema,
+} from '../server/schemas.js'
 
 // ── Types ────────────────────────────────────────────
 
@@ -31,9 +45,9 @@ export interface McpDeps {
   projectRoot: string
   getDesignSpec: () => unknown
   getTasks: () => { version: string; tasks: Array<Record<string, unknown>> }
-  addTask: (task: Record<string, unknown>) => unknown
-  updateTask: (id: string, updates: Record<string, unknown>) => unknown
-  deleteTask: (id: string) => unknown
+  addTask: (task: Record<string, unknown>) => unknown | Promise<unknown>
+  updateTask: (id: string, updates: Record<string, unknown>) => unknown | Promise<unknown>
+  deleteTask: (id: string) => unknown | Promise<unknown>
 }
 
 // ── Constants ────────────────────────────────────────
@@ -55,17 +69,9 @@ function stripVisual(task: unknown): Record<string, unknown> {
 }
 
 const PROTOCOL_VERSION = '2025-03-26'
-const SERVER_INFO = { name: 'annotask', version: '0.0.29' }
-
-const VALID_TRANSITIONS: Record<string, Set<string>> = {
-  pending:     new Set(['in_progress', 'denied']),
-  in_progress: new Set(['applied', 'review', 'needs_info', 'blocked', 'denied']),
-  applied:     new Set(['review', 'in_progress']),
-  review:      new Set(['accepted', 'denied', 'in_progress']),
-  needs_info:  new Set(['in_progress', 'denied']),
-  blocked:     new Set(['in_progress', 'denied']),
-  denied:      new Set(['pending', 'in_progress']),
-}
+// Version is baked at build time from package.json so the MCP initialize response doesn't drift.
+declare const __ANNOTASK_VERSION__: string | undefined
+const SERVER_INFO = { name: 'annotask', version: typeof __ANNOTASK_VERSION__ === 'string' ? __ANNOTASK_VERSION__ : '0.0.0' }
 
 // ── Tool definitions ─────────────────────────────────
 
@@ -220,13 +226,20 @@ const TOOLS: ToolDef[] = [
 
 // ── Tool handlers ────────────────────────────────────
 
-async function callTool(name: string, args: Record<string, unknown>, deps: McpDeps): Promise<{ content: unknown[]; isError?: boolean }> {
+function toolError(text: string): { content: unknown[]; isError: true } {
+  return { content: [{ type: 'text', text }], isError: true }
+}
+
+async function callTool(name: string, rawArgs: Record<string, unknown>, deps: McpDeps): Promise<{ content: unknown[]; isError?: boolean }> {
   switch (name) {
     case 'annotask_get_tasks': {
+      const parsed = parseWith(McpGetTasksArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const args = parsed.data
       const taskData = deps.getTasks()
       let tasks = taskData.tasks
-      if (typeof args.status === 'string') tasks = tasks.filter(t => t.status === args.status)
-      if (typeof args.mfe === 'string') tasks = filterTasksByMfe(tasks, args.mfe)
+      if (args.status) tasks = tasks.filter(t => t.status === args.status)
+      if (args.mfe) tasks = filterTasksByMfe(tasks, args.mfe)
 
       const output = args.detail === true
         ? tasks.map(stripVisual)
@@ -236,11 +249,12 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
     }
 
     case 'annotask_get_task': {
-      const taskId = typeof args.task_id === 'string' ? args.task_id : ''
-      if (!taskId) return { content: [{ type: 'text', text: 'Missing required parameter: task_id' }], isError: true }
+      const parsed = parseWith(McpGetTaskArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { task_id: taskId } = parsed.data
       const taskData = deps.getTasks()
       const task = taskData.tasks.find(t => t.id === taskId)
-      if (!task) return { content: [{ type: 'text', text: `Task not found: ${taskId}` }], isError: true }
+      if (!task) return toolError(`Task not found: ${taskId}`)
       const detail = stripVisual(task)
       // Trim agent_feedback: keep latest resolved exchange + all unresolved
       if (Array.isArray(detail.agent_feedback)) {
@@ -254,8 +268,10 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
     }
 
     case 'annotask_update_task': {
-      const taskId = typeof args.task_id === 'string' ? args.task_id : ''
-      if (!taskId) return { content: [{ type: 'text', text: 'Missing required parameter: task_id' }], isError: true }
+      const parsed = parseWith(McpUpdateTaskArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const args = parsed.data
+      const taskId = args.task_id
 
       const updates: Record<string, unknown> = {}
 
@@ -263,7 +279,7 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (args.questions) {
         const taskData = deps.getTasks()
         const task = taskData.tasks.find(t => t.id === taskId)
-        if (!task) return { content: [{ type: 'text', text: `Task not found: ${taskId}` }], isError: true }
+        if (!task) return toolError(`Task not found: ${taskId}`)
 
         const entry: Record<string, unknown> = {
           asked_at: Date.now(),
@@ -271,7 +287,10 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
         }
         if (args.question_context) entry.message = args.question_context
         const existingFeedback = Array.isArray(task.agent_feedback) ? task.agent_feedback : []
-        updates.agent_feedback = [...existingFeedback, entry]
+        const nextFeedback = [...existingFeedback, entry]
+        const check = AgentFeedbackSchema.safeParse(nextFeedback)
+        if (!check.success) return toolError(check.error.issues[0]?.message ?? 'Invalid agent_feedback')
+        updates.agent_feedback = nextFeedback
         updates.status = args.status || 'needs_info'
       } else if (args.status) {
         updates.status = args.status
@@ -288,52 +307,47 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
       if (updates.status) {
         const taskData = deps.getTasks()
         const task = taskData.tasks.find(t => t.id === taskId)
-        if (!task) return { content: [{ type: 'text', text: `Task not found: ${taskId}` }], isError: true }
-        const allowed = VALID_TRANSITIONS[String(task.status)]
-        if (allowed && !allowed.has(updates.status as string)) {
-          return {
-            content: [{ type: 'text', text: `Invalid state transition: ${String(task.status)} → ${updates.status}. Allowed: ${[...allowed].join(', ')}` }],
-            isError: true,
-          }
-        }
+        if (!task) return toolError(`Task not found: ${taskId}`)
+        const reason = assertTransition(task.status, updates.status)
+        if (reason) return toolError(reason)
       }
 
-      const result = deps.updateTask(taskId, updates)
+      const result = await deps.updateTask(taskId, updates)
       return { content: [{ type: 'text', text: compact(stripVisual(result)) }] }
     }
 
     case 'annotask_create_task': {
-      if (!args.type || !args.description) {
-        return { content: [{ type: 'text', text: 'Missing required parameters: type, description' }], isError: true }
-      }
+      const parsed = parseWith(McpCreateTaskArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const args = parsed.data
       const task: Record<string, unknown> = { type: args.type, description: args.description }
       if (args.file) task.file = args.file
       if (args.line != null) task.line = args.line
       if (args.component) task.component = args.component
       if (args.mfe) task.mfe = args.mfe
       if (args.context) task.context = args.context
-      const result = deps.addTask(task)
+      const result = await deps.addTask(task)
       return { content: [{ type: 'text', text: compact(stripVisual(result)) }] }
     }
 
     case 'annotask_delete_task': {
-      const taskId = args.task_id as string
-      if (!taskId) return { content: [{ type: 'text', text: 'Missing required parameter: task_id' }], isError: true }
-      const result = deps.deleteTask(taskId)
+      const parsed = parseWith(McpDeleteTaskArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const result = await deps.deleteTask(parsed.data.task_id)
       return { content: [{ type: 'text', text: compact(result) }] }
     }
 
     case 'annotask_get_design_spec': {
+      const parsed = parseWith(McpGetDesignSpecArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
       const spec = deps.getDesignSpec() as Record<string, any> | null
       if (!spec) return { content: [{ type: 'text', text: compact({ initialized: false }) }] }
 
-      const category = typeof args.category === 'string' ? args.category : undefined
+      const category = parsed.data.category
       if (category) {
         const slice: Record<string, unknown> = { version: spec.version, framework: spec.framework }
         if (category !== 'framework') {
-          if (!(category in spec)) {
-            return { content: [{ type: 'text', text: `Unknown category: ${category}` }], isError: true }
-          }
+          if (!(category in spec)) return toolError(`Unknown category: ${category}`)
           slice[category] = spec[category]
         }
         return { content: [{ type: 'text', text: compact(slice) }] }
@@ -358,8 +372,10 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
     }
 
     case 'annotask_get_components': {
+      const parsed = parseWith(McpGetComponentsArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
       const catalog = await scanComponentLibraries(deps.projectRoot) as { libraries?: Array<{ name: string; version?: string; components?: Array<{ name: string }> }> }
-      const search = (typeof args.search === 'string' ? args.search : '').toLowerCase()
+      const search = (parsed.data.search ?? '').toLowerCase()
       const MAX_RESULTS = 20
 
       const result = {
@@ -381,14 +397,13 @@ async function callTool(name: string, args: Record<string, unknown>, deps: McpDe
     }
 
     case 'annotask_get_screenshot': {
-      const taskId = typeof args.task_id === 'string' ? args.task_id : ''
-      if (!taskId) return { content: [{ type: 'text', text: 'Missing required parameter: task_id' }], isError: true }
+      const parsed = parseWith(McpGetScreenshotArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { task_id: taskId } = parsed.data
       const taskData = deps.getTasks()
       const task = taskData.tasks.find(t => t.id === taskId)
-      if (!task) return { content: [{ type: 'text', text: `Task not found: ${taskId}` }], isError: true }
-      if (typeof task.screenshot !== 'string' || !task.screenshot) {
-        return { content: [{ type: 'text', text: 'Task has no screenshot' }], isError: true }
-      }
+      if (!task) return toolError(`Task not found: ${taskId}`)
+      if (!isSafeScreenshot(task.screenshot)) return toolError('Task has no screenshot')
 
       const screenshotPath = nodePath.join(deps.projectRoot, '.annotask', 'screenshots', task.screenshot)
       try {
@@ -517,11 +532,17 @@ export function createMcpMiddleware(deps: McpDeps) {
       return
     }
 
-    // Batch request
+    // Batch request — isolate per-item exceptions so one bad message doesn't truncate the response
     if (Array.isArray(parsed)) {
       const responses: JsonRpcResponse[] = []
       for (const item of parsed) {
-        const result = await handleJsonRpc(item as JsonRpcRequest, deps)
+        let result: JsonRpcResponse | null = null
+        try {
+          result = await handleJsonRpc(item as JsonRpcRequest, deps)
+        } catch (err: any) {
+          const id = (item && typeof item === 'object' && 'id' in item) ? (item as any).id ?? null : null
+          result = { jsonrpc: '2.0', error: { code: -32603, message: `Internal error: ${err?.message ?? String(err)}` }, id }
+        }
         if (result) responses.push(result)
       }
       if (responses.length === 0) {

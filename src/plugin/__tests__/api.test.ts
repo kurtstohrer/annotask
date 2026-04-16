@@ -115,10 +115,11 @@ describe('API endpoints', () => {
     expect(status).toBe(200)
   })
 
-  it('GET /api/unknown returns 404', async () => {
+  it('GET /api/unknown returns 404 with structured error envelope', async () => {
     const { status, data } = await request(server, 'GET', '/__annotask/api/unknown')
     expect(status).toBe(404)
-    expect(data.error).toBe('Not found')
+    expect(data.error.message).toBe('Not found')
+    expect(data.error.code).toBe('not_found')
   })
 
   describe('POST /api/tasks', () => {
@@ -137,7 +138,7 @@ describe('API endpoints', () => {
         description: 'No type',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('type')
+      expect(data.error.message).toContain('type')
     })
 
     it('rejects missing description field', async () => {
@@ -145,7 +146,7 @@ describe('API endpoints', () => {
         type: 'style_update',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('description')
+      expect(data.error.message).toContain('description')
     })
 
     it('rejects invalid JSON', async () => {
@@ -161,13 +162,13 @@ describe('API endpoints', () => {
         req.end()
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('Invalid JSON')
+      expect(data.error.message).toContain('Invalid JSON')
     })
 
     it('rejects array body', async () => {
       const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', [1, 2, 3])
       expect(status).toBe(400)
-      expect(data.error).toContain('object')
+      expect(data.error.message).toContain('object')
     })
   })
 
@@ -186,12 +187,12 @@ describe('API endpoints', () => {
       const taskId = tasks[0]?.id
       const { status, data } = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'invalid_status' })
       expect(status).toBe(400)
-      expect(data.error).toContain('Invalid status')
+      expect(data.error.message).toContain('Invalid status')
     })
 
     it('returns error for nonexistent task', async () => {
       const { data } = await request(server, 'PATCH', '/__annotask/api/tasks/nonexistent', { status: 'applied' })
-      expect(data.error).toBe('Task not found')
+      expect(data.error.message).toBe('Task not found')
     })
   })
 
@@ -223,7 +224,7 @@ describe('API endpoints', () => {
         agent_feedback: 'not an array',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('array')
+      expect(data.error.message).toContain('array')
     })
 
     it('rejects agent_feedback entry without questions', async () => {
@@ -232,7 +233,7 @@ describe('API endpoints', () => {
         agent_feedback: [{ asked_at: Date.now(), questions: [] }],
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('non-empty questions')
+      expect(data.error.message).toContain('non-empty questions')
     })
 
     it('rejects choice question without options', async () => {
@@ -244,7 +245,7 @@ describe('API endpoints', () => {
         }],
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('options')
+      expect(data.error.message).toContain('options')
     })
 
     it('rejects invalid question type', async () => {
@@ -256,7 +257,7 @@ describe('API endpoints', () => {
         }],
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('type')
+      expect(data.error.message).toContain('type')
     })
 
     it('accepts blocked status with blocked_reason', async () => {
@@ -323,7 +324,7 @@ describe('API endpoints', () => {
         screenshot: '../../tasks.json',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('screenshot')
+      expect(data.error.message).toContain('screenshot')
     })
 
     it('rejects PATCH with non-png screenshot filename', async () => {
@@ -332,7 +333,7 @@ describe('API endpoints', () => {
         screenshot: 'malicious.html',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('screenshot')
+      expect(data.error.message).toContain('screenshot')
     })
 
     it('accepts valid screenshot filename', async () => {
@@ -363,7 +364,7 @@ describe('API endpoints', () => {
         status: 'accepted',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('Invalid state transition')
+      expect(data.error.message).toContain('Invalid state transition')
     })
 
     it('rejects pending → review (skips in_progress)', async () => {
@@ -371,7 +372,7 @@ describe('API endpoints', () => {
         status: 'review',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('Invalid state transition')
+      expect(data.error.message).toContain('Invalid state transition')
     })
 
     it('allows pending → in_progress', async () => {
@@ -387,7 +388,7 @@ describe('API endpoints', () => {
         status: 'accepted',
       })
       expect(status).toBe(400)
-      expect(data.error).toContain('Invalid state transition')
+      expect(data.error.message).toContain('Invalid state transition')
     })
 
     it('allows in_progress → review', async () => {
@@ -413,7 +414,7 @@ describe('API endpoints', () => {
         description: 'From remote',
       }, { Origin: 'https://evil.example.com' })
       expect(status).toBe(403)
-      expect(data.error).toContain('Forbidden')
+      expect(data.error.message).toContain('Forbidden')
     })
 
     it('blocks PATCH from non-local origin', async () => {
@@ -422,7 +423,7 @@ describe('API endpoints', () => {
         description: 'hacked',
       }, { Origin: 'https://evil.example.com' })
       expect(status).toBe(403)
-      expect(data.error).toContain('Forbidden')
+      expect(data.error.message).toContain('Forbidden')
     })
 
     it('allows mutation from localhost origin', async () => {

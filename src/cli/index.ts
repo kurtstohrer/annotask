@@ -1,9 +1,7 @@
 import WebSocket from 'ws'
-import { existsSync, mkdirSync, cpSync, readdirSync, symlinkSync, lstatSync, rmSync, readlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, cpSync, readdirSync, symlinkSync, lstatSync, rmSync, readlinkSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-import { readFileSync } from 'node:fs'
 import { buildTaskSummary } from '../shared/task-summary.js'
 
 const args = process.argv.slice(2)
@@ -71,6 +69,8 @@ if (command === 'watch') {
   checkStatus()
 } else if (command === 'init-skills') {
   initSkills()
+} else if (command === 'init-mcp') {
+  initMcp()
 } else if (command === 'screenshot') {
   fetchScreenshot()
 } else if (command === 'tasks') {
@@ -237,7 +237,6 @@ async function fetchScreenshot() {
     const dir = dirname(outputPath)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
-    const { writeFileSync } = await import('node:fs')
     writeFileSync(outputPath, buffer)
     console.log(`\x1b[32m[Annotask]\x1b[0m Screenshot saved to ${outputPath}`)
   } catch (err: any) {
@@ -323,7 +322,8 @@ async function updateTask() {
     })
     const data = await res.json()
     if (data.error) {
-      console.error(`\x1b[31m[Annotask]\x1b[0m ${data.error}`)
+      const msg = typeof data.error === 'string' ? data.error : data.error.message ?? 'Unknown error'
+      console.error(`\x1b[31m[Annotask]\x1b[0m ${msg}`)
       process.exit(1)
     }
     console.log(fmt(data))
@@ -437,6 +437,94 @@ function initSkills() {
 
 function isSymlink(p: string): boolean {
   try { return lstatSync(p).isSymbolicLink() } catch { return false }
+}
+
+// ── Init MCP: write editor-specific MCP config files ──
+
+function initMcp() {
+  /**
+   * Config layouts we know how to write. Each target describes the file we land
+   * on disk, the wrapper key (`mcpServers` vs. VS Code's `servers`), and the
+   * hint we print on success.
+   *
+   * Cursor / Windsurf both use the widely-adopted `mcpServers` shape; VS Code
+   * uses `servers` instead. Claude Code reads `.mcp.json` at the project root.
+   *
+   * Declared inside the function so the const is fully initialized before
+   * anything in the function body reads it — putting it at module scope while
+   * `initMcp` is dispatched from a top-level `if` block triggers a TDZ error
+   * because the dispatch runs before the const initializer.
+   */
+  const MCP_EDITORS: Record<string, { name: string; path: string; key: 'mcpServers' | 'servers'; hint: string }> = {
+    claude:   { name: 'Claude Code', path: '.mcp.json',                          key: 'mcpServers', hint: 'Restart Claude Code to pick up the new server.' },
+    cursor:   { name: 'Cursor',      path: '.cursor/mcp.json',                   key: 'mcpServers', hint: 'Enable the server in Cursor Settings → MCP.' },
+    vscode:   { name: 'VS Code',     path: '.vscode/mcp.json',                   key: 'servers',    hint: 'Open the MCP panel in VS Code and start the server.' },
+    windsurf: { name: 'Windsurf',    path: '.codeium/windsurf/mcp_config.json',  key: 'mcpServers', hint: 'Open Windsurf → MCP settings and refresh.' },
+  }
+
+  const editorArg = args.find(a => a.startsWith('--editor='))?.split('=')[1] || 'claude'
+  const force = args.includes('--force')
+
+  // Default URL keeps the server.json discovery we already do above for other
+  // commands. Falls back to the host/port flags, then to localhost:5173.
+  const url = baseUrl + '/__annotask/mcp'
+
+  const targetKeys = editorArg === 'all' ? Object.keys(MCP_EDITORS) : editorArg.split(',').map(s => s.trim())
+  const unknown = targetKeys.filter(k => !MCP_EDITORS[k])
+  if (unknown.length > 0) {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Unknown editor(s): ${unknown.join(', ')}. Valid: ${Object.keys(MCP_EDITORS).join(', ')}, all`)
+    process.exit(1)
+  }
+
+  let written = 0
+  let skipped = 0
+
+  for (const key of targetKeys) {
+    const target = MCP_EDITORS[key]
+    const filePath = resolve(process.cwd(), target.path)
+    const parent = dirname(filePath)
+
+    // Merge with any existing config so we don't clobber other servers the user
+    // already configured (e.g. they've got a Linear MCP alongside).
+    let existing: Record<string, unknown> = {}
+    const exists = existsSync(filePath)
+    if (exists) {
+      try {
+        existing = JSON.parse(readFileSync(filePath, 'utf-8')) as Record<string, unknown>
+      } catch {
+        if (!force) {
+          console.log(`  \x1b[33mskip\x1b[0m  ${target.name} → ${target.path} (file exists and isn't valid JSON; use --force to overwrite)`)
+          skipped++
+          continue
+        }
+        existing = {}
+      }
+    }
+
+    const wrapper = (existing[target.key] && typeof existing[target.key] === 'object' && !Array.isArray(existing[target.key]))
+      ? existing[target.key] as Record<string, unknown>
+      : {}
+
+    if (wrapper.annotask && !force) {
+      console.log(`  \x1b[33mskip\x1b[0m  ${target.name} → ${target.path} (annotask entry already present; use --force to overwrite)`)
+      skipped++
+      continue
+    }
+
+    wrapper.annotask = { type: 'http', url }
+    existing[target.key] = wrapper
+
+    if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
+    writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n', 'utf-8')
+    console.log(`  \x1b[32m${exists ? 'merge' : 'write'}\x1b[0m ${target.name} → \x1b[36m${target.path}\x1b[0m`)
+    console.log(`         ${target.hint}`)
+    written++
+  }
+
+  console.log()
+  console.log(`\x1b[32m[Annotask]\x1b[0m MCP config: ${written} written, ${skipped} skipped`)
+  console.log(`  URL: \x1b[36m${url}\x1b[0m`)
+  console.log(`  Make sure the Annotask dev server is running before your editor connects.`)
 }
 
 // ── Components: list available component libraries ───
@@ -593,6 +681,7 @@ function printHelp() {
   components      List all available component library components
   component       Show detailed props for a specific component
   init-skills     Install AI agent skills to your project
+  init-mcp        Write editor MCP config (Claude Code / Cursor / VS Code / Windsurf)
   mcp             Start MCP server (stdio transport, proxies to dev server)
   help            Show this help
 
@@ -602,10 +691,13 @@ function printHelp() {
   --server=URL      Annotask server URL (overrides .annotask/server.json)
   --mfe=NAME        Filter tasks by MFE identity (overrides server.json mfe)
   --pretty          Pretty-print JSON output (default: compact for agents)
-  --force           Overwrite existing skills (for init-skills)
+  --force           Overwrite existing skills / MCP entries (for init-skills, init-mcp)
   --target=NAME     Comma-separated targets (default: claude,agents)
                     Built-in: claude, agents, copilot
                     Custom: --target=.my-tool/skills
+  --editor=NAME     Target editor for init-mcp (default: claude)
+                    Valid: claude, cursor, vscode, windsurf, all
+                    Multiple: --editor=claude,cursor
 
 \x1b[33mExamples:\x1b[0m
   annotask tasks                          # Compact task summaries
@@ -618,6 +710,9 @@ function printHelp() {
   annotask component Button --json        # Props as JSON (for LLMs)
   annotask status                         # Check connection
   annotask init-skills                    # Install AI agent skills
+  annotask init-mcp                       # Write .mcp.json for Claude Code
+  annotask init-mcp --editor=all          # Write MCP config for every supported editor
+  annotask init-mcp --editor=vscode       # Write .vscode/mcp.json
   annotask mcp                            # Start stdio MCP server
 `)
 }

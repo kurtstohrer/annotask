@@ -18,7 +18,8 @@ export function writeServerInfo(projectRoot: string, port: number, host?: string
   // Wildcard/unspecified addresses aren't routable — resolve to localhost
   const resolvedHost = (host && host !== '0.0.0.0' && host !== '::' && host !== '::1') ? host : 'localhost'
   const info: ServerInfo = { url: `http://${resolvedHost}:${port}`, port, pid: process.pid }
-  fs.writeFileSync(path.join(dir, 'server.json'), JSON.stringify(info, null, 2))
+  // 0o600: contains a live PID + port; on shared machines other users have no reason to read it.
+  fs.writeFileSync(path.join(dir, 'server.json'), JSON.stringify(info, null, 2), { mode: 0o600 })
 }
 
 export function readServerInfo(projectRoot: string): ServerInfo | null {
@@ -33,7 +34,7 @@ export function writeMfeServerInfo(projectRoot: string, serverUrl: string, mfe: 
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const url = new URL(serverUrl)
   const info: ServerInfo = { url: serverUrl, port: parseInt(url.port) || 80, pid: 0, mfe }
-  fs.writeFileSync(path.join(dir, 'server.json'), JSON.stringify(info, null, 2))
+  fs.writeFileSync(path.join(dir, 'server.json'), JSON.stringify(info, null, 2), { mode: 0o600 })
 }
 
 export function removeServerInfo(projectRoot: string) {

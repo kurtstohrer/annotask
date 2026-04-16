@@ -44,6 +44,8 @@ export interface ResolvedElement {
   tag: string
   rect: BridgeRect
   classes: string
+  /** Visible label text (aria-label/title/textContent, normalized, <=200 chars). */
+  text?: string
 }
 
 export interface ResolveTemplateGroupPayload {
@@ -178,6 +180,8 @@ export interface ClickElementEvent {
   shiftKey: boolean
   clientX: number
   clientY: number
+  /** Visible label text (aria-label/title/textContent, normalized, <=200 chars). */
+  text?: string
 }
 
 export interface RouteChangedEvent {

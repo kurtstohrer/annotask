@@ -43,7 +43,8 @@ export function bridgeMessages(): string {
         mfe: srcData.mfe,
         tag: src.sourceEl.tagName.toLowerCase(),
         rect: getRect(src.sourceEl),
-        classes: typeof src.targetEl.className === 'string' ? src.targetEl.className : ''
+        classes: typeof src.targetEl.className === 'string' ? src.targetEl.className : '',
+        text: getVisibleText(src.targetEl, 200)
       });
       return;
     }
@@ -262,7 +263,8 @@ export function bridgeMessages(): string {
 
       respond(id, {
         ancestors: ancestors,
-        subtree: describeEl(ctxEl, 0)
+        subtree: describeEl(ctxEl, 0),
+        selected_element_text: getVisibleText(ctxEl, 200)
       });
       return;
     }

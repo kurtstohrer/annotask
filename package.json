@@ -4,6 +4,7 @@
   "description": "Visual UI design tool for web apps. Make changes in the browser and generate structured reports that AI agents can apply to source code. Works with Vue, React, Svelte, SolidJS, and plain HTML via Vite or Webpack.",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -25,13 +26,14 @@
   },
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "!dist/**/*.map"
   ],
   "scripts": {
     "build": "pnpm build:shell && pnpm build:plugin && pnpm build:vendor",
     "build:shell": "vite build --config vite.config.shell.ts",
     "build:plugin": "tsup",
-    "build:vendor": "mkdir -p dist/vendor && cp node_modules/axe-core/axe.min.js dist/vendor/axe-core.min.js && cp node_modules/html2canvas-pro/dist/html2canvas-pro.min.js dist/vendor/html2canvas.min.js",
+    "build:vendor": "node scripts/copy-vendor.mjs",
     "dev:shell": "vite --config vite.config.shell.ts",
     "dev:vue-vite": "pnpm --filter @annotask/playground-vue-vite dev",
     "dev:vue-webpack": "pnpm --filter @annotask/playground-vue-webpack dev",
@@ -70,7 +72,8 @@
     }
   },
   "dependencies": {
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
@@ -79,9 +82,9 @@
     "@types/prismjs": "^1.26.6",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "^5.0.0",
-    "axe-core": "^4.11.1",
+    "axe-core": "4.11.1",
     "dompurify": "^3.3.3",
-    "html2canvas-pro": "^2.0.2",
+    "html2canvas-pro": "2.0.2",
     "js-yaml": "^4.1.1",
     "jsdom": "^29.0.1",
     "marked": "^17.0.5",

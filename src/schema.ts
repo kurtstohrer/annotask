@@ -207,6 +207,8 @@ export interface AncestorInfo {
 export interface ElementContext {
   ancestors: AncestorInfo[]
   subtree: ElementNode
+  /** Visible label text of the selected element (aria-label/title/textContent, <=200 chars). */
+  selected_element_text?: string
 }
 
 /** A single question the agent asks the user */

@@ -1,4 +1,11 @@
 import { defineConfig } from 'tsup'
+import { readFileSync } from 'node:fs'
+
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')) as { version: string }
+
+const sharedDefine = {
+  __ANNOTASK_VERSION__: JSON.stringify(pkg.version),
+}
 
 export default defineConfig([
   {
@@ -14,6 +21,7 @@ export default defineConfig([
     clean: false,
     sourcemap: true,
     external: ['vite', 'webpack', 'html-webpack-plugin'],
+    define: sharedDefine,
   },
   {
     entry: { cli: 'src/cli/index.ts' },
@@ -21,5 +29,6 @@ export default defineConfig([
     dts: false,
     clean: false,
     banner: { js: '#!/usr/bin/env node' },
+    define: sharedDefine,
   },
 ])

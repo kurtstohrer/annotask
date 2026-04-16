@@ -53,6 +53,7 @@ annotask watch               # Live stream changes via WebSocket
 annotask update-task <id> --status=<status>   # Update task status
 annotask screenshot <id>     # Download a task's screenshot
 annotask init-skills         # Install agent skills into project
+annotask init-mcp            # Write editor MCP config (--editor=claude|cursor|vscode|windsurf|all)
 annotask mcp                 # Start MCP stdio server (proxies to dev server)
 ```
 
@@ -115,9 +116,8 @@ The shell has a VS Code-style theme system with 18 built-in themes and custom th
 
 - `src/shell/themes/types.ts` — `ShellThemeColors` (62 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
 - `src/shell/themes/builtin.ts` — 18 built-in theme definitions with `deriveDefaults()` helper
-- `src/shell/composables/useShellTheme.ts` — Core composable: applies themes at runtime via `style.setProperty()`, handles localStorage persistence, system preference detection, custom theme CRUD, migration from legacy `useThemeMode`
+- `src/shell/composables/useShellTheme.ts` — Core composable: applies themes at runtime via `style.setProperty()`, handles localStorage persistence, system preference detection, custom theme CRUD, and a one-shot migration from the legacy `annotask:themeMode` key
 - `src/shell/components/ShellThemeEditor.vue` — Full-screen custom theme creator with grouped color pickers and live preview
-- `src/shell/composables/useThemeMode.ts` — **Deprecated** thin wrapper around `useShellTheme`
 
 ### How themes are applied
 

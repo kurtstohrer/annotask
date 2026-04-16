@@ -1,7 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import fs from 'node:fs'
 import fsp from 'node:fs/promises'
+import crypto from 'node:crypto'
 import nodePath from 'node:path'
+import { isSafeScreenshot } from './validation.js'
+import {
+  CreateTaskBody,
+  UpdateTaskBody,
+  UploadScreenshotBody,
+  parseWith,
+  assertTransition,
+} from './schemas.js'
 
 export interface APIOptions {
   projectRoot: string
@@ -9,41 +17,14 @@ export interface APIOptions {
   getConfig: () => unknown
   getDesignSpec: () => unknown
   getTasks: () => { version: string; tasks: Array<Record<string, unknown>> }
-  updateTask: (id: string, updates: Record<string, unknown>) => unknown
-  deleteTask: (id: string) => unknown
-  addTask: (task: Record<string, unknown>) => unknown
+  updateTask: (id: string, updates: Record<string, unknown>) => unknown | Promise<unknown>
+  deleteTask: (id: string) => unknown | Promise<unknown>
+  addTask: (task: Record<string, unknown>) => unknown | Promise<unknown>
   getPerformance: () => unknown
   setPerformance: (data: unknown) => void
 }
 
 const MAX_BODY_SIZE = 4_194_304
-const VALID_TASK_STATUSES = new Set(['pending', 'in_progress', 'applied', 'review', 'accepted', 'denied', 'needs_info', 'blocked'])
-const SAFE_SCREENSHOT_RE = /^[a-zA-Z0-9_-]+\.png$/
-
-/** Valid state transitions — from current status to allowed next statuses */
-const VALID_TRANSITIONS: Record<string, Set<string>> = {
-  pending:     new Set(['in_progress', 'denied']),
-  in_progress: new Set(['applied', 'review', 'needs_info', 'blocked', 'denied']),
-  applied:     new Set(['review', 'in_progress']),
-  review:      new Set(['accepted', 'denied', 'in_progress']),
-  needs_info:  new Set(['in_progress', 'denied']),
-  blocked:     new Set(['in_progress', 'denied']),
-  denied:      new Set(['pending', 'in_progress']),
-}
-
-/** Fields that POST /tasks is allowed to set (server controls id, status, timestamps) */
-const POSTABLE_TASK_FIELDS = new Set([
-  'type', 'description', 'file', 'line', 'component', 'mfe', 'route',
-  'intent', 'action', 'context', 'viewport', 'color_scheme', 'interaction_history',
-  'element_context', 'screenshot', 'visual',
-])
-
-/** Fields that PATCH /tasks/:id is allowed to update */
-const PATCHABLE_TASK_FIELDS = new Set([
-  'status', 'description', 'notes', 'screenshot', 'feedback',
-  'intent', 'action', 'context', 'viewport', 'color_scheme', 'interaction_history',
-  'element_context', 'mfe', 'agent_feedback', 'blocked_reason', 'resolution',
-])
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -63,9 +44,28 @@ function parseJSON(raw: string): { ok: true; data: unknown } | { ok: false } {
   try { return { ok: true, data: JSON.parse(raw) } } catch { return { ok: false } }
 }
 
-function sendError(res: ServerResponse, status: number, message: string) {
+/**
+ * Error-response codes. Clients key off `error.code` to localize or react programmatically;
+ * `error.message` is for human display and debugging.
+ */
+export type ApiErrorCode =
+  | 'invalid_json'
+  | 'body_too_large'
+  | 'body_not_object'
+  | 'validation_failed'
+  | 'invalid_transition'
+  | 'forbidden_origin'
+  | 'not_found'
+  | 'missing_field'
+
+export interface ApiErrorBody {
+  error: { code: ApiErrorCode; message: string }
+}
+
+function sendError(res: ServerResponse, status: number, message: string, code: ApiErrorCode = 'validation_failed') {
   res.statusCode = status
-  res.end(JSON.stringify({ error: message }))
+  const body: ApiErrorBody = { error: { code, message } }
+  res.end(JSON.stringify(body))
 }
 
 import { isLocalOrigin } from './origin.js'
@@ -84,7 +84,7 @@ export function createAPIMiddleware(options: APIOptions) {
     // Serve screenshots (outside /api/ path)
     if (req.url?.startsWith('/__annotask/screenshots/') && req.method === 'GET') {
       const filename = (req.url.replace('/__annotask/screenshots/', '')).replace(/\?.*$/, '')
-      if (!/^[a-zA-Z0-9_-]+\.png$/.test(filename)) {
+      if (!isSafeScreenshot(filename)) {
         res.statusCode = 400; res.end('Invalid filename'); return
       }
       const screenshotsDir = nodePath.resolve(options.projectRoot, '.annotask', 'screenshots')
@@ -95,7 +95,7 @@ export function createAPIMiddleware(options: APIOptions) {
       try {
         const data = await fsp.readFile(filePath)
         res.setHeader('Content-Type', 'image/png')
-        res.setHeader('Cache-Control', 'public, max-age=3600')
+        res.setHeader('Cache-Control', 'private, max-age=3600')
         const corsOrigin = getCorsOrigin(req)
         if (corsOrigin) res.setHeader('Access-Control-Allow-Origin', corsOrigin)
         res.end(data)
@@ -125,7 +125,7 @@ export function createAPIMiddleware(options: APIOptions) {
 
     // Block mutating requests from non-local origins
     if ((req.method === 'POST' || req.method === 'PATCH' || req.method === 'DELETE') && !isLocalOrigin(req.headers.origin as string | undefined)) {
-      return sendError(res, 403, 'Forbidden: non-local origin')
+      return sendError(res, 403, 'Forbidden: non-local origin', 'forbidden_origin')
     }
 
     if (path === 'report' && req.method === 'GET') {
@@ -151,9 +151,9 @@ export function createAPIMiddleware(options: APIOptions) {
 
     if (path === 'performance' && req.method === 'POST') {
       let raw: string
-      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large') }
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
-      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body')
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
       options.setPerformance(parsed.data)
       res.end(JSON.stringify({ ok: true }))
       return
@@ -184,36 +184,30 @@ export function createAPIMiddleware(options: APIOptions) {
 
     if (path === 'tasks' && req.method === 'POST') {
       let raw: string
-      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large') }
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
-      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body')
-      const body = parsed.data as Record<string, unknown>
-      if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'Request body must be a JSON object')
-      if (typeof body.type !== 'string' || !body.type) return sendError(res, 400, 'Missing required field: type (string)')
-      if (typeof body.description !== 'string') return sendError(res, 400, 'Missing required field: description (string)')
-      // Strip unknown fields — only allow whitelisted fields through
-      const sanitized: Record<string, unknown> = {}
-      for (const key of Object.keys(body)) {
-        if (POSTABLE_TASK_FIELDS.has(key)) {
-          sanitized[key] = body[key]
-        }
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+        return sendError(res, 400, 'Request body must be a JSON object', 'body_not_object')
       }
-      res.end(JSON.stringify(options.addTask(sanitized), null, 2))
+      const result = parseWith(CreateTaskBody, parsed.data)
+      if (!result.ok) return sendError(res, 400, result.error)
+      res.end(JSON.stringify(await options.addTask(result.data as Record<string, unknown>), null, 2))
       return
     }
 
     if (path === 'screenshots' && req.method === 'POST') {
       let raw: string
-      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large') }
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
-      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body')
-      const body = parsed.data as { data: string }
-      if (!body.data || typeof body.data !== 'string') return sendError(res, 400, 'Missing data field')
-      const match = body.data.match(/^data:image\/png;base64,(.+)$/)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      const bodyResult = parseWith(UploadScreenshotBody, parsed.data)
+      if (!bodyResult.ok) return sendError(res, 400, bodyResult.error)
+      const match = bodyResult.data.data.match(/^data:image\/png;base64,(.+)$/)
       if (!match) return sendError(res, 400, 'Invalid PNG data URL')
       const buffer = Buffer.from(match[1], 'base64')
       if (buffer.length > 4 * 1024 * 1024) return sendError(res, 413, 'Screenshot too large (max 4MB)')
-      const filename = `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`
+      const filename = `screenshot-${Date.now()}-${crypto.randomBytes(8).toString('hex')}.png`
       const dir = nodePath.join(options.projectRoot, '.annotask', 'screenshots')
       await fsp.mkdir(dir, { recursive: true })
       await fsp.writeFile(nodePath.join(dir, filename), buffer)
@@ -226,7 +220,7 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!id) return sendError(res, 400, 'Missing task id')
       const taskData = options.getTasks()
       const task = taskData.tasks.find(t => t.id === id)
-      if (!task) return sendError(res, 404, 'Task not found')
+      if (!task) return sendError(res, 404, 'Task not found', 'not_found')
       res.end(JSON.stringify(task, null, 2))
       return
     }
@@ -235,63 +229,37 @@ export function createAPIMiddleware(options: APIOptions) {
       const id = decodeURIComponent(path.replace('tasks/', ''))
       if (!id) return sendError(res, 400, 'Missing task id')
       let raw: string
-      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large') }
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
-      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body')
-      const body = parsed.data as Record<string, unknown>
-      if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, 'Request body must be a JSON object')
-      if (body.status !== undefined && !VALID_TASK_STATUSES.has(body.status as string)) {
-        return sendError(res, 400, `Invalid status. Must be one of: ${[...VALID_TASK_STATUSES].join(', ')}`)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+        return sendError(res, 400, 'Request body must be a JSON object', 'body_not_object')
       }
-      // Validate state transition
-      if (body.status !== undefined) {
+      const result = parseWith(UpdateTaskBody, parsed.data)
+      if (!result.ok) return sendError(res, 400, result.error)
+      const updates = result.data
+      if (updates.status !== undefined) {
         const currentTask = options.getTasks().tasks.find(t => t.id === id)
         if (currentTask) {
-          const allowed = VALID_TRANSITIONS[String(currentTask.status)]
-          if (allowed && !allowed.has(body.status as string)) {
-            return sendError(res, 400, `Invalid state transition: ${String(currentTask.status)} → ${body.status}. Allowed: ${[...allowed].join(', ')}`)
-          }
+          const reason = assertTransition(currentTask.status, updates.status)
+          if (reason) return sendError(res, 400, reason, 'invalid_transition')
         }
       }
-      // Validate agent_feedback structure
-      if (body.agent_feedback !== undefined) {
-        const af = body.agent_feedback
-        if (!Array.isArray(af)) return sendError(res, 400, 'agent_feedback must be an array')
-        for (const entry of af as any[]) {
-          if (!entry || typeof entry !== 'object') return sendError(res, 400, 'agent_feedback entries must be objects')
-          if (typeof entry.asked_at !== 'number') return sendError(res, 400, 'agent_feedback entry requires asked_at (number)')
-          if (!Array.isArray(entry.questions) || entry.questions.length === 0) return sendError(res, 400, 'agent_feedback entry requires non-empty questions array')
-          for (const q of entry.questions) {
-            if (typeof q.id !== 'string' || typeof q.text !== 'string') return sendError(res, 400, 'Each question requires id (string) and text (string)')
-            if (q.type !== 'text' && q.type !== 'choice') return sendError(res, 400, 'Question type must be "text" or "choice"')
-            if (q.type === 'choice' && (!Array.isArray(q.options) || q.options.length === 0)) return sendError(res, 400, 'Choice questions require non-empty options array')
-          }
-          if (entry.answers !== undefined) {
-            if (!Array.isArray(entry.answers)) return sendError(res, 400, 'answers must be an array')
-            for (const a of entry.answers) {
-              if (typeof a.id !== 'string' || typeof a.value !== 'string') return sendError(res, 400, 'Each answer requires id (string) and value (string)')
-            }
-          }
-        }
+      const updated = await options.updateTask(id, updates as Record<string, unknown>) as any
+      if (updated && typeof updated === 'object' && updated.error === 'Task not found') {
+        return sendError(res, 404, 'Task not found', 'not_found')
       }
-      // Validate screenshot filename if provided
-      if (body.screenshot !== undefined && typeof body.screenshot === 'string' && !SAFE_SCREENSHOT_RE.test(body.screenshot)) {
-        return sendError(res, 400, 'Invalid screenshot filename')
-      }
-      // Strip unknown fields — only allow whitelisted fields through
-      const sanitized: Record<string, unknown> = {}
-      for (const key of Object.keys(body)) {
-        if (PATCHABLE_TASK_FIELDS.has(key)) {
-          sanitized[key] = body[key]
-        }
-      }
-      res.end(JSON.stringify(options.updateTask(id, sanitized), null, 2))
+      res.end(JSON.stringify(updated, null, 2))
       return
     }
 
     if (path.startsWith('tasks/') && req.method === 'DELETE') {
-      const id = path.replace('tasks/', '')
-      res.end(JSON.stringify(options.deleteTask(id), null, 2))
+      const id = decodeURIComponent(path.replace('tasks/', ''))
+      const deleted = await options.deleteTask(id) as any
+      if (deleted && typeof deleted === 'object' && deleted.error === 'Task not found') {
+        return sendError(res, 404, 'Task not found', 'not_found')
+      }
+      res.end(JSON.stringify(deleted, null, 2))
       return
     }
 
@@ -307,6 +275,7 @@ export function createAPIMiddleware(options: APIOptions) {
     }
 
     res.statusCode = 404
-    res.end(JSON.stringify({ error: 'Not found' }))
+    const body: ApiErrorBody = { error: { code: 'not_found', message: 'Not found' } }
+    res.end(JSON.stringify(body))
   }
 }

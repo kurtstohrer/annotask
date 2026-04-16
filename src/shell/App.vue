@@ -40,148 +40,21 @@ import { useAnnotationRects } from './composables/useAnnotationRects'
 import { useSelectionModel } from './composables/useSelectionModel'
 import { useTaskWorkflows } from './composables/useTaskWorkflows'
 import { useShellTheme } from './composables/useShellTheme'
+import { useChangeHistory } from './composables/useChangeHistory'
+import { useLocalStorageRef, useLocalStorageEnum } from './composables/useLocalStorageRef'
 import ViewportSelector from './components/ViewportSelector.vue'
 import { safeMd } from './utils/safeMd'
+import { normalizeRoute } from './utils/routes'
 
 const shellTheme = useShellTheme()
 
 const styleEditor = useStyleEditor()
 const { changes } = styleEditor
 
-// Changes scoped to the currently selected element (for the inspector panel)
-const selectionChanges = computed(() => {
-  const sel = primarySelection.value
-  if (!sel) return []
-  const line = parseInt(sel.line) || 0
-  return changes.value.filter(c => c.file === sel.file && c.line === line)
-})
-
-async function doUndo() {
-  const undoInfo = styleEditor.undo()
-  if (!undoInfo) return
-  if (undoInfo.type === 'style' && undoInfo.eid) {
-    await iframe.undoStyle(undoInfo.eid, undoInfo.property!, undoInfo.value || '')
-  } else if (undoInfo.type === 'class' && undoInfo.eid) {
-    await iframe.undoClass(undoInfo.eid, undoInfo.classes || '')
-  } else if (undoInfo.type === 'insert_remove' && undoInfo.eid) {
-    await iframe.removePlaceholder(undoInfo.eid)
-  }
-  await readLiveStyles()
-}
-
-async function doClearChanges() {
-  const sel = primarySelection.value
-  if (sel && shellView.value === 'theme') {
-    const placeholderEids = styleEditor.removeChangesFor(sel.file, parseInt(sel.line) || 0)
-    for (const eid of placeholderEids) {
-      await iframe.removePlaceholder(eid)
-    }
-  } else {
-    const placeholderEids = styleEditor.clearChanges()
-    for (const eid of placeholderEids) {
-      await iframe.removePlaceholder(eid)
-    }
-  }
-}
-
-async function commitChangesAsTask() {
-  const sel = primarySelection.value
-  const scope = selectionChanges.value.length > 0 ? selectionChanges.value : changes.value
-  if (scope.length === 0) return
-
-  // Group changes by file:line
-  const styleChanges = scope.filter(c => c.type === 'style_update') as import('./composables/useStyleEditor').StyleChangeRecord[]
-  const classChanges = scope.filter(c => c.type === 'class_update') as import('./composables/useStyleEditor').ClassChangeRecord[]
-
-  // Deduplicate changes by property (apply-to-group creates one per eid, but they're the same change)
-  const seenProps = new Set<string>()
-  const dedupedStyleChanges: typeof styleChanges = []
-  for (const c of styleChanges) {
-    const key = `${c.property}:${c.after}`
-    if (!seenProps.has(key)) {
-      seenProps.add(key)
-      dedupedStyleChanges.push(c)
-    }
-  }
-  const seenClassKeys = new Set<string>()
-  const dedupedClassChanges: typeof classChanges = []
-  for (const c of classChanges) {
-    const key = `${c.after.classes}`
-    if (!seenClassKeys.has(key)) {
-      seenClassKeys.add(key)
-      dedupedClassChanges.push(c)
-    }
-  }
-
-  // Build a description from the deduplicated changes
-  const parts: string[] = []
-  for (const c of dedupedStyleChanges) {
-    parts.push(`${c.property}: ${c.after}`)
-  }
-  for (const c of dedupedClassChanges) {
-    parts.push(`classes: ${c.after.classes}`)
-  }
-
-  const elementDesc = sel ? `<${sel.tagName}>${sel.component ? ` in ${sel.component}` : ''}` : ''
-  const changeDesc = parts.length <= 3
-    ? parts.join(', ')
-    : `${parts.slice(0, 2).join(', ')} and ${parts.length - 2} more`
-  const description = elementDesc
-    ? `Update ${changeDesc} on ${elementDesc}`
-    : `Update ${changeDesc}`
-
-  // Use the primary selection or first change for file/line
-  const file = sel?.file || styleChanges[0]?.file || classChanges[0]?.file || ''
-  const line = sel?.line ? parseInt(sel.line) : (styleChanges[0]?.line || classChanges[0]?.line || 0)
-  const component = sel?.component || styleChanges[0]?.component || classChanges[0]?.component || ''
-
-  const taskChanges: Array<Record<string, unknown>> = []
-  for (const c of dedupedStyleChanges) {
-    taskChanges.push({ property: c.property, before: c.before, after: c.after, file: c.file, line: c.line })
-  }
-  for (const c of dedupedClassChanges) {
-    taskChanges.push({ type: 'class', before: c.before.classes, after: c.after.classes, file: c.file, line: c.line })
-  }
-
-  // Element context
-  const elementContext: Record<string, unknown> = {}
-  if (sel) {
-    elementContext.element_tag = sel.tagName
-    elementContext.element_classes = sel.classes
-    if (selectedElementRole.value) elementContext.element_role = selectedElementRole.value
-    if (templateGroupEids.value.length > 1) elementContext.template_instances = templateGroupEids.value.length
-  }
-
-  const eids = [...selectedEids.value]
-
-  await createRouteTask({
-    type: 'style_update',
-    description,
-    file,
-    line,
-    component,
-    ...(eids.length ? { visual: { kind: 'select' as const, eids } } : {}),
-    context: { changes: taskChanges, ...elementContext },
-  })
-
-  // Remove only this selection's changes after commit
-  if (sel && shellView.value === 'theme') {
-    styleEditor.removeChangesFor(file, typeof line === 'number' ? line : parseInt(line) || 0)
-  } else {
-    await doClearChanges()
-  }
-}
 const annotations = useAnnotations()
 const taskSystem = useTasks()
 const viewport = useViewportPreview()
 const interactionHistory = useInteractionHistory()
-
-function normalizeRoute(path: string): string {
-  if (!path) return '/'
-  const base = path.split('#')[0].split('?')[0] || '/'
-  const withSlash = base.startsWith('/') ? base : `/${base}`
-  return withSlash.length > 1 ? withSlash.replace(/\/+$/, '') : withSlash
-}
 
 // ── State ──────────────────────────────────────────────
 const iframeRef = ref<HTMLIFrameElement | null>(null)
@@ -189,23 +62,12 @@ const { mode: interactionMode } = useInteractionMode()
 const { isInitialized: configInitialized } = useDesignSpec()
 type ShellView = 'editor' | 'theme' | 'a11y' | 'perf'
 const SHELL_VIEWS: ShellView[] = ['editor', 'theme', 'a11y', 'perf']
-
-function readStoredEnum<T extends string>(key: string, values: readonly T[], fallback: T): T {
-  const stored = localStorage.getItem(key)
-  return stored && values.includes(stored as T) ? stored as T : fallback
-}
-
-const shellView = ref<ShellView>(
-  readStoredEnum('annotask:shellView', SHELL_VIEWS, 'editor')
-)
+const shellView = useLocalStorageEnum<ShellView>('annotask:shellView', SHELL_VIEWS, 'editor')
 type PerfSection = 'vitals' | 'errors' | 'tasks'
 const PERF_SECTIONS: PerfSection[] = ['vitals', 'errors', 'tasks']
-const perfSection = ref<PerfSection>(
-  readStoredEnum('annotask:perfSection', PERF_SECTIONS, 'vitals')
-)
+const perfSection = useLocalStorageEnum<PerfSection>('annotask:perfSection', PERF_SECTIONS, 'vitals')
 let savedAnnotateMode: import('./composables/useInteractionMode').InteractionMode | null = null
 watch(shellView, (v, old) => {
-  localStorage.setItem('annotask:shellView', v)
   const wasEditor = old === 'editor'
   const isEditor = v === 'editor'
   if (!isEditor && wasEditor) {
@@ -224,10 +86,8 @@ watch(shellView, (v, old) => {
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
-const arrowColor = ref(localStorage.getItem('annotask:arrowColor') || '#ef4444')
-watch(arrowColor, (v) => localStorage.setItem('annotask:arrowColor', v))
-const highlightColor = ref(localStorage.getItem('annotask:highlightColor') || '#f59e0b')
-watch(highlightColor, (v) => localStorage.setItem('annotask:highlightColor', v))
+const arrowColor = useLocalStorageRef('annotask:arrowColor', '#ef4444')
+const highlightColor = useLocalStorageRef('annotask:highlightColor', '#f59e0b')
 const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value, () => discardUncommittedAnnotations())
 const { drawingArrow, drawingRect, hoverElement: arrowHoverElement, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
@@ -253,17 +113,13 @@ const showReportPanel = ref(false)
 const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
-const activePanel = ref<'tasks' | 'inspector'>(
-  localStorage.getItem('annotask:activePanel') === 'inspector' ? 'inspector' : 'tasks'
-)
+const activePanel = useLocalStorageEnum<'tasks' | 'inspector'>('annotask:activePanel', ['tasks', 'inspector'], 'tasks')
 watch(activePanel, (v) => {
-  localStorage.setItem('annotask:activePanel', v)
   if (shellView.value === 'perf' && v !== 'tasks' && perfSection.value === 'tasks') {
     perfSection.value = 'vitals'
   }
 })
 watch(perfSection, (v) => {
-  localStorage.setItem('annotask:perfSection', v)
   if (shellView.value !== 'perf') return
   if (v === 'tasks') {
     activePanel.value = 'tasks'
@@ -275,9 +131,9 @@ const designSection = ref<'tokens' | 'inspector'>('tokens')
 const includeHistory = ref(localStorage.getItem('annotask:includeHistory') === 'true')
 watch(includeHistory, (v) => localStorage.setItem('annotask:includeHistory', String(v)))
 const includeElementContext = ref(localStorage.getItem('annotask:includeElementContext') === 'true')
+watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElementContext', String(v)))
 const screenshots = useScreenshots(iframe)
 const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
-watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElementContext', String(v)))
 const showShortcuts = ref(false)
 const showContext = ref(false)
 const showSettings = ref(false)
@@ -391,7 +247,7 @@ function setupBridgeEvents() {
   })
 
   iframe.onBridgeEvent('click:element', async (data: ClickElementEvent) => {
-    const { file, line, component, mfe, tag: tagName, classes, eid, shiftKey, clientX, clientY } = data
+    const { file, line, component, mfe, tag: tagName, classes, eid, shiftKey, clientX, clientY, text } = data
     const shellRect = iframe.toShellRect(data.rect)
 
     // Pin mode: create pin at exact click position → open task creation panel
@@ -405,10 +261,10 @@ function setupBridgeEvents() {
       )
       pendingTaskCreation.value = {
         kind: 'pin',
-        label: `Pin on ${describeElement({ file, line, component, tag: tagName, classes })}`,
+        label: `Pin on ${describeElement({ file, line, component, tag: tagName, classes, text })}`,
         file, line, component,
         annotationId: pin.id,
-        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY },
+        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY, elementText: text || '' },
       }
       pendingTaskText.value = ''
       return
@@ -449,7 +305,7 @@ function setupBridgeEvents() {
         }
       }
     } else {
-      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid }
+      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text }
       selectedEids.value = [eid]
       const group = await iframe.findTemplateGroup(file, line, tagName)
       templateGroupEids.value = group.eids
@@ -465,8 +321,8 @@ function setupBridgeEvents() {
           label: `1 element selected`,
           file, line, component,
           meta: {
-            elementTag: tagName, elementClasses: classes,
-            selectedElements: [{ eid, file, line, component, tag: tagName, classes }],
+            elementTag: tagName, elementClasses: classes, elementText: text || '',
+            selectedElements: [{ eid, file, line, component, tag: tagName, classes, text: text || '' }],
           },
         }
         pendingTaskText.value = ''
@@ -477,9 +333,9 @@ function setupBridgeEvents() {
   })
 
   iframe.onBridgeEvent('contextmenu:element', async (data: ClickElementEvent) => {
-    const { file, line, component, mfe = '', tag: tagName, classes, eid } = data
+    const { file, line, component, mfe = '', tag: tagName, classes, eid, text } = data
     const shellRect = iframe.toShellRect(data.rect)
-    primarySelection.value = { file, line, component, mfe, tagName, classes, eid }
+    primarySelection.value = { file, line, component, mfe, tagName, classes, eid, text }
     selectedEids.value = [eid]
     await readLiveStyles()
     await refreshElementRole()
@@ -577,6 +433,20 @@ const {
   onAddGeneralTask,
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
 } = taskWorkflows
+
+// ── Change history (undo / clear / commit-as-task) ──
+// Needs createRouteTask from taskWorkflows, so initialized after it.
+const { selectionChanges, doUndo, doClearChanges, commitChangesAsTask } = useChangeHistory({
+  styleEditor,
+  iframe,
+  primarySelection,
+  selectedEids,
+  templateGroupEids,
+  selectedElementRole,
+  shellView,
+  readLiveStyles,
+  createRouteTask,
+})
 
 // ── Keyboard Shortcuts (composable handles mount/unmount) ──
 useKeyboardShortcuts({

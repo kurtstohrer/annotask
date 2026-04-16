@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue'
-import Prism from 'prismjs'
-import 'prismjs/components/prism-json'
 import { safeMd } from '../utils/safeMd'
 import type { Task } from '../composables/useTasks'
 import ConfirmDialog from './ConfirmDialog.vue'
+import TaskAgentFeedback from './TaskAgentFeedback.vue'
+import TaskInteractionHistory from './TaskInteractionHistory.vue'
+import TaskJsonView from './TaskJsonView.vue'
 
 const props = defineProps<{
   task: Task
@@ -24,27 +25,7 @@ const editing = ref(false)
 const editText = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const showJson = ref(false)
-const jsonCopied = ref(false)
-const jsonWrap = ref(false)
 const showDeleteConfirm = ref(false)
-
-const taskJson = computed(() => JSON.stringify(props.task, null, 2))
-
-function escapeHtml(str: string) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-const taskJsonHighlighted = computed(() => {
-  if (!showJson.value) return ''
-  const grammar = Prism.languages.json
-  return grammar ? Prism.highlight(taskJson.value, grammar, 'json') : escapeHtml(taskJson.value)
-})
-
-function copyJson() {
-  navigator.clipboard.writeText(taskJson.value)
-  jsonCopied.value = true
-  setTimeout(() => (jsonCopied.value = false), 2000)
-}
 
 const statusLabel: Record<string, string> = {
   pending: 'Pending',
@@ -76,6 +57,7 @@ interface ElementInfo {
   file?: string
   line?: number
   role?: string // 'from' | 'to' for arrows
+  text?: string
 }
 
 const selectedElements = computed<ElementInfo[]>(() => {
@@ -86,23 +68,23 @@ const selectedElements = computed<ElementInfo[]>(() => {
   // Multi-element annotations
   if (ctx.elements && Array.isArray(ctx.elements)) {
     for (const e of ctx.elements) {
-      elements.push({ tag: e.tag, classes: e.classes, component: e.component, file: e.file, line: e.line })
+      elements.push({ tag: e.tag, classes: e.classes, component: e.component, file: e.file, line: e.line, text: e.text })
     }
     return elements
   }
 
   // Arrow: from + to elements
   if (ctx.from_element_tag) {
-    elements.push({ tag: ctx.from_element_tag, classes: ctx.from_element_classes, role: 'from' })
+    elements.push({ tag: ctx.from_element_tag, classes: ctx.from_element_classes, role: 'from', text: ctx.from_element_text })
   }
   if (ctx.to_element) {
     const to = ctx.to_element
-    elements.push({ tag: to.tag, classes: to.classes, component: to.component, file: to.file, line: to.line, role: 'to' })
+    elements.push({ tag: to.tag, classes: to.classes, component: to.component, file: to.file, line: to.line, role: 'to', text: to.text })
   }
 
   // Single element
   if (elements.length === 0 && ctx.element_tag) {
-    elements.push({ tag: ctx.element_tag, classes: ctx.element_classes })
+    elements.push({ tag: ctx.element_tag, classes: ctx.element_classes, text: ctx.element_text })
   }
 
   return elements
@@ -136,7 +118,7 @@ const fileRefs = computed<FileRef[]>(() => {
 })
 
 // ── Context entries (filtered — skip element/arrow fields already shown above) ──
-const contextSkipKeys = new Set(['element_tag', 'element_classes', 'elements', 'from_element_tag', 'from_element_classes', 'to_element', 'changes', 'selected_text'])
+const contextSkipKeys = new Set(['element_tag', 'element_classes', 'element_text', 'elements', 'from_element_tag', 'from_element_classes', 'from_element_text', 'to_element', 'changes', 'selected_text'])
 
 const contextEntries = computed(() => {
   if (!props.task.context) return []
@@ -165,84 +147,15 @@ const ancestorList = computed(() => {
   return ec.ancestors
 })
 
-// ── Interaction history as action log ──
-interface LogEntry {
-  event: string
-  route?: string
-  detail: string
-  data: Record<string, unknown>
-}
-
-const historyLog = computed<LogEntry[]>(() => {
-  const ih = props.task.interaction_history as any
-  if (!ih?.recent_actions) return []
-  return ih.recent_actions.map((a: any) => {
-    let detail = ''
-    if (a.event === 'route_change') {
-      const prev = a.data?.previousRoute
-      detail = prev ? `${prev} → ${a.route || ih.current_route}` : `navigated to ${a.route || ih.current_route}`
-    } else if (a.event === 'action') {
-      const parts: string[] = []
-      if (a.data?.tag) parts.push(`<${a.data.tag}>`)
-      if (a.data?.text) parts.push(`"${String(a.data.text).slice(0, 40)}"`)
-      if (a.data?.href) parts.push(`→ ${a.data.href}`)
-      detail = parts.join(' ') || 'user action'
-    } else {
-      detail = JSON.stringify(a.data || {})
-    }
-    return { event: a.event, route: a.route, detail, data: a.data || {} }
-  })
-})
-
-const historyRoute = computed(() => {
-  const ih = props.task.interaction_history as any
-  return ih?.current_route || ''
-})
-
-const historyNavPath = computed(() => {
-  const ih = props.task.interaction_history as any
-  return ih?.navigation_path || []
-})
-
 const screenshots = computed(() => {
   const list: string[] = []
   if (props.task.screenshot) list.push('/__annotask/screenshots/' + props.task.screenshot)
   return list
 })
 
-// ── Agent feedback ──
-import type { AgentFeedbackEntry } from '../composables/useTasks'
-
-const replyDraft = ref<Record<string, string>>({})
-
-const pendingExchange = computed(() => {
-  const af = props.task.agent_feedback
-  if (!af?.length) return null
-  const last = af[af.length - 1]
-  return last.answered_at ? null : last
-})
-
-function updateReply(questionId: string, value: string) {
-  replyDraft.value[questionId] = value
-}
-
-function selectChoice(questionId: string, value: string) {
-  replyDraft.value[questionId] = value
-}
-
-function submitReply() {
-  const exchange = pendingExchange.value
-  if (!exchange) return
-  const answers = exchange.questions.map(q => ({
-    id: q.id,
-    value: replyDraft.value[q.id] || '',
-  }))
-  if (answers.some(a => !a.value)) return // all questions must be answered
+function onAgentReply(answers: Array<{ id: string; value: string }>) {
   emit('reply', props.task.id, answers)
-  replyDraft.value = {}
 }
-
-watch(() => props.task.id, () => { replyDraft.value = {} })
 
 function startEditing() {
   if (!isEditable.value) return
@@ -304,15 +217,7 @@ function onKeydown(e: KeyboardEvent) {
       </header>
 
       <!-- JSON view -->
-      <div v-if="showJson" class="td-body td-json-body">
-        <div class="td-json-toolbar">
-          <button :class="['td-json-wrap', { active: jsonWrap }]" @click="jsonWrap = !jsonWrap" title="Wrap lines">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="13 15 10 18 13 21"/><path d="M3 18h4"/></svg>
-          </button>
-          <button class="td-json-copy" @click="copyJson">{{ jsonCopied ? 'Copied!' : 'Copy' }}</button>
-        </div>
-        <pre :class="['td-json-pre', { 'td-json-wrap-lines': jsonWrap }]"><code v-html="taskJsonHighlighted" /></pre>
-      </div>
+      <TaskJsonView v-if="showJson" :task="task" />
 
       <!-- Body -->
       <div v-else class="td-body">
@@ -347,6 +252,7 @@ function onKeydown(e: KeyboardEvent) {
               <span v-if="el.role" class="td-el-role">{{ el.role }}</span>
               <code class="td-el-tag">&lt;{{ el.tag }}&gt;</code>
               <span v-if="el.classes" class="td-el-classes">.{{ el.classes.split(' ').slice(0, 3).join('.') }}</span>
+              <span v-if="el.text" class="td-el-text">"{{ el.text.length > 60 ? el.text.slice(0, 60) + '…' : el.text }}"</span>
               <span v-if="el.component" class="td-el-comp">{{ el.component }}</span>
             </div>
           </div>
@@ -403,36 +309,11 @@ function onKeydown(e: KeyboardEvent) {
         <!-- Agent Feedback Thread -->
         <section v-if="task.agent_feedback?.length" class="td-section">
           <h4 class="td-label">Agent Questions</h4>
-          <div v-for="(exchange, ei) in task.agent_feedback" :key="ei" class="td-agent-exchange" :class="{ answered: !!exchange.answered_at }">
-            <div v-if="exchange.message" class="td-agent-msg" v-html="safeMd(exchange.message)" />
-            <div v-for="q in exchange.questions" :key="q.id" class="td-agent-question">
-              <p class="td-agent-q-text">{{ q.text }}</p>
-              <!-- Answered: show answer -->
-              <template v-if="exchange.answered_at">
-                <div class="td-agent-answer">{{ exchange.answers?.find(a => a.id === q.id)?.value }}</div>
-              </template>
-              <!-- Unanswered: interactive form -->
-              <template v-else>
-                <div v-if="q.type === 'choice' && q.options" class="td-agent-options">
-                  <button
-                    v-for="opt in q.options"
-                    :key="opt"
-                    class="td-agent-option"
-                    :class="{ selected: replyDraft[q.id] === opt }"
-                    @click="selectChoice(q.id, opt)"
-                  >{{ opt }}</button>
-                </div>
-                <textarea
-                  v-else
-                  class="td-reply-textarea"
-                  :value="replyDraft[q.id] || ''"
-                  @input="updateReply(q.id, ($event.target as HTMLTextAreaElement).value)"
-                  placeholder="Type your answer..."
-                  rows="2"
-                />
-              </template>
-            </div>
-          </div>
+          <TaskAgentFeedback
+            :feedback="task.agent_feedback"
+            :task-id="task.id"
+            @reply="onAgentReply"
+          />
         </section>
 
         <!-- Resolution -->
@@ -502,25 +383,7 @@ function onKeydown(e: KeyboardEvent) {
         </section>
 
         <!-- Interaction History (action log) -->
-        <section v-if="historyLog.length" class="td-section">
-          <h4 class="td-label">
-            Interaction History
-            <span v-if="historyRoute" class="td-history-current">on {{ historyRoute }}</span>
-          </h4>
-          <div v-if="historyNavPath.length > 1" class="td-nav-path">
-            <span v-for="(p, i) in historyNavPath" :key="i" class="td-nav-step">
-              <span class="td-nav-route">{{ p }}</span>
-              <span v-if="i < historyNavPath.length - 1" class="td-nav-sep">→</span>
-            </span>
-          </div>
-          <div class="td-log">
-            <div v-for="(entry, i) in historyLog" :key="i" class="td-log-entry">
-              <span class="td-log-idx">{{ i + 1 }}</span>
-              <span :class="['td-log-event', entry.event]">{{ entry.event === 'route_change' ? 'navigate' : entry.event }}</span>
-              <span class="td-log-detail">{{ entry.detail }}</span>
-            </div>
-          </div>
-        </section>
+        <TaskInteractionHistory :interaction-history="task.interaction_history" />
 
         <!-- Timestamps -->
         <section class="td-section td-timestamps">
@@ -539,11 +402,10 @@ function onKeydown(e: KeyboardEvent) {
         </section>
       </div>
 
-      <!-- Footer actions -->
-      <div v-if="task.status === 'needs_info' && pendingExchange" class="td-footer">
-        <button class="td-reply-btn" :disabled="pendingExchange.questions.some(q => !replyDraft[q.id])" @click="submitReply">Reply</button>
-      </div>
-      <div v-else-if="task.status === 'blocked'" class="td-footer">
+      <!-- Footer actions.
+           (The needs_info reply action lives inside TaskAgentFeedback — it renders its
+           own "Submit answers" button once every question has a non-empty draft.) -->
+      <div v-if="task.status === 'blocked'" class="td-footer">
         <button class="td-deny-btn" @click="emit('deny', task.id)">Push Back</button>
         <button class="td-dismiss-btn" @click="showDeleteConfirm = true">Dismiss</button>
       </div>
@@ -714,6 +576,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 .td-el-tag { color: var(--accent); font-family: monospace; }
 .td-el-classes { color: var(--success); font-size: 10px; font-family: monospace; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td-el-text { color: var(--text-muted); font-size: 10px; font-style: italic; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .td-el-comp { color: var(--role-component); font-size: 10px; }
 
 /* Selected text */
@@ -858,41 +721,6 @@ function onKeydown(e: KeyboardEvent) {
   background: none; color: var(--text-muted);
 }
 .td-delete-header-btn:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
-
-/* JSON view */
-.td-json-body { padding: 0; display: flex; flex-direction: column; }
-.td-json-toolbar {
-  display: flex; justify-content: flex-end; gap: 6px; padding: 8px 12px;
-  border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0;
-}
-.td-json-wrap {
-  display: flex; align-items: center; justify-content: center;
-  padding: 4px 6px;
-  background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
-  border-radius: 5px; cursor: pointer;
-}
-.td-json-wrap:hover { color: var(--text); background: var(--border); }
-.td-json-wrap.active { color: var(--accent); border-color: var(--accent); }
-.td-json-copy {
-  padding: 4px 12px; font-size: 11px; font-weight: 500;
-  background: var(--surface-2); color: var(--text); border: 1px solid var(--border);
-  border-radius: 5px; cursor: pointer;
-}
-.td-json-copy:hover { background: var(--border); }
-.td-json-pre {
-  margin: 0; padding: 16px; flex: 1; overflow: auto;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 11px; line-height: 1.6; color: var(--text); tab-size: 2;
-}
-.td-json-pre.td-json-wrap-lines { white-space: pre-wrap; word-break: break-all; }
-.td-json-pre .token.property,
-.td-json-pre .token.key { color: var(--syntax-property); }
-.td-json-pre .token.string { color: var(--syntax-string); }
-.td-json-pre .token.number { color: var(--syntax-number); }
-.td-json-pre .token.boolean { color: var(--syntax-boolean); }
-.td-json-pre .token.null { color: var(--syntax-null); }
-.td-json-pre .token.operator { color: var(--syntax-operator); }
-.td-json-pre .token.punctuation { color: var(--syntax-punctuation); }
 
 /* Resolution */
 .td-resolution {

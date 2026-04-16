@@ -265,7 +265,11 @@ export function usePerfMonitor(
 
     const order = { poor: 0, 'needs-improvement': 1, good: 2 }
     findings.sort((a, b) => order[a.severity] - order[b.severity])
-    return findings
+    // Cap at 128: a pathological page with hundreds of heavy resources would otherwise
+    // render hundreds of cards and bog down the inspector. The worst offenders come first
+    // because of the sort above.
+    const MAX_FINDINGS = 128
+    return findings.length > MAX_FINDINGS ? findings.slice(0, MAX_FINDINGS) : findings
   })
 
   const perfTaskFindings = computed(() => {

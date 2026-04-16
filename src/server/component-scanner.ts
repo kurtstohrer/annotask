@@ -32,15 +32,19 @@ export interface ComponentManifestEntry {
   module: string
 }
 
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 min — dev-loop friendly but picks up new deps eventually
 let cachedCatalog: ComponentCatalog | null = null
+let cachedCatalogAt = 0
 let cachedManifest: ComponentManifestEntry[] | null = null
+let cachedManifestAt = 0
+let inflightCatalog: Promise<ComponentCatalog> | null = null
 
 /**
  * Generate a flat manifest of all importable components — both library and local.
  * Used by the Vite plugin to generate a bootstrap module that pre-loads everything.
  */
 export async function generateComponentManifest(projectRoot: string): Promise<ComponentManifestEntry[]> {
-  if (cachedManifest) return cachedManifest
+  if (cachedManifest && (Date.now() - cachedManifestAt) < CACHE_TTL_MS) return cachedManifest
 
   const entries: ComponentManifestEntry[] = []
   const seen = new Set<string>()
@@ -73,12 +77,16 @@ export async function generateComponentManifest(projectRoot: string): Promise<Co
   } catch { /* src/ might not exist */ }
 
   cachedManifest = entries
+  cachedManifestAt = Date.now()
   return entries
 }
 
 export function clearComponentCache() {
   cachedCatalog = null
+  cachedCatalogAt = 0
   cachedManifest = null
+  cachedManifestAt = 0
+  inflightCatalog = null
 }
 
 async function findVueFilesRecursive(dir: string): Promise<string[]> {
@@ -103,8 +111,17 @@ function extractComponentName(filePath: string): string {
 }
 
 export async function scanComponentLibraries(projectRoot: string): Promise<ComponentCatalog> {
-  if (cachedCatalog) return cachedCatalog
+  if (cachedCatalog && (Date.now() - cachedCatalogAt) < CACHE_TTL_MS) return cachedCatalog
+  // Coalesce concurrent scans — node_modules walks are expensive and should run once at most.
+  if (inflightCatalog) return inflightCatalog
+  inflightCatalog = scanComponentLibrariesUncached(projectRoot).finally(() => { inflightCatalog = null })
+  const result = await inflightCatalog
+  cachedCatalog = result
+  cachedCatalogAt = Date.now()
+  return result
+}
 
+async function scanComponentLibrariesUncached(projectRoot: string): Promise<ComponentCatalog> {
   const libraries: ScannedLibrary[] = []
 
   // Read project's package.json to find dependencies

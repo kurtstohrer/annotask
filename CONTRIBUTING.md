@@ -64,3 +64,19 @@ No new features should be added until the stabilization exit criteria from `plan
 4. No Annotask instrumentation in production builds
 5. Core flow covered by automated tests + CI
 6. README explains what works, what's experimental, and how to verify
+
+## Release Process
+
+Versions are SemVer. The source of truth is `package.json`; the MCP server and shell read it at build time via `__ANNOTASK_VERSION__`.
+
+1. **Write the changelog entry first.** Edit `CHANGELOG.md` under `## [Unreleased]`. Categorize under Added / Changed / Fixed / Security / Removed.
+2. **Verify.** `pnpm typecheck && pnpm test && pnpm build`. The build step runs `scripts/copy-vendor.mjs`, which fails loudly if the vendored upstream files have moved.
+3. **Bump.** Edit `package.json` `version` and promote `## [Unreleased]` to `## [x.y.z] — YYYY-MM-DD` in `CHANGELOG.md`. Commit `chore(release): vx.y.z`.
+4. **Tag + publish.** `git tag vx.y.z && git push --follow-tags`. `npm publish` from a clean working tree.
+5. **Post-release.** Reopen a fresh `## [Unreleased]` block in `CHANGELOG.md` and commit.
+
+Never bump `package.json` without a changelog entry in the same commit — the review checklist (`docs/REVIEWING.md`) pins this.
+
+## Reviewing PRs
+
+See `docs/REVIEWING.md` for the review checklist. Core rules: one canonical definition per rule, no business logic in `App.vue`, shared-state composables use singleton-with-refcount, every boundary validates with zod, every rAF loop has a `document.hidden` guard, size budgets hold.

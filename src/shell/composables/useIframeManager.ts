@@ -14,11 +14,28 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   const currentRoute = ref('/')
   const bridgeReady = ref(false)
 
+  /** Best-effort: derive the iframe's origin so the bridge doesn't have to post to '*'.
+   *  For same-origin iframes (the common case) we can read contentWindow.location; if
+   *  the iframe navigates cross-origin we fall back to the src URL origin. */
+  function iframeOrigin(): string {
+    const iframe = iframeRef.value
+    if (!iframe) return ''
+    try {
+      const loc = iframe.contentWindow?.location
+      if (loc && typeof loc.origin === 'string' && loc.origin && loc.origin !== 'null') return loc.origin
+    } catch { /* cross-origin */ }
+    try {
+      const src = iframe.src
+      if (src) return new URL(src, window.location.href).origin
+    } catch { /* invalid URL */ }
+    return ''
+  }
+
   /** Initialize the bridge when the iframe loads */
   function initBridgeForIframe() {
     const win = iframeRef.value?.contentWindow
     if (!win) return
-    bridge.resetBridge(win)
+    bridge.resetBridge(win, iframeOrigin())
     bridgeReady.value = false
 
     bridge.onBridgeReady(() => {
@@ -38,7 +55,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   /** Start the bridge listener (call once on shell mount) */
   function mountBridge() {
     const win = iframeRef.value?.contentWindow
-    if (win) bridge.initBridge(win)
+    if (win) bridge.initBridge(win, iframeOrigin())
   }
 
   /** Clean up the bridge (call on shell unmount) */

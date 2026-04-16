@@ -114,7 +114,8 @@ export function bridgeEvents(): string {
       rect: getRect(targetEl),
       shiftKey: e.shiftKey,
       clientX: e.clientX,
-      clientY: e.clientY
+      clientY: e.clientY,
+      text: getVisibleText(targetEl, 200)
     });
   }
 
@@ -173,7 +174,8 @@ export function bridgeEvents(): string {
       rect: getRect(targetEl),
       shiftKey: false,
       clientX: e.clientX,
-      clientY: e.clientY
+      clientY: e.clientY,
+      text: getVisibleText(targetEl, 200)
     });
   }
 

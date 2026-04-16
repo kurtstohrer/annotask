@@ -10,9 +10,16 @@ const listeners = new Map<string, Set<(payload: any) => void>>()
 const pending = new Map<string, PendingRequest>()
 
 let targetWindow: Window | null = null
-let targetOrigin: string = '*'
+/**
+ * The concrete origin to post to. '' means "unknown — do not send yet". Historically this
+ * defaulted to '*', which leaked messages for any send that happened before the client
+ * responded with bridge:ready. Callers (useIframeManager) now pass the iframe's src origin
+ * up front, and we refuse to post to an unresolved origin.
+ */
+let targetOrigin: string = ''
 let connected = false
 let onReadyCallbacks: Array<() => void> = []
+let requestSeq = 0
 
 function flushReadyCallbacks() {
   if (onReadyCallbacks.length === 0) return
@@ -21,16 +28,26 @@ function flushReadyCallbacks() {
   for (const cb of cbs) cb()
 }
 
+function isOriginCompatible(candidate: string): boolean {
+  // Accept the pre-declared origin, or upgrade from unknown once the client announces itself.
+  if (!targetOrigin) return true
+  return candidate === targetOrigin
+}
+
 function handleMessage(event: MessageEvent) {
   const msg = event.data as BridgeMessage
   if (!msg || msg.source !== 'annotask-client') return
 
-  // Verify the message came from our iframe, not an unrelated window
+  // Verify the message came from our iframe window, not an unrelated window
   if (targetWindow && event.source !== targetWindow) return
 
-  // Store the origin from the first bridge:ready message
+  // Verify the message origin matches our expected origin (tightens a previous loophole
+  // where the first message could set targetOrigin to any value).
+  if (!isOriginCompatible(event.origin)) return
+
   if (msg.type === 'bridge:ready') {
-    targetOrigin = event.origin || '*'
+    // Only adopt a concrete origin; never downgrade a known-good origin to ''.
+    if (event.origin) targetOrigin = event.origin
     connected = true
     flushReadyCallbacks()
     emit('bridge:ready', msg.payload)
@@ -57,9 +74,23 @@ function emit(type: string, payload: unknown) {
   }
 }
 
-/** Initialize the bridge. Call once when the shell mounts. */
-export function initBridge(iframeWindow: Window) {
+function deriveOriginFromIframe(win: Window): string {
+  // Try the contentWindow first (fails cross-origin, which is fine — fall through).
+  try {
+    const o = (win as any).location?.origin as string | undefined
+    if (typeof o === 'string' && o && o !== 'null') return o
+  } catch { /* cross-origin access, drop through */ }
+  return ''
+}
+
+/** Initialize the bridge. Call once when the shell mounts.
+ *  `expectedOrigin` — if provided, caller knows the iframe's origin (e.g. from iframe.src)
+ *  and we pin targetOrigin up front. Otherwise we try to derive it from the window,
+ *  and fall back to waiting for the client's bridge:ready message. */
+export function initBridge(iframeWindow: Window, expectedOrigin?: string) {
   targetWindow = iframeWindow
+  if (expectedOrigin) targetOrigin = expectedOrigin
+  else if (!targetOrigin) targetOrigin = deriveOriginFromIframe(iframeWindow)
   window.addEventListener('message', handleMessage)
 }
 
@@ -67,12 +98,15 @@ export function initBridge(iframeWindow: Window) {
 export function destroyBridge() {
   window.removeEventListener('message', handleMessage)
   targetWindow = null
+  targetOrigin = ''
   connected = false
   onReadyCallbacks = []
 }
 
-/** Reset bridge state for iframe reload (new page load) */
-export function resetBridge(iframeWindow: Window) {
+/** Reset bridge state for iframe reload (new page load).
+ *  If `expectedOrigin` is provided we pin it; otherwise we keep the previously-known
+ *  origin (most reloads stay on the same origin) so we don't reopen the '*' window. */
+export function resetBridge(iframeWindow: Window, expectedOrigin?: string) {
   // Cancel pending requests
   for (const [, p] of pending) {
     clearTimeout(p.timer)
@@ -82,7 +116,12 @@ export function resetBridge(iframeWindow: Window) {
   targetWindow = iframeWindow
   connected = false
   onReadyCallbacks = []
-  targetOrigin = '*'
+  if (expectedOrigin) targetOrigin = expectedOrigin
+  else {
+    const derived = deriveOriginFromIframe(iframeWindow)
+    if (derived) targetOrigin = derived
+    // else keep the previously-adopted origin — safer than reverting to unknown
+  }
 }
 
 /** Register a callback for when the client sends bridge:ready */
@@ -99,7 +138,7 @@ export function isConnected() { return connected }
 export function probeBridge() {
   if (connected) { flushReadyCallbacks(); return }
   if (!targetWindow) return
-  // Send a ping request; if the client responds, we know it's ready
+  if (!targetOrigin) return // can't probe until we know where to post
   request('bridge:ping', {}, 1500)
     .then(() => {
       connected = true
@@ -108,11 +147,17 @@ export function probeBridge() {
     .catch(() => { /* client not ready yet — will get bridge:ready later */ })
 }
 
+function nextRequestId(): string {
+  requestSeq = (requestSeq + 1) | 0
+  return `req-${Date.now().toString(36)}-${requestSeq.toString(36)}`
+}
+
 /** Send a request to the bridge client and wait for response */
 export function request<T = any>(type: string, payload: unknown = {}, timeout = 3000): Promise<T> {
   return new Promise((resolve, reject) => {
     if (!targetWindow) return reject(new Error('no target window'))
-    const id = `req-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    if (!targetOrigin) return reject(new Error('bridge target origin unknown — refusing to post'))
+    const id = nextRequestId()
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(new Error(`bridge request '${type}' timed out`))
@@ -124,7 +169,7 @@ export function request<T = any>(type: string, payload: unknown = {}, timeout = 
 
 /** Send a fire-and-forget message to the bridge client (no response expected) */
 export function send(type: string, payload: unknown = {}) {
-  if (!targetWindow) return
+  if (!targetWindow || !targetOrigin) return
   targetWindow.postMessage({ source: 'annotask-shell', type, payload }, targetOrigin)
 }
 

@@ -231,24 +231,27 @@ export function useTaskWorkflows(deps: {
           fromTag: fromCtx?.tag || '',
           fromClasses: fromCtx?.classes || '',
           fromComponent: fromCtx?.component || '',
+          fromText: fromCtx?.text || '',
           toFile: arrow.toFile || toCtx?.file || '',
           toLine: arrow.toLine || toCtx?.line || 0,
           toTag: toCtx?.tag || '',
           toClasses: toCtx?.classes || '',
           toComponent: toCtx?.component || '',
+          toText: toCtx?.text || '',
         },
       }
     }
   }
 
-  function describeElement(ctx: { file: string; line: string; component: string; tag: string; classes?: string } | null): string {
+  function describeElement(ctx: { file: string; line: string; component: string; tag: string; classes?: string; text?: string } | null): string {
     if (!ctx) return 'element'
     const tag = ctx.tag || 'element'
     const cls = ctx.classes?.split(' ').find(c => c && !c.startsWith('data-'))
-    if (ctx.component && cls) return `<${tag}.${cls}> in ${ctx.component}`
-    if (ctx.component && ctx.tag !== ctx.component.toLowerCase()) return `<${tag}> in ${ctx.component}`
-    if (cls) return `<${tag}.${cls}>`
-    return `<${tag}>`
+    const label = ctx.text ? ` "${ctx.text.length > 30 ? ctx.text.slice(0, 30) + '…' : ctx.text}"` : ''
+    if (ctx.component && cls) return `<${tag}.${cls}>${label} in ${ctx.component}`
+    if (ctx.component && ctx.tag !== ctx.component.toLowerCase()) return `<${tag}>${label} in ${ctx.component}`
+    if (cls) return `<${tag}.${cls}>${label}`
+    return `<${tag}>${label}`
   }
 
   /** Remove any uncommitted annotation (pending pin/arrow/highlight or orphan section). */
@@ -261,7 +264,7 @@ export function useTaskWorkflows(deps: {
     }
   }
 
-  function onArrowCreated(arrowId: string, fromCtx: { file: string; line: string; component: string; tag: string; classes?: string } | null, toCtx: { file: string; line: string; component: string; tag: string; classes?: string } | null) {
+  function onArrowCreated(arrowId: string, fromCtx: { file: string; line: string; component: string; tag: string; classes?: string; text?: string } | null, toCtx: { file: string; line: string; component: string; tag: string; classes?: string; text?: string } | null) {
     const arrow = deps.annotations.arrows.value.find(a => a.id === arrowId)
     if (!arrow) return
 
@@ -280,11 +283,13 @@ export function useTaskWorkflows(deps: {
         fromTag: fromCtx?.tag || '',
         fromClasses: fromCtx?.classes || '',
         fromComponent: fromCtx?.component || '',
+        fromText: fromCtx?.text || '',
         toFile: arrow.toFile || toCtx?.file || '',
         toLine: arrow.toLine || toCtx?.line || 0,
         toTag: toCtx?.tag || '',
         toClasses: toCtx?.classes || '',
         toComponent: toCtx?.component || '',
+        toText: toCtx?.text || '',
       },
     }
     pendingTaskText.value = ''
@@ -307,6 +312,8 @@ export function useTaskWorkflows(deps: {
       elementTag: (meta.fromTag as string) || '',
       elementClasses: (meta.fromClasses as string) || '',
     })
+    const fromText = (meta.fromText as string) || ''
+    const toText = (meta.toText as string) || ''
     createRouteTask({
       type: 'annotation',
       description: description.trim(),
@@ -317,12 +324,14 @@ export function useTaskWorkflows(deps: {
       context: {
         from_element_tag: (meta.fromTag as string) || '',
         from_element_classes: (meta.fromClasses as string) || '',
+        ...(fromText ? { from_element_text: fromText } : {}),
         to_element: {
           tag: (meta.toTag as string) || '',
           classes: (meta.toClasses as string) || '',
           component: (meta.toComponent as string) || '',
           file: arrow.toFile || '',
           line: arrow.toLine || 0,
+          ...(toText ? { text: toText } : {}),
         },
       },
     })
@@ -333,7 +342,7 @@ export function useTaskWorkflows(deps: {
     if (!ctx || !pendingTaskText.value.trim()) return
 
     if (ctx.kind === 'pin') {
-      const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number }
+      const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number; elementText?: string }
       deps.annotations.updatePinNote(ctx.annotationId!, pendingTaskText.value.trim())
       deps.styleEditor.recordAnnotation({
         file: ctx.file, line: String(ctx.line), component: ctx.component,
@@ -348,6 +357,7 @@ export function useTaskWorkflows(deps: {
         context: {
           element_tag: meta.elementTag,
           element_classes: meta.elementClasses,
+          ...(meta.elementText ? { element_text: meta.elementText } : {}),
         },
       })
     } else if (ctx.kind === 'arrow') {
@@ -369,7 +379,7 @@ export function useTaskWorkflows(deps: {
         context: { element_tag: meta.elementTag, selected_text: meta.selectedText },
       })
     } else if (ctx.kind === 'select') {
-      const meta = ctx.meta as { elementTag: string; elementClasses: string }
+      const meta = ctx.meta as { elementTag: string; elementClasses: string; elementText?: string }
       const description = pendingTaskText.value.trim()
       deps.styleEditor.recordAnnotation({
         file: ctx.file, line: String(ctx.line), component: ctx.component,
@@ -384,6 +394,7 @@ export function useTaskWorkflows(deps: {
         context: {
           element_tag: meta.elementTag,
           element_classes: meta.elementClasses,
+          ...(meta.elementText ? { element_text: meta.elementText } : {}),
         },
       })
       if (task && currentRects.length) {
@@ -413,7 +424,7 @@ export function useTaskWorkflows(deps: {
 
     // Use selection metadata (already have file/line/component from click events)
     const sel = deps.primarySelection.value
-    const targets = [{ file: sel.file, line: sel.line, component: sel.component, tag: sel.tagName, classes: sel.classes }]
+    const targets = [{ file: sel.file, line: sel.line, component: sel.component, tag: sel.tagName, classes: sel.classes, text: sel.text || '' }]
 
     for (const t of targets) {
       deps.styleEditor.recordAnnotation({ file: t.file, line: t.line, component: t.component, intent: text, elementTag: t.tag, elementClasses: t.classes })
@@ -430,10 +441,12 @@ export function useTaskWorkflows(deps: {
       context: {
         element_tag: primary.tag,
         element_classes: primary.classes,
+        ...(primary.text ? { element_text: primary.text } : {}),
         ...(targets.length > 1 ? {
           elements: targets.map(t => ({
             tag: t.tag, classes: t.classes, component: t.component,
             file: t.file, line: parseInt(t.line) || 0,
+            ...(t.text ? { text: t.text } : {}),
           })),
         } : {}),
       },
@@ -449,7 +462,7 @@ export function useTaskWorkflows(deps: {
     if (!deps.primarySelection.value) return
 
     const sel = deps.primarySelection.value
-    const targets = [{ file: sel.file, line: sel.line, component: sel.component, tag: sel.tagName, classes: sel.classes }]
+    const targets = [{ file: sel.file, line: sel.line, component: sel.component, tag: sel.tagName, classes: sel.classes, text: sel.text || '' }]
 
     for (const t of targets) {
       deps.styleEditor.recordAnnotation({ file: t.file, line: t.line, component: t.component, intent: label, action, elementTag: t.tag, elementClasses: t.classes })
@@ -463,6 +476,7 @@ export function useTaskWorkflows(deps: {
       context: {
         element_tag: primary.tag,
         element_classes: primary.classes,
+        ...(primary.text ? { element_text: primary.text } : {}),
       },
     })
   }

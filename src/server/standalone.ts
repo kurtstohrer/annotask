@@ -9,7 +9,7 @@ export interface StandaloneServerOptions {
 
 export async function startStandaloneServer(options: StandaloneServerOptions): Promise<{
   port: number
-  close: () => void
+  close: () => Promise<void>
 }> {
   const port = options.port || 24678
   const uiServer = createAnnotaskServer({ projectRoot: options.projectRoot })
@@ -27,16 +27,21 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
     }
   })
 
+  async function shutdown() {
+    removeServerInfo(options.projectRoot)
+    // Wait for in-flight task writes before closing so the last mutation isn't lost.
+    await uiServer.flush()
+    uiServer.dispose()
+    await new Promise<void>(resolve => httpServer.close(() => resolve()))
+  }
+
   return new Promise((resolve, reject) => {
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         httpServer.listen(0, '127.0.0.1', () => {
           const addr = httpServer.address() as { port: number; address: string }
           writeServerInfo(options.projectRoot, addr.port, addr.address)
-          resolve({
-            port: addr.port,
-            close: () => { removeServerInfo(options.projectRoot); uiServer.dispose(); httpServer.close() },
-          })
+          resolve({ port: addr.port, close: shutdown })
         })
       } else {
         reject(err)
@@ -45,10 +50,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
 
     httpServer.listen(port, '127.0.0.1', () => {
       writeServerInfo(options.projectRoot, port, '127.0.0.1')
-      resolve({
-        port,
-        close: () => { removeServerInfo(options.projectRoot); uiServer.dispose(); httpServer.close() },
-      })
+      resolve({ port, close: shutdown })
     })
   })
 }

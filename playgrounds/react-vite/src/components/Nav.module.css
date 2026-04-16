@@ -39,7 +39,6 @@
   width: 28px;
   height: 28px;
   display: block;
-  filter: saturate(1.25) hue-rotate(18deg);
 }
 
 .logoText {
@@ -108,12 +107,12 @@
   padding: var(--space-2) var(--space-4);
   border-radius: var(--radius-pill);
   border: 1px solid var(--border);
-  color: var(--text-muted);
+  background-color: #8120d0;
+  color: #ffffff;
   transition: all var(--duration-fast) var(--easing-standard);
 }
 
 .ghostBtn:hover {
-  color: var(--text);
   border-color: var(--border-strong);
 }
 

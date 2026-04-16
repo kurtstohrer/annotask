@@ -14,7 +14,7 @@ export default function Nav({ theme, onToggleTheme }: NavProps) {
           <span className={styles.logoMark} aria-hidden="true">
             <img src="/annotask-logo.svg" alt="" className={styles.logoImage} />
           </span>
-          <span className={styles.logoText}>annotask</span>
+          <span className={styles.logoText}>Annotask</span>
         </Link>
 
         <nav className={styles.links} aria-label="Primary">
@@ -29,17 +29,16 @@ export default function Nav({ theme, onToggleTheme }: NavProps) {
         </nav>
 
         <div className={styles.actions}>
+          <a href="https://github.com/kurtstohrer/annotask" className={styles.ghostBtn} target="_blank" rel="noreferrer">
+            Star on GitHub
+          </a>
           <button
             className={styles.themeToggle}
             onClick={onToggleTheme}
             aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
           >
-            {theme === 'dark' ? '☀' : '☾'}
+            {theme === 'dark' ? '☾' : '☀'}
           </button>
-          <a href="#waitlist" className={styles.cta}>Get started</a>
-          <a href="https://github.com/kurtstohrer/annotask" className={styles.ghostBtn} target="_blank" rel="noreferrer">
-            Star on GitHub
-          </a>
         </div>
       </div>
     </header>
