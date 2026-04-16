@@ -39,6 +39,11 @@ Visual markup tool for web apps. Annotate your UI in the browser — pins, arrow
 
 4. **You review** — In the Annotask shell, click any task to open the detail drawer — see the full markdown description, screenshots, element context, interaction history, and source files. Accept or deny each change. Denied tasks include your feedback so the agent can retry with corrections.
 
+## Demos
+
+- [Quick Demo | React - Claude Haiku 4.5](https://youtu.be/UrCzkDPM63s)
+- [Game Menu Demo | Vue 3 - Claude Opus 4.6](https://youtu.be/S07DkBLbhCc)
+
 ## Setup
 
 See **[SETUP.md](SETUP.md)** for the full setup guide — install, plugin config, MCP / skills setup, MFE configuration, and troubleshooting.
