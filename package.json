@@ -83,7 +83,7 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-vue": "^5.0.0",
     "axe-core": "4.11.1",
-    "dompurify": "^3.3.3",
+    "dompurify": "^3.4.0",
     "html2canvas-pro": "2.0.2",
     "js-yaml": "^4.1.1",
     "jsdom": "^29.0.1",
