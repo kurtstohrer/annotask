@@ -860,9 +860,11 @@ async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: stri
         }
       } catch { /* no package.json */ }
       if (typesPath) {
+        // Exact-match only: a flat barrel .d.ts has many *Props interfaces — falling back
+        // to "first *Props wins" would give every component the same wrong props.
         for (const comp of nameOnly) {
           if (comp.props.length === 0) {
-            const dtsResult = await extractPropsFromDts(typesPath, comp.name)
+            const dtsResult = await extractPropsFromDts(typesPath, comp.name, { exactMatchOnly: true })
             comp.props = dtsResult.props
           }
         }
@@ -994,6 +996,7 @@ async function extractPropsFromPropDefs(filePath: string): Promise<ScannedProp[]
 async function extractPropsFromDtsViaTs(
   dtsPath: string,
   componentName: string,
+  options: { exactMatchOnly?: boolean } = {},
 ): Promise<{ props: ScannedProp[]; resolvedName: string | null }> {
   let ts: typeof import('typescript')
   try {
@@ -1017,7 +1020,7 @@ async function extractPropsFromDtsViaTs(
 
   let target = interfaces.get(`${componentName}Props`)
   let resolvedName: string | null = null
-  if (!target) {
+  if (!target && !options.exactMatchOnly) {
     for (const [name, iface] of interfaces) {
       if (!name.endsWith('Props')) continue
       if (name.includes('PassThrough') || name.includes('MethodOptions')) continue
@@ -1096,20 +1099,25 @@ async function extractPropsFromDtsViaTs(
   return { props, resolvedName }
 }
 
-async function extractPropsFromDts(dtsPath: string, componentName: string): Promise<{ props: ScannedProp[]; resolvedName: string | null }> {
+async function extractPropsFromDts(
+  dtsPath: string,
+  componentName: string,
+  options: { exactMatchOnly?: boolean } = {},
+): Promise<{ props: ScannedProp[]; resolvedName: string | null }> {
   let content: string
   try { content = await fsp.readFile(dtsPath, 'utf-8') } catch { return { props: [], resolvedName: null } }
 
-  // Try exact match first, then search for any *Props interface
+  // `export` is optional — bundler outputs (tsup/rollup) often emit `interface FooProps {…}`
+  // without `export`, relying on a single `export { … }` block at the bottom of the file.
   let propsInterfaceName = `${componentName}Props`
-  let interfaceRegex = new RegExp(`export\\s+(?:declare\\s+)?interface\\s+${propsInterfaceName}(?:<[^>]*>)?\\s*(?:extends\\s+[^{]*)?\\{`)
+  let interfaceRegex = new RegExp(`(?:export\\s+)?(?:declare\\s+)?interface\\s+${propsInterfaceName}(?:<[^>]*>)?\\s*(?:extends\\s+[^{]*)?\\{`)
   let match = interfaceRegex.exec(content)
 
   let resolvedName: string | null = null
-  if (!match) {
-    // Find any exported *Props interface (e.g., AutoCompleteProps when dir is "autocomplete")
-    // Handle generics: DataTableProps<T = any> extends ...
-    const genericRegex = /export\s+(?:declare\s+)?interface\s+(\w+Props)(?:<[^>]*>)?\s*(?:extends\s+[^{]*)?\{/g
+  if (!match && !options.exactMatchOnly) {
+    // Find any *Props interface (e.g., AutoCompleteProps when dir is "autocomplete").
+    // Skipped under exactMatchOnly — a flat barrel .d.ts has many *Props; picking the first is wrong.
+    const genericRegex = /(?:export\s+)?(?:declare\s+)?interface\s+(\w+Props)(?:<[^>]*>)?\s*(?:extends\s+[^{]*)?\{/g
     let candidate: RegExpExecArray | null
     while ((candidate = genericRegex.exec(content)) !== null) {
       const name = candidate[1]
@@ -1120,7 +1128,10 @@ async function extractPropsFromDts(dtsPath: string, componentName: string): Prom
       resolvedName = name.replace(/Props$/, '')
       break
     }
-    if (!match) return { props: [], resolvedName: null }
+  }
+  if (!match) {
+    // Regex found nothing — AST parser is the last resort (handles exotic declarations the regex misses).
+    return extractPropsFromDtsViaTs(dtsPath, componentName, options)
   }
 
   // Extract the interface body (track brace depth)
@@ -1179,7 +1190,7 @@ async function extractPropsFromDts(dtsPath: string, componentName: string): Prom
   // Fallback: if regex failed to extract anything (e.g. multi-line types, complex generics),
   // try the TypeScript AST parser. Keeps the fast regex path for the 95% case.
   if (props.length === 0) {
-    const astResult = await extractPropsFromDtsViaTs(dtsPath, componentName)
+    const astResult = await extractPropsFromDtsViaTs(dtsPath, componentName, options)
     if (astResult.props.length > 0) return astResult
   }
 

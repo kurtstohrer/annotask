@@ -24,6 +24,29 @@ describe('extractPropsFromDts — regex path', () => {
   })
 })
 
+describe('extractPropsFromDts — flat barrel .d.ts (issue #24)', () => {
+  it('extracts props from bare `interface` (no `export`)', async () => {
+    const { props } = await S.extractPropsFromDts(fixture('flat-barrel.d.ts'), 'Accordion')
+    // Should resolve AccordionProps specifically, not pick the first *Props blindly.
+    expect(props.map(p => p.name).sort()).toEqual(['children', 'className', 'expanded'])
+    const expanded = props.find(p => p.name === 'expanded')
+    expect(expanded?.required).toBe(false)
+    expect(expanded?.description).toBe('Should the accordion be expanded?')
+  })
+
+  it('resolves per-component props in a file with many *Props interfaces', async () => {
+    const { props: groupProps } = await S.extractPropsFromDts(fixture('flat-barrel.d.ts'), 'AccordionGroup', { exactMatchOnly: true })
+    expect(groupProps.map(p => p.name).sort()).toEqual(['children', 'className', 'fullWidth', 'multiselect', 'onToggle'])
+    const multi = groupProps.find(p => p.name === 'multiselect')
+    expect(multi?.default).toBe('false')
+  })
+
+  it('exactMatchOnly returns empty when no matching interface exists', async () => {
+    const { props } = await S.extractPropsFromDts(fixture('flat-barrel.d.ts'), 'Nonexistent', { exactMatchOnly: true })
+    expect(props).toEqual([])
+  })
+})
+
 describe('extractPropsFromDtsViaTs — AST fallback', () => {
   it('handles multi-line prop types the regex extractor can\'t', async () => {
     const { props, resolvedName } = await S.extractPropsFromDtsViaTs(fixture('tricky-interface.d.ts'), 'DataTable')

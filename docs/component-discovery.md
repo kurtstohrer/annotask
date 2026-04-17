@@ -173,11 +173,13 @@ When only a bundled dist file is available (no source), the scanner extracts com
 export{Zu as alertBanner, lu as base64Editor, Au as box, ...}
 ```
 
-This provides component names and import paths but no prop definitions. The scanner filters out non-component exports by skipping:
+This provides component names and import paths. The scanner filters out non-component exports by skipping:
 - `default`, `install`
 - Names ending in `Props` or `Emits`
 - `ALL_CAPS` constants
 - Utility function prefixes (`use*`, `create*`, `get*`, `set*`, `is*`, `has*`, `with*`, `to*`, `from*`)
+
+After extracting names, the scanner hydrates props from the package's declared types file (`pkg.exports["."].types` / `pkg.types` / `pkg.typings`). It looks up the exact `${ComponentName}Props` interface for each discovered component — a flat barrel `.d.ts` typically contains many `*Props` interfaces, so the generic "first-match" fallback is disabled in this path. Interfaces declared without `export` (bundler output from tsup/rollup) are handled by making the `export` keyword optional in both the regex and AST extractors.
 
 ## Props extraction
 
