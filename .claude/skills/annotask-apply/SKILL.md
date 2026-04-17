@@ -61,9 +61,28 @@ npx annotask screenshot TASK_ID
 
 This downloads the PNG to `.annotask/screenshots/`. Use it as visual context alongside the task description and source code. (The screenshot command writes the file on disk — `--mcp` doesn't apply.)
 
-### 2. Process each pending task — one at a time
+### 2. Triage, group, then apply
 
-Filter for `status: "pending"` and `status: "denied"` (with `feedback`) tasks. Also check for `status: "in_progress"` tasks that have answers in `agent_feedback` (previously asked questions now answered). Skip `needs_info` tasks — they're waiting for user input. Process them **sequentially** — do not batch. For each task, follow this cycle:
+Filter actionable tasks: `status: "pending"`, `status: "denied"` (with `feedback`), and `status: "in_progress"` tasks whose `agent_feedback` now contains answers to earlier questions. Skip `needs_info` (waiting for user) and `blocked` (marked not actionable).
+
+Before locking anything, **triage** — read all actionable task summaries and group them by touched resources:
+
+- **By file**: tasks whose `file` is the same go in one group (Edits batched on one Read).
+- **By shared state**: any task that writes `.annotask/design-spec.json`, `:root` CSS variables, `tailwind.config.*`, or a global stylesheet goes in the *shared-state* group regardless of which source file triggered it.
+- **By dependency**: if a `theme_update` adds or changes a token that a `style_update` in the same batch consumes, the `theme_update` goes in an earlier phase. If a `section_request` introduces the UI that an `a11y_fix` targets, the `section_request` goes first.
+
+Within each group: process serially, reading the file once and batching Edits. Across groups that are fully disjoint (no shared file, no shared state, no dependency edge), you may launch parallel subagents — one per group — to apply them concurrently. If in doubt, run serially.
+
+#### Parallelism rules
+
+- **Same file → same group, serial.** Never have two tasks editing the same file concurrently.
+- **Shared global state → one group, serial.** `.annotask/design-spec.json`, `:root` blocks in shared CSS, `tailwind.config.*`, shared layout files, i18n catalogs, route tables, barrel exports.
+- **Dependency order**: `theme_update` before any `style_update` that references the new/changed token; structural task (`section_request`, `annotation` with `wrap_container`/`add_row`/`add_column`) before an `a11y_fix` or `style_update` on the same new UI.
+- **Stale locators**: after edits land, the `file`/`line` on remaining tasks may drift. Prefer searching by surrounding text/element context over trusting `line` from the original triage.
+- **Non-idempotent inserts**: `add_row`, `add_column`, `section_request`, and free-text "add this" notes can duplicate on retry. Before inserting, confirm the target isn't already present.
+- **If using parallel subagents**: each subagent receives only its group's task IDs plus project context. After all subagents finish, run a quick typecheck/build sanity pass before returning control to the user. If any subagent failed, surface it clearly — do not silently accept partial success.
+
+For each task in a group, follow this cycle:
 
 #### a. Lock the task
 
@@ -222,11 +241,26 @@ npx annotask update-task TASK_ID --status=review --resolution="Swapped grid to f
 
 Keep resolutions short — one sentence describing what you changed, not why. The user sees it in the Annotask shell alongside the diff.
 
-#### h. Move to the next task
+#### h. Move to the next task in the group
 
-Repeat steps a–g for each remaining pending task. This way the user gets incremental feedback — they can accept or deny early tasks while later ones are still being applied.
+Repeat steps a–g for each remaining task in the current group, then move to the next group (or confirm parallel subagents have finished). Per-task review flipping is what powers incremental feedback — each task moves to `review` as soon as *its own* edit lands, even inside a batched group, so the user can accept or deny early while later tasks are still in flight.
 
-### 3. Report to the user
+### 3. Second sweep — catch denies and new tasks that arrived mid-run
+
+Because tasks flip to `review` as soon as their edit lands, the user may have been reviewing (and denying) early tasks while you were still applying later ones. They may also have created brand-new tasks. Before reporting, re-fetch once:
+
+**MCP:** `annotask_get_tasks(status: "denied")` and `annotask_get_tasks(status: "pending")`
+
+```bash
+npx annotask tasks --mcp --status=denied
+npx annotask tasks --mcp --status=pending
+```
+
+If either query returns tasks you did not handle in step 2, loop back to step 2 and process them — re-triage, re-group, apply. Repeat step 3 after each sweep until both queries come back empty.
+
+**If a task keeps returning denied across multiple sweeps**, stop guessing and ask. Use step 2e (`annotask_update_task` with `questions`) to flip it to `needs_info` and let the user clarify what they actually want, rather than burning more sweeps on a misread requirement.
+
+### 4. Report to the user
 
 Tell the user:
 - Which tasks were applied

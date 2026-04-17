@@ -58,19 +58,6 @@ const facts = computed(() => {
               </feMerge>
             </filter>
           </defs>
-          <g opacity="0.5">
-            <line
-              v-for="i in 12"
-              :key="i"
-              x1="100"
-              y1="100"
-              :x2="100 + 95 * Math.cos((i * 30) * Math.PI / 180)"
-              :y2="100 + 95 * Math.sin((i * 30) * Math.PI / 180)"
-              stroke="#ff9500"
-              stroke-width="3"
-              stroke-linecap="round"
-            />
-          </g>
           <circle cx="100" cy="100" r="60" fill="url(#sunGrad)" filter="url(#sunGlow)" />
           <circle cx="90" cy="88" r="20" fill="rgba(255,255,255,0.15)" />
         </svg>

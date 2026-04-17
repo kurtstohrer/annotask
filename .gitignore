@@ -18,3 +18,4 @@ playgrounds/antenna-vite/
 
 # Claude Code session state
 .claude/worktrees/
+.claude/scheduled_tasks.lock

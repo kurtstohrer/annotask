@@ -42,7 +42,7 @@
       "orbital_period_days": 365,
       "day_length_hours": 24.0,
       "discovered_by": null,
-      "description": "Our home planet — the only known world to harbor life, with liquid water oceans and a protective atmosphere.",
+      "description": "Our home planet \u2014 the only known world to harbor life, with liquid water oceans and a protective atmosphere.",
       "color": "#3b82f6"
     },
     {
@@ -87,7 +87,7 @@
       "orbital_period_days": 10759,
       "day_length_hours": 10.7,
       "discovered_by": null,
-      "description": "Famous for its stunning rings of ice and rock. Less dense than water — it would float in a large enough bathtub.",
+      "description": "Famous for its stunning rings of ice and rock. Less dense than water \u2014 it would float in a large enough bathtub.",
       "color": "#eab308"
     },
     {
@@ -122,21 +122,354 @@
     }
   ],
   "moons": [
-    { "id": 1, "name": "Moon", "planet": "Earth", "radius_km": 1737.4, "distance_km": 384400, "orbital_period_days": 27.3, "discovered_by": null, "year_discovered": null, "description": "Earth's only natural satellite and the fifth-largest moon in the Solar System.", "color": "#d1d5db" },
-    { "id": 2, "name": "Phobos", "planet": "Mars", "radius_km": 11.3, "distance_km": 9376, "orbital_period_days": 0.32, "discovered_by": "Asaph Hall", "year_discovered": 1877, "description": "The larger of Mars' two tiny moons. It orbits so close that it is slowly spiraling inward.", "color": "#a8a29e" },
-    { "id": 3, "name": "Deimos", "planet": "Mars", "radius_km": 6.2, "distance_km": 23458, "orbital_period_days": 1.26, "discovered_by": "Asaph Hall", "year_discovered": 1877, "description": "The smaller, outermost moon of Mars. Likely a captured asteroid.", "color": "#d6d3d1" },
-    { "id": 4, "name": "Io", "planet": "Jupiter", "radius_km": 1821.6, "distance_km": 421700, "orbital_period_days": 1.77, "discovered_by": "Galileo Galilei", "year_discovered": 1610, "description": "The most volcanically active body in the Solar System, with over 400 active volcanoes.", "color": "#facc15" },
-    { "id": 5, "name": "Europa", "planet": "Jupiter", "radius_km": 1560.8, "distance_km": 671034, "orbital_period_days": 3.55, "discovered_by": "Galileo Galilei", "year_discovered": 1610, "description": "An icy shell covers a global subsurface ocean — a prime candidate in the search for extraterrestrial life.", "color": "#93c5fd" },
-    { "id": 6, "name": "Ganymede", "planet": "Jupiter", "radius_km": 2634.1, "distance_km": 1070412, "orbital_period_days": 7.15, "discovered_by": "Galileo Galilei", "year_discovered": 1610, "description": "The largest moon in the Solar System — bigger than Mercury — and the only moon known to generate its own magnetic field.", "color": "#a3a3a3" },
-    { "id": 7, "name": "Callisto", "planet": "Jupiter", "radius_km": 2410.3, "distance_km": 1882709, "orbital_period_days": 16.69, "discovered_by": "Galileo Galilei", "year_discovered": 1610, "description": "The most heavily cratered object in the Solar System, with a surface that has barely changed in billions of years.", "color": "#78716c" },
-    { "id": 8, "name": "Titan", "planet": "Saturn", "radius_km": 2574.7, "distance_km": 1221870, "orbital_period_days": 15.95, "discovered_by": "Christiaan Huygens", "year_discovered": 1655, "description": "The only moon with a thick atmosphere and stable surface liquids — lakes and rivers of liquid methane.", "color": "#f59e0b" },
-    { "id": 9, "name": "Enceladus", "planet": "Saturn", "radius_km": 252.1, "distance_km": 238042, "orbital_period_days": 1.37, "discovered_by": "William Herschel", "year_discovered": 1789, "description": "Shoots plumes of water-ice geysers into space from an ocean beneath its icy crust.", "color": "#e2e8f0" },
-    { "id": 10, "name": "Mimas", "planet": "Saturn", "radius_km": 198.2, "distance_km": 185520, "orbital_period_days": 0.94, "discovered_by": "William Herschel", "year_discovered": 1789, "description": "Sometimes called the Death Star moon because of the massive Herschel crater on one side.", "color": "#d4d4d8" },
-    { "id": 11, "name": "Rhea", "planet": "Saturn", "radius_km": 763.8, "distance_km": 527108, "orbital_period_days": 4.52, "discovered_by": "Giovanni Cassini", "year_discovered": 1672, "description": "Saturn's second-largest moon. There is tentative evidence of a thin ring system of its own.", "color": "#a1a1aa" },
-    { "id": 12, "name": "Triton", "planet": "Neptune", "radius_km": 1353.4, "distance_km": 354759, "orbital_period_days": 5.88, "discovered_by": "William Lassell", "year_discovered": 1846, "description": "The only large moon with a retrograde orbit — probably a captured Kuiper Belt object.", "color": "#a5b4fc" },
-    { "id": 13, "name": "Miranda", "planet": "Uranus", "radius_km": 235.8, "distance_km": 129390, "orbital_period_days": 1.41, "discovered_by": "Gerard Kuiper", "year_discovered": 1948, "description": "Has some of the Solar System's most extreme terrain, including 20km-high cliffs.", "color": "#cbd5e1" },
-    { "id": 14, "name": "Ariel", "planet": "Uranus", "radius_km": 578.9, "distance_km": 190900, "orbital_period_days": 2.52, "discovered_by": "William Lassell", "year_discovered": 1851, "description": "The brightest and possibly youngest surface among Uranus' major moons.", "color": "#e2e8f0" },
-    { "id": 15, "name": "Titania", "planet": "Uranus", "radius_km": 788.4, "distance_km": 435910, "orbital_period_days": 8.71, "discovered_by": "William Herschel", "year_discovered": 1787, "description": "The largest moon of Uranus. Huge canyons and fault lines scar its frozen surface.", "color": "#9ca3af" }
+    {
+      "id": 1,
+      "name": "Moon",
+      "planet": "Earth",
+      "radius_km": 1737.4,
+      "distance_km": 384400,
+      "orbital_period_days": 27.3,
+      "discovered_by": null,
+      "year_discovered": null,
+      "description": "Earth's only natural satellite and the fifth-largest moon in the Solar System.",
+      "color": "#d1d5db"
+    },
+    {
+      "id": 2,
+      "name": "Phobos",
+      "planet": "Mars",
+      "radius_km": 11.3,
+      "distance_km": 9376,
+      "orbital_period_days": 0.32,
+      "discovered_by": "Asaph Hall",
+      "year_discovered": 1877,
+      "description": "The larger of Mars' two tiny moons. It orbits so close that it is slowly spiraling inward.",
+      "color": "#a8a29e"
+    },
+    {
+      "id": 3,
+      "name": "Deimos",
+      "planet": "Mars",
+      "radius_km": 6.2,
+      "distance_km": 23458,
+      "orbital_period_days": 1.26,
+      "discovered_by": "Asaph Hall",
+      "year_discovered": 1877,
+      "description": "The smaller, outermost moon of Mars. Likely a captured asteroid.",
+      "color": "#d6d3d1"
+    },
+    {
+      "id": 4,
+      "name": "Io",
+      "planet": "Jupiter",
+      "radius_km": 1821.6,
+      "distance_km": 421700,
+      "orbital_period_days": 1.77,
+      "discovered_by": "Galileo Galilei",
+      "year_discovered": 1610,
+      "description": "The most volcanically active body in the Solar System, with over 400 active volcanoes.",
+      "color": "#facc15"
+    },
+    {
+      "id": 5,
+      "name": "Europa",
+      "planet": "Jupiter",
+      "radius_km": 1560.8,
+      "distance_km": 671034,
+      "orbital_period_days": 3.55,
+      "discovered_by": "Galileo Galilei",
+      "year_discovered": 1610,
+      "description": "An icy shell covers a global subsurface ocean \u2014 a prime candidate in the search for extraterrestrial life.",
+      "color": "#93c5fd"
+    },
+    {
+      "id": 6,
+      "name": "Ganymede",
+      "planet": "Jupiter",
+      "radius_km": 2634.1,
+      "distance_km": 1070412,
+      "orbital_period_days": 7.15,
+      "discovered_by": "Galileo Galilei",
+      "year_discovered": 1610,
+      "description": "The largest moon in the Solar System \u2014 bigger than Mercury \u2014 and the only moon known to generate its own magnetic field.",
+      "color": "#a3a3a3"
+    },
+    {
+      "id": 7,
+      "name": "Callisto",
+      "planet": "Jupiter",
+      "radius_km": 2410.3,
+      "distance_km": 1882709,
+      "orbital_period_days": 16.69,
+      "discovered_by": "Galileo Galilei",
+      "year_discovered": 1610,
+      "description": "The most heavily cratered object in the Solar System, with a surface that has barely changed in billions of years.",
+      "color": "#78716c"
+    },
+    {
+      "id": 8,
+      "name": "Titan",
+      "planet": "Saturn",
+      "radius_km": 2574.7,
+      "distance_km": 1221870,
+      "orbital_period_days": 15.95,
+      "discovered_by": "Christiaan Huygens",
+      "year_discovered": 1655,
+      "description": "The only moon with a thick atmosphere and stable surface liquids \u2014 lakes and rivers of liquid methane.",
+      "color": "#f59e0b"
+    },
+    {
+      "id": 9,
+      "name": "Enceladus",
+      "planet": "Saturn",
+      "radius_km": 252.1,
+      "distance_km": 238042,
+      "orbital_period_days": 1.37,
+      "discovered_by": "William Herschel",
+      "year_discovered": 1789,
+      "description": "Shoots plumes of water-ice geysers into space from an ocean beneath its icy crust.",
+      "color": "#e2e8f0"
+    },
+    {
+      "id": 10,
+      "name": "Mimas",
+      "planet": "Saturn",
+      "radius_km": 198.2,
+      "distance_km": 185520,
+      "orbital_period_days": 0.94,
+      "discovered_by": "William Herschel",
+      "year_discovered": 1789,
+      "description": "Sometimes called the Death Star moon because of the massive Herschel crater on one side.",
+      "color": "#d4d4d8"
+    },
+    {
+      "id": 11,
+      "name": "Rhea",
+      "planet": "Saturn",
+      "radius_km": 763.8,
+      "distance_km": 527108,
+      "orbital_period_days": 4.52,
+      "discovered_by": "Giovanni Cassini",
+      "year_discovered": 1672,
+      "description": "Saturn's second-largest moon. There is tentative evidence of a thin ring system of its own.",
+      "color": "#a1a1aa"
+    },
+    {
+      "id": 12,
+      "name": "Triton",
+      "planet": "Neptune",
+      "radius_km": 1353.4,
+      "distance_km": 354759,
+      "orbital_period_days": 5.88,
+      "discovered_by": "William Lassell",
+      "year_discovered": 1846,
+      "description": "The only large moon with a retrograde orbit \u2014 probably a captured Kuiper Belt object.",
+      "color": "#a5b4fc"
+    },
+    {
+      "id": 13,
+      "name": "Miranda",
+      "planet": "Uranus",
+      "radius_km": 235.8,
+      "distance_km": 129390,
+      "orbital_period_days": 1.41,
+      "discovered_by": "Gerard Kuiper",
+      "year_discovered": 1948,
+      "description": "Has some of the Solar System's most extreme terrain, including 20km-high cliffs.",
+      "color": "#cbd5e1"
+    },
+    {
+      "id": 14,
+      "name": "Ariel",
+      "planet": "Uranus",
+      "radius_km": 578.9,
+      "distance_km": 190900,
+      "orbital_period_days": 2.52,
+      "discovered_by": "William Lassell",
+      "year_discovered": 1851,
+      "description": "The brightest and possibly youngest surface among Uranus' major moons.",
+      "color": "#e2e8f0"
+    },
+    {
+      "id": 15,
+      "name": "Titania",
+      "planet": "Uranus",
+      "radius_km": 788.4,
+      "distance_km": 435910,
+      "orbital_period_days": 8.71,
+      "discovered_by": "William Herschel",
+      "year_discovered": 1787,
+      "description": "The largest moon of Uranus. Huge canyons and fault lines scar its frozen surface.",
+      "color": "#9ca3af"
+    },
+    {
+      "name": "Amalthea",
+      "planet": "Jupiter",
+      "radius_km": 83.5,
+      "distance_km": 181400,
+      "orbital_period_days": 0.5,
+      "discovered_by": "Edward Emerson Barnard",
+      "year_discovered": 1892,
+      "description": "An irregular, reddish inner moon of Jupiter \u2014 the reddest object in the Solar System.",
+      "color": "#b45309",
+      "id": 16
+    },
+    {
+      "name": "Himalia",
+      "planet": "Jupiter",
+      "radius_km": 85.0,
+      "distance_km": 11461000,
+      "orbital_period_days": 250.56,
+      "discovered_by": "Charles Dillon Perrine",
+      "year_discovered": 1904,
+      "description": "The largest of Jupiter's irregular moons and likely a captured asteroid.",
+      "color": "#78716c",
+      "id": 17
+    },
+    {
+      "name": "Thebe",
+      "planet": "Jupiter",
+      "radius_km": 49.3,
+      "distance_km": 221900,
+      "orbital_period_days": 0.67,
+      "discovered_by": "Stephen P. Synnott",
+      "year_discovered": 1979,
+      "description": "A small inner moon of Jupiter discovered by Voyager 1.",
+      "color": "#a8a29e",
+      "id": 18
+    },
+    {
+      "name": "Dione",
+      "planet": "Saturn",
+      "radius_km": 561.4,
+      "distance_km": 377400,
+      "orbital_period_days": 2.74,
+      "discovered_by": "Giovanni Cassini",
+      "year_discovered": 1684,
+      "description": "A dense icy moon of Saturn with wispy bright terrain carved by fractured ice cliffs.",
+      "color": "#e5e7eb",
+      "id": 19
+    },
+    {
+      "name": "Tethys",
+      "planet": "Saturn",
+      "radius_km": 531.1,
+      "distance_km": 294660,
+      "orbital_period_days": 1.89,
+      "discovered_by": "Giovanni Cassini",
+      "year_discovered": 1684,
+      "description": "An icy Saturnian moon dominated by the giant Odysseus crater and the Ithaca Chasma rift.",
+      "color": "#f3f4f6",
+      "id": 20
+    },
+    {
+      "name": "Iapetus",
+      "planet": "Saturn",
+      "radius_km": 734.5,
+      "distance_km": 3560820,
+      "orbital_period_days": 79.32,
+      "discovered_by": "Giovanni Cassini",
+      "year_discovered": 1671,
+      "description": "Saturn's two-toned moon, with one hemisphere as bright as snow and the other as dark as coal.",
+      "color": "#44403c",
+      "id": 21
+    },
+    {
+      "name": "Hyperion",
+      "planet": "Saturn",
+      "radius_km": 135.0,
+      "distance_km": 1481009,
+      "orbital_period_days": 21.28,
+      "discovered_by": "William Cranch Bond",
+      "year_discovered": 1848,
+      "description": "A chaotically tumbling, sponge-like moon with no stable axis of rotation.",
+      "color": "#a16207",
+      "id": 22
+    },
+    {
+      "name": "Phoebe",
+      "planet": "Saturn",
+      "radius_km": 106.5,
+      "distance_km": 12947918,
+      "orbital_period_days": -550.48,
+      "discovered_by": "William Henry Pickering",
+      "year_discovered": 1899,
+      "description": "A dark, retrograde moon believed to be a captured Kuiper Belt object.",
+      "color": "#1f2937",
+      "id": 23
+    },
+    {
+      "name": "Umbriel",
+      "planet": "Uranus",
+      "radius_km": 584.7,
+      "distance_km": 266000,
+      "orbital_period_days": 4.14,
+      "discovered_by": "William Lassell",
+      "year_discovered": 1851,
+      "description": "The darkest of Uranus's large moons, with an ancient, heavily cratered surface.",
+      "color": "#374151",
+      "id": 24
+    },
+    {
+      "name": "Oberon",
+      "planet": "Uranus",
+      "radius_km": 761.4,
+      "distance_km": 583520,
+      "orbital_period_days": 13.46,
+      "discovered_by": "William Herschel",
+      "year_discovered": 1787,
+      "description": "The outermost major moon of Uranus, marked by ancient craters and long fault lines.",
+      "color": "#6b7280",
+      "id": 25
+    },
+    {
+      "name": "Puck",
+      "planet": "Uranus",
+      "radius_km": 81.0,
+      "distance_km": 86004,
+      "orbital_period_days": 0.76,
+      "discovered_by": "Voyager 2",
+      "year_discovered": 1985,
+      "description": "A small, dark inner moon of Uranus discovered during the Voyager 2 flyby.",
+      "color": "#4b5563",
+      "id": 26
+    },
+    {
+      "name": "Nereid",
+      "planet": "Neptune",
+      "radius_km": 170.0,
+      "distance_km": 5513400,
+      "orbital_period_days": 360.14,
+      "discovered_by": "Gerard P. Kuiper",
+      "year_discovered": 1949,
+      "description": "Neptune's third-largest moon, with one of the most eccentric orbits of any moon.",
+      "color": "#cbd5e1",
+      "id": 27
+    },
+    {
+      "name": "Proteus",
+      "planet": "Neptune",
+      "radius_km": 210.0,
+      "distance_km": 117647,
+      "orbital_period_days": 1.12,
+      "discovered_by": "Voyager 2",
+      "year_discovered": 1989,
+      "description": "Neptune's second-largest moon and one of the darkest objects in the outer Solar System.",
+      "color": "#334155",
+      "id": 28
+    },
+    {
+      "name": "Naiad",
+      "planet": "Neptune",
+      "radius_km": 33.0,
+      "distance_km": 48227,
+      "orbital_period_days": 0.29,
+      "discovered_by": "Voyager 2",
+      "year_discovered": 1989,
+      "description": "Neptune's innermost known moon, orbiting within the planet's faint ring system.",
+      "color": "#64748b",
+      "id": 29
+    }
   ],
   "sun": {
     "type": "G-type Main Sequence (G2V)",
@@ -144,16 +477,50 @@
     "radius_km": 696340,
     "surface_temp_c": 5500,
     "core_temp_c": 15000000,
-    "mass_kg": 1.989e30,
-    "luminosity_w": 3.828e26,
-    "composition": { "hydrogen_pct": 73, "helium_pct": 25, "other_pct": 2 },
+    "mass_kg": 1.989e+30,
+    "luminosity_w": 3.828e+26,
+    "composition": {
+      "hydrogen_pct": 73,
+      "helium_pct": 25,
+      "other_pct": 2
+    },
     "layers": [
-      { "name": "Core",             "depth": "0 – 0.2 R☉",      "temp": "15 million °C",     "color": "#fff7cc" },
-      { "name": "Radiative Zone",   "depth": "0.2 – 0.7 R☉",    "temp": "7 million °C",      "color": "#ffe066" },
-      { "name": "Convective Zone",  "depth": "0.7 – 1.0 R☉",    "temp": "2 million °C",      "color": "#ffb833" },
-      { "name": "Photosphere",      "depth": "Surface",          "temp": "5,500 °C",          "color": "#ff9500" },
-      { "name": "Chromosphere",     "depth": "Lower Atmosphere", "temp": "20,000 °C",         "color": "#ff5e3a" },
-      { "name": "Corona",           "depth": "Outer Atmosphere", "temp": "1–2 million °C",    "color": "#e0e0e0" }
+      {
+        "name": "Core",
+        "depth": "0 \u2013 0.2 R\u2609",
+        "temp": "15 million \u00b0C",
+        "color": "#fff7cc"
+      },
+      {
+        "name": "Radiative Zone",
+        "depth": "0.2 \u2013 0.7 R\u2609",
+        "temp": "7 million \u00b0C",
+        "color": "#ffe066"
+      },
+      {
+        "name": "Convective Zone",
+        "depth": "0.7 \u2013 1.0 R\u2609",
+        "temp": "2 million \u00b0C",
+        "color": "#ffb833"
+      },
+      {
+        "name": "Photosphere",
+        "depth": "Surface",
+        "temp": "5,500 \u00b0C",
+        "color": "#ff9500"
+      },
+      {
+        "name": "Chromosphere",
+        "depth": "Lower Atmosphere",
+        "temp": "20,000 \u00b0C",
+        "color": "#ff5e3a"
+      },
+      {
+        "name": "Corona",
+        "depth": "Outer Atmosphere",
+        "temp": "1\u20132 million \u00b0C",
+        "color": "#e0e0e0"
+      }
     ]
   }
 }

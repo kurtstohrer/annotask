@@ -75,7 +75,7 @@ watch(
     <header class="page-header">
       <div>
         <h1 class="title">Planets</h1>
-        <p class="lede">Eight worlds orbit our Sun, from molten Mercury to icy Neptune.</p>
+        <p class="lede">Click a planet card to view more info.</p>
       </div>
     </header>
 
