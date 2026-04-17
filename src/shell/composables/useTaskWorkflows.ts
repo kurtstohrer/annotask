@@ -375,7 +375,7 @@ export function useTaskWorkflows(deps: {
       createRouteTask({
         type: 'annotation', description: intent, file: ctx.file, line: parseInt(String(ctx.line)) || 0,
         component: ctx.component, action: 'text_edit',
-        visual: { kind: 'highlight', annotationId: ctx.annotationId, eid: hl?.eid, rect: hl?.rect, color: hl?.color },
+        visual: { kind: 'highlight', annotationId: ctx.annotationId, eid: hl?.eid, rect: hl?.rect, rects: hl?.rects, color: hl?.color },
         context: { element_tag: meta.elementTag, selected_text: meta.selectedText },
       })
     } else if (ctx.kind === 'select') {
@@ -533,7 +533,7 @@ export function useTaskWorkflows(deps: {
         const hl = deps.annotations.addHighlight(
           ctx.selected_text || '',
           { file: task.file, line: task.line, component: task.component || '', elementTag: ctx.element_tag || '' },
-          v.color, v.rect,
+          v.color, v.rect, undefined, v.rects,
         )
         hl.route = taskRoute
         v.annotationId = hl.id

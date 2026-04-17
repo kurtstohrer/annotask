@@ -86,7 +86,31 @@ export function useAnnotationRects(deps: {
             }
           } else if (entry.type === 'highlight') {
             const hl = annotations.highlights.value.find(h => h.id === entry.id)
-            if (hl) hl.rect = rect
+            if (!hl) continue
+            // Reject stale matches: the highlight we found may have been replaced
+            // mid-await with a new one that happens to share the same id (ids are
+            // derived from a counter that gets reclaimed when pending annotations
+            // are discarded, so a rapid swap produces id collisions).
+            if (hl.eid !== eids[i]) continue
+            if (hl.rects && hl.rects.length) {
+              // Range-based highlight: track the element's movement and shift the
+              // per-line rects (which describe text runs, not the element box) by
+              // the same delta. Don't overwrite hl.rect with the element rect.
+              const prev = (hl as any)._anchorRect as typeof rect | undefined
+              if (prev) {
+                const dx = rect.x - prev.x
+                const dy = rect.y - prev.y
+                if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                  hl.rects = hl.rects.map(r => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }))
+                  if (hl.rect) hl.rect = { x: hl.rect.x + dx, y: hl.rect.y + dy, width: hl.rect.width, height: hl.rect.height }
+                  ;(hl as any)._anchorRect = rect
+                }
+              } else {
+                ;(hl as any)._anchorRect = rect
+              }
+            } else {
+              hl.rect = rect
+            }
           } else if (entry.type === 'section') {
             const section = annotations.drawnSections.value.find(s => s.id === entry.id)
             if (!section) continue

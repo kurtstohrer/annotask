@@ -134,11 +134,34 @@ export function bridgeEvents(): string {
     var source = findSourceElement(anchorEl);
     var data = getSourceData(source.sourceEl);
 
+    // Measure the iframe's position in the shell at mouseup time so the rects
+    // we send are in shell-viewport coords. The shell can't do this after the
+    // fact — by the time the message arrives, panel shifts from task creation
+    // may have moved the iframe, and the selection would land in the wrong spot.
+    var frameOffX = 0, frameOffY = 0;
+    try {
+      var frame = window.frameElement;
+      if (frame) {
+        var fr = frame.getBoundingClientRect();
+        frameOffX = fr.left; frameOffY = fr.top;
+      }
+    } catch (_e) {}
+
     var selRect = null;
+    var selRects = null;
     try {
       var range = sel.getRangeAt(0);
       var br = range.getBoundingClientRect();
-      if (br.width > 0 && br.height > 0) selRect = { x: br.x, y: br.y, width: br.width, height: br.height };
+      if (br.width > 0 && br.height > 0) selRect = { x: br.x + frameOffX, y: br.y + frameOffY, width: br.width, height: br.height };
+      var crs = range.getClientRects();
+      if (crs && crs.length > 0) {
+        selRects = [];
+        for (var i = 0; i < crs.length; i++) {
+          var cr = crs[i];
+          if (cr.width > 0 && cr.height > 0) selRects.push({ x: cr.x + frameOffX, y: cr.y + frameOffY, width: cr.width, height: cr.height });
+        }
+        if (selRects.length === 0) selRects = null;
+      }
     } catch (_e) {}
     sendToShell('selection:text', {
       text: text,
@@ -148,7 +171,8 @@ export function bridgeEvents(): string {
       component: data.component,
       mfe: data.mfe,
       tag: anchorEl.tagName.toLowerCase(),
-      rect: selRect
+      rect: selRect,
+      rects: selRects
     });
   }
 

@@ -77,6 +77,7 @@ export interface TextHighlight {
   prompt: string
   color: string
   rect?: ElementRect
+  rects?: ElementRect[]
   eid?: string
   file: string
   line: number
@@ -234,13 +235,14 @@ export function useAnnotations() {
   // ── Text Highlights ──
   const selectedHighlightId = ref<string | null>(null)
 
-  function addHighlight(text: string, source: { file: string; line: number; component: string; elementTag: string }, color?: string, rect?: ElementRect, eid?: string): TextHighlight {
+  function addHighlight(text: string, source: { file: string; line: number; component: string; elementTag: string }, color?: string, rect?: ElementRect, eid?: string, rects?: ElementRect[]): TextHighlight {
     counter++
     const h: TextHighlight = {
       id: `hl-${counter}`, number: counter,
       selectedText: text, prompt: '',
       color: color || readVar('--mode-highlight', '#f59e0b'),
       ...(rect ? { rect } : {}),
+      ...(rects && rects.length ? { rects } : {}),
       ...(eid ? { eid } : {}),
       file: source.file, line: source.line,
       component: source.component, elementTag: source.elementTag,

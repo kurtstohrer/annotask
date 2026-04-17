@@ -48,7 +48,7 @@ export function useInteractionModeSync(opts: UseInteractionModeSyncOptions) {
     if (mode !== 'arrow') {
       arrowHoverElement.value = null
     }
-    if (mode === 'interact') {
+    if (mode === 'interact' || mode === 'highlight') {
       clearSelection()
       hoverRect.value = null
       hoverInfo.value = null

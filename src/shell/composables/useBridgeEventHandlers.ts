@@ -203,22 +203,23 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
   async function onSelectionText(data: {
     text: string; eid: string; file: string; line: number; component: string; tag: string
     rect?: { x: number; y: number; width: number; height: number }
+    rects?: { x: number; y: number; width: number; height: number }[]
   }) {
     discardUncommittedAnnotations()
-    // Convert iframe-local rect to viewport coords
-    const iframeEl = iframeRef.value
-    const offsetX = iframeEl?.getBoundingClientRect().left || 0
-    const offsetY = iframeEl?.getBoundingClientRect().top || 0
-    let viewportRect: { x: number; y: number; width: number; height: number } | undefined
-    if (data.rect) {
-      viewportRect = { x: data.rect.x + offsetX, y: data.rect.y + offsetY, width: data.rect.width, height: data.rect.height }
-    }
+    // The plugin converts to shell-viewport coords at mouseup time (see
+    // bridge/events.ts). Don't add the iframe offset here — by the time this
+    // handler runs, the iframe may have shifted (panel layout changes trigger
+    // when we commit the previous highlight), and re-measuring would misplace
+    // the selection.
+    const viewportRect = data.rect ? { ...data.rect } : undefined
+    const viewportRects = data.rects?.map(r => ({ x: r.x, y: r.y, width: r.width, height: r.height }))
     const hl = annotations.addHighlight(
       data.text,
       { file: data.file, line: data.line, component: data.component, elementTag: data.tag },
       highlightColor.value,
       viewportRect,
-      data.eid
+      data.eid,
+      viewportRects
     )
     // Fallback: resolve element rect by eid if bridge didn't send selection rect
     if (!viewportRect && data.eid) {

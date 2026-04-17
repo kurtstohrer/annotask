@@ -196,6 +196,8 @@ export interface SelectionTextEvent {
   component: string
   mfe?: string
   tag: string
+  rect?: { x: number; y: number; width: number; height: number }
+  rects?: { x: number; y: number; width: number; height: number }[]
 }
 
 export interface KeyDownEvent {

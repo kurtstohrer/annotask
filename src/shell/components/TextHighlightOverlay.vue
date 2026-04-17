@@ -19,8 +19,26 @@ const emit = defineEmits<{
     v-for="h in highlights"
     :key="'vis-' + h.id"
   >
+    <template v-if="h.rects && h.rects.length">
+      <div
+        v-for="(r, i) in h.rects"
+        :key="'vis-' + h.id + '-' + i"
+        class="text-highlight-visual"
+        :class="{ selected: h.id === selectedId }"
+        :style="{
+          left: r.x + 'px', top: r.y + 'px',
+          width: r.width + 'px', height: r.height + 'px',
+          background: h.color + '30',
+          borderBottom: '2px solid ' + h.color,
+          boxShadow: h.id === selectedId ? '0 0 0 1px ' + h.color : 'none',
+        }"
+        @click.stop="emit('select', h.id)"
+      >
+        <span v-if="i === 0" class="highlight-badge" :style="{ background: h.color }">#{{ h.number }}</span>
+      </div>
+    </template>
     <div
-      v-if="h.rect"
+      v-else-if="h.rect"
       class="text-highlight-visual"
       :class="{ selected: h.id === selectedId }"
       :style="{
