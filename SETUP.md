@@ -129,12 +129,13 @@ Once connected, your agent gets these tools:
 | Tool | Description |
 |------|-------------|
 | `annotask_get_tasks` | List tasks with optional status and MFE filters |
+| `annotask_get_task` | Get full detail for a single task by ID (context, element_context, agent_feedback) |
 | `annotask_update_task` | Transition task status, set resolution, ask questions, mark blocked |
 | `annotask_create_task` | Create a new pending task |
 | `annotask_delete_task` | Delete a task and its screenshot |
-| `annotask_get_report` | Live change report from the current browser session |
 | `annotask_get_design_spec` | Design tokens — colors, typography, spacing, borders, breakpoints |
-| `annotask_get_components` | Component library catalog with props, types, and defaults |
+| `annotask_get_components` | Search component libraries by name (up to 20 results per library) |
+| `annotask_get_component` | Full detail for one component by name (library optional) |
 | `annotask_get_screenshot` | Task screenshot as base64 PNG image |
 
 #### Agent workflow with MCP

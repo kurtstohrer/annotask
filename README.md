@@ -39,11 +39,6 @@ Visual markup tool for web apps. Annotate your UI in the browser — pins, arrow
 
 4. **You review** — In the Annotask shell, click any task to open the detail drawer — see the full markdown description, screenshots, element context, interaction history, and source files. Accept or deny each change. Denied tasks include your feedback so the agent can retry with corrections.
 
-## Demos
-
-- [Quick Demo | React - Claude Haiku 4.5](https://youtu.be/UrCzkDPM63s)
-- [Game Menu Demo | Vue 3 - Claude Opus 4.6](https://youtu.be/S07DkBLbhCc)
-
 ## Setup
 
 See **[SETUP.md](SETUP.md)** for the full setup guide — install, plugin config, MCP / skills setup, MFE configuration, and troubleshooting.
@@ -137,12 +132,15 @@ Start your dev server, then open `http://localhost:5173/__annotask/`.
 ## CLI
 
 ```bash
-annotask watch              # Live stream of changes
-annotask report             # Fetch current report JSON
-annotask status             # Check connection
-annotask screenshot <id>    # Download a task's screenshot
-annotask init-skills        # Install agent skills into your project
-annotask mcp                # Start MCP stdio server (proxies to dev server)
+annotask status                               # Check if server is running
+annotask tasks                                # Compact task summaries (use --pretty for full objects)
+annotask report                               # Fetch live change report (no tasks)
+annotask watch                                # Live stream of changes via WebSocket
+annotask update-task <id> --status=<status>   # Update task status
+annotask screenshot <id>                      # Download a task's screenshot
+annotask init-skills                          # Install agent skills into your project
+annotask init-mcp                             # Write editor MCP config (--editor=claude|cursor|vscode|windsurf|all)
+annotask mcp                                  # Start MCP stdio server (proxies to dev server)
 ```
 
 Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=NAME` (filter by MFE), `--output=PATH` (for screenshot command).
@@ -157,9 +155,12 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=N
 
 - `GET /__annotask/api/report` — Current change report (supports `?mfe=NAME` filter)
 - `GET /__annotask/api/tasks` — Task list (supports `?mfe=NAME` filter)
+- `GET /__annotask/api/tasks/:id` — Single task detail
 - `POST /__annotask/api/tasks` — Create a task
 - `PATCH /__annotask/api/tasks/:id` — Update task (whitelisted fields: status, description, feedback, screenshot, viewport, etc.)
 - `DELETE /__annotask/api/tasks/:id` — Delete a task and clean up its screenshot
+- `GET /__annotask/api/design-spec` — Design spec (tokens, framework, breakpoints)
+- `GET /__annotask/api/components` — Component library catalog
 - `POST /__annotask/api/screenshots` — Upload a screenshot (base64 PNG, max 4MB)
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
 - `GET /__annotask/api/status` — Health check

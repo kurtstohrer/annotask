@@ -47,17 +47,29 @@ Then open:
 
 ```bash
 annotask status              # Check if server is running
-annotask tasks               # Compact task summaries (use --pretty for full objects)
+annotask tasks               # Compact task summaries (use --detail for full objects)
+annotask task <id>           # Single task detail (trimmed agent_feedback)
+annotask design-spec         # Design spec summary (or --category=NAME slice)
 annotask report              # Fetch live change report (no tasks)
 annotask watch               # Live stream changes via WebSocket
 annotask update-task <id> --status=<status>   # Update task status
 annotask screenshot <id>     # Download a task's screenshot
+annotask components [search] # List components (add --mcp for JSON)
+annotask component <Name>    # Show component props
 annotask init-skills         # Install agent skills into project
 annotask init-mcp            # Write editor MCP config (--editor=claude|cursor|vscode|windsurf|all)
 annotask mcp                 # Start MCP stdio server (proxies to dev server)
 ```
 
-Options: `--port=N`, `--host=H`, `--server=URL` (override server.json), `--mfe=NAME` (filter by MFE), `--output=PATH` (for screenshot command).
+**MCP-parity flag:** pass `--mcp` to any command to force compact JSON output
+that matches the `annotask_*` MCP tool responses (`visual` stripped,
+`agent_feedback` trimmed, no ANSI/human prefixes). Skills call the CLI with
+`--mcp` as a fallback when the MCP server isn't registered in the editor.
+
+Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
+`--mfe=NAME` (filter by MFE), `--output=PATH` (screenshot), `--mcp`,
+`--detail` (tasks), `--status=STATUS` (tasks), `--category=NAME` (design-spec),
+`--library=NAME` / `--limit=N` / `--offset=N` (components).
 
 ## Annotask API
 
@@ -96,7 +108,7 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 `App.vue` is the shell orchestrator — it wires composables together and handles bridge events. **Do not add business logic directly to App.vue.** Extract new concerns into composables under `src/shell/composables/`.
 
 Key composables:
-- `useShellTheme` — Theme system: 62 CSS variables, 18 built-in themes, custom theme CRUD, system preference, localStorage persistence
+- `useShellTheme` — Theme system: 63 CSS variables, 18 built-in themes, custom theme CRUD, system preference, localStorage persistence
 - `useSelectionModel` — Element selection state, rect tracking, hover, live styles, style/class change handlers
 - `useTaskWorkflows` — Task creation flows (pin, arrow, highlight, section → task), pending task panel, accept/deny, annotation restoration, auto-opens task panel on create
 - `useAnnotationRects` — rAF loop keeping annotation overlays positioned during scroll/resize
@@ -110,20 +122,20 @@ When adding new shell features, create a new composable that accepts its depende
 
 ## Shell Theme System
 
-The shell has a VS Code-style theme system with 18 built-in themes and custom theme support. Themes control every color in the UI via 62 CSS custom properties.
+The shell has a VS Code-style theme system with 18 built-in themes and custom theme support. Themes control every color in the UI via 63 CSS custom properties.
 
 ### Architecture
 
-- `src/shell/themes/types.ts` — `ShellThemeColors` (62 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
+- `src/shell/themes/types.ts` — `ShellThemeColors` (63 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
 - `src/shell/themes/builtin.ts` — 18 built-in theme definitions with `deriveDefaults()` helper
 - `src/shell/composables/useShellTheme.ts` — Core composable: applies themes at runtime via `style.setProperty()`, handles localStorage persistence, system preference detection, custom theme CRUD, and a one-shot migration from the legacy `annotask:themeMode` key
 - `src/shell/components/ShellThemeEditor.vue` — Full-screen custom theme creator with grouped color pickers and live preview
 
 ### How themes are applied
 
-Themes are applied at runtime via `document.documentElement.style.setProperty()` for each of the 62 CSS variables. The `:root` block in App.vue provides dark fallback values, and `:root.light` provides light fallback values — these are safety nets for first paint before JS runs. Once `useShellTheme` initializes, it overrides all variables via inline styles.
+Themes are applied at runtime via `document.documentElement.style.setProperty()` for each of the 63 CSS variables. The `:root` block in App.vue provides dark fallback values, and `:root.light` provides light fallback values — these are safety nets for first paint before JS runs. Once `useShellTheme` initializes, it overrides all variables via inline styles.
 
-### CSS variable categories (62 total)
+### CSS variable categories (63 total)
 
 | Category | Variables | Purpose |
 |----------|-----------|---------|

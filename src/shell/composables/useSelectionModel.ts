@@ -126,13 +126,14 @@ export function useSelectionModel(
   }
 
   // ── Style / class change handlers ──
-  async function onStyleChange(property: string, value: string) {
+  async function onStyleChange(property: string, value: string, tokenRole?: string) {
     if (!primarySelection.value) return
     const meta = {
       file: primarySelection.value.file,
       line: primarySelection.value.line,
       component: primarySelection.value.component,
       mfe: primarySelection.value.mfe || undefined,
+      tokenRole,
     }
     const eids = editTargetEids.value
     for (const eid of eids) {

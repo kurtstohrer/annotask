@@ -56,7 +56,7 @@ async function updateTaskStatus(id: string, status: Task['status'], feedback?: s
 async function respondToAgent(id: string, answers: Array<{ id: string; value: string }>) {
   const task = tasks.value.find(t => t.id === id)
   if (!task?.agent_feedback?.length) return
-  const thread = structuredClone(task.agent_feedback)
+  const thread = JSON.parse(JSON.stringify(task.agent_feedback)) as AgentFeedbackEntry[]
   const last = thread[thread.length - 1]
   if (last.answered_at) return // already answered
   last.answered_at = Date.now()

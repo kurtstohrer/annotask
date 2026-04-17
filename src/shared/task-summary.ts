@@ -55,3 +55,37 @@ export function buildTaskSummary(task: Record<string, unknown>): Record<string, 
 export function filterTasksByMfe<T extends { mfe?: unknown }>(tasks: T[], mfe: string): T[] {
   return tasks.filter(t => !t.mfe || t.mfe === mfe)
 }
+
+/** Strip the `visual` field from a task — it's only useful for the shell UI, not agents. */
+export function stripTaskVisual(task: unknown): Record<string, unknown> {
+  if (!task || typeof task !== 'object' || Array.isArray(task)) return {}
+  const { visual, ...rest } = task as Record<string, unknown>
+  return rest
+}
+
+/**
+ * Trim `agent_feedback` to the latest resolved exchange plus every unresolved
+ * one. Keeps the thread agent-friendly without re-sending old answered
+ * questions on every fetch.
+ */
+export function trimAgentFeedback(task: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(task.agent_feedback)) return task
+  const feedback = task.agent_feedback as Array<{ answers?: unknown[] }>
+  const resolved = feedback.filter(e => Array.isArray(e.answers) && e.answers.length > 0)
+  const unresolved = feedback.filter(e => !Array.isArray(e.answers) || e.answers.length === 0)
+  const trimmed = [...(resolved.length > 0 ? [resolved[resolved.length - 1]] : []), ...unresolved]
+  return { ...task, agent_feedback: trimmed.length > 0 ? trimmed : undefined }
+}
+
+/**
+ * Compact JSON serialization for agent-facing output: no indentation, and
+ * strips null/undefined/empty arrays to keep token counts down. Matches the
+ * MCP server's response encoding so the CLI can offer MCP-parity output.
+ */
+export function compactJson(data: unknown): string {
+  return JSON.stringify(data, (_key, value) => {
+    if (value === null || value === undefined) return undefined
+    if (Array.isArray(value) && value.length === 0) return undefined
+    return value
+  })
+}

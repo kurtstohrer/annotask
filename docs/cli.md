@@ -58,6 +58,89 @@ annotask status [--port=PORT] [--host=HOST]
 
 Exits with code 0 if the server responds, non-zero otherwise.
 
+### tasks
+
+Fetch the task list.
+
+```bash
+annotask tasks [--pretty] [--mfe=NAME]
+```
+
+Returns compact task summaries (one line per task) by default. Use `--pretty` for full, formatted task objects. `--mfe=NAME` filters by MFE identity.
+
+### update-task
+
+Transition a task's status, attach feedback, ask the user a question, or mark it blocked.
+
+```bash
+annotask update-task <task-id> --status=<status> [--feedback=<text>] [--resolution=<text>]
+annotask update-task <task-id> --ask='{"message":"...","questions":["..."]}'
+annotask update-task <task-id> --blocked-reason="Cannot fix: issue is in third-party library"
+```
+
+| Flag | Description |
+|------|-------------|
+| `--status` | One of: `pending`, `in_progress`, `applied`, `review`, `accepted`, `denied`, `needs_info`, `blocked` |
+| `--feedback` | User-facing feedback (typically paired with `denied`) |
+| `--resolution` | Short note describing what the agent did (typically paired with `review`) |
+| `--ask` | JSON-encoded `{ message, questions[] }` appended to `agent_feedback`. Auto-sets status to `needs_info` unless `--status` is given. |
+| `--blocked-reason` | Why the task can't be applied. Auto-sets status to `blocked`. |
+
+### screenshot
+
+Download a task's screenshot to a file.
+
+```bash
+annotask screenshot <task-id> [--output=PATH]
+```
+
+Writes the PNG to `<task-id>.png` by default, or to `--output=PATH`.
+
+### components
+
+List components from every detected component library.
+
+```bash
+annotask components [NAME]
+```
+
+Supply an optional name fragment to filter. Without an argument, prints every component grouped by library.
+
+### component
+
+Show full detail for one component — props, slots, events, types, defaults, description.
+
+```bash
+annotask component <name> [--library=NAME] [--json]
+```
+
+`--library` disambiguates when the same name exists in multiple libraries. `--json` outputs machine-readable JSON (suitable for LLM consumption).
+
+### init-mcp
+
+Write an MCP configuration file so your editor can connect to the Annotask MCP server.
+
+```bash
+annotask init-mcp [--editor=NAME] [--force]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--editor` | `claude` | `claude` (`.mcp.json`), `cursor` (`.cursor/mcp.json`), `vscode` (`.vscode/mcp.json`), `windsurf` (`.windsurf/mcp.json`), or `all` |
+| `--force` | off | Overwrite an existing MCP config file |
+
+Multiple editors: `--editor=claude,cursor`.
+
+### mcp
+
+Start an MCP stdio server that proxies requests to the running Annotask dev server. Used by MCP clients that only support stdio transport.
+
+```bash
+annotask mcp
+```
+
+The stdio server reads `.annotask/server.json` (written on dev server startup) to auto-discover the port. The dev server must be running.
+
 ### init-skills
 
 Install Annotask's AI agent skills into your project.

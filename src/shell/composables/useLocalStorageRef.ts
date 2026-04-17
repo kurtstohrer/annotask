@@ -20,6 +20,18 @@ export function useLocalStorageRef(key: string, fallback: string): Ref<string> {
 }
 
 /**
+ * Reactive boolean ref backed by localStorage.
+ * Stores as "true" / "false" strings.
+ */
+export function useLocalStorageBool(key: string, fallback: boolean): Ref<boolean> {
+  const stored = localStorage.getItem(key)
+  const initial = stored === null ? fallback : stored === 'true'
+  const r = ref(initial)
+  watch(r, (v) => localStorage.setItem(key, String(v)))
+  return r
+}
+
+/**
  * Like `useLocalStorageRef` but restricted to a fixed set of allowed string values.
  * Unknown stored values fall back to `fallback` (e.g. if an old build wrote
  * a value that no longer exists in the enum).

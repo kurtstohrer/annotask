@@ -19,6 +19,8 @@ export interface StyleChangeRecord {
   property: string
   before: string
   after: string
+  /** Design token semantic role (e.g. 'primary'). Set when the value was picked from a design token. */
+  tokenRole?: string
 }
 
 export interface InsertChangeRecord {
@@ -111,14 +113,20 @@ export function useStyleEditor() {
   /**
    * Record a style change. The actual DOM mutation is done by the bridge.
    * Collapses changes so only one record per eid+property exists.
+   *
+   * If `meta.tokenRole` is set, the change was picked from a design token
+   * (e.g. 'primary') and the description/commit message references the
+   * semantic name instead of the raw hex.
    */
   function applyStyle(
     eid: string,
     property: string,
     value: string,
     before: string,
-    meta: { file: string; line: string; component: string; mfe?: string }
+    meta: { file: string; line: string; component: string; mfe?: string; tokenRole?: string }
   ) {
+    const displayValue = meta.tokenRole ? `${meta.tokenRole} (${value})` : value
+
     // Find existing change for this eid + property + source location
     const existing = changes.value.find(
       c => c.type === 'style_update' && c.file === meta.file && c.line === (parseInt(meta.line) || 0)
@@ -127,14 +135,15 @@ export function useStyleEditor() {
 
     if (existing) {
       existing.after = value
-      existing.description = `Set ${property} to ${value}`
+      existing.tokenRole = meta.tokenRole
+      existing.description = `Set ${property} to ${displayValue}`
     } else {
       changeCounter++
       const id = `s${changeCounter}`
       changes.value.push({
         id,
         type: 'style_update',
-        description: `Set ${property} to ${value}`,
+        description: `Set ${property} to ${displayValue}`,
         file: meta.file,
         section: 'style',
         line: parseInt(meta.line) || 0,
@@ -144,6 +153,7 @@ export function useStyleEditor() {
         property,
         before,
         after: value,
+        ...(meta.tokenRole ? { tokenRole: meta.tokenRole } : {}),
       })
       eidRefs.set(id, eid)
     }
@@ -342,7 +352,15 @@ export function useStyleEditor() {
 
     switch (c.type) {
       case 'style_update':
-        return { ...base, component: c.component, element: c.element, property: c.property, before: c.before, after: c.after }
+        return {
+          ...base,
+          component: c.component,
+          element: c.element,
+          property: c.property,
+          before: c.before,
+          after: c.after,
+          ...(c.tokenRole ? { token_role: c.tokenRole } : {}),
+        }
       case 'class_update':
         return { ...base, component: c.component, element: c.element, before: c.before, after: c.after }
       case 'component_insert':

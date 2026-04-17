@@ -76,7 +76,7 @@ export default function App() {
           <Separator size="4" my="4" />
           <Flex justify="end" gap="2">
             <Button variant="soft" color="gray">Cancel</Button>
-            <Button variant={tone as 'solid'}>Submit</Button>
+            <Button variant={tone as 'solid'} style={{ backgroundColor: '#0090ff', color: '#eeeeee' }}>Submit</Button>
           </Flex>
         </Card>
 

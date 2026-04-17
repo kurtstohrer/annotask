@@ -86,9 +86,14 @@ export function useChangeHistory(deps: {
       if (!seenClassKeys.has(key)) { seenClassKeys.add(key); dedupedClassChanges.push(c) }
     }
 
-    // Human-readable description from the deduplicated changes
+    // Human-readable description from the deduplicated changes.
+    // If a token role is set, use the semantic name (e.g. "color: primary")
+    // rather than the raw value — tells the agent to apply a token, not a hex.
     const parts: string[] = []
-    for (const c of dedupedStyleChanges) parts.push(`${c.property}: ${c.after}`)
+    for (const c of dedupedStyleChanges) {
+      const display = c.tokenRole ? `${c.tokenRole} (${c.after})` : c.after
+      parts.push(`${c.property}: ${display}`)
+    }
     for (const c of dedupedClassChanges) parts.push(`classes: ${c.after.classes}`)
 
     const elementDesc = sel ? `<${sel.tagName}>${sel.component ? ` in ${sel.component}` : ''}` : ''
@@ -105,7 +110,14 @@ export function useChangeHistory(deps: {
 
     const taskChanges: Array<Record<string, unknown>> = []
     for (const c of dedupedStyleChanges) {
-      taskChanges.push({ property: c.property, before: c.before, after: c.after, file: c.file, line: c.line })
+      taskChanges.push({
+        property: c.property,
+        before: c.before,
+        after: c.after,
+        file: c.file,
+        line: c.line,
+        ...(c.tokenRole ? { token_role: c.tokenRole } : {}),
+      })
     }
     for (const c of dedupedClassChanges) {
       taskChanges.push({ type: 'class', before: c.before.classes, after: c.after.classes, file: c.file, line: c.line })

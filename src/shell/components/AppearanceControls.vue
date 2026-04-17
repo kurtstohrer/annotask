@@ -5,11 +5,10 @@ import { rgbToHex } from '../composables/useColorPalette'
 
 const props = defineProps<{
   computedStyles: Record<string, string>
-  iframeDoc: Document | null
 }>()
 
 const emit = defineEmits<{
-  change: [property: string, value: string]
+  change: [property: string, value: string, tokenRole?: string]
 }>()
 
 function parse(s: string): number { return parseFloat(s) || 0 }
@@ -32,8 +31,8 @@ const weightOptions = ['100', '300', '400', '500', '600', '700', '900']
       <div class="color-input-group">
         <ColorPalettePicker
           :modelValue="rgbToHex(bgColor)"
-          :iframeDoc="iframeDoc"
           @update:modelValue="emit('change', 'background-color', $event)"
+          @token-select="(role, value) => emit('change', 'background-color', value, role)"
         />
         <span class="color-value">{{ bgColor }}</span>
       </div>
@@ -44,8 +43,8 @@ const weightOptions = ['100', '300', '400', '500', '600', '700', '900']
       <div class="color-input-group">
         <ColorPalettePicker
           :modelValue="rgbToHex(textColor)"
-          :iframeDoc="iframeDoc"
           @update:modelValue="emit('change', 'color', $event)"
+          @token-select="(role, value) => emit('change', 'color', value, role)"
         />
         <span class="color-value">{{ textColor }}</span>
       </div>

@@ -2,61 +2,76 @@
 
 ## Architecture
 
-Annotask has six main modules:
-
 | Module | Purpose |
 |--------|---------|
-| `src/plugin/` | Vite integration, SFC transform, toggle button, bridge client |
+| `src/plugin/` | Vite integration, multi-framework transform, toggle button, bridge client |
 | `src/server/` | HTTP API middleware, WebSocket server, shell serving, project state |
 | `src/webpack/` | Webpack plugin and SFC transform loader |
 | `src/shell/` | Design tool UI: Vue 3 app served at `/__annotask/` |
-| `src/cli/` | Terminal tool: `annotask watch`, `annotask report`, `annotask init-skills` |
-| `src/mcp/` | MCP server (Streamable HTTP transport, tools for tasks/design spec/screenshots) |
-| `src/schema.ts` | TypeScript types defining the report contract |
+| `src/shared/` | Shared types used by both plugin and shell (postMessage bridge protocol) |
+| `src/cli/` | Terminal tool: `annotask tasks`, `watch`, `report`, `update-task`, `screenshot`, `init-skills`, `init-mcp`, `mcp`, etc. |
+| `src/mcp/` | MCP server (Streamable HTTP transport, tools for tasks/design spec/components/screenshots) |
+| `src/schema.ts` | TypeScript types defining the report and task contracts |
 
-The plugin injects source-mapping attributes into Vue SFC templates at compile time. The shell loads the user's app in an iframe and uses these attributes to map DOM elements back to source files.
+The plugin injects source-mapping attributes into component templates at compile time (Vue SFCs, JSX for React/Solid, Svelte, Astro, plain HTML). The shell loads the user's app in an iframe and uses these attributes to map DOM elements back to source files.
+
+More detail: [`docs/architecture.md`](docs/architecture.md).
 
 ## Build
 
 ```bash
 pnpm install              # Install dependencies
-pnpm build                # Build everything (shell + plugin + CLI)
-pnpm build:shell          # Build shell UI only
-pnpm build:plugin         # Build plugin + CLI only
+pnpm build                # Build everything (shell → plugin/CLI → vendor)
+pnpm build:shell          # Shell UI only (Vite → dist/shell/)
+pnpm build:plugin         # Plugin + CLI only (tsup → dist/)
+pnpm build:vendor         # Copy axe-core + html2canvas to dist/vendor/
 ```
+
+Build order matters: the shell must be built before the plugin, because the plugin serves `dist/shell/` as static files. Vendor deps are copied last.
 
 ## Test
 
 ```bash
-pnpm test                 # Run all tests
+pnpm test                 # Unit tests (Vitest)
 pnpm test:watch           # Watch mode
+pnpm typecheck            # tsc + vue-tsc
+pnpm test:e2e             # E2E tests (Playwright, all frameworks)
 ```
 
-Tests use [Vitest](https://vitest.dev/). Shell tests run in jsdom; plugin tests run in Node.
+Unit test environments:
+- Plugin tests (`src/plugin/__tests__/`): Node
+- Shell tests (`src/shell/composables/__tests__/`): jsdom
 
-## Report Contract
+E2E tests cover vue-vite, vue-webpack, react-vite, svelte-vite, html-vite, astro, htmx-vite, and mfe-vite. Playwright starts each dev server automatically.
 
-`src/schema.ts` is the canonical schema for change reports. Any runtime change must conform to these types. The `shapeChange()` function in `useStyleEditor.ts` ensures report output matches the schema before broadcasting.
+## Report and Task Contracts
 
-Currently implemented change types:
+`src/schema.ts` is the canonical source of truth for both change reports and tasks. Any runtime output must conform to these types. `shapeChange()` in `useStyleEditor.ts` normalizes change output before broadcasting.
+
+Currently emitted change types:
 - `style_update` — Inline style changes
 - `class_update` — CSS class changes
 - `component_insert` — Drag-and-drop component insertion
 - `component_move` — Element reordering
-- `annotation` — Design intent notes, pins, arrows, sections
+- `annotation` — Design intent notes, pins, arrows, text highlights
+- `section_request` — Drawn section requests for new content
 
-Schema-only types (not yet emitted at runtime):
+Schema-only types (defined but not yet emitted at runtime):
 - `component_delete`
 - `scoped_style_update`
 - `prop_update`
 
+Task types (created by the shell, consumed by agents): `annotation`, `style_update`, `theme_update`, `section_request`, `a11y_fix`. See [`docs/api.md`](docs/api.md) and the CLAUDE.md "Task Types" section for the full shape of each.
+
 ## Framework Support
 
-Annotask supports **Vue 3**, **React**, **Svelte**, and **SolidJS**. The transform layer (`src/plugin/transform.ts`) has per-framework extraction logic that feeds into a shared HTML/JSX attribute injection scanner. SolidJS and React share the same JSX transform path. The bridge client detects the active framework at runtime for component mounting.
+Annotask supports **Vue 3**, **React**, **Svelte**, and **SolidJS** as first-class targets (Vite + Webpack where applicable). **Plain HTML**, **Astro**, and **htmx** are supported on Vite only, with Astro and htmx marked experimental.
 
-## Feature Freeze
+The transform layer (`src/plugin/transform.ts`) has per-framework extraction logic that feeds into a shared HTML/JSX attribute injection scanner. React and SolidJS share the JSX transform path. Astro sources its data-attributes from Astro's native `data-astro-source-*` instrumentation, so no Annotask-specific transform is needed.
 
-No new features should be added until the stabilization exit criteria from `plan/improvements.md` are met:
+## Stability bar
+
+Annotask has a set of stabilization exit criteria the core loop must keep meeting before adding new features:
 
 1. Style/class edits produce correct before/after reports
 2. Source anchors point to correct file and line
@@ -64,6 +79,8 @@ No new features should be added until the stabilization exit criteria from `plan
 4. No Annotask instrumentation in production builds
 5. Core flow covered by automated tests + CI
 6. README explains what works, what's experimental, and how to verify
+
+If a change would regress any of these, it belongs behind stabilization work first. See `plan/annotask-gap-remediation-plan.md` for the current remediation backlog.
 
 ## Release Process
 

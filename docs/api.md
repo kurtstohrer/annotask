@@ -64,6 +64,12 @@ Returns all tasks in the pipeline.
 }
 ```
 
+### GET /api/tasks/:id
+
+Returns the full task object for a single task by ID, including `context`, `element_context`, `interaction_history`, `agent_feedback`, and any other stored fields.
+
+**Response:** the task object, or `404` if not found.
+
 ### POST /api/tasks
 
 Create a new task.
@@ -111,12 +117,14 @@ Only whitelisted fields are accepted: `status`, `description`, `notes`, `screens
 { "description": "Updated task description with **markdown** support" }
 ```
 
-**Valid statuses:** `pending`, `in_progress`, `applied`, `review`, `accepted`, `denied`
+**Valid statuses:** `pending`, `in_progress`, `applied`, `review`, `accepted`, `denied`, `needs_info`, `blocked`
 
 **Typical lifecycle:**
 ```
 pending → in_progress (agent locks) → review (agent done) → accepted (removed) or denied (with feedback)
 ```
+
+`needs_info` is auto-set when an agent sends `questions` on a PATCH. `blocked` is auto-set when an agent sends `blocked_reason`.
 
 Screenshots: max 4MB, uploaded via POST /api/screenshots.
 
@@ -148,6 +156,22 @@ Returns the current design spec (from `.annotask/design-spec.json`).
 ### GET /api/config
 
 Deprecated. Backward-compatible wrapper — use `/api/design-spec` instead.
+
+### GET /api/components
+
+Returns the component library catalog detected for the project, including props, types, defaults, slots, events, and descriptions. See [component-discovery.md](component-discovery.md) for the extraction details.
+
+### GET /api/performance
+
+Returns the latest performance snapshot captured by the shell (Web Vitals, DOM stats, resource timings, bundle analysis).
+
+### POST /api/performance
+
+Store a new performance snapshot. Called by the shell's perf monitor; not intended for external callers.
+
+### GET /api/status
+
+Health check. Returns `{ "status": "ok", "version": "<package-version>" }` when the server is running. Used by `annotask status` and by stdio MCP proxies to verify the dev server is up.
 
 ## WebSocket
 
@@ -206,11 +230,12 @@ Available tools:
 
 | Tool | Description |
 |------|-------------|
-| `get_tasks` | List all pending tasks (supports `mfe` filter) |
-| `get_task` | Get a single task by ID |
-| `create_task` | Create a new task |
-| `update_task` | Update task fields (status, description, feedback, etc.) |
-| `delete_task` | Delete a task |
-| `get_design_spec` | Get the current design spec |
-| `get_components` | Query available components from the design system |
-| `get_screenshot` | Get a task's screenshot as base64 image |
+| `annotask_get_tasks` | List task summaries (supports `status` and `mfe` filters; `detail=true` for full objects) |
+| `annotask_get_task` | Get full detail for a single task by ID (context, element_context, agent_feedback) |
+| `annotask_create_task` | Create a new pending task |
+| `annotask_update_task` | Transition status, set resolution, ask questions, mark blocked |
+| `annotask_delete_task` | Delete a task and clean up its screenshot |
+| `annotask_get_design_spec` | Design spec summary, or full tokens for a `category` (colors, typography, etc.) |
+| `annotask_get_components` | Search component libraries by name (up to 20 results per library) |
+| `annotask_get_component` | Full detail for one component by name (disambiguates across libraries) |
+| `annotask_get_screenshot` | Task screenshot as base64 PNG |

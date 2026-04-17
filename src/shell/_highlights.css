@@ -1,0 +1,62 @@
+/* Element selection and highlighting */
+.highlight {
+  position: fixed;
+  pointer-events: none;
+  z-index: 10000;
+  border-radius: 2px;
+}
+
+.highlight.hover {
+  background: color-mix(in srgb, var(--highlight-color) 10%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--highlight-color) 50%, transparent);
+}
+
+.highlight.group {
+  background: color-mix(in srgb, var(--purple) 8%, transparent);
+  border: 1.5px dashed color-mix(in srgb, var(--purple) 40%, transparent);
+}
+
+.highlight.select {
+  background: color-mix(in srgb, var(--highlight-color) 8%, transparent);
+  border: 2px solid var(--highlight-color);
+}
+
+.highlight.task-element {
+  background: color-mix(in srgb, var(--highlight-color) 8%, transparent);
+  border: 2px solid color-mix(in srgb, var(--highlight-color) 50%, transparent);
+}
+
+.hover-label,
+.select-label {
+  position: absolute;
+  bottom: 100%;
+  left: -1px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  border-radius: 4px 4px 0 0;
+}
+
+.hover-label {
+  background: var(--highlight-color);
+  color: white;
+}
+
+.hover-tag {
+  font-family: monospace;
+}
+
+.hover-comp {
+  opacity: 0.7;
+}
+
+.select-label {
+  background: var(--highlight-color);
+  color: white;
+  font-family: monospace;
+  font-size: 10px;
+}

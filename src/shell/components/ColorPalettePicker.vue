@@ -1,79 +1,163 @@
-<script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, toRef } from 'vue'
-import { useColorPalette, rgbToHex } from '../composables/useColorPalette'
+<script lang="ts">
+import { ref } from 'vue'
 
-const props = defineProps<{
+type OpenPanel = 'none' | 'tokens' | 'custom'
+
+// Module-level shared state: only one picker popover is open at a time
+// across all instances.
+const sharedActivePicker = ref<{ id: symbol; panel: OpenPanel } | null>(null)
+</script>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useColorPalette, type ColorSwatch } from '../composables/useColorPalette'
+import CustomColorPicker from './CustomColorPicker.vue'
+
+const props = withDefaults(defineProps<{
   modelValue: string
-  iframeDoc: Document | null
-}>()
+  /** Whether to show the design-tokens palette button. Default true. */
+  showTokens?: boolean
+}>(), { showTokens: true })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
+  /** Emitted when user picks a design token. Receives the token role (e.g. 'primary'). */
+  'token-select': [role: string, value: string]
 }>()
 
-const {
-  tailwindCategories,
-  cssVarCategory,
-  recentColors,
-  ensureScanned,
-  addRecentColor,
-} = useColorPalette(toRef(props, 'iframeDoc'))
+const { tokenCategory } = useColorPalette()
 
-const isOpen = ref(false)
-const activeSource = ref<'tailwind' | 'css-var' | 'recent'>('tailwind')
+const instanceId = Symbol('picker')
+
+const openPanel = computed<OpenPanel>(() =>
+  sharedActivePicker.value?.id === instanceId ? sharedActivePicker.value.panel : 'none'
+)
+
 const popoverRef = ref<HTMLElement | null>(null)
 const triggerRef = ref<HTMLElement | null>(null)
 
-function togglePopover() {
-  isOpen.value = !isOpen.value
-  if (isOpen.value) ensureScanned()
+// Popover placement offsets (px). Adjusted after opening to keep it on-screen.
+const popoverTop = ref(0)
+const popoverLeft = ref(0)
+
+function setPanel(panel: OpenPanel) {
+  sharedActivePicker.value = panel === 'none' ? null : { id: instanceId, panel }
 }
 
-function selectColor(hex: string) {
+function toggleTokens() {
+  setPanel(openPanel.value === 'tokens' ? 'none' : 'tokens')
+}
+
+function toggleCustom() {
+  setPanel(openPanel.value === 'custom' ? 'none' : 'custom')
+}
+
+function selectToken(swatch: ColorSwatch) {
+  emit('update:modelValue', swatch.value)
+  if (swatch.role) emit('token-select', swatch.role, swatch.value)
+  setPanel('none')
+}
+
+function onCustomChange(hex: string) {
   emit('update:modelValue', hex)
-  addRecentColor(hex)
-  isOpen.value = false
 }
 
 function onClickOutside(e: MouseEvent) {
-  if (!isOpen.value) return
+  if (openPanel.value === 'none') return
   const target = e.target as Node
   if (popoverRef.value?.contains(target) || triggerRef.value?.contains(target)) return
-  isOpen.value = false
+  setPanel('none')
 }
+
+/** After the popover is rendered, measure it and flip/clamp so it stays in the viewport. */
+async function positionPopover() {
+  if (openPanel.value === 'none') return
+  await nextTick()
+  const trigger = triggerRef.value
+  const pop = popoverRef.value
+  if (!trigger || !pop) return
+
+  const triggerRect = trigger.getBoundingClientRect()
+  const popRect = pop.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const margin = 8
+
+  // Default: below + left-aligned to trigger.
+  let top = triggerRect.height + 6 // 6px gap
+  let left = 0
+
+  // If popover bottom would overflow, flip above the trigger.
+  const popBottom = triggerRect.bottom + 6 + popRect.height
+  if (popBottom > vh - margin) {
+    const above = -popRect.height - 6
+    // Only flip if there's more room above than the overflow below
+    const overflowBelow = popBottom - (vh - margin)
+    const overflowAbove = -(triggerRect.top - margin - popRect.height - 6)
+    if (overflowAbove <= 0 || overflowAbove < overflowBelow) {
+      top = above
+    }
+  }
+
+  // Clamp horizontally — shift left if overflows right edge.
+  const popRight = triggerRect.left + popRect.width
+  if (popRight > vw - margin) {
+    left = (vw - margin) - popRight
+  }
+  // Shift right if overflows left edge.
+  if (triggerRect.left + left < margin) {
+    left = margin - triggerRect.left
+  }
+
+  popoverTop.value = top
+  popoverLeft.value = left
+}
+
+// Re-position whenever the panel opens or on resize while open.
+watch(openPanel, (v) => { if (v !== 'none') positionPopover() })
+
+function onResize() { if (openPanel.value !== 'none') positionPopover() }
 
 const currentMatch = computed(() => {
   const v = props.modelValue?.toLowerCase()
   if (!v) return null
-  // Check if it matches a tailwind color
-  for (const cat of tailwindCategories.value) {
-    const match = cat.swatches.find(s => s.value.toLowerCase() === v)
-    if (match) return match.label
-  }
-  // Check CSS vars
-  const varMatch = cssVarCategory.value?.swatches.find(s => s.value.toLowerCase() === v)
-  if (varMatch) return varMatch.label
-  return null
+  const match = tokenCategory.value?.swatches.find((s) => s.value.toLowerCase() === v)
+  return match?.label ?? null
 })
 
 onMounted(() => {
   document.addEventListener('mousedown', onClickOutside)
+  window.addEventListener('resize', onResize)
+  window.addEventListener('scroll', onResize, true)
 })
 onUnmounted(() => {
   document.removeEventListener('mousedown', onClickOutside)
+  window.removeEventListener('resize', onResize)
+  window.removeEventListener('scroll', onResize, true)
+  // Close our panel if we're the active picker
+  if (sharedActivePicker.value?.id === instanceId) sharedActivePicker.value = null
 })
 </script>
 
 <template>
   <div class="color-palette-picker" ref="triggerRef">
     <div class="picker-trigger">
-      <input
-        type="color"
-        :value="modelValue"
+      <!-- Swatch button opens custom color picker -->
+      <button
         class="color-swatch"
-        @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
+        :style="{ background: modelValue }"
+        @click="toggleCustom"
+        :class="{ active: openPanel === 'custom' }"
+        title="Custom color"
       />
-      <button class="palette-btn" @click="togglePopover" :class="{ active: isOpen }" title="Color palette">
+      <!-- Palette button opens token popover (hidden when showTokens=false) -->
+      <button
+        v-if="showTokens"
+        class="palette-btn"
+        @click="toggleTokens"
+        :class="{ active: openPanel === 'tokens' }"
+        title="Design tokens"
+      >
         <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
           <rect x="0" y="0" width="7" height="7" rx="1.5" />
           <rect x="9" y="0" width="7" height="7" rx="1.5" />
@@ -81,67 +165,46 @@ onUnmounted(() => {
           <rect x="9" y="9" width="7" height="7" rx="1.5" />
         </svg>
       </button>
-      <span v-if="currentMatch" class="color-match">{{ currentMatch }}</span>
+      <span v-if="currentMatch && showTokens" class="color-match">{{ currentMatch }}</span>
     </div>
 
-    <div v-if="isOpen" class="palette-popover" ref="popoverRef">
-      <div class="palette-tabs">
-        <button :class="['ptab', { active: activeSource === 'tailwind' }]" @click="activeSource = 'tailwind'">Tailwind</button>
-        <button :class="['ptab', { active: activeSource === 'css-var' }]" @click="activeSource = 'css-var'">App Vars</button>
-        <button :class="['ptab', { active: activeSource === 'recent' }]" @click="activeSource = 'recent'">Recent</button>
-      </div>
-
-      <!-- Tailwind -->
-      <div v-if="activeSource === 'tailwind'" class="palette-body">
-        <div v-for="cat in tailwindCategories" :key="cat.name" class="color-family">
-          <span class="family-label">{{ cat.name }}</span>
-          <div class="swatch-row">
+    <div
+      v-if="openPanel !== 'none'"
+      class="palette-popover"
+      ref="popoverRef"
+      :style="{ top: popoverTop + 'px', left: popoverLeft + 'px' }"
+    >
+      <!-- Design Tokens panel -->
+      <template v-if="openPanel === 'tokens'">
+        <div class="palette-header">
+          <span class="palette-title">Design Tokens</span>
+        </div>
+        <div class="palette-body">
+          <div v-if="tokenCategory" class="var-grid">
             <button
-              v-for="swatch in cat.swatches"
-              :key="swatch.value"
-              class="swatch"
-              :style="{ background: swatch.value }"
+              v-for="swatch in tokenCategory.swatches"
+              :key="swatch.label"
+              class="var-swatch"
               :class="{ selected: swatch.value.toLowerCase() === modelValue?.toLowerCase() }"
-              :title="swatch.label"
-              @click="selectColor(swatch.value)"
-            />
+              @click="selectToken(swatch)"
+            >
+              <span class="var-color" :style="{ background: swatch.value }" />
+              <span class="var-name">{{ swatch.label }}</span>
+              <span class="var-hex">{{ swatch.value }}</span>
+            </button>
           </div>
+          <p v-else class="empty-msg">
+            No design tokens available. Run <code>/annotask-init</code> to set up your project.
+          </p>
         </div>
-      </div>
+      </template>
 
-      <!-- CSS Variables -->
-      <div v-if="activeSource === 'css-var'" class="palette-body">
-        <div v-if="cssVarCategory" class="var-grid">
-          <button
-            v-for="swatch in cssVarCategory.swatches"
-            :key="swatch.label"
-            class="var-swatch"
-            :class="{ selected: swatch.value.toLowerCase() === modelValue?.toLowerCase() }"
-            @click="selectColor(swatch.value)"
-          >
-            <span class="var-color" :style="{ background: swatch.value }" />
-            <span class="var-name">{{ swatch.label }}</span>
-            <span class="var-hex">{{ swatch.value }}</span>
-          </button>
-        </div>
-        <p v-else class="empty-msg">No color variables detected</p>
-      </div>
-
-      <!-- Recent -->
-      <div v-if="activeSource === 'recent'" class="palette-body">
-        <div v-if="recentColors.length" class="swatch-grid">
-          <button
-            v-for="swatch in recentColors"
-            :key="swatch.value"
-            class="swatch large"
-            :style="{ background: swatch.value }"
-            :class="{ selected: swatch.value.toLowerCase() === modelValue?.toLowerCase() }"
-            :title="swatch.value"
-            @click="selectColor(swatch.value)"
-          />
-        </div>
-        <p v-else class="empty-msg">No colors used yet</p>
-      </div>
+      <!-- Custom color picker panel -->
+      <CustomColorPicker
+        v-else-if="openPanel === 'custom'"
+        :modelValue="modelValue"
+        @update:modelValue="onCustomChange"
+      />
     </div>
   </div>
 </template>
@@ -157,10 +220,12 @@ onUnmounted(() => {
   border-radius: 6px;
   cursor: pointer;
   padding: 0;
-  background: none;
+  transition: border-color 0.1s, box-shadow 0.1s;
 }
-.color-swatch::-webkit-color-swatch-wrapper { padding: 0; }
-.color-swatch::-webkit-color-swatch { border: none; border-radius: 4px; }
+.color-swatch:hover, .color-swatch.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
 
 .palette-btn {
   width: 24px; height: 24px;
@@ -180,12 +245,9 @@ onUnmounted(() => {
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
-/* Popover */
+/* Shared popover container — position dynamically set by JS to stay on-screen */
 .palette-popover {
   position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 6px;
   width: 280px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -195,24 +257,17 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.palette-tabs {
-  display: flex;
+.palette-header {
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
-.ptab {
-  flex: 1;
-  padding: 6px 4px;
-  font-size: 10px;
-  font-weight: 500;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.15s;
+.palette-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
-.ptab:hover { color: var(--text); }
-.ptab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 .palette-body {
   max-height: 320px;
@@ -220,36 +275,6 @@ onUnmounted(() => {
   padding: 8px;
 }
 
-/* Tailwind grid */
-.color-family {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 3px;
-}
-.family-label {
-  font-size: 8px;
-  color: var(--text-muted);
-  width: 40px;
-  flex-shrink: 0;
-  text-align: right;
-  text-transform: lowercase;
-}
-.swatch-row { display: flex; gap: 2px; }
-
-.swatch {
-  width: 18px; height: 18px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  cursor: pointer;
-  padding: 0;
-  transition: transform 0.1s;
-}
-.swatch:hover { transform: scale(1.25); z-index: 1; border-color: var(--text); }
-.swatch.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
-.swatch.large { width: 24px; height: 24px; border-radius: 4px; }
-
-/* CSS var list */
 .var-grid { display: flex; flex-direction: column; gap: 2px; }
 .var-swatch {
   display: flex; align-items: center; gap: 8px;
@@ -266,8 +291,6 @@ onUnmounted(() => {
 .var-name { font-size: 11px; color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; flex: 1; text-align: left; }
 .var-hex { font-size: 9px; color: var(--text-muted); font-family: 'SF Mono', 'Fira Code', monospace; }
 
-/* Recent grid */
-.swatch-grid { display: flex; flex-wrap: wrap; gap: 4px; }
-
 .empty-msg { font-size: 11px; color: var(--text-muted); text-align: center; padding: 20px 0; }
+.empty-msg code { font-size: 10px; background: var(--surface-2); padding: 1px 4px; border-radius: 3px; color: var(--accent); }
 </style>

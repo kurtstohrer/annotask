@@ -21,7 +21,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'style-change': [property: string, value: string]
+  'style-change': [property: string, value: string, tokenRole?: string]
   'class-change': []
   'update:editingClasses': [value: string]
   'update:applyToGroup': [value: boolean]
@@ -37,8 +37,8 @@ const styleClassChanges = computed<StyleOrClassChange[]>(() =>
   props.changes.filter((c): c is StyleOrClassChange => c.type === 'style_update' || c.type === 'class_update')
 )
 
-function onStyleChange(property: string, value: string) {
-  emit('style-change', property, value)
+function onStyleChange(property: string, value: string, tokenRole?: string) {
+  emit('style-change', property, value, tokenRole)
 }
 
 function onClassBlur() {
@@ -84,7 +84,7 @@ const localApplyToGroup = computed({
       <LayoutControls v-if="activeTab === 'layout'" :computedStyles="liveStyles" @change="onStyleChange" />
       <SpacingControls v-if="activeTab === 'spacing'" :computedStyles="liveStyles" @change="onStyleChange" />
       <SizeControls v-if="activeTab === 'size'" :computedStyles="liveStyles" @change="onStyleChange" />
-      <AppearanceControls v-if="activeTab === 'style'" :computedStyles="liveStyles" :iframeDoc="null" @change="onStyleChange" />
+      <AppearanceControls v-if="activeTab === 'style'" :computedStyles="liveStyles" @change="onStyleChange" />
       <div v-if="activeTab === 'classes'" class="classes-tab">
         <textarea v-model="localClasses" class="class-editor" rows="4" @blur="onClassBlur" @keydown.enter.ctrl="onClassBlur" placeholder="Edit CSS classes..." />
         <p class="hint">Ctrl+Enter or blur to apply</p>

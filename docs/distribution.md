@@ -25,9 +25,8 @@ dist/
     └── assets/
 
 skills/
-├── apply-annotask/SKILL.md
-├── init-annotask/SKILL.md
-└── watch-annotask/SKILL.md
+├── annotask-apply/SKILL.md
+└── annotask-init/SKILL.md
 ```
 
 ### Package identity
@@ -155,9 +154,8 @@ The first target always gets real files. Additional targets get directory symlin
 
 ```
 skills/
-├── apply-annotask/SKILL.md
-├── init-annotask/SKILL.md
-└── watch-annotask/SKILL.md
+├── annotask-apply/SKILL.md
+└── annotask-init/SKILL.md
 ```
 
 The CLI resolves these from its own package location (`dist/cli.js` → `../skills/`).

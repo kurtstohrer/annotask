@@ -1,0 +1,49 @@
+/* Canvas area and iframe container */
+.canvas-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.canvas-area.viewport-active {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: auto;
+  background: var(--bg);
+  padding: 16px;
+}
+
+.app-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.canvas-area.viewport-active .app-iframe {
+  flex-shrink: 0;
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--border), 0 4px 24px var(--shadow);
+}
+
+.drawing-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 9999;
+}
+
+.drawing-shield.arrow {
+  cursor: crosshair;
+}
+
+.drawing-shield.draw {
+  cursor: crosshair;
+}
+
+/* Main layout */
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}

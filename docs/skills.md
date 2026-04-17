@@ -1,13 +1,12 @@
 # Claude Code Skills
 
-Annotask ships three Claude Code skills that let AI agents interact with the design tool.
+Annotask ships two Claude Code skills that let AI agents interact with the design tool.
 
 ## Overview
 
 | Skill | Trigger | Purpose |
 |-------|---------|---------|
 | `/annotask-init` | "initialize Annotask", "set up Annotask" | Scan project, generate `.annotask/design-spec.json` |
-| `/annotask-watch` | "watch my changes", "monitor Annotask" | Stream changes in real-time, describe what the user is doing |
 | `/annotask-apply` | "apply the changes", "sync Annotask" | Fetch pending tasks, apply to source code, mark for review |
 
 ## /annotask-init
@@ -24,15 +23,6 @@ Scans the project to detect:
 Output: `.annotask/design-spec.json` — populates the Theme page in Annotask.
 
 Idempotent. Re-running overwrites with fresh data.
-
-## /annotask-watch
-
-Passive monitoring mode. Connects to the WebSocket and describes changes as the user makes them:
-
-- "You changed the background color of table cells in PlanetTable.vue to #2a1a1a"
-- "You increased the header font size to 28px"
-
-Does not modify any files. Suggests `/annotask-apply` when the user seems done.
 
 ## /annotask-apply
 
@@ -68,8 +58,7 @@ Skills are defined in `.claude/skills/`:
 ```
 .claude/skills/
 ├── annotask-apply/SKILL.md
-├── annotask-init/SKILL.md
-└── annotask-watch/SKILL.md
+└── annotask-init/SKILL.md
 ```
 
 These are project-scoped — they work when Claude Code is running from the Annotask project directory or any project that has these files checked in.

@@ -1,0 +1,253 @@
+/* A11y panel */
+.a11y-error {
+  font-size: 11px;
+  color: var(--danger);
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border-radius: 5px;
+  margin-bottom: 6px;
+}
+
+.a11y-pass {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 25%, transparent);
+}
+
+.a11y-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 20px 0;
+  text-align: center;
+}
+
+.a11y-summary {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--danger);
+  padding: 6px 8px;
+  border-radius: 5px;
+  margin-bottom: 4px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+.a11y-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: var(--surface-2);
+  border-left: 3px solid var(--border);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.a11y-card:hover {
+  background: var(--border);
+}
+
+.a11y-card.critical {
+  border-left-color: var(--severity-critical);
+}
+
+.a11y-card.serious {
+  border-left-color: var(--severity-serious);
+}
+
+.a11y-card.moderate {
+  border-left-color: var(--severity-moderate);
+}
+
+.a11y-card.minor {
+  border-left-color: var(--severity-minor);
+}
+
+.a11y-impact {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: white;
+  flex-shrink: 0;
+}
+
+.a11y-impact.critical {
+  background: var(--severity-critical);
+}
+
+.a11y-impact.serious {
+  background: var(--severity-serious);
+}
+
+.a11y-impact.moderate {
+  background: var(--severity-moderate);
+}
+
+.a11y-impact.minor {
+  background: var(--severity-minor);
+}
+
+.a11y-rule {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.a11y-count {
+  color: var(--text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.a11y-tasked-badge {
+  font-size: 9px;
+  color: var(--success);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.a11y-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.a11y-tasked-badge + .a11y-chevron {
+  margin-left: 0;
+}
+
+/* Finding drawer detail styles */
+.fd-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fd-detail-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.fd-detail-value {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.fd-detail-text {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.fd-a11y-element {
+  padding: 8px;
+  background: var(--surface-2);
+  border-radius: 6px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fd-a11y-html {
+  font-size: 11px;
+  color: var(--warning);
+  word-break: break-all;
+}
+
+.fd-a11y-selector {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.fd-a11y-fix {
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.fd-a11y-source {
+  font-size: 10px;
+  color: var(--accent);
+}
+
+.fd-link {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.fd-link:hover {
+  text-decoration: underline;
+}
+
+/* Screenshot button and preview */
+.screenshot-btn {
+  width: 100%;
+  padding: 5px;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.screenshot-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.screenshot-preview {
+  position: relative;
+  margin-top: 4px;
+}
+
+.screenshot-thumb {
+  width: 100%;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+
+.screenshot-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.6);
+  color: white;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.screenshot-remove:hover {
+  background: var(--danger);
+}

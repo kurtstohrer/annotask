@@ -39,12 +39,6 @@ const newRadius = ref<DesignSpecToken[]>([])
 // Adding state — which section's "add new" form is visible.
 const addingNew = ref<string | null>(null)
 
-const iframeDoc = computed(() => {
-  try {
-    return props.iframeRef?.contentDocument ?? null
-  } catch { return null }
-})
-
 // ── Computed token lists with edits applied ──
 const colors = computed(() => designSpec.value?.colors ?? [])
 const families = computed(() => designSpec.value?.typography?.families ?? [])
@@ -285,7 +279,7 @@ function discardChanges() {
               <div class="color-swatch-wrapper">
                 <ColorPalettePicker
                   :modelValue="getEffectiveValue(token, editedColors)"
-                  :iframeDoc="iframeDoc"
+                  :showTokens="false"
                   @update:modelValue="onColorChange(token, $event)"
                 />
               </div>

@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 import { isLocalOrigin } from '../server/origin.js'
 import { scanComponentLibraries } from '../server/component-scanner.js'
-import { buildTaskSummary, filterTasksByMfe } from '../shared/task-summary.js'
+import { buildTaskSummary, filterTasksByMfe, stripTaskVisual, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
 import { isSafeScreenshot } from '../server/validation.js'
 import {
   McpGetTasksArgs,
@@ -53,21 +53,11 @@ export interface McpDeps {
 
 // ── Constants ────────────────────────────────────────
 
-/** Compact JSON for MCP responses: no indentation, strips null/undefined/empty-array fields */
-function compact(data: unknown): string {
-  return JSON.stringify(data, (_key, value) => {
-    if (value === null || value === undefined) return undefined
-    if (Array.isArray(value) && value.length === 0) return undefined
-    return value
-  })
-}
-
-/** Strip fields that are only useful for the shell UI, not agents */
-function stripVisual(task: unknown): Record<string, unknown> {
-  if (!task || typeof task !== 'object' || Array.isArray(task)) return {}
-  const { visual, ...rest } = task as Record<string, unknown>
-  return rest
-}
+// Compact JSON + stripVisual + agent-feedback trimming are shared with the CLI
+// so agents get identical output whether they hit the MCP endpoint directly or
+// fall back to `npx annotask ... --mcp`.
+const compact = compactJson
+const stripVisual = stripTaskVisual
 
 // Minimal shapes so we don't drag the full scanner types through the MCP layer.
 interface ScannedComponentLike {
@@ -309,15 +299,7 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
       const taskData = deps.getTasks()
       const task = taskData.tasks.find(t => t.id === taskId)
       if (!task) return toolError(`Task not found: ${taskId}`)
-      const detail = stripVisual(task)
-      // Trim agent_feedback: keep latest resolved exchange + all unresolved
-      if (Array.isArray(detail.agent_feedback)) {
-        const feedback = detail.agent_feedback as Array<{ answers?: unknown[] }>
-        const resolved = feedback.filter(e => Array.isArray(e.answers) && e.answers.length > 0)
-        const unresolved = feedback.filter(e => !Array.isArray(e.answers) || e.answers.length === 0)
-        const trimmed = [...(resolved.length > 0 ? [resolved[resolved.length - 1]] : []), ...unresolved]
-        detail.agent_feedback = trimmed.length > 0 ? trimmed : undefined
-      }
+      const detail = trimAgentFeedback(stripVisual(task))
       return { content: [{ type: 'text', text: compact(detail) }] }
     }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, watch } from 'vue'
 import { useStyleEditor } from './composables/useStyleEditor'
 import { useInteractionMode } from './composables/useInteractionMode'
 import { useDesignSpec } from './composables/useDesignSpec'
@@ -12,27 +12,30 @@ import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
 import { useA11yScanner } from './composables/useA11yScanner'
 import { usePerfMonitor } from './composables/usePerfMonitor'
 import { useErrorMonitor } from './composables/useErrorMonitor'
-import PerfTab from './components/PerfTab.vue'
-import ErrorsTab from './components/ErrorsTab.vue'
-import LibrariesPage from './components/LibrariesPage.vue'
-import FindingDrawer from './components/FindingDrawer.vue'
 import type { A11yViolation } from './composables/useA11yScanner'
-import type { ClickElementEvent, HoverEnterEvent, BridgeRect } from '../shared/bridge-types'
-import ModeToolbar from './components/ModeToolbar.vue'
-import ArrowColorPicker from './components/ArrowColorPicker.vue'
-import ContextMenu from './components/ContextMenu.vue'
+// Annotation overlays (still used inline in canvas area)
 import PinOverlay from './components/PinOverlay.vue'
 import ArrowOverlay from './components/ArrowOverlay.vue'
 import DrawnSectionOverlay from './components/DrawnSectionOverlay.vue'
-import NotesTab from './components/NotesTab.vue'
 import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
-import ThemePage from './components/ThemePage.vue'
+// Panels + Overlays + Modals (extracted components)
+import AppToolbar from './components/AppToolbar.vue'
+import AppBanners from './components/AppBanners.vue'
+import SnippingOverlay from './components/SnippingOverlay.vue'
 import DesignPanel from './components/DesignPanel.vue'
+import PendingTaskPanel from './components/PendingTaskPanel.vue'
+import TasksPanel from './components/TasksPanel.vue'
+import A11yPanel from './components/A11yPanel.vue'
+import AuditPanel from './components/AuditPanel.vue'
+import HelpOverlay from './components/HelpOverlay.vue'
+import ContextOverlay from './components/ContextOverlay.vue'
+import SettingsOverlay from './components/SettingsOverlay.vue'
+import A11yDetailDrawer from './components/A11yDetailDrawer.vue'
+import ContextMenu from './components/ContextMenu.vue'
 import ReportViewer from './components/ReportViewer.vue'
 import TaskDetailModal from './components/TaskDetailModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
-import ShellThemeEditor from './components/ShellThemeEditor.vue'
 import { useTasks } from './composables/useTasks'
 import { useViewportPreview } from './composables/useViewportPreview'
 import { useInteractionHistory } from './composables/useInteractionHistory'
@@ -41,15 +44,19 @@ import { useSelectionModel } from './composables/useSelectionModel'
 import { useTaskWorkflows } from './composables/useTaskWorkflows'
 import { useShellTheme } from './composables/useShellTheme'
 import { useChangeHistory } from './composables/useChangeHistory'
-import { useLocalStorageRef, useLocalStorageEnum } from './composables/useLocalStorageRef'
-import ViewportSelector from './components/ViewportSelector.vue'
-import { safeMd } from './utils/safeMd'
+import { useLocalStorageRef, useLocalStorageBool } from './composables/useLocalStorageRef'
+import { useShellNavigation } from './composables/useShellNavigation'
+import { useOverlayToggles } from './composables/useOverlayToggles'
+import { useAutoScan } from './composables/useAutoScan'
+import { useBridgeEventHandlers } from './composables/useBridgeEventHandlers'
+import { useShellLifecycle } from './composables/useShellLifecycle'
+import { useInteractionModeSync } from './composables/useInteractionModeSync'
 import { normalizeRoute } from './utils/routes'
+import { navigateIframe as navigateIframeUtil, useAppUrl, useIframeStyle } from './utils/iframeNavigation'
 
 const shellTheme = useShellTheme()
 
 const styleEditor = useStyleEditor()
-const { changes } = styleEditor
 
 const annotations = useAnnotations()
 const taskSystem = useTasks()
@@ -60,29 +67,7 @@ const interactionHistory = useInteractionHistory()
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const { mode: interactionMode } = useInteractionMode()
 const { isInitialized: configInitialized } = useDesignSpec()
-type ShellView = 'editor' | 'theme' | 'a11y' | 'perf'
-const SHELL_VIEWS: ShellView[] = ['editor', 'theme', 'a11y', 'perf']
-const shellView = useLocalStorageEnum<ShellView>('annotask:shellView', SHELL_VIEWS, 'editor')
-type PerfSection = 'vitals' | 'errors' | 'tasks'
-const PERF_SECTIONS: PerfSection[] = ['vitals', 'errors', 'tasks']
-const perfSection = useLocalStorageEnum<PerfSection>('annotask:perfSection', PERF_SECTIONS, 'vitals')
-let savedAnnotateMode: import('./composables/useInteractionMode').InteractionMode | null = null
-watch(shellView, (v, old) => {
-  const wasEditor = old === 'editor'
-  const isEditor = v === 'editor'
-  if (!isEditor && wasEditor) {
-    // Leaving editor — save mode, switch to interact (or select for theme)
-    savedAnnotateMode = interactionMode.value
-    interactionMode.value = v === 'theme' ? 'select' : 'interact'
-  } else if (isEditor && !wasEditor && savedAnnotateMode) {
-    // Returning to editor — restore saved mode
-    interactionMode.value = savedAnnotateMode
-    savedAnnotateMode = null
-  } else if (!isEditor && !wasEditor) {
-    // Switching between non-editor views
-    interactionMode.value = v === 'theme' ? 'select' : 'interact'
-  }
-})
+const { shellView, perfSection, activePanel } = useShellNavigation({ interactionMode })
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
@@ -91,57 +76,22 @@ const highlightColor = useLocalStorageRef('annotask:highlightColor', '#f59e0b')
 const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value, () => discardUncommittedAnnotations())
 const { drawingArrow, drawingRect, hoverElement: arrowHoverElement, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
-// Sync mode to bridge + clear selection on interact + clean orphan annotations
-watch(interactionMode, (mode) => {
-  iframe.setMode(mode)
-  discardUncommittedAnnotations()
-  if (mode !== 'select' && pendingTaskCreation.value?.kind === 'select') {
-    pendingTaskCreation.value = null
-    pendingTaskText.value = ''
-  }
-  if (mode !== 'arrow') {
-    arrowHoverElement.value = null
-  }
-  if (mode === 'interact') {
-    clearSelection()
-    hoverRect.value = null
-    hoverInfo.value = null
-  }
-})
 const showWarning = ref(false)
 const showReportPanel = ref(false)
 const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
-const activePanel = useLocalStorageEnum<'tasks' | 'inspector'>('annotask:activePanel', ['tasks', 'inspector'], 'tasks')
-watch(activePanel, (v) => {
-  if (shellView.value === 'perf' && v !== 'tasks' && perfSection.value === 'tasks') {
-    perfSection.value = 'vitals'
-  }
-})
-watch(perfSection, (v) => {
-  if (shellView.value !== 'perf') return
-  if (v === 'tasks') {
-    activePanel.value = 'tasks'
-  } else if (activePanel.value === 'tasks') {
-    activePanel.value = 'inspector'
-  }
-})
 const designSection = ref<'tokens' | 'inspector'>('tokens')
-const includeHistory = ref(localStorage.getItem('annotask:includeHistory') === 'true')
-watch(includeHistory, (v) => localStorage.setItem('annotask:includeHistory', String(v)))
-const includeElementContext = ref(localStorage.getItem('annotask:includeElementContext') === 'true')
-watch(includeElementContext, (v) => localStorage.setItem('annotask:includeElementContext', String(v)))
+const includeHistory = useLocalStorageBool('annotask:includeHistory', false)
+const includeElementContext = useLocalStorageBool('annotask:includeElementContext', false)
 const screenshots = useScreenshots(iframe)
 const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
-const showShortcuts = ref(false)
-const showContext = ref(false)
-const showSettings = ref(false)
 const showThemeEditor = ref(false)
 const helpSection = ref<'overview' | 'annotate' | 'design' | 'a11y' | 'perf'>('overview')
-function toggleShortcuts() { showShortcuts.value = !showShortcuts.value; if (showShortcuts.value) { showContext.value = false; showSettings.value = false } }
-function toggleContext() { showContext.value = !showContext.value; if (showContext.value) { showShortcuts.value = false; showSettings.value = false } }
-function toggleSettings() { showSettings.value = !showSettings.value; if (showSettings.value) { showShortcuts.value = false; showContext.value = false } }
+const {
+  showShortcuts, showContext, showSettings,
+  toggleShortcuts, toggleContext, toggleSettings,
+} = useOverlayToggles()
 
 
 
@@ -149,7 +99,7 @@ function toggleSettings() { showSettings.value = !showSettings.value; if (showSe
 const selection = useSelectionModel(iframe, styleEditor)
 const {
   primarySelection, selectedEids, templateGroupEids, applyToGroup,
-  editTargetEids, selectionRects, groupRects,
+  selectionRects, groupRects,
   selectionSummary, selectedElementRole,
   liveStyles, editingClasses,
   hoverRect, hoverInfo,
@@ -172,13 +122,10 @@ const detailA11yViolation = ref<A11yViolation | null>(null)
 function onCreateA11yTask(v: A11yViolation) { createA11yTask(v); detailA11yViolation.value = null }
 
 const errorMonitor = useErrorMonitor(iframe, taskSystem, currentRoute)
-const { errors: capturedErrors, errorCount, warnCount, paused: errorsPaused,
-        taskErrorIds, clearErrors, createErrorTask } = errorMonitor
+const { errorCount, warnCount, paused: errorsPaused, clearErrors, createErrorTask } = errorMonitor
 
 const perfMonitor = usePerfMonitor(iframe, taskSystem, currentRoute)
-const { recording: perfRecording, recordingResult: perfRecordingResult, recordingError: perfRecordingError,
-        scanResult: perfScanResult, scanLoading: perfScanLoading, scanError: perfScanError, hasData: perfHasData,
-        timeline: perfTimeline, vitals: perfVitals, perfScore, perfFindings, perfTaskFindings, packageGroups: perfPackageGroups,
+const { recording: perfRecording, scanLoading: perfScanLoading, perfFindings,
         startRecording, stopRecording: stopPerfRecording, scanPerf: runPerfScan, createPerfTask } = perfMonitor
 function startPerfRecording() {
   interactionMode.value = 'interact'
@@ -186,221 +133,10 @@ function startPerfRecording() {
 }
 
 // ── Auto-scan on navigation ──────────────────────────
-let autoScanTimer: ReturnType<typeof setTimeout> | null = null
-const autoScanEnabled = ref(localStorage.getItem('annotask:auto-scan') !== 'false')
-watch(autoScanEnabled, (v) => localStorage.setItem('annotask:auto-scan', String(v)))
-
-function scheduleAutoScan() {
-  if (!autoScanEnabled.value || shellView.value !== 'perf') return
-  if (autoScanTimer) clearTimeout(autoScanTimer)
-  // Debounce 500ms — let SPA route transitions settle
-  autoScanTimer = setTimeout(() => {
-    if (perfSection.value === 'vitals' && !perfRecording.value) {
-      runPerfScan()
-    }
-    // A11y stays manual — too heavy for auto-scan
-  }, 500)
-}
+const { scheduleAutoScan } = useAutoScan({ shellView, perfSection, perfRecording, runPerfScan })
 
 // ── Annotation rect refresh loop ──
 const { taskElementRects, startAnnotationLoop } = useAnnotationRects({ iframe, annotations, taskSystem, normalizeRoute })
-
-// ── Event Handlers (bridge-based) ──────────────────────
-
-async function onIframeLoad() {
-  iframe.initBridgeForIframe()
-
-  iframe.onBridgeReady(async () => {
-    // Sync mode
-    iframe.setMode(interactionMode.value)
-    // Check source mapping — defer to allow frameworks (React, Svelte) to render first
-    const hasMapping = await iframe.checkSourceMapping()
-    if (!hasMapping) {
-      // Retry after a delay: frameworks may not have rendered yet on bridge ready
-      await new Promise(r => setTimeout(r, 2000))
-      showWarning.value = !(await iframe.checkSourceMapping())
-    }
-    // Get actual route from bridge and persist it
-    const route = await iframe.getCurrentRoute()
-    annotations.setRoute(route)
-    localStorage.setItem('annotask:lastRoute', route)
-    // Re-resolve select task eids now that bridge is connected
-    await resolveSelectTaskEids()
-    // Rescan layout if overlay is active
-    if (layoutOverlay.showOverlay.value) layoutOverlay.scan()
-    // Auto-scan on initial load
-    scheduleAutoScan()
-  })
-}
-
-// Subscribe to bridge events
-function setupBridgeEvents() {
-  iframe.onBridgeEvent('hover:enter', (data: HoverEnterEvent) => {
-    const shellRect = iframe.toShellRect(data.rect)
-    hoverRect.value = shellRect
-    hoverInfo.value = data.file ? { tag: data.tag, file: data.file, component: data.component } : null
-  })
-
-  iframe.onBridgeEvent('hover:leave', () => {
-    hoverRect.value = null
-    hoverInfo.value = null
-  })
-
-  iframe.onBridgeEvent('click:element', async (data: ClickElementEvent) => {
-    const { file, line, component, mfe, tag: tagName, classes, eid, shiftKey, clientX, clientY, text } = data
-    const shellRect = iframe.toShellRect(data.rect)
-
-    // Pin mode: create pin at exact click position → open task creation panel
-    if (interactionMode.value === 'pin') {
-      discardUncommittedAnnotations()
-      const pinX = clientX
-      const pinY = clientY
-      const pin = annotations.addPin(
-        { file, line, component, elementTag: tagName, elementClasses: classes },
-        pinX, pinY
-      )
-      pendingTaskCreation.value = {
-        kind: 'pin',
-        label: `Pin on ${describeElement({ file, line, component, tag: tagName, classes, text })}`,
-        file, line, component,
-        annotationId: pin.id,
-        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY, elementText: text || '' },
-      }
-      pendingTaskText.value = ''
-      return
-    }
-
-    if (shiftKey && primarySelection.value) {
-      const idx = selectedEids.value.indexOf(eid)
-      if (idx >= 0) {
-        selectedEids.value.splice(idx, 1)
-        if (selectedEids.value.length === 0) {
-          primarySelection.value = null
-          templateGroupEids.value = []
-          if (pendingTaskCreation.value?.kind === 'select') {
-            pendingTaskCreation.value = null
-            pendingTaskText.value = ''
-          }
-        }
-      } else {
-        selectedEids.value.push(eid)
-      }
-      await refreshRects()
-      if (pendingTaskCreation.value?.kind === 'select' && selectedEids.value.length > 0) {
-        const elements = (pendingTaskCreation.value.meta.selectedElements as Array<Record<string, string>>) || []
-        if (idx >= 0) {
-          // Removed element — filter it out
-          pendingTaskCreation.value = {
-            ...pendingTaskCreation.value,
-            label: `${selectedEids.value.length} element${selectedEids.value.length === 1 ? '' : 's'} selected`,
-            meta: { ...pendingTaskCreation.value.meta, selectedElements: elements.filter(e => e.eid !== eid) },
-          }
-        } else {
-          // Added element
-          pendingTaskCreation.value = {
-            ...pendingTaskCreation.value,
-            label: `${selectedEids.value.length} element${selectedEids.value.length === 1 ? '' : 's'} selected`,
-            meta: { ...pendingTaskCreation.value.meta, selectedElements: [...elements, { eid, file, line, component, tag: tagName, classes }] },
-          }
-        }
-      }
-    } else {
-      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text }
-      selectedEids.value = [eid]
-      const group = await iframe.findTemplateGroup(file, line, tagName)
-      templateGroupEids.value = group.eids
-      applyToGroup.value = group.eids.length > 1
-      editingClasses.value = classes
-      await readLiveStyles()
-      await refreshElementRole()
-      await refreshRects()
-
-      if (interactionMode.value === 'select' && shellView.value === 'editor') {
-        pendingTaskCreation.value = {
-          kind: 'select',
-          label: `1 element selected`,
-          file, line, component,
-          meta: {
-            elementTag: tagName, elementClasses: classes, elementText: text || '',
-            selectedElements: [{ eid, file, line, component, tag: tagName, classes, text: text || '' }],
-          },
-        }
-        pendingTaskText.value = ''
-      }
-    }
-
-    hoverRect.value = null
-  })
-
-  iframe.onBridgeEvent('contextmenu:element', async (data: ClickElementEvent) => {
-    const { file, line, component, mfe = '', tag: tagName, classes, eid, text } = data
-    const shellRect = iframe.toShellRect(data.rect)
-    primarySelection.value = { file, line, component, mfe, tagName, classes, eid, text }
-    selectedEids.value = [eid]
-    await readLiveStyles()
-    await refreshElementRole()
-    contextMenu.value = {
-      visible: true,
-      x: shellRect ? shellRect.x + shellRect.width / 2 : data.clientX,
-      y: shellRect ? shellRect.y + shellRect.height / 2 : data.clientY,
-    }
-  })
-
-  iframe.onBridgeEvent('selection:text', async (data: { text: string; eid: string; file: string; line: number; component: string; tag: string; rect?: { x: number; y: number; width: number; height: number } }) => {
-    discardUncommittedAnnotations()
-    // Convert iframe-local rect to viewport coords
-    const iframeEl = iframeRef.value
-    const offsetX = iframeEl?.getBoundingClientRect().left || 0
-    const offsetY = iframeEl?.getBoundingClientRect().top || 0
-    let viewportRect: { x: number; y: number; width: number; height: number } | undefined
-    if (data.rect) {
-      viewportRect = { x: data.rect.x + offsetX, y: data.rect.y + offsetY, width: data.rect.width, height: data.rect.height }
-    }
-    const hl = annotations.addHighlight(data.text, { file: data.file, line: data.line, component: data.component, elementTag: data.tag }, highlightColor.value, viewportRect, data.eid)
-    // Fallback: resolve element rect by eid if bridge didn't send selection rect
-    if (!viewportRect && data.eid) {
-      const elRect = await iframe.getElementRect(data.eid)
-      if (elRect) annotations.updateHighlight(hl.id, { rect: elRect })
-    }
-    pendingTaskCreation.value = {
-      kind: 'highlight',
-      label: `Text highlight`,
-      file: data.file,
-      line: data.line,
-      component: data.component,
-      annotationId: hl.id,
-      meta: { selectedText: data.text, elementTag: data.tag },
-    }
-    pendingTaskText.value = data.text
-  })
-
-  iframe.onBridgeEvent('keydown', (data: { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => {
-    if ((data.ctrlKey || data.metaKey) && data.key === 'z' && !data.shiftKey) {
-      doUndo()
-    }
-  })
-
-  iframe.onBridgeEvent('route:changed', async (data: { path: string }) => {
-    annotations.setRoute(data.path)
-    localStorage.setItem('annotask:lastRoute', data.path)
-    // Restore any tasks for the new route that haven't been loaded yet
-    await restoreAnnotationsFromTasks()
-    // Re-resolve eids for the freshly mounted route's annotations so they track scroll/resize
-    resolveSelectTaskEids()
-    // Auto-scan: lightweight scans on navigation
-    scheduleAutoScan()
-  })
-
-  // User action tracking (interact mode — link/button clicks in the app)
-  iframe.onBridgeEvent('user:action', (data: { tag: string; text: string; href: string }) => {
-    interactionHistory.push('action', currentRoute.value, data)
-  })
-
-  // Error monitor — passively captures console errors/warnings and unhandled exceptions
-  errorMonitor.init()
-}
-
-// ── Report ─────────────────────────────────────────────
 
 // ── Context Menu ──────────────────────────────────────
 const contextMenu = ref({ visible: false, x: 0, y: 0 })
@@ -429,8 +165,6 @@ const {
   onArrowDragMove, onArrowDragEnd,
   describeElement, onArrowCreated,
   submitPendingTask, cancelPendingTask,
-  onAddAnnotationNote, onAddAnnotationAction,
-  onAddGeneralTask,
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
 } = taskWorkflows
 
@@ -446,6 +180,20 @@ const { selectionChanges, doUndo, doClearChanges, commitChangesAsTask } = useCha
   shellView,
   readLiveStyles,
   createRouteTask,
+})
+
+// ── Bridge event handlers (needs doUndo from useChangeHistory) ──
+const { setup: setupBridgeEvents } = useBridgeEventHandlers({
+  iframe, iframeRef, annotations, interactionHistory, errorMonitor,
+  interactionMode, shellView, highlightColor,
+  primarySelection, selectedEids, templateGroupEids, applyToGroup,
+  editingClasses, hoverRect, hoverInfo,
+  readLiveStyles, refreshRects, refreshElementRole,
+  pendingTaskCreation, pendingTaskText,
+  describeElement, discardUncommittedAnnotations,
+  restoreAnnotationsFromTasks, resolveSelectTaskEids,
+  contextMenu, currentRoute,
+  doUndo, scheduleAutoScan,
 })
 
 // ── Keyboard Shortcuts (composable handles mount/unmount) ──
@@ -468,347 +216,157 @@ useKeyboardShortcuts({
   layoutOverlayToggle: () => layoutOverlay.toggle(),
 })
 
-// ── Lifecycle ──────────────────────────────────────────
-onMounted(async () => {
-  // Seed route before bridge sync so restored annotations are filtered predictably.
-  const savedRoute = localStorage.getItem('annotask:lastRoute') || '/'
-  annotations.setRoute(savedRoute)
-  // Restore annotations from persisted tasks first (bridge-independent).
-  await restoreAnnotationsFromTasks()
-
-  iframe.mountBridge()
-  setupBridgeEvents()
-  iframeRef.value?.addEventListener('load', onIframeLoad)
-  // If iframe already loaded, trigger manually
-  if (iframeRef.value?.contentWindow) onIframeLoad()
-})
-onUnmounted(() => {
-  if (autoScanTimer) {
-    clearTimeout(autoScanTimer)
-    autoScanTimer = null
-  }
-  iframeRef.value?.removeEventListener('load', onIframeLoad)
-  iframe.unmountBridge()
+// ── Interaction mode sync ──────────────────────────────
+// Placed here so pendingTaskCreation/pendingTaskText from useTaskWorkflows are available.
+useInteractionModeSync({
+  interactionMode, iframe,
+  pendingTaskCreation, pendingTaskText,
+  arrowHoverElement, hoverRect, hoverInfo,
+  clearSelection, discardUncommittedAnnotations,
 })
 
-const iframeStyle = computed(() => {
-  const vp = viewport.effectiveViewport.value
-  if (!vp.width && !vp.height) return {}
-  return {
-    width: vp.width ? `${vp.width}px` : '100%',
-    height: vp.height ? `${vp.height}px` : '100%',
-  }
+// ── Lifecycle (onMounted/onUnmounted) ─────────────────
+useShellLifecycle({
+  iframe, iframeRef, annotations, layoutOverlay, interactionMode, showWarning,
+  setupBridgeEvents, restoreAnnotationsFromTasks, resolveSelectTaskEids, scheduleAutoScan,
 })
 
-function navigateIframe(route: string) {
-  const r = route.trim()
-  if (!r || r === currentRoute.value) return
-  const path = r.startsWith('/') ? r : '/' + r
-  const iframeEl = iframeRef.value
-  if (iframeEl?.contentWindow) {
-    iframeEl.contentWindow.location.href = window.location.origin + path
-  }
-}
-
-const appUrl = computed(() => {
-  const params = new URLSearchParams(window.location.search)
-  const base = params.get('appUrl') || window.location.origin
-  const savedRoute = localStorage.getItem('annotask:lastRoute')
-  return savedRoute ? base + savedRoute : base + '/'
-})
+// ── Iframe URL + styling ──────────────────────────────
+const appUrl = useAppUrl()
+const iframeStyle = useIframeStyle(viewport)
+const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentRoute, route)
 </script>
+
 
 <template>
   <div class="annotask-shell">
     <!-- Toolbar -->
-    <header class="toolbar">
-      <div class="toolbar-left">
-        <svg class="logo" viewBox="0 0 85.81 90.51" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="m72.02 90.31c-.17-.1-.43-.48-.57-.82-.37-.93-1.97-3.46-2.74-4.33-.66-.74-.77-.79-5.99-2.5-2.93-.96-5.52-1.85-5.77-1.98-.47-.25-.35.01-4.7-9.99-1.1-2.53-2.11-4.72-2.25-4.87-.22-.24-1.7-.26-11.7-.21-6.3.03-11.51.12-11.58.19-.11.11-2.06 4.98-4.34 10.84-.4 1.04-1.21 3.11-1.8 4.6-.58 1.49-1.52 3.88-2.08 5.32-.64 1.65-1.18 2.76-1.45 3.02l-.44.41H8.31 0l.49-1.22c4.92-12.33 8.69-21.78 9.54-23.94 1.22-3.09 4.33-10.89 6.52-16.32.82-2.03 1.72-4.3 2-5.05.28-.74 1.17-2.97 1.97-4.96 2.26-5.6 3-7.45 4.7-11.72 2.32-5.86 5.17-13 7.63-19.11 1.2-2.98 2.29-5.73 2.44-6.13.15-.4.45-.9.68-1.13l.42-.41h8.22c4.57 0 8.4.07 8.63.17.49.19.22-.38 3.81 8.22 1.57 3.77 3 7.18 3.17 7.57.73 1.72 6 14.31 7.22 17.22 1.71 4.1 5.73 13.7 6 14.34.17.4.66 1.58 1.09 2.61.43 1.04 1.63 3.94 2.68 6.46 1.05 2.51 1.9 4.63 1.9 4.71 0 .08-.14.2-.3.27-.17.07-2.89 1.13-6.05 2.37-3.16 1.23-6.39 2.5-7.17 2.81-.78.31-1.47.51-1.53.45-.06-.06-.47-1.07-.92-2.24-1.24-3.24-5.96-15.5-7.72-20.06-.86-2.23-2.45-6.33-3.52-9.11-1.07-2.78-2.93-7.6-4.14-10.73-1.2-3.12-2.4-6.25-2.67-6.94l-.48-1.26-.19.54c-.42 1.17-1.35 3.64-3.23 8.56-1.08 2.83-2.45 6.44-3.05 8.02-.6 1.59-2.24 5.89-3.65 9.56l-2.57 6.67 8.58.05 8.58.05.31.76c.17.42 1.14 2.91 2.16 5.54 6.49 16.81 6.66 17.24 6.88 17.18.08-.02 1.08-.41 2.21-.87 1.13-.46 3.45-1.39 5.15-2.06 5.12-2.03 14.4-5.73 14.68-5.85.14-.06.39-.01.55.12.32.25 2.19 4.68 2.19 5.19 0 .18-.14.48-.3.68-.27.32-5.46 2.61-10.94 4.83-4.74 1.92-6.58 2.65-7.29 2.92l-.77.29 1.94.34 1.94.34.77-.38c1.61-.79 3.36-1.45 7.27-2.71 2.22-.72 4.1-1.32 4.19-1.33.16-.02.94 1.75 2.24 5.12.41 1.04 1.36 3.49 2.13 5.45.77 1.96 1.39 3.71 1.39 3.89 0 .75-.14.76-6.94.76-4.33 0-6.64-.07-6.85-.2z"/></svg>
-        <div class="view-toggle">
-          <button :class="['toggle-btn', { active: shellView === 'editor' }]" @click="shellView = 'editor'" title="Annotate and inspect your UI">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-            Annotate
-          </button>
-          <button :class="['toggle-btn', { active: shellView === 'theme' }]" @click="shellView = 'theme'" title="Edit design tokens (colors, typography, spacing)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>
-            Design
-          </button>
-          <button :class="['toggle-btn', { active: shellView === 'a11y' }]" @click="shellView = 'a11y'" title="Run accessibility checks (axe-core WCAG)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><path d="M7 9h10"/><path d="M12 9v9"/><path d="M9.5 18l2.5-4 2.5 4"/></svg>
-            Accessibility
-            <span v-if="a11yViolations.length" class="toggle-badge">{{ a11yViolations.length }}</span>
-          </button>
-          <button :class="['toggle-btn', { active: shellView === 'perf' }]" @click="shellView = 'perf'" title="Performance and errors">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            Performance
-            <span v-if="perfFindings.length + errorCount + warnCount" class="toggle-badge">{{ perfFindings.length + errorCount + warnCount }}</span>
-          </button>
-        </div>
-        <template v-if="shellView === 'editor'">
-          <ModeToolbar v-model="interactionMode" />
-          <ArrowColorPicker v-if="interactionMode === 'arrow'" v-model="arrowColor" />
-          <ArrowColorPicker v-if="interactionMode === 'highlight'" v-model="highlightColor" />
-        </template>
-        <template v-else-if="shellView === 'theme'">
-          <div class="mode-toolbar">
-            <button :class="['mode-btn mode-interact', { active: interactionMode === 'interact' }]" @click="interactionMode = 'interact'" title="Interact (I)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
-            </button>
-            <button :class="['mode-btn mode-select', { active: interactionMode === 'select' }]" @click="interactionMode = 'select'" title="Select (V)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V4a2 2 0 1 1 4 0v5"/><path d="M11 9a2 2 0 1 1 4 0v2"/><path d="M15 11a2 2 0 1 1 4 0v4a8 8 0 0 1-8 8 7 7 0 0 1-5-2l-3.3-3.3a2 2 0 0 1 2.8-2.8L7 16"/></svg>
-            </button>
-          </div>
-          <button :class="['tool-btn', { active: layoutOverlay.showOverlay.value }]" @click="layoutOverlay.toggle()" title="Show Layout (L)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
-          </button>
-        </template>
-        <template v-else-if="shellView === 'a11y'">
-          <button class="scan-btn" :disabled="a11yLoading" @click="scanA11y('page')" title="Run axe-core WCAG accessibility scan on the page">
-            {{ a11yLoading ? 'Scanning...' : 'Scan Page' }}
-          </button>
-        </template>
-        <template v-else-if="shellView === 'perf'">
-          <template v-if="perfSection === 'vitals'">
-            <button v-if="!perfRecording" class="rec-btn" @click="startPerfRecording" title="Record a performance session">
-              <span class="rec-dot"></span> Record
-            </button>
-            <button v-else class="rec-btn recording" @click="stopPerfRecording" title="Stop recording">
-              <span class="rec-dot active"></span> Stop
-            </button>
-            <button class="scan-btn" :disabled="perfScanLoading || perfRecording" @click="runPerfScan" title="Scan page performance">
-              {{ perfScanLoading ? 'Scanning...' : 'Scan' }}
-            </button>
-          </template>
-        </template>
-      </div>
-      <div v-if="shellView === 'editor'" class="toolbar-center">
-        <ViewportSelector />
-        <input
-          class="route-input"
-          :value="currentRoute"
-          title="Current route — edit to navigate"
-          @keydown.enter="navigateIframe(($event.target as HTMLInputElement).value)"
-          @blur="navigateIframe(($event.target as HTMLInputElement).value)"
-        />
-      </div>
-      <div v-else class="toolbar-center">
-        <ViewportSelector />
-        <input
-          class="route-input"
-          :value="currentRoute"
-          title="Current route — edit to navigate"
-          @keydown.enter="navigateIframe(($event.target as HTMLInputElement).value)"
-          @blur="navigateIframe(($event.target as HTMLInputElement).value)"
-        />
-      </div>
-      <div v-if="shellView === 'editor'" class="toolbar-right">
-        <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Tasks
-            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
-          </button>
-        </div>
-        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
-      </div>
-      <div v-else-if="shellView === 'theme'" class="toolbar-right">
-        <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: designSection === 'tokens' && activePanel !== 'tasks' }]" @click="designSection = 'tokens'; activePanel = 'inspector'" title="Edit design tokens">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
-            Tokens
-          </button>
-          <button :class="['toggle-btn', { active: designSection === 'inspector' && activePanel !== 'tasks' }]" @click="designSection = 'inspector'; activePanel = 'inspector'" title="Inspect element styles">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            Inspector
-          </button>
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Tasks
-            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
-          </button>
-        </div>
-        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
-      </div>
-      <div v-else-if="shellView === 'a11y'" class="toolbar-right">
-        <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: activePanel !== 'tasks' }]" @click="activePanel = 'inspector'" title="View report">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-            Report
-          </button>
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]" @click="activePanel = 'tasks'" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Tasks
-            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
-          </button>
-        </div>
-        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
-      </div>
-      <div v-else-if="shellView === 'perf'" class="toolbar-right">
-        <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: perfSection === 'vitals' }]" @click="perfSection = 'vitals'" title="Web Vitals and page performance">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-            Audit
-            <span v-if="perfFindings.length" class="toggle-badge">{{ perfFindings.length }}</span>
-          </button>
-          <button :class="['toggle-btn', { active: perfSection === 'errors' }]" @click="perfSection = 'errors'" title="Console errors and warnings">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            Errors
-            <span v-if="errorCount + warnCount" class="toggle-badge error-badge">{{ errorCount + warnCount }}</span>
-          </button>
-          <button :class="['toggle-btn', { active: perfSection === 'tasks' }]" @click="perfSection = 'tasks'" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            Tasks
-            <span v-if="routeTasks.length" class="toggle-badge">{{ routeTasks.length }}</span>
-          </button>
-        </div>
-        <button :class="['tool-btn', { active: showContext }]" @click="toggleContext" title="Component Context">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showSettings }]" @click="toggleSettings" title="Settings">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-        <button :class="['tool-btn', { active: showShortcuts }]" @click="toggleShortcuts" title="Keyboard Shortcuts (?)">?</button>
-      </div>
-    </header>
+    <AppToolbar
+      :shell-view="shellView"
+      :interaction-mode="interactionMode"
+      :arrow-color="arrowColor"
+      :highlight-color="highlightColor"
+      :active-panel="activePanel"
+      :design-section="designSection"
+      :perf-section="perfSection"
+      :current-route="currentRoute"
+      :layout-overlay-active="layoutOverlay.showOverlay.value"
+      :a11y-loading="a11yLoading"
+      :a11y-violations-count="a11yViolations.length"
+      :perf-recording="perfRecording"
+      :perf-scan-loading="perfScanLoading"
+      :perf-findings-count="perfFindings.length"
+      :error-count="errorCount"
+      :warn-count="warnCount"
+      :route-tasks-count="routeTasks.length"
+      :show-context="showContext"
+      :show-settings="showSettings"
+      :show-shortcuts="showShortcuts"
+      @update:shellView="shellView = $event"
+      @update:interactionMode="interactionMode = $event"
+      @update:arrowColor="arrowColor = $event"
+      @update:highlightColor="highlightColor = $event"
+      @set-active-panel="activePanel = $event"
+      @toggle-tasks-panel="activePanel = activePanel === 'tasks' ? 'inspector' : 'tasks'"
+      @switch-design-section="designSection = $event; activePanel = 'inspector'"
+      @switch-perf-section="perfSection = $event"
+      @toggle-layout-overlay="layoutOverlay.toggle()"
+      @scan-a11y="scanA11y('page')"
+      @start-perf-recording="startPerfRecording"
+      @stop-perf-recording="stopPerfRecording"
+      @run-perf-scan="runPerfScan"
+      @navigate-iframe="navigateIframe"
+      @toggle-context="toggleContext"
+      @toggle-settings="toggleSettings"
+      @toggle-shortcuts="toggleShortcuts"
+    />
 
     <!-- Banners -->
-    <div v-if="showWarning" class="warning-banner">
-      Source mapping unavailable — ensure the Annotask plugin is configured in your build tool.
-    </div>
-    <div v-if="!configInitialized" class="setup-banner">
-      Annotask not initialized — run <code>/annotask-init</code> in your AI assistant to set up project tokens and component detection.
-    </div>
+    <AppBanners :show-warning="showWarning" :config-initialized="configInitialized" />
 
     <!-- Snipping overlay -->
-    <div v-if="snipActive" class="snip-overlay"
-      @pointerdown="onSnipDown" @pointermove="onSnipMove" @pointerup="onSnipUp" @keydown.escape="cancelSnip">
-      <div class="snip-hint">Drag to select a region, or press Esc to cancel</div>
-      <div v-if="snipRect && snipRect.width > 5 && snipRect.height > 5" class="snip-selection"
-        :style="{ left: snipRect.x+'px', top: snipRect.y+'px', width: snipRect.width+'px', height: snipRect.height+'px' }">
-        <div class="snip-size-label">{{ Math.round(snipRect.width) }} &times; {{ Math.round(snipRect.height) }}</div>
-      </div>
-    </div>
+    <SnippingOverlay v-if="snipActive" :snip-rect="snipRect"
+      @pointer-down="onSnipDown" @pointer-move="onSnipMove" @pointer-up="onSnipUp" @cancel="cancelSnip" />
 
     <!-- Main -->
     <div class="main">
+      <!-- Canvas / iframe -->
       <div class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
         @pointerdown="shellView === 'editor' ? onCanvasPointerDown($event) : undefined"
         @pointermove="shellView === 'editor' ? onCanvasPointerMove($event) : undefined"
-        @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined"
-      >
+        @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined">
         <iframe ref="iframeRef" :src="appUrl" class="app-iframe" :style="iframeStyle" />
 
         <!-- Hover + selection overlays (editor and theme modes) -->
         <template v-if="shellView === 'editor' ? showMarkup.inspector : shellView === 'theme'">
-        <!-- Hover highlight -->
-        <div v-if="hoverRect" class="highlight hover" :style="{ left: hoverRect.x+'px', top: hoverRect.y+'px', width: hoverRect.width+'px', height: hoverRect.height+'px' }">
-          <div v-if="hoverInfo" class="hover-label">
-            <span class="hover-tag">&lt;{{ hoverInfo.tag }}&gt;</span>
-            <span v-if="hoverInfo.component" class="hover-comp">{{ hoverInfo.component }}</span>
+          <div v-if="hoverRect" class="highlight hover"
+            :style="{ left: hoverRect.x + 'px', top: hoverRect.y + 'px', width: hoverRect.width + 'px', height: hoverRect.height + 'px' }">
+            <div v-if="hoverInfo" class="hover-label">
+              <span class="hover-tag">&lt;{{ hoverInfo.tag }}&gt;</span>
+              <span v-if="hoverInfo.component" class="hover-comp">{{ hoverInfo.component }}</span>
+            </div>
           </div>
-        </div>
-
-        <!-- Template group highlights -->
-        <div v-for="(rect, i) in groupRects" :key="'g'+i" class="highlight group"
-          :style="{ left: rect.x+'px', top: rect.y+'px', width: rect.width+'px', height: rect.height+'px' }" />
-
-        <!-- Selection highlights -->
-        <div v-for="(rect, i) in selectionRects" :key="'s'+i" class="highlight select"
-          :style="{ left: rect.x+'px', top: rect.y+'px', width: rect.width+'px', height: rect.height+'px' }">
-          <div v-if="i === 0 && primarySelection" class="select-label">
-            &lt;{{ primarySelection.tagName }}&gt; · {{ primarySelection.component }}
+          <div v-for="(rect, i) in groupRects" :key="'g' + i" class="highlight group"
+            :style="{ left: rect.x + 'px', top: rect.y + 'px', width: rect.width + 'px', height: rect.height + 'px' }" />
+          <div v-for="(rect, i) in selectionRects" :key="'s' + i" class="highlight select"
+            :style="{ left: rect.x + 'px', top: rect.y + 'px', width: rect.width + 'px', height: rect.height + 'px' }">
+            <div v-if="i === 0 && primarySelection" class="select-label">
+              &lt;{{ primarySelection.tagName }}&gt; · {{ primarySelection.component }}
+            </div>
           </div>
-        </div>
         </template>
 
         <!-- Editor-only overlays -->
         <template v-if="shellView === 'editor'">
-        <!-- Drawing shield: captures pointer events for arrow/draw/sticky modes -->
-        <div v-if="interactionMode === 'arrow' || interactionMode === 'draw'"
-          class="drawing-shield" :class="interactionMode" />
+          <div v-if="interactionMode === 'arrow' || interactionMode === 'draw'" class="drawing-shield" :class="interactionMode" />
+          <template v-if="interactionMode !== 'interact'">
+            <div v-for="te in taskElementRects" :key="'te-' + te.taskId" class="highlight task-element"
+              :style="{ left: te.rect.x + 'px', top: te.rect.y + 'px', width: te.rect.width + 'px', height: te.rect.height + 'px' }" />
+            <PinOverlay v-if="showMarkup.pins"
+              :pins="annotations.routePins.value"
+              :selectedPinId="annotations.selectedPinId.value"
+              :iframeOffset="{ x: iframeRef?.getBoundingClientRect()?.left || 0, y: iframeRef?.getBoundingClientRect()?.top || 0 }"
+              @select-pin="id => { annotations.selectedPinId.value = id }"
+              @remove-pin="annotations.removePin"
+            />
+            <ArrowOverlay v-if="showMarkup.arrows"
+              :arrows="annotations.routeArrows.value"
+              :selectedId="annotations.selectedArrowId.value"
+              :drawingArrow="drawingArrow"
+              :drawingColor="arrowColor"
+              :hoverElement="arrowHoverElement"
+              @select="annotations.selectedArrowId.value = $event"
+              @remove="annotations.removeArrow"
+              :dragTargetRect="arrowDragTargetRect"
+              @update-arrow="(id, updates) => annotations.updateArrow(id, updates)"
+              @drag-move="onArrowDragMove"
+              @drag-end="onArrowDragEnd"
+            />
+            <DrawnSectionOverlay v-if="showMarkup.sections"
+              :sections="annotations.routeSections.value"
+              :selectedId="annotations.selectedSectionId.value"
+              :drawingRect="drawingRect"
+              :sectionTaskMap="sectionTaskMap"
+              @select="annotations.selectedSectionId.value = $event"
+              @remove="annotations.removeDrawnSection"
+              @update-prompt="(id, prompt) => annotations.updateDrawnSection(id, { prompt })"
+              @update-rect="(id, rect) => annotations.updateDrawnSection(id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height })"
+              @submit="onSectionSubmit"
+            />
+            <TextHighlightOverlay v-if="showMarkup.highlights"
+              :highlights="annotations.routeHighlights.value"
+              :selectedId="annotations.selectedHighlightId.value"
+              @select="annotations.selectedHighlightId.value = $event"
+              @remove="annotations.removeHighlight"
+              @update-prompt="(id, p) => annotations.updateHighlight(id, { prompt: p })"
+            />
+          </template>
+        </template>
 
-        <!-- Annotation overlays: hidden in interact mode so the user can use their app normally -->
-        <template v-if="interactionMode !== 'interact'">
-
-        <!-- Persistent task element highlights (always visible, outside inspector toggle) -->
-        <div v-for="te in taskElementRects" :key="'te-'+te.taskId" class="highlight task-element"
-          :style="{ left: te.rect.x+'px', top: te.rect.y+'px', width: te.rect.width+'px', height: te.rect.height+'px' }" />
-
-        <!-- Pins -->
-        <PinOverlay v-if="showMarkup.pins"
-          :pins="annotations.routePins.value"
-          :selectedPinId="annotations.selectedPinId.value"
-          :iframeOffset="{ x: iframeRef?.getBoundingClientRect()?.left || 0, y: iframeRef?.getBoundingClientRect()?.top || 0 }"
-          @select-pin="id => { annotations.selectedPinId.value = id }"
-          @remove-pin="annotations.removePin"
-        />
-
-        <!-- Arrows -->
-        <ArrowOverlay v-if="showMarkup.arrows"
-          :arrows="annotations.routeArrows.value"
-          :selectedId="annotations.selectedArrowId.value"
-          :drawingArrow="drawingArrow"
-          :drawingColor="arrowColor"
-          :hoverElement="arrowHoverElement"
-          @select="annotations.selectedArrowId.value = $event"
-          @remove="annotations.removeArrow"
-          :dragTargetRect="arrowDragTargetRect"
-          @update-arrow="(id, updates) => annotations.updateArrow(id, updates)"
-          @drag-move="onArrowDragMove"
-          @drag-end="onArrowDragEnd"
-        />
-
-        <!-- Drawn sections -->
-        <DrawnSectionOverlay v-if="showMarkup.sections"
-          :sections="annotations.routeSections.value"
-          :selectedId="annotations.selectedSectionId.value"
-          :drawingRect="drawingRect"
-          :sectionTaskMap="sectionTaskMap"
-          @select="annotations.selectedSectionId.value = $event"
-          @remove="annotations.removeDrawnSection"
-          @update-prompt="(id, prompt) => annotations.updateDrawnSection(id, { prompt })"
-          @update-rect="(id, rect) => annotations.updateDrawnSection(id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height })"
-          @submit="onSectionSubmit"
-        />
-
-        <!-- Text highlight cards -->
-        <TextHighlightOverlay v-if="showMarkup.highlights"
-          :highlights="annotations.routeHighlights.value"
-          :selectedId="annotations.selectedHighlightId.value"
-          @select="annotations.selectedHighlightId.value = $event"
-          @remove="annotations.removeHighlight"
-          @update-prompt="(id, p) => annotations.updateHighlight(id, { prompt: p })"
-        />
-
-        </template><!-- end annotation overlays (hidden in interact mode) -->
-        </template><!-- end editor overlays -->
-
-        <!-- Layout overlay (design view) -->
-        <LayoutOverlay
-          v-if="layoutOverlay.showOverlay.value"
-          :containers="layoutOverlay.containers.value"
-        />
+        <LayoutOverlay v-if="layoutOverlay.showOverlay.value" :containers="layoutOverlay.containers.value" />
       </div>
 
-      <!-- Theme / Design panel -->
+      <!-- Design panel (theme view) -->
       <aside v-if="shellView === 'theme' && activePanel !== 'tasks'" class="theme-panel">
         <DesignPanel
           :section="designSection"
@@ -832,460 +390,92 @@ const appUrl = computed(() => {
         />
       </aside>
 
-      <!-- Pending Task Creation Panel (after pin/arrow/select placement — editor only) -->
-      <aside class="panel" v-if="shellView === 'editor' && pendingTaskCreation">
-        <div class="panel-source">
-          <span class="source-path" style="color:var(--text)">Add Task</span>
-        </div>
-        <div class="pending-task-panel">
-          <div v-if="pendingTaskCreation.kind !== 'highlight'" class="pending-task-context">
-            <div class="pending-task-kind" :class="pendingTaskCreation.kind">
-              <svg v-if="pendingTaskCreation.kind === 'pin'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="10" r="3"/><path d="M12 21.7C17.3 17 20 13 20 10a8 8 0 1 0-16 0c0 3 2.7 7 8 11.7z"/></svg>
-              <svg v-else-if="pendingTaskCreation.kind === 'arrow'" width="12" height="12" viewBox="0 0 24 24" fill="none" :stroke="(pendingTaskCreation.meta.arrowColor as string) || 'currentColor'" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-              <svg v-else-if="pendingTaskCreation.kind === 'select'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V4a2 2 0 1 1 4 0v5"/><path d="M11 9a2 2 0 1 1 4 0v2"/><path d="M15 11a2 2 0 1 1 4 0v4a8 8 0 0 1-8 8 7 7 0 0 1-5-2l-3.3-3.3a2 2 0 0 1 2.8-2.8L7 16"/></svg>
-              <span v-if="pendingTaskCreation.kind === 'arrow'">{{ pendingTaskCreation.label }}</span>
-              <span v-else>{{ selectedEids.length }} element{{ selectedEids.length === 1 ? '' : 's' }} selected</span>
-            </div>
-            <code class="pending-task-file">{{ pendingTaskCreation.file }}:{{ pendingTaskCreation.line }}</code>
-          </div>
-          <!-- Element details for select tasks -->
-          <div v-if="pendingTaskCreation?.kind === 'select' && pendingTaskCreation.meta.selectedElements" class="select-element-details">
-            <div v-for="(el, i) in (pendingTaskCreation.meta.selectedElements as Array<Record<string, string>>)" :key="el.eid || i" class="selected-element-card">
-              <div class="selected-element-header">
-                <code class="selected-element-tag">&lt;{{ el.tag }}&gt;</code>
-                <span v-if="el.component" class="component-badge">{{ el.component }}</span>
-              </div>
-              <code class="selected-element-file">{{ el.file }}:{{ el.line }}</code>
-              <code v-if="el.classes" class="selected-element-classes">{{ el.classes }}</code>
-            </div>
-          </div>
-          <span v-if="pendingTaskCreation?.kind === 'highlight'" class="pending-task-title">Change text</span>
-          <textarea
-            v-model="pendingTaskText"
-            class="pending-task-input"
-            rows="6"
-            placeholder="Describe the change..."
-            autofocus
-            @keydown.enter.ctrl="submitPendingTask"
-            @keydown.escape="cancelPendingTask"
-          />
-          <div class="task-toggles">
-            <label class="history-toggle" title="Attach your navigation path and click actions to this task"><input type="checkbox" v-model="includeHistory" /><span>Include interaction history</span></label>
-            <label class="history-toggle" title="Attach parent layout chain and DOM subtree snapshot to this task"><input type="checkbox" v-model="includeElementContext" /><span>Include DOM context</span></label>
-          </div>
-          <div v-if="pendingScreenshot" class="screenshot-preview">
-            <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
-            <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
-          </div>
-          <button v-else class="screenshot-btn" @click="startSnip" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
-          <div class="pending-task-actions">
-            <button class="submit-btn" :disabled="!pendingTaskText.trim()" @click="submitPendingTask">Add Task</button>
-            <button class="cancel-btn" @click="cancelPendingTask">Cancel</button>
-          </div>
-        </div>
-      </aside>
+      <!-- Pending Task Panel (editor mode) -->
+      <PendingTaskPanel v-if="shellView === 'editor' && pendingTaskCreation"
+        :pending-task-creation="pendingTaskCreation"
+        :pending-task-text="pendingTaskText"
+        :selected-eids-count="selectedEids.length"
+        :pending-screenshot="pendingScreenshot"
+        :include-history="includeHistory"
+        :include-element-context="includeElementContext"
+        @update:pendingTaskText="pendingTaskText = $event"
+        @update:includeHistory="includeHistory = $event"
+        @update:includeElementContext="includeElementContext = $event"
+        @submit="submitPendingTask"
+        @cancel="cancelPendingTask"
+        @start-snip="startSnip"
+        @remove-screenshot="removeScreenshot"
+      />
 
-      <!-- Task Panel -->
-      <aside class="panel" v-else-if="activePanel === 'tasks'">
-        <div class="panel-source">
-          <span class="source-path" style="color:var(--text)">Tasks</span>
-          <span class="component-badge">{{ taskSystem.tasks.value.length }}</span>
-          <button :class="['new-task-toggle json-toggle', { active: showReportPanel }]" @click="showReportPanel = !showReportPanel" title="View all tasks as JSON">
-            JSON
-          </button>
-          <button class="new-task-toggle" @click="showNewTaskForm = !showNewTaskForm" title="Create a general task (not tied to an element)">
-            {{ showNewTaskForm ? '−' : '+' }} New
-          </button>
-        </div>
-
-        <!-- New task form (collapsible) -->
-        <div v-if="showNewTaskForm" class="new-task-form">
-          <textarea v-model="newTaskText" class="new-task-input" rows="2" placeholder="Describe a change..." @keydown.enter.ctrl="submitNewTask" />
-          <div class="task-toggles">
-            <label class="history-toggle" title="Attach your navigation path and click actions to this task"><input type="checkbox" v-model="includeHistory" /><span>Include interaction history</span></label>
-            <label class="history-toggle" title="Attach parent layout chain and DOM subtree snapshot to this task"><input type="checkbox" v-model="includeElementContext" /><span>Include DOM context</span></label>
-          </div>
-          <div v-if="pendingScreenshot" class="screenshot-preview">
-            <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
-            <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
-          </div>
-          <button v-else class="screenshot-btn" @click="startSnip" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
-          <div class="new-task-actions">
-            <button class="submit-btn" :disabled="!newTaskText.trim()" @click="submitNewTask">Add</button>
-            <button class="cancel-btn" @click="showNewTaskForm = false; newTaskText = ''">Cancel</button>
-          </div>
-        </div>
-
-        <div class="tab-content">
-          <div v-if="taskSystem.tasks.value.length === 0 && !showNewTaskForm" class="empty-hint" style="padding:20px 0">
-            No tasks yet. Click + New to add one.
-          </div>
-          <div v-for="task in routeTasks" :key="task.id" class="task-card" :class="task.status" @click="detailTaskId = task.id">
-            <div v-if="task.resolution" class="task-card-resolution">{{ task.resolution }}</div>
-            <div class="task-card-header">
-              <span class="task-status-dot" :class="task.status" />
-              <span class="task-card-desc task-card-md" v-html="safeMd(task.description)"></span>
-              <button class="task-card-close" @click.stop="confirmDeleteTaskId = task.id" title="Delete task">×</button>
-            </div>
-            <div class="task-card-meta">
-              <code class="task-card-file">{{ task.file }}:{{ task.line }}</code>
-              <span v-if="task.route" class="task-route-badge">{{ task.route }}</span>
-            </div>
-            <img v-if="task.screenshot" class="task-screenshot-thumb" :src="'/__annotask/screenshots/' + task.screenshot" />
-            <div v-if="task.feedback" class="task-card-feedback">{{ task.feedback }}</div>
-            <div v-if="task.status === 'needs_info' && task.agent_feedback?.length" class="task-card-agent-q">
-              {{ task.agent_feedback[task.agent_feedback.length - 1].questions[0]?.text }}
-            </div>
-            <div v-if="task.status === 'blocked' && task.blocked_reason" class="task-card-blocked">
-              {{ task.blocked_reason }}
-            </div>
-            <div v-if="task.status === 'review'" class="task-card-actions" @click.stop>
-              <template v-if="denyingTaskId !== task.id">
-                <button class="task-accept" @click="acceptTask(task.id)" title="Accept this change and remove the task">Accept</button>
-                <button class="task-deny" @click="denyingTaskId = task.id; denyFeedbackText = ''" title="Reject and send feedback to the agent">Deny</button>
-              </template>
-              <template v-else>
-                <div class="deny-form">
-                  <textarea
-                    v-model="denyFeedbackText"
-                    class="deny-feedback-textarea"
-                    rows="3"
-                    placeholder="What needs to change?"
-                    autofocus
-                    @keydown.enter.ctrl="submitDeny(task.id)"
-                    @keydown.escape="denyingTaskId = null"
-                  />
-                  <div class="task-toggles">
-                    <label class="history-toggle" title="Attach your navigation path and click actions to this task"><input type="checkbox" v-model="includeHistory" /><span>Include interaction history</span></label>
-                    <label class="history-toggle" title="Attach parent layout chain and DOM subtree snapshot to this task"><input type="checkbox" v-model="includeElementContext" /><span>Include DOM context</span></label>
-                  </div>
-                  <div v-if="pendingScreenshot" class="screenshot-preview">
-                    <img :src="'/__annotask/screenshots/' + pendingScreenshot" class="screenshot-thumb" />
-                    <button class="screenshot-remove" @click="removeScreenshot">&times;</button>
-                  </div>
-                  <button v-else class="screenshot-btn" @click="startSnip" title="Capture a screenshot — drag a region or click for full page">Add Screenshot</button>
-                  <div class="deny-form-actions">
-                    <button class="task-send-feedback" :disabled="!denyFeedbackText.trim()" @click="submitDeny(task.id)">Send Feedback</button>
-                    <button class="cancel-btn" style="padding:4px 8px;font-size:10px" @click="denyingTaskId = null">Cancel</button>
-                  </div>
-                </div>
-              </template>
-            </div>
-          </div>
-        </div>
-      </aside>
+      <!-- Tasks Panel -->
+      <TasksPanel v-else-if="activePanel === 'tasks'"
+        :total-tasks="taskSystem.tasks.value.length"
+        :route-tasks="routeTasks"
+        :show-new-task-form="showNewTaskForm"
+        :show-report-panel="showReportPanel"
+        :new-task-text="newTaskText"
+        :denying-task-id="denyingTaskId"
+        :deny-feedback-text="denyFeedbackText"
+        :pending-screenshot="pendingScreenshot"
+        :include-history="includeHistory"
+        :include-element-context="includeElementContext"
+        @update:showReportPanel="showReportPanel = $event"
+        @update:newTaskText="newTaskText = $event"
+        @update:denyFeedbackText="denyFeedbackText = $event"
+        @update:includeHistory="includeHistory = $event"
+        @update:includeElementContext="includeElementContext = $event"
+        @toggle-new-task="showNewTaskForm = !showNewTaskForm"
+        @submit-new-task="submitNewTask"
+        @cancel-new-task="showNewTaskForm = false; newTaskText = ''"
+        @open-detail="detailTaskId = $event"
+        @confirm-delete="confirmDeleteTaskId = $event"
+        @accept="acceptTask"
+        @start-deny="(id) => { denyingTaskId = id; denyFeedbackText = '' }"
+        @submit-deny="submitDeny"
+        @cancel-deny="denyingTaskId = null"
+        @start-snip="startSnip"
+        @remove-screenshot="removeScreenshot"
+      />
 
       <!-- A11y Panel -->
-      <aside class="panel" v-else-if="shellView === 'a11y'">
-        <div class="panel-source">
-          <span class="source-path" style="color:var(--text)">Accessibility</span>
-        </div>
-        <div class="tab-content">
-          <div v-if="a11yError" class="a11y-error">{{ a11yError }}</div>
+      <A11yPanel v-else-if="shellView === 'a11y'"
+        :a11y-violations="a11yViolations"
+        :a11y-loading="a11yLoading"
+        :a11y-error="a11yError"
+        :a11y-scanned="a11yScanned"
+        :a11y-task-rules="a11yTaskRules"
+        @select-violation="detailA11yViolation = $event"
+      />
 
-          <div v-if="!a11yLoading && a11yViolations.length === 0 && !a11yError && a11yScanned" class="a11y-pass">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
-            No violations found
-          </div>
-          <div v-else-if="!a11yLoading && a11yViolations.length === 0 && !a11yError" class="a11y-empty">
-            Click Scan Page to check accessibility
-          </div>
-
-          <div v-if="a11yViolations.length" class="a11y-summary">
-            {{ a11yViolations.length }} violation{{ a11yViolations.length === 1 ? '' : 's' }}
-          </div>
-
-          <div v-for="v in a11yViolations" :key="v.id" class="a11y-card" :class="v.impact" @click="detailA11yViolation = v">
-            <span class="a11y-impact" :class="v.impact">{{ v.impact }}</span>
-            <span class="a11y-rule">{{ v.id }}</span>
-            <span class="a11y-count">{{ v.nodes }} element{{ v.nodes === 1 ? '' : 's' }}</span>
-            <span v-if="a11yTaskRules.has(v.id)" class="a11y-tasked-badge">tasked</span>
-            <svg class="a11y-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-          </div>
-        </div>
-      </aside>
-
-      <!-- Audit Panel (Performance / Errors / Images / DOM) -->
-      <aside class="panel" v-else-if="shellView === 'perf'">
-        <div class="tab-content">
-          <PerfTab
-            v-if="perfSection === 'vitals'"
-            :recording="perfRecording"
-            :recording-result="perfRecordingResult"
-            :scan-result="perfScanResult"
-            :scan-loading="perfScanLoading"
-            :has-data="perfHasData"
-            :timeline="perfTimeline"
-            :vitals="perfVitals"
-            :score="perfScore"
-            :findings="perfFindings"
-            :task-findings="perfTaskFindings"
-            :package-groups="perfPackageGroups"
-            :error="perfRecordingError || perfScanError"
-            @start-recording="startPerfRecording"
-            @stop-recording="stopPerfRecording"
-            @scan="runPerfScan"
-            @create-task="createPerfTask"
-          />
-          <ErrorsTab
-            v-else-if="perfSection === 'errors'"
-            :errors="capturedErrors"
-            :error-count="errorCount"
-            :warn-count="warnCount"
-            :paused="errorsPaused"
-            :task-error-ids="taskErrorIds"
-            @create-task="createErrorTask"
-            @clear="clearErrors"
-            @toggle-pause="errorsPaused = !errorsPaused"
-          />
-        </div>
-      </aside>
+      <!-- Audit Panel (perf vitals / errors) -->
+      <AuditPanel v-else-if="shellView === 'perf'"
+        :perf-section="perfSection"
+        :perf-monitor="perfMonitor"
+        :error-monitor="errorMonitor"
+        @start-recording="startPerfRecording"
+        @stop-recording="stopPerfRecording"
+        @scan="runPerfScan"
+        @create-perf-task="createPerfTask"
+        @create-error-task="createErrorTask"
+        @clear-errors="clearErrors"
+        @toggle-errors-pause="errorsPaused = !errorsPaused"
+      />
 
       <!-- Full-screen overlays -->
-      <div v-if="showShortcuts" class="fullscreen-overlay help-overlay">
-        <div class="help-sidebar">
-          <nav class="help-nav">
-            <button :class="['help-nav-btn', { active: helpSection === 'overview' }]" @click="helpSection = 'overview'">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-              Overview
-            </button>
-            <button :class="['help-nav-btn', { active: helpSection === 'annotate' }]" @click="helpSection = 'annotate'">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-              Annotate
-            </button>
-            <button :class="['help-nav-btn', { active: helpSection === 'design' }]" @click="helpSection = 'design'">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>
-              Design
-            </button>
-            <button :class="['help-nav-btn', { active: helpSection === 'a11y' }]" @click="helpSection = 'a11y'">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><path d="M7 9h10"/><path d="M12 9v9"/><path d="M9.5 18l2.5-4 2.5 4"/></svg>
-              Accessibility
-            </button>
-            <button :class="['help-nav-btn', { active: helpSection === 'perf' }]" @click="helpSection = 'perf'">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-              Performance
-            </button>
-          </nav>
-          <div class="help-version">Annotask v{{ annotaskVersion }}</div>
-        </div>
-        <div class="help-content">
-          <!-- Overview -->
-          <div v-if="helpSection === 'overview'" class="help-page">
-            <h2 class="help-page-title">Quick Overview</h2>
-            <p class="help-intro">Annotask is a visual UI design tool that runs alongside your app. Make visual changes in the browser and Annotask generates structured tasks that AI agents can apply to your source code.</p>
+      <HelpOverlay v-if="showShortcuts"
+        :help-section="helpSection"
+        :annotask-version="annotaskVersion"
+        @update:helpSection="helpSection = $event"
+      />
 
-            <div class="help-cards">
-              <button class="help-card" @click="helpSection = 'annotate'">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                <span class="help-card-title">Annotate</span>
-                <span class="help-card-desc">Pin, arrow, section, and highlight tools to mark up your UI and create tasks</span>
-              </button>
-              <button class="help-card" @click="helpSection = 'design'">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>
-                <span class="help-card-title">Design</span>
-                <span class="help-card-desc">Edit design tokens, inspect element styles, and manage your design system</span>
-              </button>
-              <button class="help-card" @click="helpSection = 'a11y'">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><path d="M7 9h10"/><path d="M12 9v9"/><path d="M9.5 18l2.5-4 2.5 4"/></svg>
-                <span class="help-card-title">Accessibility</span>
-                <span class="help-card-desc">Run WCAG audits with axe-core and create fix tasks from violations</span>
-              </button>
-              <button class="help-card" @click="helpSection = 'perf'">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                <span class="help-card-title">Performance</span>
-                <span class="help-card-desc">Web Vitals, bundle analysis, interaction recording, and error monitoring</span>
-              </button>
-            </div>
+      <ContextOverlay v-if="showContext" @close="showContext = false" />
 
-            <h3 class="help-section-title">Keyboard Shortcuts</h3>
-            <div class="help-shortcuts-grid">
-              <div class="help-shortcut-group">
-                <div class="shortcut-group-title">Tools</div>
-                <div class="shortcut-row"><kbd>V</kbd><span>Select</span></div>
-                <div class="shortcut-row"><kbd>P</kbd><span>Pin</span></div>
-                <div class="shortcut-row"><kbd>A</kbd><span>Arrow</span></div>
-                <div class="shortcut-row"><kbd>D</kbd><span>Draw Section</span></div>
-                <div class="shortcut-row"><kbd>H</kbd><span>Highlight Text</span></div>
-                <div class="shortcut-row"><kbd>I</kbd><span>Interact Mode</span></div>
-              </div>
-              <div class="help-shortcut-group">
-                <div class="shortcut-group-title">View</div>
-                <div class="shortcut-row"><kbd>L</kbd><span>Toggle Layout Overlay</span></div>
-                <div class="shortcut-row"><kbd>T</kbd><span>Toggle Task Panel</span></div>
-                <div class="shortcut-row"><kbd>?</kbd><span>Toggle Help</span></div>
-                <div class="shortcut-row"><kbd>Esc</kbd><span>Deselect / Close</span></div>
-              </div>
-              <div class="help-shortcut-group">
-                <div class="shortcut-group-title">Actions</div>
-                <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Z</kbd><span>Undo</span></div>
-                <div class="shortcut-row"><kbd class="mod">Ctrl</kbd><kbd>Enter</kbd><span>Submit Form</span></div>
-              </div>
-            </div>
-            <div class="shortcut-hint">On Mac, use <kbd class="mod">&#8984;</kbd> instead of <kbd class="mod">Ctrl</kbd></div>
-          </div>
-
-          <!-- Annotate -->
-          <div v-else-if="helpSection === 'annotate'" class="help-page">
-            <h2 class="help-page-title">Annotate</h2>
-            <p class="help-intro">Select elements, place annotations, and create tasks for your AI agent. Each annotation becomes a structured task with file location, component info, and your description.</p>
-
-            <h3 class="help-section-title">Tools</h3>
-            <div class="help-feature-list">
-              <div class="help-feature">
-                <div class="help-feature-header"><kbd>V</kbd> Select</div>
-                <p>Click any element to select it. The inspector panel shows computed styles, component info, and source file location. Multi-select with shift+click. Create a task from the selection with a description of your desired change.</p>
-              </div>
-              <div class="help-feature">
-                <div class="help-feature-header"><kbd>P</kbd> Pin</div>
-                <p>Click to drop a pin on any element. A task panel opens to describe the change you want. Pins track their target element during scroll and resize.</p>
-              </div>
-              <div class="help-feature">
-                <div class="help-feature-header"><kbd>A</kbd> Arrow</div>
-                <p>Draw arrows between elements to show relationships or flow. Arrows snap to element edges with bezier curves. Drag endpoints to reposition. Multiple colors available.</p>
-              </div>
-              <div class="help-feature">
-                <div class="help-feature-header"><kbd>D</kbd> Draw Section</div>
-                <p>Draw a rectangular area to describe a new content section. Includes a markdown editor for detailed descriptions. Sections are movable and resizable.</p>
-              </div>
-              <div class="help-feature">
-                <div class="help-feature-header"><kbd>H</kbd> Highlight Text</div>
-                <p>Select text in your app to highlight it. The highlight is attached to the DOM range and tracks scroll. Create tasks referencing the highlighted content.</p>
-              </div>
-              <div class="help-feature">
-                <div class="help-feature-header"><kbd>I</kbd> Interact</div>
-                <p>Switch to interact mode to use your app normally — click links, fill forms, scroll. No element selection or annotation occurs in this mode.</p>
-              </div>
-            </div>
-
-            <h3 class="help-section-title">Tasks</h3>
-            <p class="help-text">Every annotation creates a task with a lifecycle: <strong>pending</strong> &rarr; <strong>in_progress</strong> &rarr; <strong>review</strong> &rarr; <strong>accepted</strong> or <strong>denied</strong>. Tasks include source file, line number, component, route, and optional screenshots. Use the Tasks panel <kbd>T</kbd> to review, accept, deny, or delete tasks.</p>
-
-            <h3 class="help-section-title">Screenshots</h3>
-            <p class="help-text">Attach screenshots to any task. Use the snipping tool to capture a region or the full page. Screenshots are stored on the server and included in task reports for your AI agent.</p>
-          </div>
-
-          <!-- Design -->
-          <div v-else-if="helpSection === 'design'" class="help-page">
-            <h2 class="help-page-title">Design</h2>
-            <p class="help-intro">Inspect and edit your app's visual design. Changes are recorded as tasks that map back to your source code and design tokens.</p>
-
-            <h3 class="help-section-title">Design Tokens</h3>
-            <p class="help-text">View and edit your design system tokens — colors, typography, spacing, borders, shadows, and more. Annotask detects CSS custom properties and organizes them by category. Edits create <strong>theme_update</strong> tasks with the token name, category, before/after values, and CSS variable reference.</p>
-
-            <h3 class="help-section-title">Inspector</h3>
-            <p class="help-text">Click any element to inspect its computed styles. Edit properties inline — changes are applied live and recorded as <strong>style_update</strong> tasks. Class editing lets you add, remove, or toggle CSS classes. All changes can be undone with <kbd class="mod">Ctrl</kbd><kbd>Z</kbd>.</p>
-
-            <h3 class="help-section-title">Layout Overlay</h3>
-            <p class="help-text">Toggle the layout overlay <kbd>L</kbd> to visualize flex and grid containers. See container boundaries, alignment, and gaps. Scan the page to discover all layout containers at once.</p>
-
-            <h3 class="help-section-title">Color Palette</h3>
-            <p class="help-text">Scan your page to extract all CSS custom property colors into a visual palette. See which tokens are in use and quickly navigate to edit them.</p>
-          </div>
-
-          <!-- Accessibility -->
-          <div v-else-if="helpSection === 'a11y'" class="help-page">
-            <h2 class="help-page-title">Accessibility</h2>
-            <p class="help-intro">Run automated WCAG accessibility audits powered by axe-core. Scan the full page or a specific element to find violations.</p>
-
-            <h3 class="help-section-title">Scanning</h3>
-            <p class="help-text">Click <strong>Scan Page</strong> to run a full-page audit, or select an element first and scan just that subtree. Axe-core is loaded on demand from the local server — no external CDN required.</p>
-
-            <h3 class="help-section-title">Violations</h3>
-            <p class="help-text">Results are grouped by rule with impact levels: critical, serious, moderate, minor. Each violation shows the affected elements, their selectors, and a suggested fix. Click a violation to see full details including the WCAG rule reference.</p>
-
-            <h3 class="help-section-title">Creating Fix Tasks</h3>
-            <p class="help-text">Click the task button on any violation to create an <strong>a11y_fix</strong> task. The task includes the rule ID, impact, affected elements with their selectors, source file locations, and fix suggestions — everything your AI agent needs to resolve the issue.</p>
-          </div>
-
-          <!-- Performance -->
-          <div v-else-if="helpSection === 'perf'" class="help-page">
-            <h2 class="help-page-title">Performance</h2>
-            <p class="help-intro">Monitor Web Vitals, analyze bundles, record interactions, and track console errors. Create fix tasks from performance findings.</p>
-
-            <h3 class="help-section-title">Audit</h3>
-            <p class="help-text">Click <strong>Scan</strong> to capture a performance snapshot — Web Vitals (LCP, FID, CLS, TTFB), navigation timing, and resource breakdown. Resources are sorted by transfer size so you can spot large assets immediately.</p>
-
-            <h3 class="help-section-title">Recording</h3>
-            <p class="help-text">Click <strong>Record</strong> to capture a performance session. Interact with your app, then stop recording. The result includes a timeline of navigation and click events, vitals collected during the session, and a full resource list. Recordings are saved to the server for historical comparison.</p>
-
-            <h3 class="help-section-title">Findings</h3>
-            <p class="help-text">Annotask analyzes scan and recording results to surface actionable findings — slow vitals, large bundles, render-blocking resources, excessive DOM size. Each finding can be turned into a task for your AI agent.</p>
-
-            <h3 class="help-section-title">Errors</h3>
-            <p class="help-text">The Errors tab captures console errors and warnings from your app in real time. Errors are deduplicated and bounded to prevent memory issues. Click any error to create a fix task with the error message, stack trace, and source location.</p>
-          </div>
-        </div>
-      </div>
-
-      <div v-if="showContext" class="fullscreen-overlay">
-        <div class="fullscreen-overlay-header">
-          <span class="fullscreen-overlay-title">Component Context</span>
-          <button class="fullscreen-overlay-close" @click="showContext = false">Esc to close</button>
-        </div>
-        <LibrariesPage />
-      </div>
-
-      <!-- Settings -->
-      <div v-if="showSettings" class="fullscreen-overlay settings-overlay">
-        <div class="fullscreen-overlay-header">
-          <span class="fullscreen-overlay-title">Settings</span>
-          <button class="fullscreen-overlay-close" @click="showSettings = false">Esc to close</button>
-        </div>
-        <div class="settings-content">
-          <div class="settings-page">
-            <h2 class="settings-page-title">Appearance</h2>
-
-            <div class="settings-section">
-              <label class="settings-label">Theme</label>
-              <p class="settings-desc">Pick a shell theme that contrasts with your app.</p>
-
-              <!-- System preference toggle -->
-              <label class="settings-system-toggle">
-                <input type="checkbox" :checked="shellTheme.activeThemeId.value === 'system'" @change="shellTheme.setTheme(($event.target as HTMLInputElement).checked ? 'system' : shellTheme.resolvedTheme.value.id)" />
-                <span>Use system preference</span>
-              </label>
-
-              <!-- Theme grid grouped by category -->
-              <template v-for="group in [
-                { key: 'default', label: 'Default' },
-                { key: 'high-contrast', label: 'High Contrast' },
-                { key: 'accessibility', label: 'Accessibility' },
-                { key: 'editor', label: 'Editor Themes' },
-                { key: 'custom', label: 'Custom' },
-              ]" :key="group.key">
-                <template v-if="shellTheme.allThemes.value.filter(t => t.group === group.key).length">
-                  <div class="settings-group-label">{{ group.label }}</div>
-                  <div class="settings-theme-grid">
-                    <button
-                      v-for="t in shellTheme.allThemes.value.filter(t => t.group === group.key)"
-                      :key="t.id"
-                      :class="['settings-theme-card', {
-                        active: shellTheme.activeThemeId.value === 'system'
-                          ? shellTheme.resolvedTheme.value.id === t.id
-                          : shellTheme.activeThemeId.value === t.id
-                      }]"
-                      @click="shellTheme.setTheme(t.id)"
-                      :title="t.description"
-                    >
-                      <div class="theme-card-swatches">
-                        <span class="theme-swatch" :style="{ background: t.colors.bg }" />
-                        <span class="theme-swatch" :style="{ background: t.colors.surface }" />
-                        <span class="theme-swatch" :style="{ background: t.colors.accent }" />
-                        <span class="theme-swatch" :style="{ background: t.colors.danger }" />
-                        <span class="theme-swatch" :style="{ background: t.colors.text }" />
-                      </div>
-                      <span class="theme-card-name">{{ t.name }}</span>
-                    </button>
-                  </div>
-                </template>
-              </template>
-              <button class="settings-create-btn" @click="showThemeEditor = true">+ Create Custom Theme</button>
-            </div>
-          </div>
-        </div>
-        <ShellThemeEditor v-if="showThemeEditor" @close="showThemeEditor = false" />
-      </div>
-
+      <SettingsOverlay v-if="showSettings"
+        :shell-theme="shellTheme"
+        :show-theme-editor="showThemeEditor"
+        @close="showSettings = false"
+        @update:showThemeEditor="showThemeEditor = $event"
+      />
     </div>
 
     <!-- Context menu -->
@@ -1294,34 +484,15 @@ const appUrl = computed(() => {
     <!-- Report viewer slide-out -->
     <ReportViewer v-if="showReportPanel" :tasks="taskSystem.tasks.value" @close="showReportPanel = false" />
 
-    <!-- Task detail modal -->
     <!-- A11y Finding Detail -->
-    <FindingDrawer
-      v-if="detailA11yViolation"
-      :title="detailA11yViolation.help"
-      :severity="detailA11yViolation.impact"
+    <A11yDetailDrawer v-if="detailA11yViolation"
+      :violation="detailA11yViolation"
       :tasked="a11yTaskRules.has(detailA11yViolation.id)"
       @close="detailA11yViolation = null"
       @create-task="onCreateA11yTask(detailA11yViolation!)"
-    >
-      <div class="fd-detail-section"><span class="fd-detail-label">Rule</span><span class="fd-detail-value">{{ detailA11yViolation.id }}</span></div>
-      <div class="fd-detail-section"><span class="fd-detail-label">Impact</span><span class="fd-detail-value">{{ detailA11yViolation.impact }}</span></div>
-      <div class="fd-detail-section"><span class="fd-detail-label">Description</span><p class="fd-detail-text">{{ detailA11yViolation.description }}</p></div>
-      <div v-if="detailA11yViolation.elements && detailA11yViolation.elements.length" class="fd-detail-section">
-        <span class="fd-detail-label">Affected Elements ({{ detailA11yViolation.nodes }})</span>
-        <div v-for="(el, i) in detailA11yViolation.elements" :key="i" class="fd-a11y-element">
-          <code class="fd-a11y-html">{{ el.html }}</code>
-          <code v-if="el.target" class="fd-a11y-selector">{{ el.target }}</code>
-          <p v-if="el.failureSummary" class="fd-a11y-fix">{{ el.failureSummary }}</p>
-          <span v-if="el.file" class="fd-a11y-source">{{ el.file }}:{{ el.line }} &middot; {{ el.component }}</span>
-        </div>
-      </div>
-      <div class="fd-detail-section">
-        <span class="fd-detail-label">Learn More</span>
-        <a :href="detailA11yViolation.helpUrl" target="_blank" rel="noopener" class="fd-link">{{ detailA11yViolation.helpUrl }}</a>
-      </div>
-    </FindingDrawer>
+    />
 
+    <!-- Task detail modal -->
     <TaskDetailModal
       v-if="detailTask"
       :task="detailTask"
@@ -1341,6 +512,7 @@ const appUrl = computed(() => {
     />
   </div>
 </template>
+
 
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1382,6 +554,7 @@ const appUrl = computed(() => {
   --annotation-red: #ef4444; --annotation-orange: #f97316; --annotation-yellow: #eab308;
   --annotation-green: #22c55e; --annotation-blue: #3b82f6; --annotation-purple: #8b5cf6;
 }
+
 /* Light fallback — kept for safe first paint before JS runs */
 :root.light {
   --bg: #f8f9fa; --surface: #ffffff; --surface-2: #f0f1f3; --surface-3: #e5e7eb;
@@ -1416,597 +589,4 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
 ::-webkit-scrollbar-corner { background: transparent; }
 
 .annotask-shell { display: flex; flex-direction: column; height: 100%; }
-
-/* Toolbar */
-.toolbar { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 12px; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 8px; }
-.logo { height: 20px; width: auto; margin-right: 12px; color: var(--accent); }
-.tool-btn { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); color: var(--text); font-size: 12px; cursor: pointer; }
-.tool-btn:hover { background: var(--border); }
-.tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.tool-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
-.tool-btn.danger { color: var(--danger); }
-/* Interact / Select toggle for Design view */
-.mode-toolbar { display: flex; gap: 2px; align-items: center; }
-.mode-btn {
-  width: 28px; height: 28px;
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--surface-2);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.1s;
-}
-.mode-btn:hover { background: var(--border); color: var(--text); }
-.mode-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
-/* Panel toggle (Inspector/Tasks) */
-.panel-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-.toggle-btn {
-  display: flex; align-items: center; gap: 3px;
-  padding: 3px 8px; border: none;
-  background: var(--surface-2); color: var(--text-muted);
-  font-size: 11px; cursor: pointer; transition: all 0.1s;
-}
-.toggle-btn:first-child { border-right: 1px solid var(--border); }
-.toggle-btn:hover { background: var(--border); color: var(--text); }
-.toggle-btn.active { background: var(--accent); color: var(--text-on-accent); }
-.toggle-badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 14px; height: 14px; padding: 0 3px;
-  font-size: 8px; font-weight: 700;
-  background: var(--danger); color: white;
-  border-radius: 7px;
-}
-
-/* View toggle (Editor/Theme) */
-.view-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-right: 8px; }
-
-/* Theme panel */
-.theme-panel { width: 440px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
-
-.visibility-toggles { display: flex; gap: 1px; margin-right: 4px; }
-.vis-btn {
-  width: 20px; height: 20px; border: none; border-radius: 3px;
-  background: var(--surface-2); color: var(--text-muted);
-  font-size: 9px; font-weight: 700; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.1s;
-}
-.vis-btn:hover { background: var(--border); color: var(--text); }
-.vis-btn.off { opacity: 0.3; text-decoration: line-through; }
-.change-count { font-size: 11px; color: var(--text-muted); }
-
-/* Banners */
-.warning-banner { padding: 8px 16px; background: color-mix(in srgb, var(--warning) 10%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); color: var(--warning); font-size: 12px; }
-.warning-banner code { background: color-mix(in srgb, var(--warning) 15%, transparent); padding: 1px 4px; border-radius: 3px; }
-.setup-banner { padding: 8px 16px; background: color-mix(in srgb, var(--accent) 8%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); font-size: 12px; }
-.setup-banner code { background: color-mix(in srgb, var(--accent) 15%, transparent); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
-
-/* Main */
-.main { display: flex; flex: 1; overflow: hidden; position: relative; }
-.toolbar-center { display: flex; align-items: center; gap: 8px; }
-.route-input {
-  font-size: 11px; color: var(--text-muted); background: var(--surface-2);
-  padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  outline: none; min-width: 80px; max-width: 200px;
-}
-.route-input:focus { border-color: var(--accent); color: var(--text); }
-.canvas-area { flex: 1; position: relative; overflow: hidden; }
-
-/* Full-screen overlays (help, context) */
-.fullscreen-overlay {
-  position: absolute; inset: 0; z-index: 10010;
-  background: var(--surface);
-  display: flex; flex-direction: column;
-  overflow: hidden;
-}
-.fullscreen-overlay-header {
-  display: flex; align-items: center; padding: 10px 16px;
-  border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
-.fullscreen-overlay-title {
-  font-size: 13px; font-weight: 600; color: var(--text);
-}
-.fullscreen-overlay-close {
-  margin-left: auto; background: none; border: 1px solid var(--border);
-  color: var(--text-muted); font-size: 11px; padding: 3px 10px;
-  border-radius: 4px; cursor: pointer;
-}
-.fullscreen-overlay-close:hover { color: var(--text); background: var(--surface-2); }
-
-.help-overlay { flex-direction: row; }
-
-/* Settings page */
-.settings-content {
-  flex: 1; overflow-y: auto; padding: 32px 48px;
-}
-.settings-page { max-width: 560px; }
-.settings-page-title {
-  font-size: 16px; font-weight: 700; color: var(--text); margin: 0 0 20px;
-}
-.settings-section { margin-bottom: 28px; }
-.settings-label {
-  font-size: 12px; font-weight: 600; color: var(--text); display: block; margin-bottom: 4px;
-}
-.settings-desc {
-  font-size: 11px; color: var(--text-muted); margin: 0 0 12px; line-height: 1.5;
-}
-.settings-system-toggle {
-  display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text);
-  cursor: pointer; margin-bottom: 12px;
-}
-.settings-system-toggle input { accent-color: var(--accent); cursor: pointer; }
-.settings-group-label {
-  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text-muted); margin: 12px 0 6px;
-}
-.settings-theme-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px;
-}
-.settings-theme-card {
-  display: flex; flex-direction: column; gap: 5px; padding: 8px;
-  background: var(--surface-2); border: 2px solid var(--border); border-radius: 6px;
-  cursor: pointer; transition: border-color 0.12s;
-}
-.settings-theme-card:hover { border-color: var(--text-muted); }
-.settings-theme-card.active { border-color: var(--accent); }
-.theme-card-swatches { display: flex; gap: 2px; }
-.theme-swatch {
-  flex: 1; height: 14px; border-radius: 2px;
-  border: 1px solid rgba(128,128,128,0.2);
-}
-.theme-card-name { font-size: 10px; font-weight: 500; color: var(--text); }
-.settings-create-btn {
-  margin-top: 12px; padding: 6px 14px; font-size: 11px; font-weight: 600;
-  background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border);
-  border-radius: 6px; cursor: pointer;
-}
-.settings-create-btn:hover { border-color: var(--accent); color: var(--accent); }
-
-/* Help page layout */
-.help-sidebar {
-  width: 180px; flex-shrink: 0; border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; padding: 12px 0;
-}
-.help-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; flex: 1; }
-.help-nav-btn {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  background: none; border: none; border-radius: 6px; cursor: pointer;
-  font-size: 12px; color: var(--text); text-align: left; width: 100%;
-}
-.help-nav-btn:hover { background: var(--surface-2); }
-.help-nav-btn.active { background: var(--accent); color: #fff; }
-.help-version {
-  padding: 12px 20px 4px; font-size: 10px; color: var(--text-muted); opacity: 0.5;
-}
-.help-content {
-  flex: 1; overflow-y: auto; padding: 32px 48px;
-}
-.help-page { max-width: 720px; }
-.help-page-title {
-  font-size: 20px; font-weight: 700; color: var(--text); margin: 0 0 8px;
-}
-.help-intro {
-  font-size: 13px; color: var(--text); line-height: 1.6; margin: 0 0 28px;
-}
-.help-section-title {
-  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text); margin: 28px 0 12px; padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-}
-.help-text {
-  font-size: 12px; color: var(--text); line-height: 1.65; margin: 0 0 12px;
-}
-.help-text strong { color: var(--text); font-weight: 600; }
-.help-text kbd {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 18px; height: 16px; padding: 0 4px;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px;
-  font-family: inherit; font-size: 10px; font-weight: 600; color: var(--text);
-  vertical-align: middle;
-}
-
-/* Overview cards */
-.help-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 28px; }
-.help-card {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
-  padding: 16px; background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 8px; cursor: pointer; text-align: left;
-}
-.help-card:hover { border-color: var(--accent); }
-.help-card svg { color: var(--accent); }
-.help-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.help-card-desc { font-size: 11px; color: var(--text); line-height: 1.5; }
-
-/* Overview shortcuts grid */
-.help-shortcuts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-.help-shortcut-group { }
-
-/* Feature list (annotate tools etc.) */
-.help-feature-list { display: flex; flex-direction: column; gap: 16px; }
-.help-feature { }
-.help-feature-header {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px;
-}
-.help-feature p {
-  font-size: 12px; color: var(--text); line-height: 1.6; margin: 0;
-}
-.canvas-area.viewport-active {
-  display: flex; align-items: flex-start; justify-content: center;
-  overflow: auto; background: var(--bg); padding: 16px;
-}
-.app-iframe { width: 100%; height: 100%; border: none; }
-.canvas-area.viewport-active .app-iframe {
-  flex-shrink: 0;
-  border-radius: 6px;
-  box-shadow: 0 0 0 1px var(--border), 0 4px 24px var(--shadow);
-}
-.drawing-shield { position: absolute; inset: 0; z-index: 9999; }
-.drawing-shield.arrow { cursor: crosshair; }
-.drawing-shield.draw { cursor: crosshair; }
-
-/* Highlights */
-.highlight { position: fixed; pointer-events: none; z-index: 10000; border-radius: 2px; }
-.highlight.hover { background: color-mix(in srgb, var(--highlight-color) 10%, transparent); border: 1.5px solid color-mix(in srgb, var(--highlight-color) 50%, transparent); }
-.highlight.group { background: color-mix(in srgb, var(--purple) 8%, transparent); border: 1.5px dashed color-mix(in srgb, var(--purple) 40%, transparent); }
-.highlight.select { background: color-mix(in srgb, var(--highlight-color) 8%, transparent); border: 2px solid var(--highlight-color); }
-.highlight.task-element { background: color-mix(in srgb, var(--highlight-color) 8%, transparent); border: 2px solid color-mix(in srgb, var(--highlight-color) 50%, transparent); }
-
-.hover-label, .select-label {
-  position: absolute; bottom: 100%; left: -1px;
-  display: flex; align-items: center; gap: 6px;
-  padding: 2px 8px; font-size: 11px; font-weight: 500; white-space: nowrap;
-  border-radius: 4px 4px 0 0;
-}
-.hover-label { background: var(--highlight-color); color: white; }
-.hover-tag { font-family: monospace; }
-.hover-comp { opacity: 0.7; }
-.select-label { background: var(--highlight-color); color: white; font-family: monospace; font-size: 10px; }
-
-/* Panel */
-.panel { width: 320px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
-.panel.empty { justify-content: center; align-items: center; }
-.panel-source { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.source-path { font-size: 12px; color: var(--accent); word-break: break-all; font-family: monospace; }
-.component-badge { font-size: 10px; padding: 2px 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); white-space: nowrap; }
-.role-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
-.role-badge.container { background: color-mix(in srgb, var(--role-container) 15%, transparent); color: var(--role-container); }
-.role-badge.content { background: color-mix(in srgb, var(--role-content) 15%, transparent); color: var(--role-content); }
-.role-badge.component { background: color-mix(in srgb, var(--role-component) 15%, transparent); color: var(--role-component); }
-
-/* Group bar */
-.panel-group-bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--purple) 6%, transparent); }
-.group-summary { font-size: 11px; color: var(--purple); }
-.group-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; }
-.group-toggle input { accent-color: var(--purple); width: 14px; height: 14px; cursor: pointer; }
-.toggle-label { font-size: 11px; color: var(--text-muted); }
-
-/* Tabs */
-.panel-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.tab { flex: 1; padding: 8px 4px; font-size: 11px; font-weight: 500; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); cursor: pointer; transition: all 0.15s; }
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px; font-size: 9px; font-weight: 700; background: var(--danger); color: white; border-radius: 7px; margin-left: 3px; }
-
-/* Tab content */
-.tab-content { flex: 1; overflow-y: auto; padding: 14px; }
-
-/* Classes tab */
-.class-editor { width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: monospace; font-size: 12px; resize: vertical; outline: none; }
-.class-editor:focus { border-color: var(--accent); }
-.hint { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
-
-/* Empty state */
-.empty-content { text-align: center; color: var(--text-muted); }
-.empty-content p { margin-top: 8px; }
-.empty-hint { font-size: 11px; opacity: 0.6; }
-
-/* Changes footer */
-.changes-footer { border-top: 1px solid var(--border); flex-shrink: 0; padding: 8px 14px; }
-.changes-list { max-height: 120px; overflow-y: auto; margin-bottom: 6px; }
-.change-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
-.change-prop { color: var(--text-muted); font-family: monospace; }
-.change-arrow { color: var(--text-muted); font-size: 10px; }
-.change-val { color: var(--success); font-family: monospace; }
-.changes-actions { display: flex; align-items: center; gap: 6px; }
-.changes-count { font-size: 10px; color: var(--text-muted); flex: 1; }
-.changes-commit {
-  padding: 4px 12px; font-size: 11px; font-weight: 600;
-  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 5px; cursor: pointer;
-}
-.changes-commit:hover { opacity: 0.9; }
-.changes-discard {
-  padding: 4px 12px; font-size: 11px;
-  background: var(--surface-2); color: var(--text-muted);
-  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
-}
-.changes-discard:hover { background: var(--border); color: var(--text); }
-
-/* Task cards in sidebar */
-.task-card { padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; cursor: pointer; transition: border-color 0.12s; }
-.task-card:hover { border-color: var(--text-muted); }
-.task-card.in_progress { border-color: var(--accent); }
-.task-card.review { border-color: var(--warning); }
-.task-card.denied { border-color: var(--danger); }
-.task-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
-.task-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.task-status-dot.pending { background: var(--text-muted); }
-.task-status-dot.in_progress { background: var(--accent); }
-.task-status-dot.review { background: var(--warning); }
-.task-status-dot.denied { background: var(--danger); }
-.task-status-dot.needs_info { background: var(--status-needs-info); }
-.task-status-dot.blocked { background: var(--status-blocked); }
-.task-card-desc { font-size: 11px; color: var(--text); flex: 1; }
-.task-card-md {
-  max-height: 40px; overflow: hidden; line-height: 1.4;
-  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
-  mask-image: linear-gradient(to bottom, #000 60%, transparent 100%);
-}
-.task-card-md p { margin: 0; }
-.task-card-md pre, .task-card-md blockquote, .task-card-md ul, .task-card-md ol { margin: 2px 0; }
-.task-card-md code { font-size: 10px; background: var(--surface-2); padding: 0 3px; border-radius: 2px; }
-.task-card-close { width: 16px; height: 16px; border: none; background: none; color: var(--text-muted); font-size: 13px; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 3px; }
-.task-card-close:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
-.task-card-meta { display: flex; align-items: center; gap: 6px; }
-.task-card-file { font-size: 9px; color: var(--text-muted); }
-.task-route-badge { font-size: 8px; padding: 1px 5px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); border-radius: 3px; font-weight: 600; }
-.task-card-feedback { font-size: 10px; color: var(--danger); font-style: italic; margin-top: 3px; }
-.task-card-resolution {
-  font-size: 10px; color: var(--success); margin-bottom: 4px; padding: 3px 8px;
-  background: color-mix(in srgb, var(--success) 8%, transparent); border-radius: 4px; border-left: 2px solid var(--success);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.task-card-agent-q {
-  font-size: 10px; color: var(--indigo); margin-top: 3px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.task-card-blocked {
-  font-size: 10px; color: var(--status-blocked); margin-top: 3px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* New task form */
-.new-task-toggle {
-  margin-left: auto; padding: 2px 8px; font-size: 10px; font-weight: 600;
-  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 4px; cursor: pointer;
-}
-.new-task-toggle:hover { opacity: 0.9; }
-.new-task-toggle.json-toggle { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
-.new-task-toggle.json-toggle.active { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
-.new-task-form { padding: 8px 14px; border-bottom: 1px solid var(--border); }
-.new-task-input {
-  width: 100%; padding: 6px 8px; font-size: 12px;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
-  color: var(--text); resize: none; outline: none; font-family: inherit;
-}
-.new-task-input:focus { border-color: var(--accent); }
-.new-task-actions { display: flex; gap: 4px; margin-top: 4px; }
-.submit-btn {
-  padding: 4px 12px; font-size: 11px; font-weight: 600;
-  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 4px; cursor: pointer;
-}
-.submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.cancel-btn {
-  padding: 4px 12px; font-size: 11px;
-  background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
-}
-
-.task-card-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; align-items: center; }
-.deny-form { display: flex; flex-direction: column; gap: 6px; width: 100%; }
-.deny-feedback-textarea {
-  width: 100%; padding: 6px 8px; font-size: 11px;
-  background: var(--bg); border: 1px solid var(--danger); border-radius: 5px;
-  color: var(--text); outline: none; resize: vertical; font-family: inherit; line-height: 1.4;
-}
-.deny-feedback-textarea:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 20%, transparent); }
-.deny-form-actions { display: flex; gap: 4px; align-items: center; }
-.task-card-actions .task-accept, .task-card-actions .task-deny {
-  flex: 1; padding: 5px 0; font-size: 11px; font-weight: 600;
-  border: none; border-radius: 5px; cursor: pointer; transition: all 0.12s;
-  display: flex; align-items: center; justify-content: center; gap: 4px;
-}
-.task-card-actions .task-accept { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
-.task-card-actions .task-accept:hover { background: var(--success); color: var(--text-on-accent); }
-.task-card-actions .task-deny { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
-.task-card-actions .task-deny:hover { background: var(--danger); color: var(--text-on-accent); }
-.task-send-feedback {
-  flex: 1; padding: 5px 0; font-size: 11px; font-weight: 600;
-  border: none; border-radius: 5px; cursor: pointer; transition: all 0.12s;
-  background: rgba(161,161,170,0.15); color: var(--text-muted);
-}
-.task-send-feedback:hover:not(:disabled) { background: rgba(161,161,170,0.3); color: var(--text); }
-.task-send-feedback:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* Pending task creation panel */
-.pending-task-panel { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
-.pending-task-context { display: flex; flex-direction: column; gap: 6px; }
-.pending-task-kind {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 600; color: var(--text);
-}
-.pending-task-kind.pin { color: var(--accent); }
-.pending-task-kind.pin svg { stroke: var(--accent); }
-.pending-task-kind.highlight { color: var(--warning); }
-.pending-task-kind.highlight svg { stroke: var(--warning); }
-.pending-task-kind.select { color: var(--accent); }
-.pending-task-kind.select svg { stroke: var(--accent); }
-.select-element-details { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; max-height: 200px; overflow-y: auto; }
-.selected-element-card { padding: 6px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; }
-.selected-element-header { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
-.selected-element-tag { font-size: 12px; font-weight: 600; color: var(--text); }
-.selected-element-file { display: block; color: var(--text-muted); font-size: 10px; }
-.selected-element-classes { display: block; color: var(--text-muted); font-size: 10px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pending-task-file { font-size: 11px; color: var(--text-muted); font-family: monospace; }
-.pending-task-title { font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 4px; display: block; }
-.pending-task-input {
-  width: 100%; padding: 8px 10px; font-size: 12px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-  resize: vertical; font-family: inherit; line-height: 1.4;
-}
-.pending-task-input:focus { border-color: var(--accent); outline: none; }
-.pending-task-actions { display: flex; gap: 6px; }
-.pending-task-actions .submit-btn {
-  flex: 1; padding: 6px 12px; font-size: 11px; font-weight: 600;
-  background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 5px; cursor: pointer;
-}
-.pending-task-actions .submit-btn:disabled { opacity: 0.4; cursor: default; }
-.pending-task-actions .cancel-btn {
-  padding: 6px 12px; font-size: 11px;
-  background: var(--surface-2); color: var(--text-muted);
-  border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
-}
-.pending-task-actions .cancel-btn:hover { background: var(--border); color: var(--text); }
-
-.task-toggles { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
-
-/* Toolbar action buttons (scan, record) */
-.scan-btn { padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--accent); color: var(--text-on-accent); border: none; border-radius: 4px; cursor: pointer; }
-.scan-btn:disabled { opacity: 0.5; cursor: default; }
-.scan-btn:hover:not(:disabled) { opacity: 0.9; }
-.rec-btn { display: flex; align-items: center; gap: 4px; padding: 3px 10px; font-size: 10px; font-weight: 600; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
-.rec-btn:hover { background: var(--border); }
-.rec-btn.recording { background: color-mix(in srgb, var(--danger) 15%, transparent); border-color: var(--danger); color: var(--danger); }
-.rec-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
-.rec-dot.active { animation: pulse-dot 1s infinite; }
-@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-
-/* A11y panel */
-.a11y-error { font-size: 11px; color: var(--danger); padding: 6px 8px; background: color-mix(in srgb, var(--danger) 10%, transparent); border-radius: 5px; margin-bottom: 6px; }
-.a11y-pass {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
-  background: color-mix(in srgb, var(--success) 12%, transparent); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 25%, transparent);
-}
-.a11y-empty { font-size: 11px; color: var(--text-muted); padding: 20px 0; text-align: center; }
-.a11y-summary {
-  font-size: 11px; font-weight: 600; color: var(--danger);
-  padding: 6px 8px; border-radius: 5px; margin-bottom: 4px;
-  background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
-}
-.a11y-card {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 8px; border-radius: 6px; margin-bottom: 4px;
-  background: var(--surface-2); border-left: 3px solid var(--border);
-  cursor: pointer; font-size: 11px;
-}
-.a11y-card:hover { background: var(--border); }
-.a11y-card.critical { border-left-color: var(--severity-critical); }
-.a11y-card.serious { border-left-color: var(--severity-serious); }
-.a11y-card.moderate { border-left-color: var(--severity-moderate); }
-.a11y-card.minor { border-left-color: var(--severity-minor); }
-.a11y-impact {
-  font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 5px;
-  border-radius: 3px; color: white; flex-shrink: 0;
-}
-.a11y-impact.critical { background: var(--severity-critical); }
-.a11y-impact.serious { background: var(--severity-serious); }
-.a11y-impact.moderate { background: var(--severity-moderate); }
-.a11y-impact.minor { background: var(--severity-minor); }
-.a11y-rule { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.a11y-count { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
-.a11y-tasked-badge { font-size: 9px; color: var(--success); margin-left: auto; flex-shrink: 0; }
-.a11y-chevron { color: var(--text-muted); flex-shrink: 0; margin-left: auto; }
-.a11y-tasked-badge + .a11y-chevron { margin-left: 0; }
-
-/* Finding drawer detail styles */
-.fd-detail-section { display: flex; flex-direction: column; gap: 4px; }
-.fd-detail-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
-.fd-detail-value { font-size: 13px; color: var(--text); }
-.fd-detail-text { font-size: 12px; color: var(--text); line-height: 1.5; margin: 0; }
-.fd-a11y-element { padding: 8px; background: var(--surface-2); border-radius: 6px; margin-top: 4px; display: flex; flex-direction: column; gap: 4px; }
-.fd-a11y-html { font-size: 11px; color: var(--warning); word-break: break-all; }
-.fd-a11y-selector { font-size: 10px; color: var(--text-muted); }
-.fd-a11y-fix { font-size: 11px; color: var(--text); line-height: 1.4; margin: 0; }
-.fd-a11y-source { font-size: 10px; color: var(--accent); }
-.fd-link { font-size: 12px; color: var(--accent); text-decoration: none; word-break: break-all; }
-.fd-link:hover { text-decoration: underline; }
-
-/* Screenshot button and preview */
-.screenshot-btn {
-  width: 100%; padding: 5px; margin-top: 4px; font-size: 10px; font-weight: 600;
-  background: var(--surface-2); color: var(--text-muted); border: 1px dashed var(--border);
-  border-radius: 5px; cursor: pointer;
-}
-.screenshot-btn:hover { border-color: var(--accent); color: var(--accent); }
-.screenshot-preview { position: relative; margin-top: 4px; }
-.screenshot-thumb { width: 100%; border-radius: 4px; border: 1px solid var(--border); }
-.screenshot-remove {
-  position: absolute; top: 4px; right: 4px; width: 18px; height: 18px;
-  border: none; border-radius: 50%; background: rgba(0,0,0,0.6); color: white;
-  font-size: 14px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
-}
-.screenshot-remove:hover { background: var(--danger); }
-
-/* Snipping overlay — macOS-style: selected area clear, surroundings dimmed */
-.snip-overlay {
-  position: fixed; inset: 0; z-index: 20000;
-  cursor: crosshair;
-}
-/* Dim the entire screen when no selection is drawn yet */
-.snip-overlay:not(:has(.snip-selection)) {
-  background: rgba(0, 0, 0, 0.4);
-}
-.snip-hint {
-  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
-  padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600;
-  background: rgba(0, 0, 0, 0.75); color: white; pointer-events: none;
-  backdrop-filter: blur(4px); letter-spacing: 0.01em;
-}
-.snip-selection {
-  position: fixed; z-index: 20001; pointer-events: none;
-  border: 2px solid rgba(255, 255, 255, 0.8);
-  border-radius: 2px;
-  /* Giant box-shadow creates the dimmed surround — the selection stays clear */
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
-}
-.snip-size-label {
-  position: absolute; bottom: -24px; left: 50%; transform: translateX(-50%);
-  padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
-  background: rgba(0, 0, 0, 0.75); color: white; white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Task screenshot thumbnail */
-.task-screenshot-thumb {
-  width: 100%; border-radius: 4px; margin-top: 6px;
-  border: 1px solid var(--border);
-}
-.history-toggle { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
-.history-toggle input { margin: 0; }
-.history-toggle span { user-select: none; }
-
-/* Shortcuts panel */
-/* Shortcut rows (used in help overview) */
-.shortcut-group { margin-bottom: 16px; }
-.shortcut-group-title {
-  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text-muted); margin-bottom: 8px; padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-.shortcut-row {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 0; font-size: 12px; color: var(--text);
-}
-.shortcut-row span { margin-left: auto; color: var(--text); font-size: 11px; }
-.shortcut-row kbd {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 22px; height: 20px; padding: 0 5px;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;
-  font-family: inherit; font-size: 11px; font-weight: 600; color: var(--text);
-  box-shadow: 0 1px 0 var(--border);
-}
-.shortcut-row kbd.mod { font-size: 10px; color: var(--text-muted); }
-.shortcut-hint {
-  font-size: 11px; color: var(--text); margin-top: 16px; padding-top: 8px;
-  border-top: 1px solid var(--border); display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-}
-.shortcut-hint kbd {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 18px; height: 16px; padding: 0 4px;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 3px;
-  font-family: inherit; font-size: 10px; font-weight: 600; color: var(--text-muted);
-}
 </style>

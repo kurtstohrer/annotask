@@ -22,7 +22,7 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'style-change': [property: string, value: string]
+  'style-change': [property: string, value: string, tokenRole?: string]
   'class-change': []
   'update:editingClasses': [value: string]
   'update:applyToGroup': [value: boolean]
@@ -45,7 +45,7 @@ const emit = defineEmits<{
       :liveStyles="liveStyles"
       :editingClasses="editingClasses"
       :changes="changes"
-      @style-change="(p, v) => emit('style-change', p, v)"
+      @style-change="(p, v, role) => emit('style-change', p, v, role)"
       @class-change="emit('class-change')"
       @update:editingClasses="emit('update:editingClasses', $event)"
       @update:applyToGroup="emit('update:applyToGroup', $event)"

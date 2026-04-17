@@ -2,7 +2,7 @@ import WebSocket from 'ws'
 import { existsSync, mkdirSync, cpSync, readdirSync, symlinkSync, lstatSync, rmSync, readlinkSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildTaskSummary } from '../shared/task-summary.js'
+import { buildTaskSummary, stripTaskVisual, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
 
 const args = process.argv.slice(2)
 const command = args[0] || 'watch'
@@ -11,15 +11,28 @@ const host = args.find(a => a.startsWith('--host='))?.split('=')[1] || 'localhos
 const serverArg = args.find(a => a.startsWith('--server='))?.split('=')[1] || ''
 const mfeArg = args.find(a => a.startsWith('--mfe='))?.split('=')[1] || ''
 const prettyFlag = args.includes('--pretty')
+const detailFlag = args.includes('--detail')
+/**
+ * --mcp forces agent-parity output: compact JSON on stdout, no ANSI colors,
+ * no human-readable prefixes. The shape matches what the MCP server returns
+ * for the equivalent `annotask_*` tool call, so skills that prefer MCP can
+ * fall back to CLI invocations with identical parsing. Overrides --pretty.
+ */
+const mcpFlag = args.includes('--mcp')
 
 /** Compact JSON for agent-facing output; strips null/undefined/empty arrays */
 function fmt(data: unknown): string {
-  if (prettyFlag) return JSON.stringify(data, null, 2)
-  return JSON.stringify(data, (_key, value) => {
-    if (value === null || value === undefined) return undefined
-    if (Array.isArray(value) && value.length === 0) return undefined
-    return value
-  })
+  if (prettyFlag && !mcpFlag) return JSON.stringify(data, null, 2)
+  return compactJson(data)
+}
+
+/** Color wrapper — returns raw text under --mcp so stderr/stdout stay parseable. */
+function color(code: string, text: string): string {
+  return mcpFlag ? text : `\x1b[${code}m${text}\x1b[0m`
+}
+/** stderr log that's suppressed under --mcp (keeps tool output machine-clean). */
+function info(text: string): void {
+  if (!mcpFlag) console.error(text)
 }
 
 // Discover server URL and MFE from .annotask/server.json or CLI flags
@@ -75,6 +88,10 @@ if (command === 'watch') {
   fetchScreenshot()
 } else if (command === 'tasks') {
   fetchTasks()
+} else if (command === 'task') {
+  fetchTask()
+} else if (command === 'design-spec') {
+  fetchDesignSpec()
 } else if (command === 'update-task') {
   updateTask()
 } else if (command === 'components') {
@@ -183,12 +200,10 @@ async function fetchReport() {
     const report = await res.json()
 
     console.log(fmt(report))
-    if (mfeFilter) {
-      console.error(`\x1b[36m[Annotask]\x1b[0m Filtered by MFE: ${mfeFilter}`)
-    }
+    if (mfeFilter) info(`${color('36', '[Annotask]')} Filtered by MFE: ${mfeFilter}`)
   } catch (err: any) {
-    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch report: ${err.message}`)
-    console.error(`Make sure the Annotask server is running at ${baseUrl}`)
+    console.error(`${color('31', '[Annotask]')} Failed to fetch report: ${err.message}`)
+    if (!mcpFlag) console.error(`Make sure the Annotask server is running at ${baseUrl}`)
     process.exit(1)
   }
 }
@@ -198,12 +213,20 @@ async function fetchReport() {
 async function checkStatus() {
   try {
     const res = await fetch(`${apiUrl}/status`)
-    const data = await res.json()
-    console.log(`\x1b[32m[Annotask]\x1b[0m Server is running at ${baseUrl}`)
-    if (mfeFilter) console.log(`\x1b[36m[Annotask]\x1b[0m MFE filter: ${mfeFilter}`)
+    const data = await res.json() as Record<string, unknown>
+    if (mcpFlag) {
+      console.log(fmt({ ...data, url: baseUrl, mfe: mfeFilter || undefined }))
+      return
+    }
+    console.log(`${color('32', '[Annotask]')} Server is running at ${baseUrl}`)
+    if (mfeFilter) console.log(`${color('36', '[Annotask]')} MFE filter: ${mfeFilter}`)
     console.log(JSON.stringify(data, null, 2))
   } catch {
-    console.log(`\x1b[31m[Annotask]\x1b[0m No Annotask server found at ${baseUrl}`)
+    if (mcpFlag) {
+      console.log(fmt({ status: 'unreachable', url: baseUrl }))
+      process.exit(1)
+    }
+    console.log(`${color('31', '[Annotask]')} No Annotask server found at ${baseUrl}`)
     process.exit(1)
   }
 }
@@ -248,21 +271,100 @@ async function fetchScreenshot() {
 // ── Tasks: fetch task list ────────────────────────────────
 
 async function fetchTasks() {
+  const statusFilter = args.find(a => a.startsWith('--status='))?.split('=')[1] || ''
   try {
     const tasksUrl = mfeFilter ? `${apiUrl}/tasks?mfe=${encodeURIComponent(mfeFilter)}` : `${apiUrl}/tasks`
     const res = await fetch(tasksUrl)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json() as { tasks?: Array<Record<string, unknown>>; [key: string]: unknown }
 
-    if (!prettyFlag) {
-      const tasks = Array.isArray(data.tasks) ? data.tasks : []
+    let tasks = Array.isArray(data.tasks) ? data.tasks : []
+    if (statusFilter) tasks = tasks.filter(t => t.status === statusFilter)
+
+    // With --detail (or legacy --pretty without --mcp) we return full task
+    // objects. In MCP-parity mode we strip the shell-only `visual` field so
+    // the shape matches annotask_get_tasks(detail:true).
+    if (detailFlag) {
+      data.tasks = mcpFlag ? tasks.map(stripTaskVisual) : tasks
+    } else if (prettyFlag && !mcpFlag) {
+      data.tasks = tasks
+    } else {
       data.tasks = tasks.map(buildTaskSummary)
-      data.count = tasks.length
     }
+    data.count = (data.tasks as unknown[]).length
 
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch tasks: ${err.message}`)
+    console.error(`${color('31', '[Annotask]')} Failed to fetch tasks: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Task: fetch a single task (matches MCP annotask_get_task) ────
+
+async function fetchTask() {
+  const taskId = args[1]
+  if (!taskId) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask task <task-id>`)
+    process.exit(1)
+  }
+  try {
+    const res = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}`)
+    if (res.status === 404) {
+      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
+      process.exit(1)
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const task = await res.json() as Record<string, unknown>
+    console.log(fmt(trimAgentFeedback(stripTaskVisual(task))))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch task: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Design spec: summary or sliced category (matches MCP) ────────
+
+async function fetchDesignSpec() {
+  const categoryArg = args.find(a => a.startsWith('--category='))?.split('=')[1] || ''
+  try {
+    const res = await fetch(`${apiUrl}/design-spec`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const spec = await res.json() as Record<string, any> | null
+    if (!spec) { console.log(fmt({ initialized: false })); return }
+
+    if (categoryArg) {
+      const slice: Record<string, unknown> = { version: spec.version, framework: spec.framework }
+      if (categoryArg !== 'framework') {
+        if (!(categoryArg in spec)) {
+          console.error(`${color('31', '[Annotask]')} Unknown category: ${categoryArg}`)
+          process.exit(1)
+        }
+        slice[categoryArg] = spec[categoryArg]
+      }
+      console.log(fmt(slice))
+      return
+    }
+
+    // Summary mode — token counts instead of the full payload, matches the
+    // shape annotask_get_design_spec returns without a `category` arg.
+    const summary = {
+      version: spec.version,
+      framework: spec.framework,
+      counts: {
+        colors: spec.colors?.length ?? 0,
+        typographyFamilies: spec.typography?.families?.length ?? 0,
+        typographyScale: spec.typography?.scale?.length ?? 0,
+        spacing: spec.spacing?.length ?? 0,
+        borderRadius: spec.borders?.radius?.length ?? 0,
+      },
+      hasBreakpoints: !!spec.breakpoints && Object.keys(spec.breakpoints).length > 0,
+      icons: spec.icons ? { library: spec.icons.library } : null,
+      components: spec.components ? { library: spec.components.library, used: spec.components.used?.length ?? 0 } : null,
+    }
+    console.log(fmt(summary))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch design spec: ${err.message}`)
     process.exit(1)
   }
 }
@@ -278,7 +380,7 @@ async function updateTask() {
   const resolutionArg = args.find(a => a.startsWith('--resolution='))?.split('=').slice(1).join('=')
 
   if (!taskId || (!statusArg && !askArg && !blockedReasonArg)) {
-    console.error('\x1b[31m[Annotask]\x1b[0m Usage: annotask update-task <task-id> --status=<status> [--feedback=<text>]')
+    console.error(`${color('31', '[Annotask]')} Usage: annotask update-task <task-id> --status=<status> [--feedback=<text>]`)
     console.error('       annotask update-task <task-id> --ask=\'{"message":"...","questions":[...]}\'')
     console.error('       annotask update-task <task-id> --blocked-reason="Cannot fix: issue is in third-party library"')
     console.error('  Valid statuses: pending, in_progress, applied, review, accepted, denied, needs_info, blocked')
@@ -293,7 +395,7 @@ async function updateTask() {
       const taskRes = await fetch(`${apiUrl}/tasks`)
       const taskData = await taskRes.json()
       const task = taskData.tasks.find((t: any) => t.id === taskId)
-      if (!task) { console.error(`\x1b[31m[Annotask]\x1b[0m Task not found: ${taskId}`); process.exit(1) }
+      if (!task) { console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`); process.exit(1) }
 
       const askData = JSON.parse(askArg)
       const entry = {
@@ -323,12 +425,12 @@ async function updateTask() {
     const data = await res.json()
     if (data.error) {
       const msg = typeof data.error === 'string' ? data.error : data.error.message ?? 'Unknown error'
-      console.error(`\x1b[31m[Annotask]\x1b[0m ${msg}`)
+      console.error(`${color('31', '[Annotask]')} ${msg}`)
       process.exit(1)
     }
-    console.log(fmt(data))
+    console.log(fmt(mcpFlag ? stripTaskVisual(data) : data))
   } catch (err: any) {
-    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to update task: ${err.message}`)
+    console.error(`${color('31', '[Annotask]')} Failed to update task: ${err.message}`)
     process.exit(1)
   }
 }
@@ -530,26 +632,59 @@ function initMcp() {
 // ── Components: list available component libraries ───
 
 async function listComponents() {
+  const libraryArg = args.find(a => a.startsWith('--library='))?.split('=')[1] || ''
+  const categoryArg = args.find(a => a.startsWith('--category='))?.split('=')[1] || ''
+  const limitArg = Number(args.find(a => a.startsWith('--limit='))?.split('=')[1]) || 50
+  const offsetArg = Number(args.find(a => a.startsWith('--offset='))?.split('=')[1]) || 0
+
   try {
     const res = await fetch(`${apiUrl}/components`)
     const data = await res.json()
-    const filterArg = args[1] || ''
+    const filterArg = args[1] && !args[1].startsWith('--') ? args[1] : ''
+    const searchLc = filterArg.toLowerCase()
 
-    for (const lib of data.libraries || []) {
-      const components = filterArg
-        ? lib.components.filter((c: any) => c.name.toLowerCase().includes(filterArg.toLowerCase()))
-        : lib.components
+    const filteredLibs = (data.libraries || [])
+      .filter((lib: any) => !libraryArg || lib.name === libraryArg)
+      .map((lib: any) => {
+        const filtered = (lib.components || []).filter((c: any) => {
+          if (searchLc && !c.name.toLowerCase().includes(searchLc)) return false
+          if (categoryArg && c.category !== categoryArg) return false
+          return true
+        })
+        return { ...lib, _filtered: filtered, _total: filtered.length }
+      })
+      .filter((lib: any) => lib._filtered.length > 0)
 
-      if (components.length === 0) continue
+    if (mcpFlag) {
+      // Match annotask_get_components: compact summaries + pagination fields.
+      const libraries = filteredLibs.map((lib: any) => ({
+        name: lib.name,
+        version: lib.version,
+        total: lib._total,
+        components: lib._filtered.slice(offsetArg, offsetArg + limitArg).map((c: any) => ({
+          name: c.name,
+          module: c.module,
+          category: c.category ?? null,
+          description: c.description ?? null,
+          propCount: c.props?.length ?? 0,
+          slotCount: c.slots?.length ?? 0,
+          eventCount: c.events?.length ?? 0,
+          deprecated: c.deprecated ? true : undefined,
+        })),
+      }))
+      console.log(fmt({ libraries }))
+      return
+    }
 
-      console.log(`\n\x1b[36m${lib.name}\x1b[0m v${lib.version} (${components.length} components)`)
-      for (const comp of components) {
+    for (const lib of filteredLibs) {
+      console.log(`\n${color('36', lib.name)} v${lib.version} (${lib._filtered.length} components)`)
+      for (const comp of lib._filtered.slice(offsetArg, offsetArg + limitArg)) {
         const propCount = comp.props?.length || 0
-        console.log(`  \x1b[33m${comp.name}\x1b[0m  ${comp.module}  (${propCount} props)`)
+        console.log(`  ${color('33', comp.name)}  ${comp.module}  (${propCount} props)`)
       }
     }
   } catch (err: any) {
-    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch components: ${err.message}`)
+    console.error(`${color('31', '[Annotask]')} Failed to fetch components: ${err.message}`)
     process.exit(1)
   }
 }
@@ -559,34 +694,58 @@ async function listComponents() {
 async function showComponent() {
   const name = args[1]
   if (!name) {
-    console.error('\x1b[31m[Annotask]\x1b[0m Usage: annotask component <ComponentName>')
+    console.error(`${color('31', '[Annotask]')} Usage: annotask component <ComponentName>`)
     process.exit(1)
   }
 
-  const jsonFlag = args.includes('--json')
+  const jsonFlag = args.includes('--json') || mcpFlag
+  const libraryArg = args.find(a => a.startsWith('--library='))?.split('=')[1] || ''
 
   try {
     const res = await fetch(`${apiUrl}/components`)
     const data = await res.json()
 
-    let found: any = null
-    let libName = ''
+    const matches: Array<{ library: string; version: string | undefined; component: any }> = []
     for (const lib of data.libraries || []) {
-      const match = lib.components.find((c: any) => c.name.toLowerCase() === name.toLowerCase())
-      if (match) { found = match; libName = lib.name; break }
+      if (libraryArg && lib.name !== libraryArg) continue
+      for (const c of lib.components || []) {
+        if (c.name.toLowerCase() === name.toLowerCase()) {
+          matches.push({ library: lib.name, version: lib.version, component: c })
+        }
+      }
     }
 
-    if (!found) {
-      console.error(`\x1b[31m[Annotask]\x1b[0m Component "${name}" not found. Use \x1b[33mannotask components\x1b[0m to list available components.`)
+    if (matches.length === 0) {
+      if (mcpFlag) {
+        console.error(fmt({ error: `Component not found: ${name}${libraryArg ? ` (library: ${libraryArg})` : ''}` }))
+      } else {
+        console.error(`${color('31', '[Annotask]')} Component "${name}" not found. Use ${color('33', 'annotask components')} to list available components.`)
+      }
       process.exit(1)
     }
 
+    if (matches.length > 1 && !libraryArg) {
+      const ambiguous = {
+        ambiguous: true,
+        message: `Found ${matches.length} components named ${name}. Pass --library to disambiguate.`,
+        candidates: matches.map(m => ({ library: m.library, module: m.component.module })),
+      }
+      if (mcpFlag) { console.log(fmt(ambiguous)); return }
+      if (jsonFlag) { console.log(JSON.stringify(ambiguous, null, 2)); return }
+      console.error(`${color('31', '[Annotask]')} ${ambiguous.message}`)
+      for (const c of ambiguous.candidates) console.error(`  ${c.library}: ${c.module}`)
+      process.exit(1)
+    }
+
+    const { library: libName, version, component: found } = matches[0]
+
     if (jsonFlag) {
-      console.log(JSON.stringify({ library: libName, ...found }, null, 2))
+      const payload = { library: libName, version, ...found }
+      console.log(mcpFlag ? fmt(payload) : JSON.stringify(payload, null, 2))
       return
     }
 
-    console.log(`\n\x1b[36m${found.name}\x1b[0m`)
+    console.log(`\n${color('36', found.name)}`)
     console.log(`  Library: ${libName}`)
     console.log(`  Import:  ${found.module}`)
 
@@ -595,15 +754,15 @@ async function showComponent() {
     } else {
       console.log(`  Props:   ${found.props.length}\n`)
       for (const p of found.props) {
-        const req = p.required ? ' \x1b[33m(required)\x1b[0m' : ''
-        const type = p.type ? `\x1b[90m${p.type}\x1b[0m` : ''
+        const req = p.required ? ` ${color('33', '(required)')}` : ''
+        const type = p.type ? color('90', p.type) : ''
         const def = p.default != null ? `  default: ${p.default}` : ''
-        console.log(`  \x1b[36m${p.name}\x1b[0m  ${type}${req}${def}`)
+        console.log(`  ${color('36', p.name)}  ${type}${req}${def}`)
         if (p.description) console.log(`    ${p.description}`)
       }
     }
   } catch (err: any) {
-    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch component: ${err.message}`)
+    console.error(`${color('31', '[Annotask]')} Failed to fetch component: ${err.message}`)
     process.exit(1)
   }
 }
@@ -676,10 +835,14 @@ function printHelp() {
 \x1b[33mCommands:\x1b[0m
   watch           Live stream of design changes (default)
   tasks           Fetch task list (compact summaries by default)
+  task            Fetch a single task by id (trimmed agent_feedback)
+  design-spec     Fetch design spec summary or a single --category
   report          Fetch the live change report (no tasks)
   status          Check if Annotask server is running
   components      List all available component library components
   component       Show detailed props for a specific component
+  update-task     Update a task's status / resolution / feedback
+  screenshot      Download a task's screenshot
   init-skills     Install AI agent skills to your project
   init-mcp        Write editor MCP config (Claude Code / Cursor / VS Code / Windsurf)
   mcp             Start MCP server (stdio transport, proxies to dev server)
@@ -690,7 +853,18 @@ function printHelp() {
   --host=H          Dev server host (default: localhost)
   --server=URL      Annotask server URL (overrides .annotask/server.json)
   --mfe=NAME        Filter tasks by MFE identity (overrides server.json mfe)
-  --pretty          Pretty-print JSON output (default: compact for agents)
+  --mcp             Emit MCP-parity output: compact JSON, no ANSI, matches the
+                    annotask_* tool shapes. Use in agent skills so responses
+                    are identical whether reached via MCP or the CLI.
+  --pretty          Pretty-print JSON output (ignored under --mcp)
+  --detail          tasks: return full task objects instead of summaries
+  --status=STATUS   tasks: filter by status (pending, review, denied, ...)
+  --category=NAME   design-spec: return a single token category
+                    (colors, typography, spacing, borders, breakpoints,
+                    icons, components, framework)
+  --library=NAME    components / component: restrict to one library
+  --limit=N         components: max results per library (default 50)
+  --offset=N        components: skip the first N results (pagination)
   --force           Overwrite existing skills / MCP entries (for init-skills, init-mcp)
   --target=NAME     Comma-separated targets (default: claude,agents)
                     Built-in: claude, agents, copilot
@@ -700,19 +874,20 @@ function printHelp() {
                     Multiple: --editor=claude,cursor
 
 \x1b[33mExamples:\x1b[0m
-  annotask tasks                          # Compact task summaries
-  annotask tasks --pretty                 # Full task objects, pretty-printed
-  annotask watch                          # Watch live changes
-  annotask report                         # Get live change report
-  annotask components                     # List all library components
-  annotask components Button              # Filter by name
-  annotask component Button               # Show Button props
-  annotask component Button --json        # Props as JSON (for LLMs)
-  annotask status                         # Check connection
+  annotask tasks --mcp                    # Agent-parity compact summaries
+  annotask tasks --mcp --detail           # Full task objects (visual stripped)
+  annotask tasks --mcp --status=pending   # Filter by status
+  annotask task TASK_ID --mcp             # Single task detail (MCP-parity)
+  annotask design-spec --mcp              # Design spec summary
+  annotask design-spec --mcp --category=colors   # Full colors payload
+  annotask components --mcp Button        # Compact JSON, filtered by name
+  annotask component Button --mcp         # Full component JSON
+  annotask update-task TASK_ID --status=in_progress --mcp
+  annotask status --mcp                   # Compact JSON status
+  annotask watch                          # Watch live changes (human)
   annotask init-skills                    # Install AI agent skills
   annotask init-mcp                       # Write .mcp.json for Claude Code
   annotask init-mcp --editor=all          # Write MCP config for every supported editor
-  annotask init-mcp --editor=vscode       # Write .vscode/mcp.json
   annotask mcp                            # Start stdio MCP server
 `)
 }
