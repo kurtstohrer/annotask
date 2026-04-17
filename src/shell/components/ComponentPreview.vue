@@ -31,7 +31,6 @@ interface PreviewComponent {
 const props = defineProps<{ component: PreviewComponent }>()
 const emit = defineEmits<{
   back: []
-  insert: [snippet: string]
 }>()
 
 // Local prop/slot editor state — no longer tied to a live iframe, purely drives the
@@ -282,9 +281,6 @@ async function copySnippet() {
   } catch { /* ignore */ }
 }
 
-function insertSnippet() {
-  emit('insert', snippet.value)
-}
 </script>
 
 <template>
@@ -448,7 +444,6 @@ function insertSnippet() {
         <h4 class="cp-section-title">Snippet</h4>
         <div class="cp-snippet-actions">
           <button class="cp-btn" @click="copySnippet">{{ copyOk ? 'Copied' : 'Copy' }}</button>
-          <button class="cp-btn cp-btn-primary" @click="insertSnippet">Insert as task</button>
         </div>
       </div>
       <pre class="cp-code"><code>{{ snippet }}</code></pre>

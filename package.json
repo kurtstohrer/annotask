@@ -1,6 +1,6 @@
 {
   "name": "annotask",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "description": "Visual UI design tool for web apps. Make changes in the browser and generate structured reports that AI agents can apply to source code. Works with Vue, React, Svelte, SolidJS, and plain HTML via Vite or Webpack.",
   "license": "MIT",
   "type": "module",

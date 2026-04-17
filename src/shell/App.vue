@@ -271,7 +271,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       @switch-design-section="designSection = $event; activePanel = 'inspector'"
       @switch-perf-section="perfSection = $event"
       @toggle-layout-overlay="layoutOverlay.toggle()"
-      @scan-a11y="scanA11y('page')"
+      @scan-a11y="activePanel = 'inspector'; scanA11y('page')"
       @start-perf-recording="startPerfRecording"
       @stop-perf-recording="stopPerfRecording"
       @run-perf-scan="runPerfScan"

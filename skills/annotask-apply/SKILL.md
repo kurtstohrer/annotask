@@ -108,9 +108,9 @@ npx annotask design-spec --category=colors --mcp
 - For responsive design, use the detected breakpoints
 - Document the token reference in your resolution note (e.g., "Applied primary color token")
 
-#### c. Find relevant components (optional but recommended)
+#### c. Find relevant components (required when adding any UI element)
 
-Before applying structural changes (e.g., `section_request`, new UI elements), check if there are existing components in the project's component library that you can reuse:
+If the task asks you to add, insert, or create a UI element of any kind — a table, button, card, modal, input, dropdown, form, list, nav, etc. — you **must** search the component library first before writing HTML from scratch. This applies to all task types: `section_request`, `annotation` with actions like `add_column`/`add_row`/`wrap_container`, and free-text `annotation` notes whose `description` implies new UI.
 
 **MCP:** `annotask_get_components(search: "button")` — returns matching components from registered libraries with names, descriptions, and prop signatures. Limit results with `limit`, offset with `offset`, filter by `library`.
 
@@ -131,11 +131,11 @@ npx annotask component Button --mcp
 
 **When to use:**
 - **Section requests** — Instead of creating HTML from scratch, search for relevant components and compose them
-- **UI additions** — Check if a button, card, modal, or input component already exists before writing custom HTML
+- **UI additions** — Check if a table, button, card, modal, input, form, list, or nav component already exists before writing custom HTML
 - **Styling consistency** — Using library components ensures your changes match the design system
 
 **How to apply:**
-- Search for components matching the intent (e.g., "dropdown" if adding a select menu)
+- Search for components matching the intent (e.g., "table" if adding tabular data, "dropdown" if adding a select menu)
 - Read the props to understand customization options (variant, size, disabled, etc.)
 - Use the component in your JSX/Vue/Svelte code with appropriate props
 - Document the component reference in your resolution note
@@ -146,9 +146,9 @@ Read the task type and apply accordingly:
 
 - **`annotation` with `action: "text_edit"`**: The `description` field says what text to change. Find the text in the source file and apply the edit.
 
-- **`annotation` with other actions** (`add_column`, `add_row`, `wrap_container`, `delete`, `duplicate`, `move_up`, `move_down`): Apply the structural change described in `description`.
+- **`annotation` with other actions** (`add_column`, `add_row`, `wrap_container`, `delete`, `duplicate`, `move_up`, `move_down`): Apply the structural change described in `description`. If the action adds new UI (e.g. `add_row` into a table that doesn't exist yet, or `wrap_container` that introduces a new component), run step c first.
 
-- **`annotation` with no action**: This is a free-text note. Read `description` and apply your best judgment to the source code. If `context.to_element` is present, this is an arrow annotation referencing two elements.
+- **`annotation` with no action**: This is a free-text note. Read `description` and apply your best judgment to the source code. If `context.to_element` is present, this is an arrow annotation referencing two elements. **If the description asks you to add, insert, or create any UI element (e.g. "add a table", "put a form here", "insert a card"), you must run step c (component library search) before writing HTML.**
 
 - **`style_update`**: Apply CSS property changes. The `context.changes` array contains each change with `property`, `before`, and `after` values. Use scoped styles, inline styles, or Tailwind classes based on project patterns.
 

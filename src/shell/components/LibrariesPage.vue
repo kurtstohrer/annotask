@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import ComponentPreview from './ComponentPreview.vue'
-import { useTasks } from '../composables/useTasks'
 
 interface LibraryProp {
   name: string
@@ -42,8 +41,6 @@ interface LibraryCatalog {
   components: LibraryComponent[]
 }
 
-const { createTask } = useTasks()
-
 const libraries = ref<LibraryCatalog[]>([])
 const usedComponents = ref<Set<string>>(new Set())
 const loading = ref(false)
@@ -79,20 +76,6 @@ const totalUsed = computed(() => {
 
 function showContextPage() {
   selectedComponent.value = null
-}
-
-async function handleInsert(snippet: string) {
-  if (!selectedComponent.value) return
-  await createTask({
-    type: 'annotation',
-    description: `Insert ${selectedComponent.value.name} component`,
-    component: selectedComponent.value.name,
-    context: {
-      module: selectedComponent.value.module,
-      snippet,
-      source: 'component-preview',
-    },
-  })
 }
 
 async function refresh() {
@@ -186,7 +169,6 @@ onMounted(refresh)
           <ComponentPreview
             :component="selectedComponent"
             @back="showContextPage"
-            @insert="handleInsert"
           />
         </template>
 
