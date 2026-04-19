@@ -34,7 +34,7 @@ pnpm dev:htmx-vite          # htmx + Vite (port 5178)
 pnpm dev:mfe-vite           # MFE storefront child (port 5180)
 ```
 
-For playgrounds also wired into the shared FastAPI service (`playgrounds/api/`), use the `justfile`: `just react`, `just svelte`, `just vue`, `just mfe` — each auto-starts the API on `:8888` if it isn't already up.
+For playgrounds also wired into the shared FastAPI service (`playgrounds/simple/api/`), use the `justfile`: `just react`, `just svelte`, `just vue`, `just mfe` — each auto-starts the API on `:8888` if it isn't already up.
 
 Opens the playground app with Annotask enabled.
 
@@ -119,21 +119,22 @@ src/
 └── schema.ts               # Canonical TypeScript types
 
 playgrounds/
-├── api/                     # Shared FastAPI service (marketing / countries / dashboard / catalog)
-├── vue-vite/                # Vue admin dashboard on PrimeVue (port 5173)
-├── vue-webpack/             # Vue + Webpack test app (port 8090)
-├── vue-primevue/            # Vue + PrimeVue component showcase
-├── react-vite/              # React marketing site (port 5174)
-├── react-radix/             # React + Radix UI showcase
-├── svelte-vite/             # Svelte country explorer (port 5175)
-├── solid-vite/              # SolidJS showcase (port 5179)
-├── html-vite/               # Plain HTML + Vite (port 5176)
-├── htmx-vite/               # htmx + Vite (port 5178)
-├── astro/                   # Astro (port 5177)
-├── antenna-vite/            # Experimental playground
-├── mfe-vite/                # MFE storefront child (port 5180)
-├── justfile                 # `just react`, `just svelte`, etc.
-└── DEMOS.md                 # Curated demo scenarios for the main playgrounds
+└── simple/                  # Single-framework integration playgrounds
+    ├── api/                     # Shared FastAPI service (marketing / countries / dashboard / catalog)
+    ├── vue-vite/                # Vue admin dashboard on PrimeVue (port 5173)
+    ├── vue-webpack/             # Vue + Webpack test app (port 8090)
+    ├── vue-primevue/            # Vue + PrimeVue component showcase
+    ├── react-vite/              # React marketing site (port 5174)
+    ├── react-radix/             # React + Radix UI showcase
+    ├── svelte-vite/             # Svelte country explorer (port 5175)
+    ├── solid-vite/              # SolidJS showcase (port 5179)
+    ├── html-vite/               # Plain HTML + Vite (port 5176)
+    ├── htmx-vite/               # htmx + Vite (port 5178)
+    ├── astro/                   # Astro (port 5177)
+    ├── antenna-vite/            # Experimental playground
+    ├── mfe-vite/                # MFE storefront child (port 5180)
+    ├── justfile                 # `just react`, `just svelte`, etc.
+    └── DEMOS.md                 # Curated demo scenarios for the main playgrounds
 
 e2e/                         # Playwright browser tests
 plan/                        # Roadmap and improvement notes

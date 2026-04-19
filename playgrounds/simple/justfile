@@ -1,5 +1,5 @@
 # Playground development commands
-# Run from the playgrounds/ directory or use: just -f playgrounds/justfile <command>
+# Run from the playgrounds/simple/ directory or use: just -f playgrounds/simple/justfile <command>
 
 # Ensure the Planet Explorer API is running (starts it in background if not)
 [private]

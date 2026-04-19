@@ -237,7 +237,7 @@ pnpm test:e2e                 # Run E2E tests (all frameworks)
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, performance snapshots
 - `src/cli/` — CLI tool for terminal interaction
 - `skills/` — Agent skill definitions (shipped with the npm package)
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
+- `playgrounds/simple/` — Single-framework test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
 
 ## Troubleshooting
 

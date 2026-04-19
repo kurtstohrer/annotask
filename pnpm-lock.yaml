@@ -97,7 +97,7 @@ importers:
         specifier: ^2.0.0
         version: 2.2.12(typescript@5.9.3)
 
-  playgrounds/antenna-vite:
+  playgrounds/simple/antenna-vite:
     dependencies:
       '@fortawesome/fontawesome-svg-core':
         specifier: ^6.7.2
@@ -141,7 +141,7 @@ importers:
         version: 5.2.4(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))(vue@3.5.31(typescript@5.9.3))
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       autoprefixer:
         specifier: ^10.4.27
         version: 10.4.27(postcss@8.5.8)
@@ -155,7 +155,7 @@ importers:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/astro:
+  playgrounds/simple/astro:
     dependencies:
       astro:
         specifier: ^5.0.0
@@ -163,27 +163,27 @@ importers:
     devDependencies:
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
 
-  playgrounds/html-vite:
+  playgrounds/simple/html-vite:
     devDependencies:
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       vite:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/htmx-vite:
+  playgrounds/simple/htmx-vite:
     devDependencies:
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       vite:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/mfe-vite:
+  playgrounds/simple/mfe-vite:
     dependencies:
       vue:
         specifier: ^3.5.0
@@ -197,12 +197,12 @@ importers:
         version: 5.2.4(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))(vue@3.5.31(typescript@5.9.3))
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       vite:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/react-radix:
+  playgrounds/simple/react-radix:
     dependencies:
       '@radix-ui/themes':
         specifier: ^3.1.6
@@ -225,7 +225,7 @@ importers:
         version: 4.7.0(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       typescript:
         specifier: ^5.5.0
         version: 5.9.3
@@ -233,7 +233,7 @@ importers:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/react-vite:
+  playgrounds/simple/react-vite:
     dependencies:
       react:
         specifier: ^19.0.0
@@ -256,7 +256,7 @@ importers:
         version: 4.7.0(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       typescript:
         specifier: ^5.5.0
         version: 5.9.3
@@ -264,7 +264,7 @@ importers:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/solid-vite:
+  playgrounds/simple/solid-vite:
     dependencies:
       solid-js:
         specifier: ^1.9.0
@@ -272,7 +272,7 @@ importers:
     devDependencies:
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       typescript:
         specifier: ^5.5.0
         version: 5.9.3
@@ -283,7 +283,7 @@ importers:
         specifier: ^2.11.0
         version: 2.11.12(solid-js@1.9.12)(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))
 
-  playgrounds/svelte-vite:
+  playgrounds/simple/svelte-vite:
     dependencies:
       svelte:
         specifier: ^5.0.0
@@ -294,12 +294,12 @@ importers:
         version: 5.1.1(svelte@5.55.0)(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       vite:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/vue-primevue:
+  playgrounds/simple/vue-primevue:
     dependencies:
       '@primevue/themes':
         specifier: ^4.5.4
@@ -319,12 +319,12 @@ importers:
         version: 5.2.4(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))(vue@3.5.31(typescript@5.9.3))
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       vite:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/vue-vite:
+  playgrounds/simple/vue-vite:
     dependencies:
       primeicons:
         specifier: ^7.0.0
@@ -341,12 +341,12 @@ importers:
         version: 5.2.4(vite@6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3))(vue@3.5.31(typescript@5.9.3))
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       vite:
         specifier: ^6.4.2
         version: 6.4.2(@types/node@25.5.0)(jiti@1.21.7)(terser@5.46.1)(yaml@2.8.3)
 
-  playgrounds/vue-webpack:
+  playgrounds/simple/vue-webpack:
     dependencies:
       vue:
         specifier: ^3.5.0
@@ -360,7 +360,7 @@ importers:
         version: 3.5.31
       annotask:
         specifier: workspace:*
-        version: link:../..
+        version: link:../../..
       css-loader:
         specifier: ^7.0.0
         version: 7.1.4(webpack@5.105.4)

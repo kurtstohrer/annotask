@@ -136,7 +136,7 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
 - `src/mcp/` — MCP server (Streamable HTTP transport, embedded in the Vite/Webpack server)
 - `src/cli/` — CLI tool for terminal interaction
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
+- `playgrounds/simple/` — Single-framework test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
 
 ## Shell Architecture
 

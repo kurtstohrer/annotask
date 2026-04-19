@@ -14,7 +14,7 @@ __pycache__
 plan/
 
 # Local-only (references external repos)
-playgrounds/antenna-vite/
+playgrounds/simple/antenna-vite/
 
 # Claude Code session state
 .claude/worktrees/

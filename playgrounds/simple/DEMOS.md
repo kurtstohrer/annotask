@@ -5,7 +5,7 @@ across the categories most teams care about: marketing, data exploration,
 admin dashboards, and embedded e-commerce widgets.
 
 All playgrounds are wired to the same shared FastAPI service in
-`playgrounds/api/`, but each pulls from a different domain (marketing,
+`playgrounds/simple/api/`, but each pulls from a different domain (marketing,
 countries, dashboard, catalog) so the data, layout, and demo opportunities
 feel distinct.
 
