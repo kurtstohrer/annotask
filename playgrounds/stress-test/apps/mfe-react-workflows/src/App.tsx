@@ -33,10 +33,12 @@ export function App() {
     setLoading(true)
     setHealthError(null)
     try {
-      const res = await fetch('/api/health')
+      // Absolute URL — works both solo (:4210 → :4310) and single-spa (:4200 → :4310).
+      const API_BASE = 'http://localhost:4310'
+      const res = await fetch(`${API_BASE}/api/health`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setHealth((await res.json()) as Health)
-      const wfRes = await fetch('/api/workflows')
+      const wfRes = await fetch(`${API_BASE}/api/workflows`)
       if (wfRes.ok) {
         const body = (await wfRes.json()) as Workflow[]
         if (Array.isArray(body) && body.length > 0) setWorkflows(body)

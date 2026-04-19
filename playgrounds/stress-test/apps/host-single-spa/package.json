@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@annotask/stress-ui-tokens": "workspace:*",
+    "single-spa": "^6.0.3",
     "vue": "^3.5.0"
   },
   "devDependencies": {

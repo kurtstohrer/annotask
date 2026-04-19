@@ -19,6 +19,10 @@ import {
 import type { Health, Product, Workflow, WorkflowStatus } from '@annotask/stress-contracts'
 import { products, workflows as seedWorkflows } from '@annotask/stress-fixtures'
 
+// Absolute URL — works both solo (browser at :4220) and single-spa
+// (browser at :4200). CORS is open on FastAPI.
+const API_BASE = 'http://localhost:4320'
+
 const health = ref<Health | null>(null)
 const healthError = ref<string | null>(null)
 const loading = ref(true)
@@ -28,7 +32,7 @@ async function load() {
   loading.value = true
   healthError.value = null
   try {
-    const res = await fetch('/api/health')
+    const res = await fetch(`${API_BASE}/api/health`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     health.value = (await res.json()) as Health
   } catch (err) {

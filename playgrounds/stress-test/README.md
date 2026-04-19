@@ -48,9 +48,53 @@ e2e/                         # Playwright specs for host + each MFE + services
 | `services/laravel` | — | ✅ (first build ~3–6 min; serves the Blade slot on :4350) |
 
 The Blade "MFE" is served directly by Laravel on port 4350 — there is no
-separate frontend workspace for it. The host iframes `:4350` for the
-Blade slot; when Laravel isn't running, that iframe shows a connection
-error (expected — start it with `just laravel`).
+separate frontend workspace for it. The host mounts `:4350` via an
+iframe-backed single-spa legacy app for the Blade slot; when Laravel
+isn't running, that slot shows a connection error (expected — start it
+with `just laravel`).
+
+## Real single-spa mounting
+
+The JS MFEs are **not** iframe-wrapped. The host is a genuine single-spa
+root — it imports each MFE's `src/single-spa.*` module cross-origin over
+ESM and registers it as a single-spa application with a hash-based
+activity function:
+
+```
+host (:4200)
+├── registerApplication('@stress/vue-data-lab',    import('http://localhost:4220/src/single-spa.ts'),  #/vue)
+├── registerApplication('@stress/react-workflows', import('http://localhost:4210/src/single-spa.tsx'), #/react)
+├── registerApplication('@stress/svelte-streaming',   ...,                                             #/svelte)
+├── registerApplication('@stress/solid-component-lab',...,                                             #/solid)
+├── registerApplication('@stress/htmx-partials',      ...,                                             #/htmx)
+└── registerApplication('@stress/blade-legacy-lab',   (iframe lifecycle for cross-origin SSR),         #/blade)
+```
+
+Each MFE ships a small `single-spa.*` entry that exports
+`bootstrap/mount/unmount` via its framework adapter:
+
+| MFE | Adapter |
+|-----|---------|
+| React | `single-spa-react` |
+| Vue | `single-spa-vue` |
+| Svelte 5 | hand-written using `svelte`'s `mount`/`unmount` |
+| Solid | hand-written using `solid-js/web`'s `render` |
+| htmx | hand-written (injects HTML fragment + `htmx.process`) |
+| Blade | hand-written iframe lifecycle (single-spa legacy-app pattern) |
+
+Each MFE also keeps its solo `main.*` entry so it still boots standalone
+at its own port (fast iteration + existing smoke tests).
+
+Under single-spa all MFE JS runs in the host's origin (`:4200`), so each
+app fetches its service via absolute URL (Vue → `:4320`, React →
+`:4310`, Svelte → `:4330`, Solid → `:4340`, htmx → `:4360`). Every
+service has open CORS.
+
+The React MFE uses `@vitejs/plugin-react-swc` plus a small preamble
+shim in the host's `index.html` that installs the React Fast Refresh
+globals before any MFE module loads — necessary because plugin-react's
+Fast Refresh preamble normally comes from the MFE's own index.html,
+which single-spa skips.
 
 ## Component library per framework
 

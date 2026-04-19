@@ -4,8 +4,11 @@ import { Button } from '@kobalte/core/button'
 import type { Health } from '@annotask/stress-contracts'
 import { componentUsage, workflows } from '@annotask/stress-fixtures'
 
+// Absolute URL — works both solo (:4240 → :4340) and single-spa (:4200 → :4340).
+const API_BASE = 'http://localhost:4340'
+
 async function fetchHealth(): Promise<Health> {
-  const res = await fetch('/api/health')
+  const res = await fetch(`${API_BASE}/api/health`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }

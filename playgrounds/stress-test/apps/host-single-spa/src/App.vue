@@ -1,276 +1,108 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-
-type MfeStatus = 'implemented' | 'stub'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 interface Mfe {
   id: string
   label: string
   stack: string
-  url: string
-  status: MfeStatus
+  hash: string
+  mountId: string
 }
 
 const mfes: Mfe[] = [
-  { id: 'vue-data-lab', label: 'Vue · Data Lab', stack: 'Vue + FastAPI', url: 'http://localhost:4220/', status: 'implemented' },
-  { id: 'react-workflows', label: 'React · Workflows', stack: 'React + Java', url: 'http://localhost:4210/', status: 'stub' },
-  { id: 'svelte-streaming', label: 'Svelte · Streaming', stack: 'Svelte + Go', url: 'http://localhost:4230/', status: 'stub' },
-  { id: 'solid-component-lab', label: 'Solid · Component Lab', stack: 'Solid + Node', url: 'http://localhost:4240/', status: 'stub' },
-  { id: 'blade-legacy-lab', label: 'Blade · Legacy Lab', stack: 'Blade + Laravel', url: 'http://localhost:4350/', status: 'implemented' },
-  { id: 'htmx-partials', label: 'htmx · Partials', stack: 'htmx + Rust', url: 'http://localhost:4260/', status: 'stub' },
+  { id: 'vue-data-lab',        label: 'Vue · Data Lab',        stack: 'Vue + FastAPI + Naive UI', hash: '#/vue',    mountId: 'single-spa-application:@stress/vue-data-lab' },
+  { id: 'react-workflows',     label: 'React · Workflows',     stack: 'React + Java + Mantine',   hash: '#/react',  mountId: 'single-spa-application:@stress/react-workflows' },
+  { id: 'svelte-streaming',    label: 'Svelte · Streaming',    stack: 'Svelte + Go + bits-ui',    hash: '#/svelte', mountId: 'single-spa-application:@stress/svelte-streaming' },
+  { id: 'solid-component-lab', label: 'Solid · Component Lab', stack: 'Solid + Node + Kobalte',   hash: '#/solid',  mountId: 'single-spa-application:@stress/solid-component-lab' },
+  { id: 'blade-legacy-lab',    label: 'Blade · Legacy Lab',    stack: 'Blade + Laravel (iframe)', hash: '#/blade',  mountId: 'single-spa-application:@stress/blade-legacy-lab' },
+  { id: 'htmx-partials',       label: 'htmx · Partials',       stack: 'htmx + Rust + Pico.css',   hash: '#/htmx',   mountId: 'single-spa-application:@stress/htmx-partials' },
 ]
 
-const active = ref<Mfe | null>(null)
-const activeId = computed(() => active.value?.id ?? null)
-
-function select(mfe: Mfe) {
-  active.value = mfe
+const currentHash = ref(window.location.hash || '#/')
+function onHashChange() {
+  currentHash.value = window.location.hash || '#/'
 }
 
-function home() {
-  active.value = null
-}
+onMounted(() => window.addEventListener('hashchange', onHashChange))
+onUnmounted(() => window.removeEventListener('hashchange', onHashChange))
+
+const isHome = computed(() => currentHash.value === '#/' || currentHash.value === '')
 </script>
 
 <template>
   <div class="shell">
     <header class="topbar">
-      <button class="brand" type="button" @click="home">Annotask Stress Lab</button>
+      <a class="brand" href="#/">Annotask Stress Lab</a>
       <nav class="nav">
-        <button
+        <a
           v-for="mfe in mfes"
-          :key="mfe.id"
-          type="button"
+          :key="mfe.hash"
+          :href="mfe.hash"
           class="nav-btn"
-          :class="{ active: mfe.id === activeId, stub: mfe.status === 'stub' }"
-          @click="select(mfe)"
+          :class="{ active: currentHash === mfe.hash }"
         >
           {{ mfe.label }}
-          <span v-if="mfe.status === 'stub'" class="pill">stub</span>
-        </button>
+        </a>
       </nav>
     </header>
 
     <main class="main">
-      <section v-if="!active" class="overview">
+      <section v-show="isHome" class="overview">
         <h1>Host (single-spa root)</h1>
         <p>
-          This is the stress-lab host on port 4200. Each button above switches
-          the viewport below to a child MFE running on its own port. MFEs
-          marked <span class="pill">stub</span> don't have code yet — only
-          their directory and README exist.
+          Each nav link routes to a different child MFE mounted via
+          <code>single-spa</code> — no iframes for the JS stacks. The Blade slot
+          still uses an iframe because Laravel serves a full cross-origin SSR
+          page (a supported single-spa legacy pattern).
         </p>
         <p>
-          The current skeleton uses iframes for MFE composition. Real
-          single-spa parcel/module-federation wiring lands once at least two
-          MFEs are implemented.
+          Every MFE has its own Vite dev server. The host imports each MFE's
+          <code>src/single-spa.*</code> module over HTTP and registers it. Click
+          any tab to route there; the mount point below receives the rendered
+          output.
         </p>
 
         <table class="grid">
           <thead>
-            <tr><th>MFE</th><th>Stack</th><th>URL</th><th>Status</th></tr>
+            <tr><th>MFE</th><th>Stack</th><th>Route</th></tr>
           </thead>
           <tbody>
             <tr v-for="mfe in mfes" :key="mfe.id">
               <td>{{ mfe.label }}</td>
               <td>{{ mfe.stack }}</td>
-              <td><code>{{ mfe.url }}</code></td>
-              <td>
-                <span class="pill" :class="mfe.status">{{ mfe.status }}</span>
-              </td>
+              <td><code>{{ mfe.hash }}</code></td>
             </tr>
           </tbody>
         </table>
       </section>
 
-      <section v-else class="viewport">
-        <div class="viewport-bar">
-          <strong>{{ active.label }}</strong>
-          <span class="meta">mfe: <code>{{ active.id }}</code></span>
-          <span class="meta">url: <code>{{ active.url }}</code></span>
-          <span v-if="active.status === 'stub'" class="pill stub">stub — not implemented</span>
-        </div>
-        <iframe
-          v-if="active.status === 'implemented'"
-          :src="active.url"
-          class="frame"
-          :title="active.label"
+      <div v-show="!isHome" class="viewport">
+        <div
+          v-for="mfe in mfes"
+          :key="mfe.mountId"
+          :id="mfe.mountId"
+          class="mfe-mount"
         />
-        <div v-else class="frame placeholder">
-          <p>
-            <strong>{{ active.label }}</strong> has not been implemented yet.
-            See the plan and the MFE's README for the intended scope.
-          </p>
-        </div>
-      </section>
+      </div>
     </main>
   </div>
 </template>
 
 <style scoped>
-.shell {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  color: #e8ecf1;
-  background: #0b0f17;
-}
-
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
-  border-bottom: 1px solid #1e2836;
-  background: #0f1623;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.brand {
-  font-weight: 600;
-  font-size: 15px;
-  background: none;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  padding: 0;
-}
-
-.nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.nav-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border: 1px solid #24314a;
-  border-radius: 999px;
-  background: transparent;
-  color: #bac5d4;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.nav-btn:hover {
-  border-color: #3c5170;
-  color: #e8ecf1;
-}
-
-.nav-btn.active {
-  background: #1d64e3;
-  border-color: #1d64e3;
-  color: #fff;
-}
-
-.nav-btn.stub {
-  opacity: 0.75;
-}
-
-.main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.overview {
-  padding: 32px 28px;
-  max-width: 880px;
-  line-height: 1.55;
-}
-
-.overview h1 {
-  margin-top: 0;
-  font-size: 22px;
-}
-
-.grid {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 20px;
-  font-size: 13px;
-}
-
-.grid th,
-.grid td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid #1e2836;
-}
-
-.grid th {
-  color: #8793a6;
-  font-weight: 500;
-}
-
-.pill {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: #1e2836;
-  color: #8793a6;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.pill.stub {
-  background: #3b2c1a;
-  color: #f0b880;
-}
-
-.pill.implemented {
-  background: #1a3b2a;
-  color: #7fd9a2;
-}
-
-.viewport {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.viewport-bar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 8px 16px;
-  border-bottom: 1px solid #1e2836;
-  background: #0f1623;
-  font-size: 12px;
-}
-
-.meta {
-  color: #8793a6;
-}
-
-.frame {
-  flex: 1;
-  width: 100%;
-  border: 0;
-  background: #fff;
-}
-
-.frame.placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-  color: #8793a6;
-  background: #0b0f17;
-}
-
-code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
-  color: #c6d1e1;
-}
+.shell { display: flex; flex-direction: column; min-height: 100vh; font-family: var(--stress-font); color: #e8ecf1; background: #0b0f17; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid #1e2836; background: #0f1623; position: sticky; top: 0; z-index: 1; }
+.brand { font-weight: 600; font-size: 15px; color: inherit; text-decoration: none; }
+.nav { display: flex; flex-wrap: wrap; gap: 6px; }
+.nav-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid #24314a; border-radius: 999px; background: transparent; color: #bac5d4; font-size: 13px; text-decoration: none; }
+.nav-btn:hover { border-color: #3c5170; color: #e8ecf1; }
+.nav-btn.active { background: var(--stress-accent); border-color: var(--stress-accent); color: #fff; }
+.main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.overview { padding: 32px 28px; max-width: 880px; line-height: 1.55; }
+.overview h1 { margin: 0 0 12px; font-size: 22px; }
+.grid { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }
+.grid th, .grid td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1e2836; }
+.grid th { color: #8793a6; font-weight: 500; }
+.viewport { flex: 1; background: var(--stress-bg); min-height: 0; color: var(--stress-text); }
+.mfe-mount { min-height: 0; }
+code { font-family: var(--stress-font-mono); font-size: 12px; color: #c6d1e1; }
 </style>

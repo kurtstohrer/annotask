@@ -11,6 +11,7 @@
     "@annotask/stress-fixtures": "workspace:*",
     "@annotask/stress-ui-tokens": "workspace:*",
     "naive-ui": "^2.40.0",
+    "single-spa-vue": "^3.0.1",
     "vue": "^3.5.0"
   },
   "devDependencies": {

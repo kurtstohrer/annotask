@@ -6,7 +6,27 @@
     <title>Annotask Stress Lab — Host</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="root"></div>
+    <!--
+      React MFE preamble. @vitejs/plugin-react-swc expects the React Fast
+      Refresh runtime globals to be set before the MFE's JSX-transformed
+      code runs. Under single-spa we import the MFE module cross-origin
+      so its own index.html preamble never executes — so the host pulls
+      the React MFE's refresh runtime directly from its Vite server and
+      sets the globals here. Must run before /src/main.ts.
+    -->
+    <script type="module">
+      try {
+        const mod = await import('http://localhost:4210/@react-refresh')
+        const RefreshRuntime = mod.default ?? mod
+        RefreshRuntime.injectIntoGlobalHook(window)
+        window.$RefreshReg$ = () => {}
+        window.$RefreshSig$ = () => (type) => type
+        window.__vite_plugin_react_preamble_installed__ = true
+      } catch (err) {
+        console.warn('[host] React refresh preamble skipped:', err)
+      }
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

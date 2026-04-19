@@ -8,11 +8,14 @@
   let detailOpen = $state(false)
   let detailWorkflow = $state(null)
 
+  // Absolute URL — works solo (:4230) and under single-spa (:4200).
+  const API_BASE = 'http://localhost:4330'
+
   async function load() {
     loading = true
     error = null
     try {
-      const res = await fetch('/api/health')
+      const res = await fetch(`${API_BASE}/api/health`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       health = await res.json()
     } catch (err) {
