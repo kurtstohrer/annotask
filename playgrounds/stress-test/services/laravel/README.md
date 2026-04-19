@@ -1,30 +1,47 @@
 # laravel
 
-Laravel service — port 4350. Serves Blade-rendered pages (the
-`mfe-blade-legacy-lab` slot) plus a JSON API surface.
+Laravel service — port 4350. Serves the Blade-rendered pages that fill
+the "Blade Legacy Lab" slot in the host, plus a small JSON API surface.
 
-## Status
+## Run
 
-Stub. Directory reserved. Real Laravel project lands in a follow-up pass
-(Blade templates under `resources/views/`, validation-backed form POSTs,
-admin-only JSON enrichments). See `plan/annotask-stress-playground-plan.md`.
-
-While this service is not running, the Blade MFE slot falls back to a
-Vite-served placeholder at `apps/mfe-blade-legacy-lab` so the skeleton
-stays testable.
-
-## Local toolchain
-
-PHP/Composer are not installed in the default dev environment. Run via
-Docker:
+Docker only (PHP/Composer are not installed in the default dev environment):
 
 ```bash
-pnpm stress-test:up laravel
+just laravel           # from playgrounds/stress-test
+# or:
+docker compose -f playgrounds/stress-test/docker-compose.yml up --build laravel
 ```
 
-## Planned endpoints
+First boot scaffolds Laravel via `composer create-project` inside the
+image and layers our custom slice on top (~3–6 minutes). Subsequent boots
+use cached layers.
 
-- `GET /` — Blade-rendered legacy form index
-- `POST /tasks` — validation-heavy form submit
-- `GET /api/health` — service health probe
-- `GET /api/admin/tasks.json` — admin JSON enrichments
+## Layout
+
+The repo only carries the custom slice that overlays the scaffold:
+
+```
+services/laravel/
+├── Dockerfile
+├── README.md
+└── overlay/
+    ├── routes/web.php
+    ├── app/Http/Controllers/
+    │   ├── HomeController.php
+    │   ├── HealthController.php
+    │   └── TaskController.php
+    └── resources/views/
+        ├── layouts/app.blade.php
+        ├── home.blade.php
+        └── tasks/create.blade.php
+```
+
+Everything else comes from `laravel/laravel` at image build time.
+
+## Endpoints
+
+- `GET /` — Blade-rendered workflow queue + action buttons
+- `GET /tasks/new` — Blade-rendered form
+- `POST /tasks` — form submit with validation (redirects back with flash)
+- `GET /api/health` — JSON health probe

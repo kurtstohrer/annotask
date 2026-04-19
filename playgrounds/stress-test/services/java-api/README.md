@@ -2,23 +2,24 @@
 
 Spring Boot service — port 4310. Feeds `mfe-react-workflows`.
 
-## Status
+## Run
 
-Stub. Directory reserved. Real Spring Boot implementation lands in a
-follow-up pass (workflow simulator, bulk review actions, audit trails,
-OpenAPI endpoints). See `plan/annotask-stress-playground-plan.md`.
-
-## Local toolchain
-
-Java is not installed in the default dev environment. Run via Docker:
+Docker only (Java/Maven are not installed in the default dev environment):
 
 ```bash
-pnpm stress-test:up java-api
+just java              # from playgrounds/stress-test
+# or:
+docker compose -f playgrounds/stress-test/docker-compose.yml up --build java-api
 ```
 
-## Planned endpoints
+First boot builds Maven deps and the Spring Boot fat jar (~3–5 minutes).
+Subsequent starts use cached layers.
 
-- `GET /api/health`
-- `GET /api/workflows?status=…&page=…`
-- `POST /api/workflows/:id/transitions`
-- `GET /api/openapi.json`
+## Endpoints
+
+- `GET /api/health` — service health + version probe
+- `GET /api/workflows?status=pending|in_progress|review` — seeded workflow list
+- `GET /api/workflows/:id` — single workflow detail
+- `POST /api/workflows/:id/transitions?to=<status>` — transition action
+- `GET /api/docs` — Swagger UI
+- `GET /api/openapi` — raw OpenAPI document
