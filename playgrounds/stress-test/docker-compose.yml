@@ -1,8 +1,5 @@
-# Stress-test compose stack.
-#
-# Skeleton — only services with working implementations are uncommented.
-# Apps run locally via `pnpm dev:stress-*` for now; compose support for the
-# frontends lands alongside their implementations.
+# Stress-test compose stack — services only. Frontends run locally via
+# `pnpm dev:stress-*` on their assigned ports (see README).
 
 services:
   fastapi:
@@ -12,8 +9,26 @@ services:
     environment:
       - PORT=4320
 
+  node-api:
+    build: ./services/node-api
+    ports:
+      - "4340:4340"
+    environment:
+      - PORT=4340
+
+  go-api:
+    build: ./services/go-api
+    ports:
+      - "4330:4330"
+    environment:
+      - PORT=4330
+
+  rust-api:
+    build: ./services/rust-api
+    ports:
+      - "4360:4360"
+    environment:
+      - PORT=4360
+
   # java-api:    # TODO — Spring Boot, port 4310
-  # go-api:      # TODO — Go, port 4330
-  # node-api:    # TODO — Node, port 4340
   # laravel:     # TODO — Laravel, port 4350
-  # rust-api:    # TODO — Rust, port 4360

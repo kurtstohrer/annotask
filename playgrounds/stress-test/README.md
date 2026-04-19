@@ -35,13 +35,29 @@ e2e/                         # Playwright specs for host + each MFE + services
 
 | Slice | State |
 |-------|-------|
-| `apps/host-single-spa` | Implemented (minimal shell + nav) |
-| `apps/mfe-vue-data-lab` | Implemented (minimal boot + annotask mfe id) |
-| `services/fastapi` | Implemented (health endpoint) |
-| Everything else | README stub only |
+| `apps/host-single-spa` | Implemented |
+| `apps/mfe-react-workflows` | Implemented |
+| `apps/mfe-vue-data-lab` | Implemented |
+| `apps/mfe-svelte-streaming` | Implemented |
+| `apps/mfe-solid-component-lab` | Scaffolded — blocked on core Solid/JSX bug (see below) |
+| `apps/mfe-blade-legacy-lab` | Vite placeholder; real Blade via Laravel service |
+| `apps/mfe-htmx-partials` | Implemented |
+| `services/fastapi` | Implemented (health + OpenAPI) |
+| `services/node-api` | Implemented |
+| `services/go-api` | Implemented |
+| `services/rust-api` | Implemented (JSON + HTML fragment) |
+| `services/java-api` | Docker-only stub |
+| `services/laravel` | Docker-only stub |
 
-The first vertical slice exists to prove the pattern — host + one MFE + one
-service, all bootable. Remaining MFEs and services land in follow-up commits.
+### Known issue — Solid MFE
+
+The Solid slot is scaffolded but fails to render (`React is not defined`)
+because annotask's JSX transform emits `React.createElement` calls, which
+pre-empts `vite-plugin-solid`'s own Babel-based JSX transform. The same
+failure mode exists in `playgrounds/simple/solid-vite/` — it just isn't
+caught there because the simple tier doesn't e2e-test Solid. Fixing this
+is a core annotask plugin task, not a stress-test concern; the Playwright
+spec for Solid is `test.skip`'d until then.
 
 ## Running the implemented slice
 

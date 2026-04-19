@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Stress Lab — htmx Partials</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>htmx Partials</h1>
+        <p class="sub">
+          MFE id <code>htmx-partials</code> · port 4260 · backed by Rust on :4360
+        </p>
+      </header>
+
+      <section class="panel">
+        <h2>What this stresses</h2>
+        <ul>
+          <li>Server-driven HTML fragments via <code>hx-get</code></li>
+          <li>DOM mutation after load — annotask must follow swapped elements</li>
+          <li>Compact Rust-served partials for incremental refreshes</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>Upstream health</h2>
+        <div
+          id="health"
+          hx-get="/api/health-fragment"
+          hx-trigger="load, click from:#refresh-btn"
+          hx-swap="innerHTML"
+        >
+          <p>Loading <code>/api/health-fragment</code>…</p>
+        </div>
+        <button type="button" id="refresh-btn" class="btn">Refresh</button>
+        <p class="hint">
+          If the Rust service is down this panel will stay empty. Start it with
+          <code>pnpm dev:stress-rust-api</code>.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

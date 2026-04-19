@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Stress Lab — Blade Legacy Lab</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Blade Legacy Lab</h1>
+        <p class="sub">
+          MFE id <code>blade-legacy-lab</code> · port 4250 · backed by Laravel on :4350
+        </p>
+      </header>
+
+      <section class="panel warn">
+        <h2>Placeholder</h2>
+        <p>
+          This slot is a Vite-served placeholder. The real Blade-rendered
+          pages come from the Laravel service (<code>services/laravel</code>),
+          which boots via Docker Compose. Until that service is running
+          you'll see this HTML instead of true Laravel SSR output.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>What this will stress (once Laravel is wired)</h2>
+        <ul>
+          <li>Server-rendered Blade templates with annotask attribute injection in PHP output</li>
+          <li>Full-page reloads and form POST validation flows</li>
+          <li>Source-mapping tasks to <code>resources/views/*.blade.php</code></li>
+          <li>Mixed JSON + HTML responses from the same Laravel origin</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>How to run the real slice</h2>
+        <pre><code>pnpm stress-test:up laravel   # build + start Laravel service
+curl http://localhost:4350/    # verify Blade renders</code></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
