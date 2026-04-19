@@ -1,4 +1,6 @@
 packages:
   - 'playgrounds/simple/*'
+  - 'playgrounds/stress-test/apps/*'
+  - 'playgrounds/stress-test/packages/*'
 onlyBuiltDependencies:
   - esbuild
