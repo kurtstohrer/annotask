@@ -50,21 +50,38 @@ e2e/                         # Playwright specs for host + each MFE + services
 | `services/laravel` | Docker-only stub |
 
 
-## Running the implemented slice
+## Running the lab
 
-From the repo root:
+After a one-time `pnpm build` at the repo root (so the workspace resolves
+the built annotask plugin), use the justfile in this directory:
 
 ```bash
-pnpm build                          # build annotask once (required by workspace deps)
-pnpm dev:stress-fastapi             # start FastAPI on :4320
-pnpm dev:stress-vue-data-lab        # start Vue data lab on :4220
-pnpm dev:stress-host                # start host on :4200
+cd playgrounds/stress-test
+just up            # start everything: 4 native services + host + every MFE
+just down          # kill anything listening on stress-lab ports
+just test          # run the Playwright suite (boots servers itself)
+just list          # show every recipe
 ```
 
-Open `http://localhost:4200/` for the host.
+Individual pieces:
 
-Once Docker is in play (next pass), `pnpm stress-test:up` will run the full
-compose stack.
+```bash
+just host          # just the host shell on :4200
+just vue           # Vue data-lab on :4220
+just fastapi       # FastAPI on :4320
+# ...and one recipe per MFE / service
+```
+
+Docker compose (services only — adds Java + Laravel once those ship):
+
+```bash
+just compose-up
+just compose-down
+```
+
+The justfile is a thin wrapper — you can call the underlying pnpm scripts
+directly from the repo root (`pnpm dev:stress-host`, `pnpm test:e2e:stress`,
+etc.) if you prefer.
 
 ## Conventions
 
