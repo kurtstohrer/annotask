@@ -1,4 +1,5 @@
 # source-snapshots
 
-Pinned snapshots of external data sources, used by `upstream-adapters/` as
-the offline fallback. **Not yet implemented.**
+Pinned snapshots of external data sources. `upstream-adapters/` falls
+back to these when the live source is offline so the lab stays
+deterministic.

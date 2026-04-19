@@ -30,5 +30,18 @@ services:
     environment:
       - PORT=4360
 
-  # java-api:    # TODO — Spring Boot, port 4310
-  # laravel:     # TODO — Laravel, port 4350
+  java-api:
+    build: ./services/java-api
+    ports:
+      - "4310:4310"
+    environment:
+      - PORT=4310
+
+  laravel:
+    build: ./services/laravel
+    ports:
+      - "4350:4350"
+    environment:
+      - PORT=4350
+      - APP_ENV=local
+      - APP_DEBUG=true

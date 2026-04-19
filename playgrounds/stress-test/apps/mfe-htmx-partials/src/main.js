@@ -1,4 +1,8 @@
-// htmx is loaded via <script> in index.html; Vite's dev server needs at least
-// one JS entry to pick up HMR, so this file exists to hook MFE-side behavior
-// and demonstrate the annotask bridge on a non-framework app.
-console.log('[htmx-partials] ready')
+import '@annotask/stress-ui-tokens/tokens.css'
+import '@picocss/pico/css/pico.min.css'
+import 'htmx.org'
+
+// htmx self-registers on import; this module also loads the Pico.css theme
+// + shared tokens so server-rendered fragments from Rust land in a styled
+// page. Console-log confirms HMR reloads pick us up.
+console.log('[htmx-partials] ready — Pico.css + htmx loaded')

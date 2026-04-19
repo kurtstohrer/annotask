@@ -51,7 +51,6 @@
     "dev:stress-react-workflows": "pnpm --filter @annotask/stress-mfe-react-workflows dev",
     "dev:stress-svelte-streaming": "pnpm --filter @annotask/stress-mfe-svelte-streaming dev",
     "dev:stress-solid-component-lab": "pnpm --filter @annotask/stress-mfe-solid-component-lab dev",
-    "dev:stress-blade-legacy-lab": "pnpm --filter @annotask/stress-mfe-blade-legacy-lab dev",
     "dev:stress-htmx-partials": "pnpm --filter @annotask/stress-mfe-htmx-partials dev",
     "dev:stress-fastapi": "uvicorn main:app --reload --port 4320 --app-dir playgrounds/stress-test/services/fastapi",
     "dev:stress-node-api": "node playgrounds/stress-test/services/node-api/index.js",
@@ -77,20 +76,32 @@
     "node": ">=18"
   },
   "peerDependencies": {
-    "vite": ">=4.0.0",
-    "webpack": ">=5.0.0",
-    "@vue/compiler-sfc": "^3.0.0",
-    "@vue/compiler-dom": "^3.0.0",
     "@babel/parser": "^7.0.0",
-    "svelte": ">=3.0.0"
+    "@vue/compiler-dom": "^3.0.0",
+    "@vue/compiler-sfc": "^3.0.0",
+    "svelte": ">=3.0.0",
+    "vite": ">=4.0.0",
+    "webpack": ">=5.0.0"
   },
   "peerDependenciesMeta": {
-    "vite": { "optional": true },
-    "webpack": { "optional": true },
-    "@vue/compiler-sfc": { "optional": true },
-    "@vue/compiler-dom": { "optional": true },
-    "@babel/parser": { "optional": true },
-    "svelte": { "optional": true }
+    "vite": {
+      "optional": true
+    },
+    "webpack": {
+      "optional": true
+    },
+    "@vue/compiler-sfc": {
+      "optional": true
+    },
+    "@vue/compiler-dom": {
+      "optional": true
+    },
+    "@babel/parser": {
+      "optional": true
+    },
+    "svelte": {
+      "optional": true
+    }
   },
   "dependencies": {
     "ws": "^8.20.0",
@@ -112,6 +123,7 @@
     "html2canvas-pro": "2.0.2",
     "js-yaml": "^4.1.1",
     "jsdom": "^29.0.1",
+    "lucide-vue-next": "^1.0.0",
     "marked": "^17.0.5",
     "prismjs": "^1.30.0",
     "svelte": "^5.0.0",

@@ -14,34 +14,34 @@ ROOT := justfile_directory() + "/../.."
 default:
     @just --list --unsorted
 
-# Start the full stack (4 native services + host + every MFE). Ctrl-C tears it down.
+# Start native services + host + every MFE. Ctrl-C tears it down.
+# Java + Laravel are Docker-only — start with `just compose-up` separately.
 up:
     #!/usr/bin/env bash
     set -e
     cd {{ROOT}}
     trap 'jobs -p | xargs -r kill' EXIT INT TERM
-    echo "[stress-lab] starting services..."
+    echo "[stress-lab] starting native services..."
     pnpm dev:stress-fastapi   >/tmp/stress-fastapi.log   2>&1 &
     pnpm dev:stress-node-api  >/tmp/stress-node-api.log  2>&1 &
     pnpm dev:stress-go-api    >/tmp/stress-go-api.log    2>&1 &
     pnpm dev:stress-rust-api  >/tmp/stress-rust-api.log  2>&1 &
     sleep 1
     echo "[stress-lab] starting frontends..."
-    pnpm dev:stress-host                 >/tmp/stress-host.log                 2>&1 &
-    pnpm dev:stress-vue-data-lab         >/tmp/stress-vue.log                  2>&1 &
-    pnpm dev:stress-react-workflows      >/tmp/stress-react.log                2>&1 &
-    pnpm dev:stress-svelte-streaming     >/tmp/stress-svelte.log               2>&1 &
-    pnpm dev:stress-solid-component-lab  >/tmp/stress-solid.log                2>&1 &
-    pnpm dev:stress-blade-legacy-lab     >/tmp/stress-blade.log                2>&1 &
-    pnpm dev:stress-htmx-partials        >/tmp/stress-htmx.log                 2>&1 &
+    pnpm dev:stress-host                 >/tmp/stress-host.log    2>&1 &
+    pnpm dev:stress-vue-data-lab         >/tmp/stress-vue.log     2>&1 &
+    pnpm dev:stress-react-workflows      >/tmp/stress-react.log   2>&1 &
+    pnpm dev:stress-svelte-streaming     >/tmp/stress-svelte.log  2>&1 &
+    pnpm dev:stress-solid-component-lab  >/tmp/stress-solid.log   2>&1 &
+    pnpm dev:stress-htmx-partials        >/tmp/stress-htmx.log    2>&1 &
     sleep 3
     echo
     echo "  Host        http://localhost:4200"
     echo "  Vue         http://localhost:4220   FastAPI  http://localhost:4320"
-    echo "  React       http://localhost:4210   Java     :4310 (docker)"
+    echo "  React       http://localhost:4210   Java     http://localhost:4310 (docker)"
     echo "  Svelte      http://localhost:4230   Go       http://localhost:4330"
     echo "  Solid       http://localhost:4240   Node     http://localhost:4340"
-    echo "  Blade       http://localhost:4250   Laravel  :4350 (docker)"
+    echo "  Blade       http://localhost:4350 (docker — served by Laravel)"
     echo "  htmx        http://localhost:4260   Rust     http://localhost:4360"
     echo
     echo "  Logs: /tmp/stress-*.log   |   Stop: Ctrl-C (or just down)"
@@ -50,7 +50,7 @@ up:
 # Kill anything listening on stress-test ports.
 down:
     #!/usr/bin/env bash
-    for p in 4200 4210 4220 4230 4240 4250 4260 4320 4330 4340 4360; do
+    for p in 4200 4210 4220 4230 4240 4260 4310 4320 4330 4340 4350 4360; do
         pid=$(lsof -ti:$p 2>/dev/null || true)
         if [ -n "$pid" ]; then
             kill "$pid" 2>/dev/null || true
@@ -86,15 +86,11 @@ svelte:
 solid:
     cd {{ROOT}} && pnpm dev:stress-solid-component-lab
 
-# Blade legacy-lab placeholder — :4250 (real Blade via Laravel :4350)
-blade:
-    cd {{ROOT}} && pnpm dev:stress-blade-legacy-lab
-
 # htmx partials MFE — :4260 (backed by Rust :4360)
 htmx:
     cd {{ROOT}} && pnpm dev:stress-htmx-partials
 
-# ── Services ────────────────────────────────────────────
+# ── Services (native) ───────────────────────────────────
 
 # FastAPI — :4320
 fastapi:
@@ -112,9 +108,19 @@ go:
 rust:
     cd {{ROOT}} && pnpm dev:stress-rust-api
 
-# ── Docker compose (services only) ──────────────────────
+# ── Services (docker-only) ──────────────────────────────
 
-# Build + start every compose-wired service (fastapi, node, go, rust — java/laravel TODO).
+# Java Spring Boot — :4310. First build ~3–5 min.
+java:
+    cd {{ROOT}} && docker compose -f playgrounds/stress-test/docker-compose.yml up --build java-api
+
+# Laravel — :4350. Serves the Blade slot + JSON API. First build ~3–6 min.
+laravel:
+    cd {{ROOT}} && docker compose -f playgrounds/stress-test/docker-compose.yml up --build laravel
+
+# ── Docker compose (full stack) ─────────────────────────
+
+# Build + start every compose-wired service (fastapi, node, go, rust, java, laravel).
 compose-up:
     cd {{ROOT}} && pnpm stress-test:up
 

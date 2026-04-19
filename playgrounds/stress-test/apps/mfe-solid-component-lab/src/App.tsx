@@ -1,11 +1,8 @@
-import { createResource, createSignal, Show } from 'solid-js'
-
-interface Health {
-  status: string
-  service: string
-  port: number
-  version: string
-}
+import { createResource, createSignal, For, Show } from 'solid-js'
+import { Tabs } from '@kobalte/core/tabs'
+import { Button } from '@kobalte/core/button'
+import type { Health } from '@annotask/stress-contracts'
+import { componentUsage, workflows } from '@annotask/stress-fixtures'
 
 async function fetchHealth(): Promise<Health> {
   const res = await fetch('/api/health')
@@ -18,57 +15,91 @@ export function App() {
   const [health] = createResource(reloadKey, fetchHealth)
 
   return (
-    <main style={styles.page}>
+    <main>
       <header>
-        <h1 style={styles.h1}>Solid Component Lab</h1>
-        <p style={styles.sub}>
-          MFE id <code>solid-component-lab</code> · port 4240 · backed by Node on :4340
+        <h1>Solid Component Lab</h1>
+        <p class="sub">
+          MFE <code>solid-component-lab</code> · port 4240 · backed by Node on :4340 · Kobalte
         </p>
       </header>
 
-      <section style={styles.panel}>
-        <h2 style={styles.h2}>What this stresses</h2>
+      <section class="panel">
+        <h2>What this stresses</h2>
         <ul>
           <li><code>createResource</code> + signals for nested reactive data</li>
-          <li>Solid's JSX template compilation — annotask data attributes inside <code>_$template()</code></li>
-          <li>Component registry / dynamic imports driven by Node service</li>
+          <li>Kobalte headless primitives (<code>Tabs</code>, <code>Button</code>) — component discovery</li>
+          <li>Solid JSX template compilation with annotask data attributes</li>
         </ul>
       </section>
 
-      <section style={styles.panel}>
-        <h2 style={styles.h2}>Upstream health</h2>
+      <section class="panel">
+        <div class="row">
+          <h2 style={{ margin: 0 }}>Upstream health</h2>
+          <Button class="btn" onClick={() => setReloadKey((k) => k + 1)}>Refresh</Button>
+        </div>
         <Show when={health.loading}>
-          <p>Loading <code>/api/health</code>…</p>
+          <p>Loading /api/health…</p>
         </Show>
         <Show when={health.error}>
-          <p style={styles.err}>
-            Failed to reach Node service: <code>{String(health.error)}</code>. Start it with{' '}
-            <code>pnpm dev:stress-node-api</code>.
+          <p class="err">
+            Failed to reach Node service: <code>{String(health.error)}</code>. Start with <code>just node</code>.
           </p>
         </Show>
         <Show when={health() && !health.error}>
-          <dl style={styles.kv}>
+          <dl class="kv">
             <dt>status</dt><dd>{health()!.status}</dd>
             <dt>service</dt><dd>{health()!.service}</dd>
             <dt>port</dt><dd>{health()!.port}</dd>
             <dt>version</dt><dd>{health()!.version}</dd>
           </dl>
         </Show>
-        <button type="button" onClick={() => setReloadKey((k) => k + 1)} style={styles.btn}>
-          Refresh
-        </button>
+      </section>
+
+      <section class="panel">
+        <h2>Shared-data tabs</h2>
+        <Tabs defaultValue="workflows">
+          <Tabs.List class="tabs-list">
+            <Tabs.Trigger value="workflows" class="tabs-trigger">Workflows</Tabs.Trigger>
+            <Tabs.Trigger value="components" class="tabs-trigger">Component usage</Tabs.Trigger>
+          </Tabs.List>
+
+          <Tabs.Content value="workflows">
+            <table>
+              <thead>
+                <tr><th>ID</th><th>Title</th><th>Owner</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                <For each={workflows}>{(wf) => (
+                  <tr>
+                    <td><code>{wf.id}</code></td>
+                    <td>{wf.title}</td>
+                    <td>{wf.owner}</td>
+                    <td>{wf.status}</td>
+                  </tr>
+                )}</For>
+              </tbody>
+            </table>
+          </Tabs.Content>
+
+          <Tabs.Content value="components">
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Framework</th><th>Library</th><th>Uses</th></tr>
+              </thead>
+              <tbody>
+                <For each={componentUsage}>{(c) => (
+                  <tr>
+                    <td><code>{c.name}</code></td>
+                    <td>{c.framework}</td>
+                    <td>{c.library}</td>
+                    <td>{c.uses}</td>
+                  </tr>
+                )}</For>
+              </tbody>
+            </table>
+          </Tabs.Content>
+        </Tabs>
       </section>
     </main>
   )
 }
-
-const styles = {
-  page: { 'font-family': 'system-ui, sans-serif', color: '#1a202c', padding: '28px 32px', 'max-width': '780px', 'line-height': '1.55' },
-  h1: { margin: '0 0 4px', 'font-size': '22px' },
-  sub: { color: '#64748b', margin: '0 0 24px', 'font-size': '13px' },
-  panel: { border: '1px solid #e2e8f0', 'border-radius': '10px', padding: '18px 20px', 'margin-bottom': '16px', background: '#fff' },
-  h2: { margin: '0 0 10px', 'font-size': '15px', color: '#334155' },
-  kv: { display: 'grid', 'grid-template-columns': '100px 1fr', gap: '6px 16px', margin: '8px 0 12px', 'font-size': '13px' },
-  err: { color: '#b91c1c' },
-  btn: { padding: '6px 14px', 'border-radius': '6px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', 'font-size': '13px' },
-} as const

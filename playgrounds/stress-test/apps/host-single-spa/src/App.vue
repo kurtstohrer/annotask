@@ -16,7 +16,7 @@ const mfes: Mfe[] = [
   { id: 'react-workflows', label: 'React · Workflows', stack: 'React + Java', url: 'http://localhost:4210/', status: 'stub' },
   { id: 'svelte-streaming', label: 'Svelte · Streaming', stack: 'Svelte + Go', url: 'http://localhost:4230/', status: 'stub' },
   { id: 'solid-component-lab', label: 'Solid · Component Lab', stack: 'Solid + Node', url: 'http://localhost:4240/', status: 'stub' },
-  { id: 'blade-legacy-lab', label: 'Blade · Legacy Lab', stack: 'Blade + Laravel', url: 'http://localhost:4250/', status: 'stub' },
+  { id: 'blade-legacy-lab', label: 'Blade · Legacy Lab', stack: 'Blade + Laravel', url: 'http://localhost:4350/', status: 'implemented' },
   { id: 'htmx-partials', label: 'htmx · Partials', stack: 'htmx + Rust', url: 'http://localhost:4260/', status: 'stub' },
 ]
 

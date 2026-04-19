@@ -6,6 +6,11 @@
   "scripts": {
     "dev": "vite"
   },
+  "dependencies": {
+    "@annotask/stress-ui-tokens": "workspace:*",
+    "@picocss/pico": "^2.0.6",
+    "htmx.org": "^2.0.4"
+  },
   "devDependencies": {
     "annotask": "workspace:*",
     "vite": "^6.4.2"

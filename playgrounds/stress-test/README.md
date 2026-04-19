@@ -13,14 +13,13 @@ apps/
   mfe-vue-data-lab/          # Vue — port 4220 — mfe: vue-data-lab
   mfe-svelte-streaming/      # Svelte — port 4230 — mfe: svelte-streaming
   mfe-solid-component-lab/   # Solid — port 4240 — mfe: solid-component-lab
-  mfe-blade-legacy-lab/      # Blade SSR — port 4250 — mfe: blade-legacy-lab
   mfe-htmx-partials/         # htmx — port 4260 — mfe: htmx-partials
 services/
   java-api/                  # Spring Boot — port 4310
   fastapi/                   # FastAPI — port 4320
   go-api/                    # Go — port 4330
   node-api/                  # Node — port 4340
-  laravel/                   # Laravel — port 4350 (serves Blade MFE)
+  laravel/                   # Laravel — port 4350 (serves Blade pages + JSON)
   rust-api/                  # Rust — port 4360 (serves htmx fragments)
 packages/
   shared-fixtures/           # Deterministic seed data
@@ -31,23 +30,53 @@ packages/
 e2e/                         # Playwright specs for host + each MFE + services
 ```
 
-## Current skeleton status
+## Status
 
-| Slice | State |
-|-------|-------|
-| `apps/host-single-spa` | Implemented |
-| `apps/mfe-react-workflows` | Implemented |
-| `apps/mfe-vue-data-lab` | Implemented |
-| `apps/mfe-svelte-streaming` | Implemented |
-| `apps/mfe-solid-component-lab` | Implemented |
-| `apps/mfe-blade-legacy-lab` | Vite placeholder; real Blade via Laravel service |
-| `apps/mfe-htmx-partials` | Implemented |
-| `services/fastapi` | Implemented (health + OpenAPI) |
-| `services/node-api` | Implemented |
-| `services/go-api` | Implemented |
-| `services/rust-api` | Implemented (JSON + HTML fragment) |
-| `services/java-api` | Docker-only stub |
-| `services/laravel` | Docker-only stub |
+| Slice | Native dev | Docker (compose) |
+|-------|-----------|------------------|
+| `apps/host-single-spa` | ✅ | — |
+| `apps/mfe-react-workflows` | ✅ | — |
+| `apps/mfe-vue-data-lab` | ✅ | — |
+| `apps/mfe-svelte-streaming` | ✅ | — |
+| `apps/mfe-solid-component-lab` | ✅ | — |
+| `apps/mfe-htmx-partials` | ✅ | — |
+| `services/fastapi` | ✅ | ✅ |
+| `services/node-api` | ✅ | ✅ |
+| `services/go-api` | ✅ | ✅ |
+| `services/rust-api` | ✅ | ✅ |
+| `services/java-api` | — | ✅ (first build ~3–5 min) |
+| `services/laravel` | — | ✅ (first build ~3–6 min; serves the Blade slot on :4350) |
+
+The Blade "MFE" is served directly by Laravel on port 4350 — there is no
+separate frontend workspace for it. The host iframes `:4350` for the
+Blade slot; when Laravel isn't running, that iframe shows a connection
+error (expected — start it with `just laravel`).
+
+## Component library per framework
+
+Each MFE uses a distinct component library so annotask's component
+discovery has real breadth to traverse.
+
+| MFE | Framework | Library | Imports from library |
+|-----|-----------|---------|----------------------|
+| `mfe-react-workflows` | React 19 | [Mantine](https://mantine.dev) | `Container`, `Card`, `Table`, `Badge`, `Button`, `Alert`, `Group`, `Stack`, `Title`, `Text` |
+| `mfe-vue-data-lab` | Vue 3 | [Naive UI](https://www.naiveui.com) | `NCard`, `NDataTable`, `NDescriptions`, `NTag`, `NButton`, `NAlert`, `NSpace`, `NLayout` |
+| `mfe-svelte-streaming` | Svelte 5 | [bits-ui](https://bits-ui.com) | `Dialog.Root`, `Dialog.Portal`, `Dialog.Overlay`, `Dialog.Content`, `Dialog.Close` |
+| `mfe-solid-component-lab` | Solid | [Kobalte](https://kobalte.dev) | `Tabs`, `Button` |
+| `mfe-htmx-partials` | htmx | [Pico.css](https://picocss.com) | classless styling — `<article>`, `<header>`, `<hgroup>`, `<button class="secondary">` |
+| `mfe-blade-legacy-lab` (Laravel) | Blade | native `<x-*>` components | `<x-card>`, `<x-button>`, `<x-status-pill>`, `<x-workflow-table>` |
+
+## Shared packages
+
+Used across every MFE / service in the stress tier:
+
+| Package | What it carries |
+|---------|-----------------|
+| `@annotask/stress-contracts` | `Health`, `Workflow`, `Product`, `MetricSeries`, `ComponentUsage` types |
+| `@annotask/stress-fixtures` | Deterministic seed arrays (`workflows`, `products`, `metrics`, `componentUsage`) |
+| `@annotask/stress-ui-tokens` | `tokens.css` — CSS custom properties every MFE imports at entry |
+| `@annotask/stress-snapshots` | Pinned external-data snapshots (e.g. github-trending) |
+| `@annotask/stress-upstream-adapters` | Live-or-snapshot fallback adapter pattern |
 
 
 ## Running the lab

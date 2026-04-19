@@ -1,145 +1,140 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref } from 'vue'
+import {
+  NAlert,
+  NBadge,
+  NButton,
+  NCard,
+  NConfigProvider,
+  NDataTable,
+  NDescriptions,
+  NDescriptionsItem,
+  NLayout,
+  NLayoutContent,
+  NSpace,
+  NTag,
+  NText,
+  type DataTableColumns,
+} from 'naive-ui'
+import type { Health, Product, Workflow, WorkflowStatus } from '@annotask/stress-contracts'
+import { products, workflows as seedWorkflows } from '@annotask/stress-fixtures'
 
-interface HealthResponse {
-  status: string
-  service: string
-  port: number
-  version: string
-}
-
-const health = ref<HealthResponse | null>(null)
-const error = ref<string | null>(null)
+const health = ref<Health | null>(null)
+const healthError = ref<string | null>(null)
 const loading = ref(true)
+const rows = ref<Workflow[]>(seedWorkflows)
 
-async function loadHealth() {
+async function load() {
   loading.value = true
-  error.value = null
+  healthError.value = null
   try {
     const res = await fetch('/api/health')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    health.value = (await res.json()) as HealthResponse
+    health.value = (await res.json()) as Health
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
+    healthError.value = err instanceof Error ? err.message : String(err)
   } finally {
     loading.value = false
   }
 }
 
-onMounted(loadHealth)
+onMounted(load)
+
+const statusTone: Record<WorkflowStatus, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
+  pending: 'warning',
+  in_progress: 'info',
+  review: 'info',
+  accepted: 'success',
+  denied: 'error',
+}
+
+const workflowColumns = computed<DataTableColumns<Workflow>>(() => [
+  { title: 'ID', key: 'id', width: 80, render: (row) => h('code', {}, row.id) },
+  { title: 'Title', key: 'title' },
+  { title: 'Owner', key: 'owner', width: 110 },
+  {
+    title: 'Status',
+    key: 'status',
+    width: 130,
+    render: (row) => h(NTag, { type: statusTone[row.status] ?? 'default', size: 'small', round: true }, () => row.status),
+  },
+])
+
+const productColumns = computed<DataTableColumns<Product>>(() => [
+  { title: 'ID', key: 'id', width: 70, render: (row) => h('code', {}, row.id) },
+  { title: 'Name', key: 'name' },
+  { title: 'Category', key: 'category', width: 120 },
+  {
+    title: 'Price',
+    key: 'price_cents',
+    width: 110,
+    render: (row) => '$' + (row.price_cents / 100).toFixed(2),
+  },
+  {
+    title: 'Stock',
+    key: 'in_stock',
+    width: 90,
+    render: (row) =>
+      h(NTag, { type: row.in_stock ? 'success' : 'default', size: 'small' }, () => (row.in_stock ? 'yes' : 'no')),
+  },
+])
 </script>
 
 <template>
-  <main class="page">
-    <header>
-      <h1>Vue Data Lab</h1>
-      <p class="sub">
-        MFE id <code>vue-data-lab</code> · port 4220 · backed by FastAPI on :4320
-      </p>
-    </header>
+  <NConfigProvider>
+    <NLayout class="page">
+      <NLayoutContent content-style="padding: 28px 32px; max-width: 900px;">
+        <header class="header">
+          <h1>Vue Data Lab</h1>
+          <p class="sub">
+            MFE <code>vue-data-lab</code> · port 4220 · backed by FastAPI on :4320 · Naive UI
+          </p>
+        </header>
 
-    <section class="panel">
-      <h2>What this stresses</h2>
-      <ul>
-        <li>Vue composables + typed API client as a data-access pattern</li>
-        <li>FastAPI OpenAPI schema discovery</li>
-        <li>Cross-MFE isolation — tasks created here get <code>mfe: vue-data-lab</code></li>
-      </ul>
-    </section>
+        <NSpace vertical :size="16" style="width: 100%">
+          <NCard title="What this stresses" size="small">
+            <ul>
+              <li>Vue composables + typed API client — FastAPI OpenAPI discovery</li>
+              <li>Naive UI <code>NDataTable</code> component discovery</li>
+              <li>Tasks routed under <code>mfe: vue-data-lab</code></li>
+            </ul>
+          </NCard>
 
-    <section class="panel">
-      <h2>Upstream health</h2>
-      <p v-if="loading">Loading <code>/api/health</code>…</p>
-      <p v-else-if="error" class="err">
-        Failed to reach FastAPI: <code>{{ error }}</code>. Start it with
-        <code>pnpm dev:stress-fastapi</code> from the repo root.
-      </p>
-      <dl v-else-if="health" class="kv">
-        <dt>status</dt><dd>{{ health.status }}</dd>
-        <dt>service</dt><dd>{{ health.service }}</dd>
-        <dt>port</dt><dd>{{ health.port }}</dd>
-        <dt>version</dt><dd>{{ health.version }}</dd>
-      </dl>
+          <NCard title="Upstream health" size="small">
+            <template #header-extra>
+              <NButton size="small" :loading="loading" @click="load">Refresh</NButton>
+            </template>
+            <NAlert v-if="healthError" type="error" :show-icon="false" title="FastAPI unreachable" style="margin-bottom: 8px;">
+              <code>{{ healthError }}</code> — start with <code>just fastapi</code>.
+            </NAlert>
+            <NDescriptions v-if="health" :column="2" bordered size="small">
+              <NDescriptionsItem label="status">
+                <NBadge type="success" dot /> {{ health.status }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="service"><code>{{ health.service }}</code></NDescriptionsItem>
+              <NDescriptionsItem label="port"><code>{{ health.port }}</code></NDescriptionsItem>
+              <NDescriptionsItem label="version"><code>{{ health.version }}</code></NDescriptionsItem>
+            </NDescriptions>
+            <NText v-else-if="loading" depth="3">Loading /api/health…</NText>
+          </NCard>
 
-      <button type="button" class="retry" @click="loadHealth">Refresh</button>
-    </section>
-  </main>
+          <NCard title="Workflows" size="small">
+            <NDataTable :columns="workflowColumns" :data="rows" size="small" :bordered="false" />
+          </NCard>
+
+          <NCard title="Products" size="small">
+            <NDataTable :columns="productColumns" :data="products" size="small" :bordered="false" />
+          </NCard>
+        </NSpace>
+      </NLayoutContent>
+    </NLayout>
+  </NConfigProvider>
 </template>
 
-<style scoped>
-.page {
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  color: #1a202c;
-  padding: 28px 32px;
-  max-width: 780px;
-  line-height: 1.55;
-}
-
-header h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
-}
-
-.sub {
-  color: #64748b;
-  margin: 0 0 24px;
-  font-size: 13px;
-}
-
-.panel {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 18px 20px;
-  margin-bottom: 16px;
-  background: #fff;
-}
-
-.panel h2 {
-  margin: 0 0 10px;
-  font-size: 15px;
-  color: #334155;
-}
-
-.panel ul {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.kv {
-  display: grid;
-  grid-template-columns: 100px 1fr;
-  gap: 6px 16px;
-  margin: 8px 0 12px;
-  font-size: 13px;
-}
-
-.kv dt {
-  color: #64748b;
-}
-
-.kv dd {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-
-.err {
-  color: #b91c1c;
-}
-
-.retry {
-  padding: 6px 14px;
-  border-radius: 6px;
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
-  background: #f1f5f9;
-  padding: 1px 5px;
-  border-radius: 4px;
-}
+<style>
+html, body { margin: 0; font-family: var(--stress-font); color: var(--stress-text); background: var(--stress-bg); }
+.page { background: var(--stress-bg); min-height: 100vh; }
+.header h1 { margin: 0 0 4px; font-size: 22px; }
+.sub { color: var(--stress-text-muted); margin: 0 0 16px; font-size: 13px; }
+code { font-family: var(--stress-font-mono); font-size: 12px; background: var(--stress-surface-2); padding: 1px 5px; border-radius: 4px; }
 </style>

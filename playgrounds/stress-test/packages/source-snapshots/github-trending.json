@@ -1,0 +1,11 @@
+{
+  "source": "github-trending",
+  "captured_at": "2026-04-17T08:00:00Z",
+  "items": [
+    { "repo": "annotask/annotask",          "stars_today": 148, "language": "TypeScript" },
+    { "repo": "solidjs/solid",              "stars_today": 93,  "language": "TypeScript" },
+    { "repo": "mantinedev/mantine",         "stars_today": 71,  "language": "TypeScript" },
+    { "repo": "tuanpmt/naive-ui",           "stars_today": 66,  "language": "Vue" },
+    { "repo": "huntabyte/bits-ui",          "stars_today": 45,  "language": "Svelte" }
+  ]
+}

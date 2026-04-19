@@ -7,6 +7,10 @@
     "dev": "vite"
   },
   "dependencies": {
+    "@annotask/stress-contracts": "workspace:*",
+    "@annotask/stress-fixtures": "workspace:*",
+    "@annotask/stress-ui-tokens": "workspace:*",
+    "naive-ui": "^2.40.0",
     "vue": "^3.5.0"
   },
   "devDependencies": {

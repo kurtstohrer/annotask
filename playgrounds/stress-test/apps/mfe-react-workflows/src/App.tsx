@@ -1,26 +1,48 @@
 import { useCallback, useEffect, useState } from 'react'
+import {
+  Alert,
+  Badge,
+  Box,
+  Button,
+  Card,
+  Container,
+  Group,
+  Stack,
+  Table,
+  Text,
+  Title,
+} from '@mantine/core'
+import type { Health, Workflow, WorkflowStatus } from '@annotask/stress-contracts'
+import { workflows as seedWorkflows } from '@annotask/stress-fixtures'
 
-interface Health {
-  status: string
-  service: string
-  port: number
-  version: string
+const statusColor: Record<WorkflowStatus, string> = {
+  pending: 'yellow',
+  in_progress: 'blue',
+  review: 'violet',
+  accepted: 'green',
+  denied: 'red',
 }
 
 export function App() {
   const [health, setHealth] = useState<Health | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [healthError, setHealthError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [workflows, setWorkflows] = useState<Workflow[]>(seedWorkflows)
 
   const load = useCallback(async () => {
     setLoading(true)
-    setError(null)
+    setHealthError(null)
     try {
       const res = await fetch('/api/health')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       setHealth((await res.json()) as Health)
+      const wfRes = await fetch('/api/workflows')
+      if (wfRes.ok) {
+        const body = (await wfRes.json()) as Workflow[]
+        if (Array.isArray(body) && body.length > 0) setWorkflows(body)
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setHealthError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
@@ -31,53 +53,72 @@ export function App() {
   }, [load])
 
   return (
-    <main style={styles.page}>
-      <header>
-        <h1 style={styles.h1}>React Workflows</h1>
-        <p style={styles.sub}>
-          MFE id <code>react-workflows</code> · port 4210 · backed by Java on :4310
-        </p>
-      </header>
+    <Container size="md" py="xl">
+      <Stack gap="lg">
+        <Box>
+          <Title order={1} size="h2">React Workflows</Title>
+          <Text c="dimmed" size="sm">
+            MFE <code>react-workflows</code> · port 4210 · backed by Java on :4310 · Mantine UI
+          </Text>
+        </Box>
 
-      <section style={styles.panel}>
-        <h2 style={styles.h2}>What this stresses</h2>
-        <ul>
-          <li>React hooks + query/mutation pattern for dense CRUD</li>
-          <li>Workflow-heavy state transitions and review queues</li>
-          <li>Cross-MFE task routing — tasks land under <code>mfe: react-workflows</code></li>
-        </ul>
-      </section>
+        <Card withBorder radius="md" padding="lg">
+          <Title order={2} size="h4" mb="xs">What this stresses</Title>
+          <Text component="ul" m={0} pl="md">
+            <li>Dense React CRUD with Mantine component discovery</li>
+            <li>Workflow status transitions and review queues</li>
+            <li>Tasks created here land under <code>mfe: react-workflows</code></li>
+          </Text>
+        </Card>
 
-      <section style={styles.panel}>
-        <h2 style={styles.h2}>Upstream health</h2>
-        {loading && <p>Loading <code>/api/health</code>…</p>}
-        {error && (
-          <p style={styles.err}>
-            Failed to reach Java service: <code>{error}</code>. Start it with{' '}
-            <code>pnpm dev:stress-java-api</code> (Docker, see README).
-          </p>
-        )}
-        {health && (
-          <dl style={styles.kv}>
-            <dt>status</dt><dd>{health.status}</dd>
-            <dt>service</dt><dd>{health.service}</dd>
-            <dt>port</dt><dd>{health.port}</dd>
-            <dt>version</dt><dd>{health.version}</dd>
-          </dl>
-        )}
-        <button type="button" onClick={load} style={styles.btn}>Refresh</button>
-      </section>
-    </main>
+        <Card withBorder radius="md" padding="lg">
+          <Group justify="space-between" mb="sm">
+            <Title order={2} size="h4">Upstream health</Title>
+            <Button size="xs" variant="light" onClick={load} loading={loading}>Refresh</Button>
+          </Group>
+          {healthError && (
+            <Alert color="red" variant="light" title="Java service unreachable" mb="sm">
+              <code>{healthError}</code> — start with <code>just java</code>.
+            </Alert>
+          )}
+          {health && (
+            <Table withTableBorder highlightOnHover>
+              <Table.Tbody>
+                <Table.Tr><Table.Td>status</Table.Td><Table.Td><Badge color="green" variant="light">{health.status}</Badge></Table.Td></Table.Tr>
+                <Table.Tr><Table.Td>service</Table.Td><Table.Td><code>{health.service}</code></Table.Td></Table.Tr>
+                <Table.Tr><Table.Td>port</Table.Td><Table.Td><code>{health.port}</code></Table.Td></Table.Tr>
+                <Table.Tr><Table.Td>version</Table.Td><Table.Td><code>{health.version}</code></Table.Td></Table.Tr>
+              </Table.Tbody>
+            </Table>
+          )}
+        </Card>
+
+        <Card withBorder radius="md" padding="lg">
+          <Title order={2} size="h4" mb="sm">Workflow queue</Title>
+          <Table withTableBorder striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>ID</Table.Th>
+                <Table.Th>Title</Table.Th>
+                <Table.Th>Owner</Table.Th>
+                <Table.Th>Status</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {workflows.map((wf) => (
+                <Table.Tr key={wf.id}>
+                  <Table.Td><code>{wf.id}</code></Table.Td>
+                  <Table.Td>{wf.title}</Table.Td>
+                  <Table.Td>{wf.owner ?? '—'}</Table.Td>
+                  <Table.Td>
+                    <Badge color={statusColor[wf.status] ?? 'gray'} variant="light">{wf.status}</Badge>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Card>
+      </Stack>
+    </Container>
   )
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  page: { fontFamily: 'system-ui, sans-serif', color: '#1a202c', padding: '28px 32px', maxWidth: 780, lineHeight: 1.55 },
-  h1: { margin: '0 0 4px', fontSize: 22 },
-  sub: { color: '#64748b', margin: '0 0 24px', fontSize: 13 },
-  panel: { border: '1px solid #e2e8f0', borderRadius: 10, padding: '18px 20px', marginBottom: 16, background: '#fff' },
-  h2: { margin: '0 0 10px', fontSize: 15, color: '#334155' },
-  kv: { display: 'grid', gridTemplateColumns: '100px 1fr', gap: '6px 16px', margin: '8px 0 12px', fontSize: 13 },
-  err: { color: '#b91c1c' },
-  btn: { padding: '6px 14px', borderRadius: 6, border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontSize: 13 },
 }

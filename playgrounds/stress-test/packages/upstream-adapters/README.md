@@ -1,5 +1,8 @@
 # upstream-adapters
 
-Adapters for external data sources. Each adapter exposes a uniform shape
-to its service and falls back to a pinned snapshot when the upstream is
-offline. **Not yet implemented.**
+Adapters that wrap external data sources with a live-plus-snapshot
+pattern: try the live fetch, fall back to a pinned snapshot from
+`source-snapshots/` on any failure.
+
+Annotask's data-source discovery should surface both the live URL and
+the local snapshot as linked sources.

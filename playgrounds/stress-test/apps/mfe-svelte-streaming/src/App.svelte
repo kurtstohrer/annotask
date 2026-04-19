@@ -1,7 +1,12 @@
 <script>
+  import { Dialog } from 'bits-ui'
+  import { workflows, metrics } from '@annotask/stress-fixtures'
+
   let health = $state(null)
   let error = $state(null)
   let loading = $state(true)
+  let detailOpen = $state(false)
+  let detailWorkflow = $state(null)
 
   async function load() {
     loading = true
@@ -17,6 +22,28 @@
     }
   }
 
+  function pillClass(status) {
+    if (status === 'accepted') return 'pill ok'
+    if (status === 'denied') return 'pill err'
+    if (status === 'pending') return 'pill warn'
+    return 'pill'
+  }
+
+  function openDetail(wf) {
+    detailWorkflow = wf
+    detailOpen = true
+  }
+
+  // Curried so the template can reference `inspectFor(wf)` without an
+  // inline arrow. The annotask Svelte transform's findTagEnd scanner
+  // mis-parses the `>` inside `{() => ...}` as a tag close, so we avoid
+  // arrows in template attribute values until that's fixed upstream.
+  function inspectFor(wf) {
+    return function () {
+      openDetail(wf)
+    }
+  }
+
   load()
 </script>
 
@@ -24,28 +51,28 @@
   <header>
     <h1>Svelte Streaming</h1>
     <p class="sub">
-      MFE id <code>svelte-streaming</code> · port 4230 · backed by Go on :4330
+      MFE <code>svelte-streaming</code> · port 4230 · backed by Go on :4330 · bits-ui
     </p>
   </header>
 
   <section class="panel">
     <h2>What this stresses</h2>
     <ul>
-      <li>Svelte stores + async modules for streaming/compare flows</li>
-      <li>Go-backed SSE/telemetry feeds, live perf updates</li>
+      <li>Svelte 5 runes + <code>bits-ui</code> Dialog component discovery</li>
+      <li>Go-backed telemetry series + live updates</li>
       <li>Route-persistence + localStorage under fast-changing data</li>
     </ul>
   </section>
 
   <section class="panel">
-    <h2>Upstream health</h2>
+    <div class="row">
+      <h2 style="margin:0">Upstream health</h2>
+      <button class="btn" type="button" onclick={load}>Refresh</button>
+    </div>
     {#if loading}
-      <p>Loading <code>/api/health</code>…</p>
+      <p>Loading /api/health…</p>
     {:else if error}
-      <p class="err">
-        Failed to reach Go service: <code>{error}</code>. Start it with
-        <code>pnpm dev:stress-go-api</code>.
-      </p>
+      <p class="err">Failed to reach Go service: <code>{error}</code>. Start it with <code>just go</code>.</p>
     {:else if health}
       <dl class="kv">
         <dt>status</dt><dd>{health.status}</dd>
@@ -54,20 +81,61 @@
         <dt>version</dt><dd>{health.version}</dd>
       </dl>
     {/if}
-    <button type="button" class="btn" onclick={load}>Refresh</button>
+  </section>
+
+  <section class="panel">
+    <h2>Workflows</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Title</th><th>Owner</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {#each workflows as wf}
+          <tr>
+            <td><code>{wf.id}</code></td>
+            <td>{wf.title}</td>
+            <td>{wf.owner}</td>
+            <td><span class={pillClass(wf.status)}>{wf.status}</span></td>
+            <td><button class="btn" type="button" onclick={inspectFor(wf)}>Inspect</button></td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Metric series (from shared-fixtures)</h2>
+    {#each metrics as series}
+      <h3 style="font-size: 13px; color: var(--stress-text-muted); margin: 12px 0 4px">
+        {series.name} <span class="pill">{series.unit}</span>
+      </h3>
+      <div style="display: flex; gap: 4px; align-items: flex-end; height: 48px;">
+        {#each series.points as p}
+          <div style="flex:1; background: var(--stress-accent); opacity: 0.8; height: {p.value / 7}%; min-height: 4px;" title="{p.t}: {p.value}"></div>
+        {/each}
+      </div>
+    {/each}
   </section>
 </main>
 
-<style>
-  main { font-family: system-ui, sans-serif; color: #1a202c; padding: 28px 32px; max-width: 780px; line-height: 1.55; }
-  h1 { margin: 0 0 4px; font-size: 22px; }
-  .sub { color: #64748b; margin: 0 0 24px; font-size: 13px; }
-  .panel { border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; background: #fff; }
-  .panel h2 { margin: 0 0 10px; font-size: 15px; color: #334155; }
-  .kv { display: grid; grid-template-columns: 100px 1fr; gap: 6px 16px; margin: 8px 0 12px; font-size: 13px; }
-  .kv dt { color: #64748b; }
-  .kv dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-  .err { color: #b91c1c; }
-  .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #cbd5e1; background: #f8fafc; cursor: pointer; font-size: 13px; }
-  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
-</style>
+<Dialog.Root bind:open={detailOpen}>
+  <Dialog.Portal>
+    <Dialog.Overlay class="dialog-overlay" />
+    <Dialog.Content class="dialog-content">
+      <Dialog.Title>
+        <h3>{detailWorkflow?.title ?? 'Workflow'}</h3>
+      </Dialog.Title>
+      {#if detailWorkflow}
+        <dl class="kv">
+          <dt>id</dt><dd><code>{detailWorkflow.id}</code></dd>
+          <dt>status</dt><dd>{detailWorkflow.status}</dd>
+          <dt>owner</dt><dd>{detailWorkflow.owner}</dd>
+          <dt>created</dt><dd><code>{detailWorkflow.created_at}</code></dd>
+        </dl>
+      {/if}
+      <div style="margin-top: 16px; display: flex; justify-content: flex-end">
+        <Dialog.Close class="btn">Close</Dialog.Close>
+      </div>
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>

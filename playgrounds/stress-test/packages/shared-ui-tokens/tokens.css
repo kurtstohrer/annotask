@@ -1,0 +1,41 @@
+/* Cross-MFE design tokens. Each MFE imports this file so a theme edit in
+ * one place cascades to every stack. Annotask's token-edit flow works on
+ * these variables regardless of which MFE is in focus. */
+
+:root {
+  /* Surfaces */
+  --stress-bg: #f8fafc;
+  --stress-surface: #ffffff;
+  --stress-surface-2: #f1f5f9;
+  --stress-border: #e2e8f0;
+
+  /* Text */
+  --stress-text: #1a202c;
+  --stress-text-muted: #64748b;
+
+  /* Accent + semantic */
+  --stress-accent: #1d64e3;
+  --stress-accent-hover: #1850b9;
+  --stress-success: #16a34a;
+  --stress-warning: #d97706;
+  --stress-danger: #b91c1c;
+
+  /* Layout */
+  --stress-radius: 10px;
+  --stress-radius-sm: 6px;
+  --stress-gutter: 18px;
+  --stress-font: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --stress-font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+:root.dark,
+:root[data-theme="dark"] {
+  --stress-bg: #0b1220;
+  --stress-surface: #111a2e;
+  --stress-surface-2: #1a2540;
+  --stress-border: #233152;
+  --stress-text: #e7eefb;
+  --stress-text-muted: #8a9ab8;
+  --stress-accent: #5a8dff;
+  --stress-accent-hover: #3a71ec;
+}
