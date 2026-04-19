@@ -5,6 +5,15 @@ import { isLocalOrigin } from '../server/origin.js'
 import { scanComponentLibraries } from '../server/component-scanner.js'
 import { buildTaskSummary, filterTasksByMfe, stripTaskVisual, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
 import { isSafeScreenshot } from '../server/validation.js'
+import { getCodeContext } from '../server/code-context.js'
+import { getComponentExamples } from '../server/component-examples.js'
+import { resolveDataContext } from '../server/data-context.js'
+import { scanDataSources } from '../server/data-source-scanner.js'
+import { getDataSourceExamples } from '../server/data-source-examples.js'
+import { resolveDataSourceDetails } from '../server/data-source-details.js'
+import { scanApiSchemas } from '../server/api-schema-scanner.js'
+import { resolveEndpoint } from '../server/api-schema-resolver.js'
+import { TASK_TYPES, type DataSource } from '../schema.js'
 import {
   McpGetTasksArgs,
   McpGetTaskArgs,
@@ -15,6 +24,15 @@ import {
   McpGetComponentsArgs,
   McpGetComponentArgs,
   McpGetScreenshotArgs,
+  McpGetCodeContextArgs,
+  McpGetComponentExamplesArgs,
+  McpGetDataContextArgs,
+  McpGetDataSourcesArgs,
+  McpGetDataSourceExamplesArgs,
+  McpGetDataSourceDetailsArgs,
+  McpGetApiSchemasArgs,
+  McpGetApiOperationArgs,
+  McpResolveEndpointArgs,
   parseWith,
   assertTransition,
   AgentFeedbackSchema,
@@ -180,7 +198,7 @@ const TOOLS: ToolDef[] = [
   },
   {
     name: 'annotask_create_task',
-    description: 'Create a new design task with "pending" status. Types: annotation, style_update, section_request, a11y_fix, theme_update.',
+    description: `Create a new design task with "pending" status. Types: ${TASK_TYPES.join(', ')}.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -264,6 +282,142 @@ const TOOLS: ToolDef[] = [
         task_id: { type: 'string', description: 'The task ID whose screenshot to fetch' },
       },
       required: ['task_id'],
+    },
+  },
+  {
+    name: 'annotask_get_code_context',
+    description:
+      'Resolve a task to grounded source context: a ±15 line excerpt around `task.line`, the nearest enclosing symbol/component, the file\'s import block, and a short `excerpt_hash` for drift detection. ' +
+      'Prefer this over trusting `task.line` when a task has been retried, is older than your current triage pass, or when a prior Edit touched the same file. ' +
+      'Use `context_lines` to widen/narrow the window (default 15, max 200).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID to resolve source context for' },
+        context_lines: { type: 'number', description: 'Lines of context on each side of task.line. Default 15, max 200.' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'annotask_get_component_examples',
+    description:
+      'Find real in-repo usages of a component by name. Returns up to `limit` call sites (default 3) with a short surrounding source snippet, the line number, and the most common import path for the component. ' +
+      'Use this when you are about to reuse or place a component and want to match the repo\'s own conventions (prop combinations, wrapper patterns, slot usage) rather than invent new ones.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Component name to search for (case-sensitive)' },
+        limit: { type: 'number', description: 'Max examples to return. Default 3, max 10.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'annotask_get_data_context',
+    description:
+      'Resolve (or return stored) data_context for a task — what hooks/stores/fetch calls power the selected element. ' +
+      'Returns `sources[]` — every data reference in the enclosing file, sorted with the primary (nearest to `task.line`, tie-broken hook>store>fetch>graphql>loader>rpc) at index 0 — plus `rendered_identifiers` (template/JSX names, CSV) and `route_bindings` (route params/query keys, CSV). ' +
+      'Use this before editing or inserting any data-driven UI so you reuse the repo\'s own queries/stores instead of writing fake data. Pass `refresh: true` to force a fresh scan even if the task already stores a data_context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID to resolve data context for' },
+        refresh: { type: 'boolean', description: 'Ignore stored data_context on the task and re-scan the source file.' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'annotask_get_data_sources',
+    description:
+      'List the project-wide data source catalog: detected data-fetching libraries from package.json (React Query, SWR, Pinia, Zustand, Apollo, tRPC, …) and project-specific entries found in `src/` (user hooks, stores, fetch wrappers, GraphQL operations). ' +
+      '`project_entries` come sorted by `used_count` descending — the most load-bearing entries first. Use this when deciding which existing data source to reuse before writing new code.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc'], description: 'Only return project entries of this kind. "composable" covers React hooks, Vue composables, Svelte helpers, Solid primitive wrappers. "signal" is fine-grained reactive (Solid createSignal, Svelte store reads).' },
+        library: { type: 'string', description: 'Only return this library from the libraries list.' },
+        search: { type: 'string', description: 'Substring match on project entry name (case-insensitive).' },
+        used_only: { type: 'boolean', description: 'Restrict project entries to `used_count > 0` — analogous to `annotask_get_components` used_only filter.' },
+      },
+    },
+  },
+  {
+    name: 'annotask_get_api_schemas',
+    description:
+      'List discovered API schemas. Sources: OpenAPI/Swagger JSON/YAML files, GraphQL SDL files, tRPC routers (with zod input/output), and live dev-server probes at common paths (/openapi.json, /graphql with introspection, etc.). ' +
+      'Default returns compact entries (kind, location, title, operation_count). Set detail=true to include every `operations[]` with full request/response schemas. ' +
+      'Use alongside `annotask_get_data_context` — when a source has `response_schema_ref`, this tool lets you pull the full shape.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['openapi', 'graphql', 'trpc', 'jsonschema'], description: 'Filter by schema kind.' },
+        detail: { type: 'boolean', description: 'Include full operations[] array. Default false — agents usually fetch by operation via annotask_get_api_operation.' },
+      },
+    },
+  },
+  {
+    name: 'annotask_get_api_operation',
+    description:
+      'Fetch a single operation by path (+ optional method). Returns the operation with `request_schema`, `response_schema`, `schema_refs` (named types to chase via further calls), and a `schema_location` pointer. ' +
+      'Use this after `annotask_get_data_context` surfaces a `response_schema_ref`, or after `annotask_resolve_endpoint` returns a match.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Operation path pattern (OpenAPI: "/users/{id}"; GraphQL: field name like "users"; tRPC: procedure name "users.list").' },
+        method: { type: 'string', description: 'HTTP method for OpenAPI (GET/POST/...), or "query"/"mutation"/"subscription" for GraphQL, or "query"/"mutation" for tRPC.' },
+        schema_location: { type: 'string', description: 'Disambiguate when the same path exists in multiple discovered schemas — use the `location` from annotask_get_api_schemas.' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'annotask_resolve_endpoint',
+    description:
+      'Resolve a concrete URL (e.g. `/api/users/42`) against the discovered OpenAPI / GraphQL / tRPC schemas — returns the best-match operation with a confidence score. ' +
+      'Call this when `data_context` surfaces an endpoint and you want to know its declared response shape. Complementary to `annotask_get_api_operation`: use this when you have a URL, use `annotask_get_api_operation` when you have a path pattern.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Concrete URL or path. Query strings / fragments are stripped.' },
+        method: { type: 'string', description: 'HTTP method — improves match score when provided.' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'annotask_get_data_source_examples',
+    description:
+      'Find in-repo usages of a data source by name — symmetric with `annotask_get_component_examples`. Returns up to `limit` call sites (default 3) with ±5 lines of surrounding code and the dominant import path. ' +
+      'Use this after identifying a candidate hook/store/query from `annotask_get_data_sources` or from a task\'s `data_context`, to see how the project actually uses it (destructuring, parameters, common wrappers). ' +
+      'Pass `kind` for more accurate matching: `store` looks for property reads too (`userStore.x`), hook/fetch/rpc look for call sites only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Data source name to search for (case-sensitive identifier).' },
+        kind: { type: 'string', enum: ['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc'], description: 'DataSource kind — tightens the match regex (store matches property access too; signal matches bare reads and calls).' },
+        limit: { type: 'number', description: 'Max examples to return. Default 3, max 10.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'annotask_get_data_source_details',
+    description:
+      'Pull the *definition* of a project-specific data source (hook, store, fetch wrapper, GraphQL operation, tRPC router) by name. ' +
+      'Complements `annotask_get_data_source_examples` (which shows call sites): this returns signature, return-type annotation, ±15 lines of surrounding body, the file\'s import block, co-located sibling exports, and referenced named types. ' +
+      'Regex-driven in V1 — results carry `resolved_by: "regex"` and a `confidence` field (high | medium | low). When multiple definitions share the name, returns `{ error: "ambiguous", candidates }`; narrow with `file` and/or `kind` and call again. ' +
+      'Not found → `{ error: "not_found", name }`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Data source name (case-sensitive identifier).' },
+        kind: { type: 'string', enum: ['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc'], description: 'Optional disambiguation when multiple kinds share a name.' },
+        file: { type: 'string', description: 'Optional disambiguation — project-relative file path to resolve the definition against.' },
+        context_lines: { type: 'number', description: 'Lines of body excerpt around the definition (default 15, max 40).' },
+      },
+      required: ['name'],
     },
   },
 ]
@@ -468,6 +622,124 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
       }
       const { library: libName, version, component } = matches[0]
       return { content: [{ type: 'text', text: compact({ library: libName, version, ...component }) }] }
+    }
+
+    case 'annotask_get_code_context': {
+      const parsed = parseWith(McpGetCodeContextArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { task_id: taskId, context_lines: contextLines } = parsed.data
+      const taskData = deps.getTasks()
+      const task = taskData.tasks.find(t => t.id === taskId)
+      if (!task) return toolError(`Task not found: ${taskId}`)
+      const file = typeof task.file === 'string' ? task.file : ''
+      const line = typeof task.line === 'number' ? task.line : 0
+      if (!file) return toolError('Task has no file reference — cannot resolve code context')
+      const result = await getCodeContext(deps.projectRoot, file, line, contextLines ?? 15)
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_component_examples': {
+      const parsed = parseWith(McpGetComponentExamplesArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { name, limit } = parsed.data
+      const result = await getComponentExamples(deps.projectRoot, name, limit ?? 3)
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_data_context': {
+      const parsed = parseWith(McpGetDataContextArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { task_id: taskId, refresh } = parsed.data
+      const taskData = deps.getTasks()
+      const task = taskData.tasks.find(t => t.id === taskId)
+      if (!task) return toolError(`Task not found: ${taskId}`)
+      const stored = task.data_context
+      if (!refresh && stored && typeof stored === 'object') {
+        return { content: [{ type: 'text', text: compact(stored) }] }
+      }
+      const file = typeof task.file === 'string' ? task.file : ''
+      const line = typeof task.line === 'number' ? task.line : 0
+      if (!file) return toolError('Task has no file reference — cannot resolve data context')
+      const result = await resolveDataContext(deps.projectRoot, file, line)
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_data_sources': {
+      const parsed = parseWith(McpGetDataSourcesArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const args = parsed.data
+      const catalog = await scanDataSources(deps.projectRoot)
+      const libraries = args.library ? catalog.libraries.filter(l => l.name === args.library) : catalog.libraries
+      let entries = catalog.project_entries
+      if (args.kind) entries = entries.filter(e => e.kind === args.kind)
+      if (args.search) {
+        const q = args.search.toLowerCase()
+        entries = entries.filter(e => e.name.toLowerCase().includes(q))
+      }
+      if (args.used_only) entries = entries.filter(e => e.used_count > 0)
+      return { content: [{ type: 'text', text: compact({ libraries, project_entries: entries, scannedAt: catalog.scannedAt }) }] }
+    }
+
+    case 'annotask_get_api_schemas': {
+      const parsed = parseWith(McpGetApiSchemasArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { kind, detail } = parsed.data
+      const catalog = await scanApiSchemas(deps.projectRoot)
+      let schemas = catalog.schemas
+      if (kind) schemas = schemas.filter(s => s.kind === kind)
+      const emitted = detail ? schemas : schemas.map(s => ({ ...s, operations: [] }))
+      return { content: [{ type: 'text', text: compact({ schemas: emitted, scannedAt: catalog.scannedAt }) }] }
+    }
+
+    case 'annotask_get_api_operation': {
+      const parsed = parseWith(McpGetApiOperationArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { path, method, schema_location } = parsed.data
+      const catalog = await scanApiSchemas(deps.projectRoot)
+      const normMethod = method ? method.toUpperCase() : undefined
+      const matches: Array<Record<string, unknown>> = []
+      for (const schema of catalog.schemas) {
+        if (schema_location && schema.location !== schema_location) continue
+        for (const op of schema.operations) {
+          if (op.path !== path) continue
+          if (normMethod && op.method.toUpperCase() !== normMethod) continue
+          matches.push({ schema_location: schema.location, schema_kind: schema.kind, operation: op })
+        }
+      }
+      if (matches.length === 0) return toolError(`Operation not found: ${path}${method ? ` (${method})` : ''}`)
+      if (matches.length === 1) return { content: [{ type: 'text', text: compact(matches[0]) }] }
+      return { content: [{ type: 'text', text: compact({ ambiguous: true, candidates: matches }) }] }
+    }
+
+    case 'annotask_resolve_endpoint': {
+      const parsed = parseWith(McpResolveEndpointArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { url, method } = parsed.data
+      const catalog = await scanApiSchemas(deps.projectRoot)
+      const match = resolveEndpoint(catalog, url, method)
+      return { content: [{ type: 'text', text: compact({ match }) }] }
+    }
+
+    case 'annotask_get_data_source_examples': {
+      const parsed = parseWith(McpGetDataSourceExamplesArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { name, kind, limit } = parsed.data
+      const result = await getDataSourceExamples(deps.projectRoot, name, limit ?? 3, kind as DataSource['kind'] | undefined)
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_data_source_details': {
+      const parsed = parseWith(McpGetDataSourceDetailsArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { name, kind, file, context_lines } = parsed.data
+      const result = await resolveDataSourceDetails({
+        projectRoot: deps.projectRoot,
+        name,
+        kind: kind as DataSource['kind'] | undefined,
+        file,
+        contextLines: context_lines,
+      })
+      return { content: [{ type: 'text', text: compact(result) }] }
     }
 
     case 'annotask_get_screenshot': {

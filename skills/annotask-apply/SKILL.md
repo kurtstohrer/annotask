@@ -78,7 +78,7 @@ Within each group: process serially, reading the file once and batching Edits. A
 - **Same file → same group, serial.** Never have two tasks editing the same file concurrently.
 - **Shared global state → one group, serial.** `.annotask/design-spec.json`, `:root` blocks in shared CSS, `tailwind.config.*`, shared layout files, i18n catalogs, route tables, barrel exports.
 - **Dependency order**: `theme_update` before any `style_update` that references the new/changed token; structural task (`section_request`, `annotation` with `wrap_container`/`add_row`/`add_column`) before an `a11y_fix` or `style_update` on the same new UI.
-- **Stale locators**: after edits land, the `file`/`line` on remaining tasks may drift. Prefer searching by surrounding text/element context over trusting `line` from the original triage.
+- **Stale locators**: after edits land, the `file`/`line` on remaining tasks may drift. When in doubt, call `annotask_get_code_context(task_id)` before editing — it returns the current symbol, a ±15 line excerpt, and an `excerpt_hash` you can compare across retries. Otherwise, search by surrounding text/element context over trusting `line` from the original triage.
 - **Non-idempotent inserts**: `add_row`, `add_column`, `section_request`, and free-text "add this" notes can duplicate on retry. Before inserting, confirm the target isn't already present.
 - **If using parallel subagents**: each subagent receives only its group's task IDs plus project context. After all subagents finish, run a quick typecheck/build sanity pass before returning control to the user. If any subagent failed, surface it clearly — do not silently accept partial success.
 
@@ -148,6 +148,66 @@ For a specific component, get its full prop signature:
 npx annotask component Button --mcp
 ```
 
+For **in-repo usage examples** (real prop combinations + import path this project actually uses), call `annotask_get_component_examples(name: "Button")` — or `npx annotask component-examples Button --mcp`. Prefer the example's import path and prop shape over reinventing: the examples show how *this* codebase uses the component, not just what the library exposes.
+
+#### c-ter. Find the data source (required for any task that adds or modifies data-driven UI)
+
+Before writing UI that renders data, check what's already wired. If the task's summary contains `data_context_summary` (e.g. `"hook:useUserQuery"` or `"store:useCounterStore"`), that's the primary data source powering the selected element. For the full picture:
+
+**MCP:** `annotask_get_data_context(task_id: "TASK_ID")` — returns the complete `DataContext`: every data reference in the enclosing file (`sources`, sorted with the primary source at index 0 — closest to `task.line`, tie-broken by kind precedence), `rendered_identifiers` from the template/JSX (CSV), and `route_bindings` (CSV).
+
+```bash
+npx annotask data-context TASK_ID --mcp
+```
+
+To browse the project's catalog of hooks, stores, and fetch wrappers (sorted by `used_count` — most load-bearing first):
+
+**MCP:** `annotask_get_data_sources(used_only: true)` — filter to entries actually used elsewhere in the codebase.
+
+```bash
+npx annotask data-sources --used-only --mcp
+```
+
+To see **real in-repo usages** of a specific data source (destructuring patterns, parameter shape, common wrappers — parallel to `annotask_get_component_examples`):
+
+**MCP:** `annotask_get_data_source_examples(name: "useUserQuery", kind: "composable")`
+
+```bash
+npx annotask data-source-examples useUserQuery --kind=composable --mcp
+```
+
+To see **what shape comes back** from an API — cross-reference declared schemas (OpenAPI, GraphQL, tRPC) so you don't guess field names:
+
+**MCP:** `annotask_resolve_endpoint(url: "/api/cats")` → returns the best-match operation with a confidence score.
+
+```bash
+npx annotask resolve-endpoint /api/cats --mcp
+```
+
+**MCP:** `annotask_get_api_operation(path: "/api/cats", method: "GET")` — full request / response schema for a known path pattern.
+
+```bash
+npx annotask api-operation /api/cats --method=GET --mcp
+```
+
+**MCP:** `annotask_get_api_schemas(detail: true)` — browse every discovered schema source up front.
+
+```bash
+npx annotask api-schemas --detail --mcp
+```
+
+If a task summary shows `response_schema_ref: "Cat[]"`, the agent already knows a declared shape exists — `annotask_get_api_operation` or `annotask_resolve_endpoint` will surface the full JSON schema.
+
+**When to use:**
+- Any task where the user's description mentions adding, replacing, or rewiring data — "show the current user", "list orders", "filter by status", "fetch from the API".
+- Denied tasks where feedback mentions wrong or fake data.
+- Section requests that need to render real information.
+
+**How to apply:**
+- Prefer reusing a hook/store from `data_context.sources` or `data-sources` catalog over writing new fetch code.
+- Copy the import path and call-site shape from `data-source-examples`, not from library docs.
+- If `sources[0]` doesn't match the user's description (e.g. task says "user name" but `sources[0]` is `useOrdersQuery`), check the rest of the `sources` list — the right hook is usually there.
+
 **When to use:**
 - **Section requests** — Instead of creating HTML from scratch, search for relevant components and compose them
 - **UI additions** — Check if a table, button, card, modal, input, form, list, or nav component already exists before writing custom HTML
@@ -156,8 +216,24 @@ npx annotask component Button --mcp
 **How to apply:**
 - Search for components matching the intent (e.g., "table" if adding tabular data, "dropdown" if adding a select menu)
 - Read the props to understand customization options (variant, size, disabled, etc.)
+- Call `annotask_get_component_examples` to see how the component is already used in this codebase; copy the import path and prop patterns from there
 - Use the component in your JSX/Vue/Svelte code with appropriate props
 - Document the component reference in your resolution note
+
+#### c-bis. Re-anchor older or retried tasks
+
+For **denied** tasks, tasks that have been sitting in the queue while you edited other files, or any task whose `file`/`line` you suspect has drifted: call `annotask_get_code_context(task_id)` before editing.
+
+```bash
+npx annotask code-context TASK_ID --mcp
+```
+
+Response:
+```json
+{"file":"src/components/Header.vue","line":42,"symbol":"Header","excerpt_start_line":27,"excerpt_end_line":57,"excerpt":"...","imports":["import ..."],"excerpt_hash":"ab12cd34ef56..."}
+```
+
+Use `symbol` + `excerpt` to locate the edit target; the `excerpt_hash` is a cheap drift check on subsequent retries (if the hash changes between attempts, the surrounding code moved). Skip this step for fresh pending tasks where `file`/`line` are known good.
 
 #### d. Apply the change
 
@@ -173,7 +249,47 @@ Read the task type and apply accordingly:
 
 - **`section_request`**: Create a new section in the template near the referenced element. The `description` field describes what content to create. `placement` gives spatial hints. Use the design spec (step b) and component library search (step c) to find relevant components and tokens before writing custom HTML.
 
-- **`a11y_fix`**: Fix an accessibility violation. The `context` contains `rule` (axe rule ID), `impact`, `help` (what to fix), `helpUrl` (WCAG reference), and `elements` array with `html` snippets, `selector`, `fix` suggestions, and source `file`/`line`/`component`.
+- **`a11y_fix`**: Fix an accessibility violation. The `context` contains `rule` (axe rule ID, or the synthetic `tab-order` rule from Annotask's tab-order overlay), `impact`, `help`, `helpUrl`, and `elements` array with `html`, `selector`, `fix`, source `file`/`line`/`component`, and a per-element `a11y` block with computed accessibility metadata:
+
+  ```
+  elements[i].a11y = {
+    accessible_name, name_source,   // "Sign in", source: aria-label | labelledby | label | alt | text | placeholder | none
+    role, role_source,              // "button", source: explicit | implicit | none
+    tabindex, focusable,            // null | number, true/false
+    focus_indicator,                // "visible" | "none" | "unknown"
+    contrast,                       // { foreground, background, ratio, aa_normal, aa_large, ... } only when element has text
+    aria_attrs,                     // [{ name: "aria-expanded", value: "false" }, ...]
+  }
+  ```
+
+  Annotask also attaches `element_context` (ancestor layout chain + DOM subtree) to every `a11y_fix` task — use it to decide whether the fix lives at the markup, component, layout, or token layer.
+
+  If `screenshot_meta` is present (the user manually attached one with the snip tool), retrieve it via `annotask_get_screenshot` before proposing visual changes (color-contrast, focus rings).
+
+  **Per-rule playbook.** Most rules fall into one of these patterns — match by `context.rule`:
+
+  | Rule(s) | Fix layer | What to do |
+  |---|---|---|
+  | `color-contrast`, `color-contrast-enhanced` | Design tokens first | Read `elements[i].a11y.contrast` for the actual fg/bg hex + ratio. If the colors come from theme tokens (check `cssVar` lookups in the source), adjust the token. If the contrast comes from a one-off inline style or hardcoded class, fix the component, not the token (you'd regress every other consumer). |
+  | `label`, `form-field-multiple-labels` | Markup | Wrap input in `<label>` or add `aria-labelledby` referencing visible text. `a11y.accessible_name` shows what (if anything) the input currently exposes — when `name_source === 'placeholder'`, the input has no real label. |
+  | `button-name`, `link-name`, `input-button-name` | Markup | Add visible text content or `aria-label`. For icon-only buttons add a visually hidden `<span class="sr-only">` (or your project's equivalent). Don't add `title` — it's not reliable for SR users. |
+  | `image-alt`, `role-img-alt`, `svg-img-alt` | Markup | `alt=""` for decorative imagery, descriptive `alt` for informational. For `<img>` that conveys text, use the text. For SVG icons that pair with visible text, use `aria-hidden="true"`. |
+  | `landmark-one-main`, `region`, `landmark-no-duplicate-banner`, `landmark-no-duplicate-contentinfo` | Layout component | Wrap the page's primary content in `<main>`. Add `role="region"` + `aria-label` to top-level layout containers. These almost always live in a layout component (e.g. `App.vue`, `_layout.tsx`, `RootLayout`), not in leaf components — `element_context.ancestors` will show the closest landmark-eligible ancestor. |
+  | `heading-order`, `page-has-heading-one`, `empty-heading` | Content/layout | Insert/promote `<h1>`; renumber subsequent levels so the outline is contiguous. Usually a layout/section component change, not a leaf change. |
+  | `aria-allowed-attr`, `aria-required-attr`, `aria-valid-attr-value`, `aria-roles`, `aria-required-children`, `aria-required-parent` | Markup | Read `elements[i].a11y.role` and `aria_attrs` to see exactly what's set. Reference the WAI-ARIA roles spec (`helpUrl`) for the role's allowed attributes. Remove disallowed attrs; add required ones. |
+  | `aria-hidden-focus`, `aria-hidden-body` | Markup | An element with `aria-hidden="true"` cannot contain focusable descendants. Either remove `aria-hidden`, or move the focusable elements outside (or set `tabindex="-1"` and ensure they're never the focus target). |
+  | `tabindex`, **synthetic** `tab-order` | Markup | Remove positive `tabindex`; use 0 (focusable in DOM order) or -1 (programmatically focusable, not in tab order). For the synthetic `tab-order` rule, `context.tab_order.flag` is one of `positive` / `unreachable` / `reorder` — fix the source markup so DOM order matches visual order. |
+  | `meta-viewport`, `html-has-lang`, `html-lang-valid`, `document-title`, `meta-refresh` | Document head | Single source of truth — usually `index.html` (Vite/CRA), `app/layout.tsx` (Next), `src/routes/+layout.svelte` (SvelteKit), or the framework's root document. |
+  | `focus-order-semantics`, `nested-interactive` | Markup | Use semantic interactive elements (`<button>`, `<a href>`, `<input>`) instead of clickable `<div>`/`<span>`. Don't nest interactive elements (e.g. `<button>` inside `<a>`). |
+  | `bypass`, `skip-link` | Layout component | Add a "Skip to main content" link as the first focusable element of the layout. Style it with the visually-hidden pattern that becomes visible on `:focus`. |
+  | `duplicate-id`, `duplicate-id-active`, `duplicate-id-aria` | Markup | Search the codebase for hardcoded `id="…"` and rename one. If the id is dynamic, ensure the generation key is unique per instance. |
+  | `frame-title`, `iframe-title` | Markup | Add `title="…"` describing the iframe's purpose. |
+
+  **General rules:**
+  - Prefer **pattern fixes** over instance fixes. When `elements` contains many entries that share the same `file`/`component`, change the source component once — don't paste the same fix N times.
+  - Use `element_context.ancestors` to decide whether a fix needs to land in a parent component (e.g. landmark wrapping must happen at the layout level).
+  - For the synthetic `tab-order` rule, the offending element is in `elements[0].a11y.eid` and the failure type is in `context.tab_order.flag`. There is no `helpUrl` from axe — use the linked WCAG focus-order page in `context.helpUrl`.
+  - When `a11y.accessible_name` is empty and `a11y.focusable` is true, the element is unreachable for screen readers — naming is the highest-priority fix.
 
 - **`theme_update`**: A design token value change from the Theme page. The `context` object contains:
   - `category`: which token category (`colors`, `typography.families`, `typography.scale`, `spacing`, `borders.radius`)
@@ -190,6 +306,49 @@ Read the task type and apply accordingly:
   - If the source references a Tailwind config: update the corresponding key in `tailwind.config.*`.
   - If `isNew` is true: add the new variable/config entry in the most appropriate location (`:root` block in the main CSS file, or Tailwind config `theme.extend`).
   - After applying, update `.annotask/design-spec.json` to reflect the new value so the Theme page stays in sync.
+
+- **`api_update`**: In-repo backend-contract edit. Created from the shell's Data view when the user selects an internal data source (`schema_in_repo === true`) and fills in a desired change. Only valid for in-repo schemas — external APIs cannot be edited from Annotask and should be marked `blocked` with an explanation if a request implies one.
+
+  The `context` object carries:
+  - `data_source_name`: hook/store/query identifier (e.g. `useCatsQuery`)
+  - `data_source_kind`: one of `composable | signal | store | fetch | graphql | loader | rpc`
+  - `schema_location`: path to the schema file (e.g. `openapi.yaml`, `src/trpc/router.ts`)
+  - `schema_kind`: `openapi | graphql | trpc | jsonschema`
+  - `endpoint`: literal endpoint / query key when the source used one
+  - `operation`: `{ method, path }` from the matched schema operation, when a match exists
+  - `desired_change`: user's description of the needed contract change
+  - `rationale`: optional "why"
+
+  **How to apply:**
+  - Open the schema file at `context.schema_location`. Read the referenced operation (`context.operation.method` + `context.operation.path`, or find it by `endpoint`) and make the change described in `desired_change`.
+  - Update the handler / backend implementation that serves that operation (typical pairs: OpenAPI routes ↔ the framework-specific handler file, tRPC router ↔ its procedure body).
+  - Update the frontend data source at `file:line` if the shape change affects the consumer (e.g. return type, destructured fields).
+  - If the change is additive (new optional field), you usually don't need to change existing callers. If it's breaking (required field, renamed field), search for all usages with `annotask_get_data_source_examples` and update them.
+  - Record what you changed in the resolution note — mention which schema location, which operation, and any frontend call sites touched.
+
+- **`annotation` with cross-boundary API edits**: An annotation task may turn out to require an in-repo API change (e.g. "show expiration date on the tier badge" when the `Cat` schema does not currently return `expires_at`).
+
+  **Rule**: do **not** silently edit the backend. Ask the user first via a `needs_info` question:
+  > This change requires updating the internal API route `GET /api/cats` to add an `expires_at` field on the `Cat` response. Proceed with both frontend and backend edits? (yes / no)
+
+  If the user approves, continue the same task (do **not** spawn a separate `api_update` task). Record each API edit structurally in `task.context.api_edits[]`:
+  ```json
+  {
+    "api_edits": [
+      {
+        "schema_location": "openapi.yaml",
+        "schema_kind": "openapi",
+        "operation": { "method": "GET", "path": "/api/cats" },
+        "change_summary": "Added nullable expires_at: string (ISO date) to the Cat response schema and handler."
+      }
+    ]
+  }
+  ```
+  Annotask's summary lifting will surface `api_edits_count` on the triage view so the user sees this task crossed the frontend/backend line.
+
+  If the user denies, do the frontend-only thing you can, or mark the task `blocked` with an explanation pointing at the missing backend support.
+
+  If the data source is external (`schema_in_repo === false`) and the task requires a contract change, mark the task `blocked` immediately — Annotask cannot edit APIs outside the repo.
 
 #### e. Ask for clarification (only when stuck)
 

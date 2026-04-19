@@ -8,6 +8,10 @@ import type { useStyleEditor } from './useStyleEditor'
 export interface SelectionData {
   file: string; line: string; component: string; mfe: string
   tagName: string; classes: string; eid: string
+  /** JSX/template tag name as written in source (e.g. "Button", "Flex"). */
+  sourceTag?: string
+  /** Nearest wrapping component with a different data-annotask-component. */
+  parentComponent?: string
   /** Visible label text, used for agent disambiguation in task context. */
   text?: string
 }
@@ -107,7 +111,7 @@ export function useSelectionModel(
   const liveStyles = ref<Record<string, string>>({})
   const editingClasses = ref('')
   const hoverRect = ref<BridgeRect | null>(null)
-  const hoverInfo = ref<{ tag: string; file: string; component: string } | null>(null)
+  const hoverInfo = ref<{ tag: string; file: string; component: string; source_tag?: string; parent_component?: string } | null>(null)
 
   const allStyleProps = [
     'display', 'position', 'width', 'height', 'min-width', 'max-width', 'min-height', 'max-height',

@@ -7,13 +7,35 @@
  * in one place instead of spread across hand-rolled checks.
  */
 import { z } from 'zod'
+import { TASK_TYPES } from '../schema.js'
 import { SAFE_SCREENSHOT_RE, VALID_TASK_STATUSES, VALID_TRANSITIONS } from './validation.js'
 
 const statusValues = [...VALID_TASK_STATUSES] as [string, ...string[]]
 const statusError = `Invalid status. Must be one of: ${statusValues.join(', ')}`
 
+type TaskTypeValue = typeof TASK_TYPES[number]
+const typeValues = [...TASK_TYPES] as [TaskTypeValue, ...TaskTypeValue[]]
+const typeError = `Invalid task type. Must be one of: ${typeValues.join(', ')}`
+
 /** A screenshot filename that's safe to concatenate with a filesystem path. */
 export const ScreenshotName = z.string().regex(SAFE_SCREENSHOT_RE, 'Invalid screenshot filename')
+
+/**
+ * A project-relative source path safe to read later. Rejects absolute paths,
+ * `..` escapes, null-byte injection, and URL-looking inputs. Defense in depth
+ * for endpoints that ultimately feed this into filesystem reads. The final
+ * containment check still happens at read time via `resolveProjectFile`.
+ */
+const SAFE_SOURCE_FILE_RE = /^(?!.*(?:^|\/)\.\.(?:\/|$))(?!\/{2,})[^\0:]+$/
+export const SafeSourceFile = z
+  .string()
+  .min(1, 'file must be non-empty')
+  .max(1024, 'file path too long')
+  .refine(v => !/^[a-zA-Z]:[\\/]/.test(v), 'Absolute Windows paths are not allowed')
+  .refine(v => !/^\\\\/.test(v), 'UNC paths are not allowed')
+  .refine(v => !/^[a-z][a-z0-9+.-]*:\/\//i.test(v), 'URL-style paths are not allowed')
+  .refine(v => !v.includes('\0'), 'Null bytes are not allowed')
+  .refine(v => SAFE_SOURCE_FILE_RE.test(v.replace(/^\/+/, '')), 'file may not contain .. segments')
 
 /** One question asked of the user in an agent_feedback thread. */
 const FeedbackQuestion = z.discriminatedUnion('type', [
@@ -52,9 +74,9 @@ export const AgentFeedbackSchema = z.array(FeedbackEntry)
  * without breaking.
  */
 export const CreateTaskBody = z.object({
-  type: z.string().min(1, 'Missing required field: type (string)'),
+  type: z.enum(typeValues, { message: typeError }),
   description: z.string().min(0, 'Missing required field: description (string)'),
-  file: z.string().optional(),
+  file: SafeSourceFile.optional(),
   line: z.number().optional(),
   component: z.string().optional(),
   mfe: z.string().optional(),
@@ -66,7 +88,9 @@ export const CreateTaskBody = z.object({
   color_scheme: z.unknown().optional(),
   interaction_history: z.unknown().optional(),
   element_context: z.unknown().optional(),
+  data_context: z.unknown().optional(),
   screenshot: ScreenshotName.optional(),
+  screenshot_meta: z.unknown().optional(),
   visual: z.unknown().optional(),
 })
 
@@ -85,6 +109,8 @@ export const UpdateTaskBody = z.object({
   color_scheme: z.unknown().optional(),
   interaction_history: z.unknown().optional(),
   element_context: z.unknown().optional(),
+  data_context: z.unknown().optional(),
+  screenshot_meta: z.unknown().optional(),
   mfe: z.string().optional(),
   agent_feedback: AgentFeedbackSchema.optional(),
   blocked_reason: z.string().optional(),
@@ -124,9 +150,9 @@ export const McpUpdateTaskArgs = z.object({
 })
 
 export const McpCreateTaskArgs = z.object({
-  type: z.string().min(1, 'Missing required parameters: type, description'),
+  type: z.enum(typeValues, { message: typeError }),
   description: z.string().min(1, 'Missing required parameters: type, description'),
-  file: z.string().optional(),
+  file: SafeSourceFile.optional(),
   line: z.number().optional(),
   component: z.string().optional(),
   mfe: z.string().optional(),
@@ -158,6 +184,59 @@ export const McpGetComponentArgs = z.object({
 
 export const McpGetScreenshotArgs = z.object({
   task_id: z.string().min(1, 'Missing required parameter: task_id'),
+})
+
+export const McpGetCodeContextArgs = z.object({
+  task_id: z.string().min(1, 'Missing required parameter: task_id'),
+  context_lines: z.number().int().min(0).max(200).optional(),
+})
+
+export const McpGetComponentExamplesArgs = z.object({
+  name: z.string().min(1, 'Missing required parameter: name'),
+  limit: z.number().int().min(1).max(10).optional(),
+})
+
+export const McpGetDataContextArgs = z.object({
+  task_id: z.string().min(1, 'Missing required parameter: task_id'),
+  refresh: z.boolean().optional(),
+})
+
+const DataSourceKindEnum = z.enum(['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc'])
+
+export const McpGetDataSourcesArgs = z.object({
+  kind: DataSourceKindEnum.optional(),
+  library: z.string().optional(),
+  search: z.string().optional(),
+  used_only: z.boolean().optional(),
+})
+
+export const McpGetDataSourceExamplesArgs = z.object({
+  name: z.string().min(1, 'Missing required parameter: name'),
+  kind: DataSourceKindEnum.optional(),
+  limit: z.number().int().min(1).max(10).optional(),
+})
+
+export const McpGetDataSourceDetailsArgs = z.object({
+  name: z.string().min(1, 'Missing required parameter: name'),
+  kind: DataSourceKindEnum.optional(),
+  file: SafeSourceFile.optional(),
+  context_lines: z.number().int().min(0).max(40).optional(),
+})
+
+export const McpGetApiSchemasArgs = z.object({
+  kind: z.enum(['openapi', 'graphql', 'trpc', 'jsonschema']).optional(),
+  detail: z.boolean().optional(),
+})
+
+export const McpGetApiOperationArgs = z.object({
+  path: z.string().min(1, 'Missing required parameter: path'),
+  method: z.string().optional(),
+  schema_location: z.string().optional(),
+})
+
+export const McpResolveEndpointArgs = z.object({
+  url: z.string().min(1, 'Missing required parameter: url'),
+  method: z.string().optional(),
 })
 
 // ── Runtime helpers ──────────────────────────────────────

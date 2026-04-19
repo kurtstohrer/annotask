@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import ThemePage from './ThemePage.vue'
 import ElementStyleEditor from './ElementStyleEditor.vue'
+import AccessibilitySection from './AccessibilitySection.vue'
 import type { SelectionData } from '../composables/useSelectionModel'
 import type { ElementRole } from '../composables/useElementClassification'
 import type { ChangeRecord } from '../composables/useStyleEditor'
 import type { ColorSchemeInfo } from '../../schema'
+import type { useIframeManager } from '../composables/useIframeManager'
 
 defineProps<{
   section: 'tokens' | 'inspector'
   iframeRef: HTMLIFrameElement | null
+  iframe: ReturnType<typeof useIframeManager>
   getColorScheme: () => Promise<ColorSchemeInfo | null>
   primarySelection: SelectionData | null
   selectionSummary: string | null
@@ -34,24 +37,26 @@ const emit = defineEmits<{
 <template>
   <div class="design-panel">
     <ThemePage v-if="section === 'tokens'" :iframeRef="iframeRef" :getColorScheme="getColorScheme" />
-    <ElementStyleEditor
-      v-else-if="section === 'inspector' && primarySelection"
-      :primarySelection="primarySelection"
-      :selectionSummary="selectionSummary"
-      :selectedElementRole="selectedElementRole"
-      :templateGroupEids="templateGroupEids"
-      :selectedEids="selectedEids"
-      :applyToGroup="applyToGroup"
-      :liveStyles="liveStyles"
-      :editingClasses="editingClasses"
-      :changes="changes"
-      @style-change="(p, v, role) => emit('style-change', p, v, role)"
-      @class-change="emit('class-change')"
-      @update:editingClasses="emit('update:editingClasses', $event)"
-      @update:applyToGroup="emit('update:applyToGroup', $event)"
-      @commit="emit('commit')"
-      @discard="emit('discard')"
-    />
+    <template v-else-if="section === 'inspector' && primarySelection">
+      <ElementStyleEditor
+        :primarySelection="primarySelection"
+        :selectionSummary="selectionSummary"
+        :selectedElementRole="selectedElementRole"
+        :templateGroupEids="templateGroupEids"
+        :selectedEids="selectedEids"
+        :applyToGroup="applyToGroup"
+        :liveStyles="liveStyles"
+        :editingClasses="editingClasses"
+        :changes="changes"
+        @style-change="(p, v, role) => emit('style-change', p, v, role)"
+        @class-change="emit('class-change')"
+        @update:editingClasses="emit('update:editingClasses', $event)"
+        @update:applyToGroup="emit('update:applyToGroup', $event)"
+        @commit="emit('commit')"
+        @discard="emit('discard')"
+      />
+      <AccessibilitySection :iframe="iframe" :eid="primarySelection.eid" />
+    </template>
     <div v-else class="empty-element">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
       <p>Click an element to edit its styles</p>

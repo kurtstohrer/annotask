@@ -1,4 +1,5 @@
 import type { Plugin, ViteDevServer } from 'vite'
+import fs from 'node:fs'
 import { transformFile, transformHTML } from './transform.js'
 import { bridgeClientScript } from './bridge-client.js'
 import { createAnnotaskServer } from '../server/index.js'
@@ -63,10 +64,34 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       // handled via data-astro-source-* attributes in the bridge client.
       if (!id.endsWith('.vue') && !id.endsWith('.svelte') && !/\.[jt]sx$/.test(id)) return null
 
-      const result = transformFile(code, id, projectRoot, mfe)
+      // JSX/TSX only: if another `enforce: 'pre'` plugin ran first (e.g.
+      // `@vitejs/plugin-react` when it's listed before annotask() in the
+      // user's config), `code` will contain an HMR/Fast Refresh preamble
+      // that shifts every line number we compute. Re-read the raw file from
+      // disk so our `data-annotask-line` attrs reference the user's actual
+      // source lines. We preserve the preamble by prepending it back onto
+      // our injected output.
+      let sourceForTransform = code
+      let preamble = ''
+      if (/\.[jt]sx$/.test(id)) {
+        const bareId = id.split('?')[0]
+        try {
+          const rawCode = fs.readFileSync(bareId, 'utf-8')
+          if (rawCode && code.length > rawCode.length && code.includes(rawCode)) {
+            preamble = code.slice(0, code.indexOf(rawCode))
+            sourceForTransform = rawCode
+          } else if (rawCode && rawCode !== code && rawCode.length < code.length) {
+            // Raw not found as substring (minor whitespace differences?). Fall
+            // back to `code` but log once at dev time so we can tune.
+            sourceForTransform = rawCode
+          }
+        } catch { /* file unreadable — fall back to code */ }
+      }
+
+      const result = transformFile(sourceForTransform, id, projectRoot, mfe)
       if (!result) return null
 
-      return { code: result, map: null }
+      return { code: preamble + result, map: null }
     },
 
     transformIndexHtml(html, ctx) {

@@ -40,8 +40,11 @@
           <TaskOptionsToggles
             :include-history="includeHistory"
             :include-element-context="includeElementContext"
+            :include-data-context="includeDataContext"
+            :data-context-probe="dataContextProbe"
             @update:includeHistory="$emit('update:includeHistory', $event)"
             @update:includeElementContext="$emit('update:includeElementContext', $event)"
+            @update:includeDataContext="$emit('update:includeDataContext', $event)"
           />
           <ScreenshotUploader
             :pending-screenshot="pendingScreenshot"
@@ -65,6 +68,7 @@ import TaskOptionsToggles from './TaskOptionsToggles.vue'
 import ScreenshotUploader from './ScreenshotUploader.vue'
 import { safeMd } from '../utils/safeMd'
 import type { AnnotaskTask } from '../../schema'
+import type { DataContextProbeResult } from '../services/dataContextClient'
 
 interface Props {
   task: AnnotaskTask
@@ -73,6 +77,8 @@ interface Props {
   pendingScreenshot?: string | null
   includeHistory: boolean
   includeElementContext: boolean
+  includeDataContext: boolean
+  dataContextProbe: DataContextProbeResult | null
 }
 
 defineProps<Props>()
@@ -86,6 +92,7 @@ defineEmits<{
   (e: 'update:denyFeedbackText', text: string): void
   (e: 'update:includeHistory', value: boolean): void
   (e: 'update:includeElementContext', value: boolean): void
+  (e: 'update:includeDataContext', value: boolean): void
   (e: 'start-snip'): void
   (e: 'remove-screenshot'): void
 }>()

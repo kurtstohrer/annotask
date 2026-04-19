@@ -23,8 +23,11 @@
       <TaskOptionsToggles
         :include-history="includeHistory"
         :include-element-context="includeElementContext"
+        :include-data-context="includeDataContext"
+        :data-context-probe="dataContextProbe"
         @update:includeHistory="$emit('update:includeHistory', $event)"
         @update:includeElementContext="$emit('update:includeElementContext', $event)"
+        @update:includeDataContext="$emit('update:includeDataContext', $event)"
       />
       <ScreenshotUploader
         :pending-screenshot="pendingScreenshot"
@@ -50,6 +53,8 @@
         :pending-screenshot="pendingScreenshot"
         :include-history="includeHistory"
         :include-element-context="includeElementContext"
+        :include-data-context="includeDataContext"
+        :data-context-probe="dataContextProbe"
         @open-detail="$emit('open-detail', $event)"
         @confirm-delete="$emit('confirm-delete', $event)"
         @accept="$emit('accept', $event)"
@@ -59,6 +64,7 @@
         @update:denyFeedbackText="$emit('update:denyFeedbackText', $event)"
         @update:includeHistory="$emit('update:includeHistory', $event)"
         @update:includeElementContext="$emit('update:includeElementContext', $event)"
+        @update:includeDataContext="$emit('update:includeDataContext', $event)"
         @start-snip="$emit('start-snip')"
         @remove-screenshot="$emit('remove-screenshot')"
       />
@@ -71,6 +77,7 @@ import TaskCard from './TaskCard.vue'
 import TaskOptionsToggles from './TaskOptionsToggles.vue'
 import ScreenshotUploader from './ScreenshotUploader.vue'
 import type { AnnotaskTask } from '../../schema'
+import type { DataContextProbeResult } from '../services/dataContextClient'
 
 interface Props {
   totalTasks: number
@@ -83,6 +90,8 @@ interface Props {
   pendingScreenshot?: string | null
   includeHistory: boolean
   includeElementContext: boolean
+  includeDataContext: boolean
+  dataContextProbe: DataContextProbeResult | null
 }
 
 defineProps<Props>()
@@ -92,6 +101,7 @@ defineEmits<{
   (e: 'update:denyFeedbackText', value: string): void
   (e: 'update:includeHistory', value: boolean): void
   (e: 'update:includeElementContext', value: boolean): void
+  (e: 'update:includeDataContext', value: boolean): void
   (e: 'toggle-new-task'): void
   (e: 'submit-new-task'): void
   (e: 'cancel-new-task'): void

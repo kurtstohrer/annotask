@@ -3,6 +3,7 @@ import type { Ref } from 'vue'
 import type { useIframeManager } from './useIframeManager'
 import type { useTasks } from './useTasks'
 import type { ConsoleErrorEvent, UnhandledErrorEvent } from '../../shared/bridge-types'
+import { useComponentContextCapture } from './useComponentContextCapture'
 
 type IframeManager = ReturnType<typeof useIframeManager>
 type TaskSystem = ReturnType<typeof useTasks>
@@ -26,6 +27,7 @@ export function useErrorMonitor(
   const errors = ref<ErrorEntry[]>([])
   const errorById = new Map<string, ErrorEntry>()
   const paused = ref(false)
+  const componentContextCapture = useComponentContextCapture(iframe)
 
   /** Insert a new entry at the head while keeping the buffer bounded.
    *  Drops the oldest entries (and their dedup keys) once we exceed MAX_ERRORS. */
@@ -149,6 +151,7 @@ export function useErrorMonitor(
     }
 
     const colorScheme = await iframe.getColorScheme()
+    const frag = componentContextCapture.fromSource(component, file, line)
 
     taskSystem.createTask({
       type: 'error_fix',
@@ -164,6 +167,7 @@ export function useErrorMonitor(
         message: entry.message,
         stack: entry.stack,
         occurrences: entry.count,
+        ...(frag.component ? { component: frag.component } : {}),
       },
     })
   }

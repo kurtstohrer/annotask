@@ -52,13 +52,37 @@ export function bridgeEvents(): string {
   var lastHoverEid = null;
   var rafPending = false;
   var pendingHoverData = null;
+  // Tracks whether the shell currently has a highlight painted. lastHoverEid
+  // is client-side intent; shellShowing is the committed shell state. They
+  // diverge whenever rAF bails after onMouseOver already updated
+  // lastHoverEid — without this flag those bails leak a stuck highlight of
+  // the previously-painted element.
+  var shellShowing = false;
+
+  function clearHoverState() {
+    lastHoverEid = null;
+    pendingHoverData = null;
+    if (!shellShowing) return;
+    shellShowing = false;
+    sendToShell('hover:leave', {});
+  }
 
   function onMouseOver(e) {
     if (!inspectModes[currentMode]) return;
     var el = e.target;
-    if (!el || el === document.documentElement || el === document.body) return;
+    if (!el || el === document.documentElement || el === document.body) { clearHoverState(); return; }
     var eid = getEid(el);
     if (eid === lastHoverEid) return;
+
+    var rect = getRect(el);
+    // Skip hover on elements that cover most of the viewport — these are
+    // layout wrappers (Theme, Box, outer Flex) the user rarely wants to
+    // highlight. Clear any stuck prior highlight on the way out, otherwise
+    // the old rect lingers after the cursor crosses into a big wrapper.
+    var vw = window.innerWidth || document.documentElement.clientWidth || 1;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 1;
+    if (rect.width * rect.height > vw * vh * 0.6) { clearHoverState(); return; }
+
     lastHoverEid = eid;
 
     var source = findSourceElement(el);
@@ -69,24 +93,47 @@ export function bridgeEvents(): string {
       tag: el.tagName.toLowerCase(),
       file: data.file,
       component: data.component,
-      rect: getRect(el)
+      source_tag: data.source_tag,
+      parent_component: findParentComponent(source.sourceEl, data.component),
+      rect: rect
     };
 
     if (!rafPending) {
       rafPending = true;
       requestAnimationFrame(function() {
         rafPending = false;
-        if (pendingHoverData) sendToShell('hover:enter', pendingHoverData);
+        // Re-verify state at flush time. If any check fails AND the shell is
+        // currently painting a stale highlight, emit leave so it clears —
+        // otherwise the previously-painted rect stays stuck while
+        // lastHoverEid has already moved on.
+        var ok = !!pendingHoverData
+          && inspectModes[currentMode]
+          && pendingHoverData.eid === lastHoverEid;
+        var el = ok ? getEl(pendingHoverData.eid) : null;
+        if (ok && (!el || !el.isConnected)) ok = false;
+        if (ok) { try { if (!el.matches(':hover')) ok = false; } catch (_e) {} }
+        if (ok) {
+          shellShowing = true;
+          sendToShell('hover:enter', pendingHoverData);
+        } else if (shellShowing) {
+          shellShowing = false;
+          lastHoverEid = null;
+          pendingHoverData = null;
+          sendToShell('hover:leave', {});
+        }
       });
     }
   }
 
   function onMouseOut(e) {
     if (!inspectModes[currentMode]) return;
-    if (e.relatedTarget && e.relatedTarget !== document.documentElement) return;
-    lastHoverEid = null;
-    pendingHoverData = null;
-    sendToShell('hover:leave', {});
+    // Only suppress the clear if relatedTarget is still a live node inside
+    // this document. Transient/detached relatedTargets (common during
+    // virtualized-list updates or re-renders) would otherwise swallow the
+    // leave and leave the highlight stuck.
+    var rt = e.relatedTarget;
+    if (rt && rt.nodeType === 1 && document.documentElement.contains(rt)) return;
+    clearHoverState();
   }
 
   function onClick(e) {
@@ -108,6 +155,8 @@ export function bridgeEvents(): string {
       file: data.file,
       line: data.line,
       component: data.component,
+      source_tag: data.source_tag,
+      parent_component: findParentComponent(source.sourceEl, data.component),
       mfe: data.mfe,
       tag: targetEl.tagName.toLowerCase(),
       classes: classes,
@@ -169,6 +218,7 @@ export function bridgeEvents(): string {
       file: data.file,
       line: parseInt(data.line) || 0,
       component: data.component,
+      source_tag: data.source_tag,
       mfe: data.mfe,
       tag: anchorEl.tagName.toLowerCase(),
       rect: selRect,
@@ -217,6 +267,79 @@ export function bridgeEvents(): string {
   document.addEventListener('mouseup', onMouseUp, { capture: true });
   document.addEventListener('keydown', onKeyDown, { capture: true });
   document.addEventListener('contextmenu', onContextMenu, { capture: true });
+
+  // ── Data-view hover reporter ──
+  // The shell toggles this via a 'data:watch' message. When active, every
+  // mousemove walks up to find the nearest element with data-annotask-file,
+  // then emits 'data:hover' with (file, line, clientX, clientY) to the shell.
+  // Lets the shell show a tooltip over highlighted elements without needing
+  // same-origin contentDocument access.
+  var dataWatchActive = false;
+  var dataHoverRaf = false;
+  var dataHoverPending = null;
+
+  function onDataWatchMove(e) {
+    if (!dataWatchActive) return;
+    var el = e.target;
+    // Walk up looking for an annotated ancestor. Tag is read from the SAME
+    // element as file+line — carrying tag independently across ancestors
+    // mixes a component tag from one node with a call-site file from another
+    // and confuses shell-side source lookup.
+    //
+    // React transforms every JSX opening tag (including intrinsics like
+    // <div>), so the innermost hit often has a lowercase tag that will
+    // never match a library source. In that case keep climbing so the
+    // containing user component's call site is reported instead. Vue/Svelte
+    // templates behave the same — intrinsic roots exist there too.
+    var fallback = null;
+    var found = null;
+    while (el && el !== document && el !== document.documentElement) {
+      if (el.nodeType === 1 && el.getAttribute) {
+        var file = el.getAttribute('data-annotask-file');
+        if (file) {
+          var tag = el.getAttribute('data-annotask-source-tag') || '';
+          var line = el.getAttribute('data-annotask-line') || '';
+          // Remember the innermost annotated node as a fallback in case we
+          // never climb into a component tag.
+          if (!fallback) fallback = { file: file, line: line, tag: tag };
+          // Prefer the first node whose tag looks like a user component —
+          // JSX / SFC component names are uppercase by convention.
+          if (tag && /^[A-Z]/.test(tag.charAt(0))) {
+            found = { file: file, line: line, tag: tag };
+            break;
+          }
+        }
+      }
+      el = el.parentNode;
+    }
+    var picked = found || fallback;
+    if (picked) {
+      dataHoverPending = { file: picked.file, line: picked.line, tag: picked.tag, clientX: e.clientX, clientY: e.clientY };
+    } else {
+      dataHoverPending = { file: '', line: '', tag: '', clientX: e.clientX, clientY: e.clientY };
+    }
+    if (!dataHoverRaf) {
+      dataHoverRaf = true;
+      requestAnimationFrame(function() {
+        dataHoverRaf = false;
+        if (dataWatchActive && dataHoverPending) sendToShell('data:hover', dataHoverPending);
+      });
+    }
+  }
+
+  function onDataWatchLeave() {
+    if (!dataWatchActive) return;
+    dataHoverPending = null;
+    sendToShell('data:hover', { file: '', line: '', tag: '', clientX: 0, clientY: 0 });
+  }
+
+  document.addEventListener('mousemove', onDataWatchMove, { capture: true, passive: true });
+  document.addEventListener('mouseleave', onDataWatchLeave);
+
+  // Exposed so the message handler (in messages.ts, same inlined scope) can
+  // flip the flag. Using a global-ish var works because both scripts share
+  // the bridge-client IIFE scope.
+  window.__annotaskSetDataWatch = function(on) { dataWatchActive = !!on; };
 
   // ── User Action Tracking (interact mode) ───────────────
   var lastActionTs = 0;

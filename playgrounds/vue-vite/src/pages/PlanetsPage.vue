@@ -3,12 +3,14 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PlanetCard from '../components/PlanetCard.vue'
 import PlanetDetail from '../components/PlanetDetail.vue'
+import { usePlanets } from '../composables/usePlanets'
 import type { Planet, PlanetType } from '../types'
 
 const route = useRoute()
 const router = useRouter()
 
-const planets = ref<Planet[]>([])
+const { planets, loading: queryLoading } = usePlanets()
+
 const selected = ref<Planet | null>(null)
 const loading = ref(true)
 const error = ref('')

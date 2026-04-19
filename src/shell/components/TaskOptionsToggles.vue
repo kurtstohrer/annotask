@@ -8,22 +8,38 @@
       <input type="checkbox" :checked="includeElementContext" @change="$emit('update:includeElementContext', ($event.target as HTMLInputElement).checked)" />
       <span>Include DOM context</span>
     </label>
+    <label v-if="dataContextProbe?.hasData" class="history-toggle">
+      <input type="checkbox" :checked="includeDataContext" @change="$emit('update:includeDataContext', ($event.target as HTMLInputElement).checked)" />
+      <span>Include data context{{ dataContextLabel }}</span>
+    </label>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+import type { DataContextProbeResult } from '../services/dataContextClient'
+
 interface Props {
   includeHistory: boolean
   includeElementContext: boolean
+  includeDataContext: boolean
+  dataContextProbe: DataContextProbeResult | null
 }
 
 interface Emits {
   (e: 'update:includeHistory', value: boolean): void
   (e: 'update:includeElementContext', value: boolean): void
+  (e: 'update:includeDataContext', value: boolean): void
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 defineEmits<Emits>()
+
+const dataContextLabel = computed(() => {
+  const p = props.dataContextProbe
+  if (!p?.hasData || !p.primaryName) return ''
+  return ` (${p.primaryName})`
+})
 </script>
 
 <style scoped>

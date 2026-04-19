@@ -384,7 +384,7 @@ export function injectAttributes(
       // Calculate file-relative line number
       const lineInFile = templateStartLine + template.slice(0, tagStart).split('\n').length - 1
 
-      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}"${mfe ? ` data-annotask-mfe="${mfe}"` : ''}`
+      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}" data-annotask-source-tag="${tagName}"${mfe ? ` data-annotask-mfe="${mfe}"` : ''}`
 
       // Find the insertion point: right before '>' or '/>'
       let insertAt = tagEndIndex - 1 // the '>'

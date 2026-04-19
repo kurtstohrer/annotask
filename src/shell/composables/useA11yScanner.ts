@@ -2,6 +2,8 @@ import { ref, computed } from 'vue'
 import type { Ref } from 'vue'
 import type { useIframeManager } from './useIframeManager'
 import type { useTasks } from './useTasks'
+import { useComponentContextCapture } from './useComponentContextCapture'
+import type { AccessibilityInfo } from '../../shared/bridge-types'
 
 type IframeManager = ReturnType<typeof useIframeManager>
 type TaskSystem = ReturnType<typeof useTasks>
@@ -57,10 +59,49 @@ export function useA11yScanner(
     a11yScanned.value = true
   }
 
+  const componentContextCapture = useComponentContextCapture(iframe)
+
   async function createA11yTask(violation: A11yViolation) {
     const elements = violation.elements || []
     const firstWithSource = elements.find(e => e.file)
     const colorScheme = await iframe.getColorScheme()
+    // Prefer a bridge walk when the user has the offending element selected;
+    // otherwise fall back to a synthetic component ref from the violation's
+    // source data. Either way the server fills library/category.
+    const primaryEid = primarySelection.value?.eid
+    const ccAsync = primaryEid ? await componentContextCapture.capture(primaryEid) : {}
+    const frag = (ccAsync.component || ccAsync.rendered)
+      ? ccAsync
+      : componentContextCapture.fromSource(
+          firstWithSource?.component,
+          firstWithSource?.file,
+          firstWithSource?.line,
+        )
+
+    // Resolve each violation's selector → eid, then ask the iframe for
+    // computed accessibility info. Gives the agent foreground/background
+    // hex + ratio for color-contrast, computed accessible name + source
+    // for label/button-name fixes, and ARIA attribute audits — none of
+    // which axe surfaces in `failureSummary` in a structured form.
+    const selectors = elements.map(e => e.target).filter(Boolean) as string[]
+    const resolved = selectors.length > 0 ? await iframe.resolveBySelectors(selectors) : []
+    const eids = resolved.map(r => r.eid).filter((e): e is string => !!e)
+    const accessibilityInfos = eids.length > 0 ? await iframe.computeAccessibilityInfo(eids) : []
+    const a11yByEid = new Map<string, AccessibilityInfo>()
+    for (let i = 0; i < eids.length; i++) {
+      const info = accessibilityInfos[i]
+      if (info) a11yByEid.set(eids[i], info)
+    }
+    const eidBySelector = new Map<string, string | null>()
+    for (const r of resolved) eidBySelector.set(r.selector, r.eid)
+
+    // Always attach element_context for a11y_fix. Structural a11y issues
+    // (landmarks, headings, label/input pairings) cannot be reasoned about
+    // without the ancestor layout chain. Mirrors the override useTaskWorkflows
+    // applies on denial — same justification, different trigger.
+    const contextEid = primaryEid || eids[0] || null
+    const elementContext = contextEid ? await iframe.getElementContext(contextEid) : null
+
     taskSystem.createTask({
       type: 'a11y_fix',
       description: `Fix accessibility: ${violation.help}`,
@@ -69,19 +110,27 @@ export function useA11yScanner(
       component: firstWithSource?.component || '',
       route: currentRoute.value,
       ...(colorScheme ? { color_scheme: colorScheme } : {}),
+      ...(elementContext ? { element_context: elementContext } : {}),
       context: {
+        ...(frag.component ? { component: frag.component } : {}),
+        ...(frag.rendered ? { rendered: frag.rendered } : {}),
         rule: violation.id,
         impact: violation.impact,
         description: violation.description,
         help: violation.help,
         helpUrl: violation.helpUrl,
         affected_elements: violation.nodes,
-        elements: elements.map(e => ({
-          html: e.html,
-          selector: e.target,
-          fix: e.failureSummary,
-          ...(e.file ? { file: e.file, line: e.line, component: e.component } : {}),
-        })),
+        elements: elements.map(e => {
+          const eid = eidBySelector.get(e.target) || null
+          const a11yInfo = eid ? a11yByEid.get(eid) : undefined
+          return {
+            html: e.html,
+            selector: e.target,
+            fix: e.failureSummary,
+            ...(e.file ? { file: e.file, line: e.line, component: e.component } : {}),
+            ...(a11yInfo ? { a11y: a11yInfo } : {}),
+          }
+        }),
       },
     })
   }

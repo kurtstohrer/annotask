@@ -50,7 +50,7 @@ export interface BridgeEventHandlerDeps {
   applyToGroup: Ref<boolean>
   editingClasses: Ref<string>
   hoverRect: Ref<Rect | null>
-  hoverInfo: Ref<{ tag: string; file: string; component: string } | null>
+  hoverInfo: Ref<{ tag: string; file: string; component: string; source_tag?: string; parent_component?: string } | null>
 
   // Selection operations
   readLiveStyles: () => Promise<void>
@@ -93,7 +93,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
   function onHoverEnter(data: HoverEnterEvent) {
     const shellRect = iframe.toShellRect(data.rect)
     hoverRect.value = shellRect
-    hoverInfo.value = data.file ? { tag: data.tag, file: data.file, component: data.component } : null
+    hoverInfo.value = data.file ? { tag: data.tag, file: data.file, component: data.component, ...(data.source_tag ? { source_tag: data.source_tag } : {}), ...(data.parent_component ? { parent_component: data.parent_component } : {}) } : null
   }
 
   function onHoverLeave() {
@@ -102,7 +102,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
   }
 
   async function onClickElement(data: ClickElementEvent) {
-    const { file, line, component, mfe, tag: tagName, classes, eid, shiftKey, clientX, clientY, text } = data
+    const { file, line, component, source_tag, parent_component, mfe, tag: tagName, classes, eid, shiftKey, clientX, clientY, text } = data
 
     // Pin mode: create pin at exact click position → open task creation panel
     if (interactionMode.value === 'pin') {
@@ -118,7 +118,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
         label: `Pin on ${describeElement({ file, line, component, tag: tagName, classes, text })}`,
         file, line, component,
         annotationId: pin.id,
-        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY, elementText: text || '' },
+        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY, elementText: text || '', ...(source_tag ? { elementSourceTag: source_tag } : {}) },
       }
       pendingTaskText.value = ''
       return
@@ -159,11 +159,14 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
         }
       }
     } else {
-      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text }
+      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}) }
       selectedEids.value = [eid]
       const group = await iframe.findTemplateGroup(file, line, tagName)
       templateGroupEids.value = group.eids
-      applyToGroup.value = group.eids.length > 1
+      // Default: a single click selects exactly one element. Shift+click adds
+      // more. The template-group is still tracked so the style editor's
+      // "apply to all instances" toggle can opt into fan-out when useful.
+      applyToGroup.value = false
       editingClasses.value = classes
       await readLiveStyles()
       await refreshElementRole()
@@ -176,6 +179,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
           file, line, component,
           meta: {
             elementTag: tagName, elementClasses: classes, elementText: text || '',
+            ...(source_tag ? { elementSourceTag: source_tag } : {}),
             selectedElements: [{ eid, file, line, component, tag: tagName, classes, text: text || '' }],
           },
         }
@@ -187,9 +191,9 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
   }
 
   async function onContextMenu(data: ClickElementEvent) {
-    const { file, line, component, mfe = '', tag: tagName, classes, eid, text } = data
+    const { file, line, component, source_tag, parent_component, mfe = '', tag: tagName, classes, eid, text } = data
     const shellRect = iframe.toShellRect(data.rect)
-    primarySelection.value = { file, line, component, mfe, tagName, classes, eid, text }
+    primarySelection.value = { file, line, component, mfe, tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}) }
     selectedEids.value = [eid]
     await readLiveStyles()
     await refreshElementRole()
@@ -202,6 +206,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
 
   async function onSelectionText(data: {
     text: string; eid: string; file: string; line: number; component: string; tag: string
+    source_tag?: string
     rect?: { x: number; y: number; width: number; height: number }
     rects?: { x: number; y: number; width: number; height: number }[]
   }) {
@@ -233,7 +238,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
       line: data.line,
       component: data.component,
       annotationId: hl.id,
-      meta: { selectedText: data.text, elementTag: data.tag },
+      meta: { selectedText: data.text, elementTag: data.tag, ...(data.source_tag ? { elementSourceTag: data.source_tag } : {}) },
     }
     pendingTaskText.value = data.text
   }

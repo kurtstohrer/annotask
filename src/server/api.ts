@@ -10,6 +10,7 @@ import {
   parseWith,
   assertTransition,
 } from './schemas.js'
+import { enrichContextComponentRefs } from './component-context.js'
 
 export interface APIOptions {
   projectRoot: string
@@ -71,12 +72,35 @@ function sendError(res: ServerResponse, status: number, message: string, code: A
 import { isLocalOrigin } from './origin.js'
 import { scanComponentLibraries } from './component-scanner.js'
 import { filterTasksByMfe } from '../shared/task-summary.js'
+import { getCodeContext } from './code-context.js'
+import { getComponentExamples } from './component-examples.js'
+import { scanComponentUsage } from './component-usage.js'
+import { probeDataContext, resolveDataContext, resolveElementDataContext } from './data-context.js'
+import { scanDataSources } from './data-source-scanner.js'
+import { getDataSourceExamples } from './data-source-examples.js'
+import { resolveDataSourceDetails } from './data-source-details.js'
+import { resolveBindingGraph } from './binding-analysis/index.js'
+import { scanApiSchemas } from './api-schema-scanner.js'
+import { resolveEndpoint } from './api-schema-resolver.js'
+import type { DataSource } from '../schema.js'
 
 /** Build CORS origin value — reflect the request origin if it's local, otherwise omit */
 function getCorsOrigin(req: IncomingMessage): string | null {
   const origin = req.headers.origin as string | undefined
   if (!origin) return null // same-origin, no CORS header needed
   return isLocalOrigin(origin) ? origin : null
+}
+
+/**
+ * Best-effort dev-server URL from the incoming request. Annotask runs inside
+ * the user's Vite/Webpack dev server, so the Host header tells us where it's
+ * bound. Used to seed api-schema HTTP probes.
+ */
+function deriveDevServerUrl(req: IncomingMessage): string | undefined {
+  const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+  if (!host) return undefined
+  const proto = (req.headers['x-forwarded-proto'] as string | undefined) || 'http'
+  return `${proto}://${host}`
 }
 
 export function createAPIMiddleware(options: APIOptions) {
@@ -192,7 +216,17 @@ export function createAPIMiddleware(options: APIOptions) {
       }
       const result = parseWith(CreateTaskBody, parsed.data)
       if (!result.ok) return sendError(res, 400, result.error)
-      res.end(JSON.stringify(await options.addTask(result.data as Record<string, unknown>), null, 2))
+      const payload = result.data as Record<string, unknown>
+      // Enrich component refs nested in `context` (component / rendered.ancestors,
+      // plus the arrow variants) with library/category from the scanner cache.
+      // Failures here (e.g., missing package.json) pass the payload through
+      // untouched — library/category are strictly additive.
+      try {
+        const catalog = await scanComponentLibraries(options.projectRoot)
+        const enrichedContext = enrichContextComponentRefs(payload.context as Record<string, unknown> | undefined, catalog)
+        if (enrichedContext) payload.context = enrichedContext
+      } catch { /* enrichment is best-effort */ }
+      res.end(JSON.stringify(await options.addTask(payload), null, 2))
       return
     }
 
@@ -269,8 +303,228 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
+    if (path === 'component-usage' && req.method === 'GET') {
+      const result = await scanComponentUsage(options.projectRoot)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
     if (path === 'status' && req.method === 'GET') {
       res.end(JSON.stringify({ status: 'ok', tool: 'annotask' }))
+      return
+    }
+
+    if (path.startsWith('code-context/') && req.method === 'GET') {
+      const taskId = decodeURIComponent(path.replace('code-context/', ''))
+      if (!taskId) return sendError(res, 400, 'Missing task id')
+      const task = options.getTasks().tasks.find(t => t.id === taskId)
+      if (!task) return sendError(res, 404, 'Task not found', 'not_found')
+      const file = typeof task.file === 'string' ? task.file : ''
+      const line = typeof task.line === 'number' ? task.line : 0
+      if (!file) return sendError(res, 400, 'Task has no file reference')
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const ctxLinesArg = Number(urlObj.searchParams.get('context_lines') || '15')
+      const contextLines = Number.isFinite(ctxLinesArg) ? Math.max(0, Math.min(200, ctxLinesArg)) : 15
+      const result = await getCodeContext(options.projectRoot, file, line, contextLines)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    // Direct file+line excerpt — no task lookup. Used by the Components view
+    // to show a component's definition without minting a task.
+    if (path === 'source-excerpt' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const file = urlObj.searchParams.get('file') || ''
+      const lineArg = Number(urlObj.searchParams.get('line') || '1')
+      const line = Number.isFinite(lineArg) ? lineArg : 1
+      if (!file) return sendError(res, 400, 'Missing file')
+      const ctxLinesArg = Number(urlObj.searchParams.get('context_lines') || '15')
+      const contextLines = Number.isFinite(ctxLinesArg) ? Math.max(0, Math.min(200, ctxLinesArg)) : 15
+      const result = await getCodeContext(options.projectRoot, file, line, contextLines)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path === 'data-context/probe' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const file = urlObj.searchParams.get('file') || ''
+      if (!file) return sendError(res, 400, 'Missing file parameter')
+      const result = await probeDataContext(options.projectRoot, file)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path === 'data-context/resolve' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const file = urlObj.searchParams.get('file') || ''
+      const lineArg = Number(urlObj.searchParams.get('line') || '0')
+      if (!file) return sendError(res, 400, 'Missing file parameter')
+      const result = await resolveDataContext(
+        options.projectRoot,
+        file,
+        Number.isFinite(lineArg) ? lineArg : 0,
+        { devServerUrl: deriveDevServerUrl(req) },
+      )
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path === 'data-context/element' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const file = urlObj.searchParams.get('file') || ''
+      const lineArg = Number(urlObj.searchParams.get('line') || '0')
+      if (!file) return sendError(res, 400, 'Missing file parameter')
+      const result = await resolveElementDataContext(
+        options.projectRoot,
+        file,
+        Number.isFinite(lineArg) ? lineArg : 0,
+        { devServerUrl: deriveDevServerUrl(req) },
+      )
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path.startsWith('data-context/') && req.method === 'GET') {
+      const taskId = decodeURIComponent(path.replace('data-context/', ''))
+      if (!taskId) return sendError(res, 400, 'Missing task id')
+      const task = options.getTasks().tasks.find(t => t.id === taskId)
+      if (!task) return sendError(res, 404, 'Task not found', 'not_found')
+      // Return stored data_context if present; otherwise resolve freshly.
+      const stored = task.data_context
+      if (stored && typeof stored === 'object') {
+        res.end(JSON.stringify(stored, null, 2))
+        return
+      }
+      const file = typeof task.file === 'string' ? task.file : ''
+      const line = typeof task.line === 'number' ? task.line : 0
+      if (!file) return sendError(res, 400, 'Task has no file reference')
+      const result = await resolveDataContext(
+        options.projectRoot,
+        file,
+        line,
+        { devServerUrl: deriveDevServerUrl(req) },
+      )
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path === 'data-sources' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const kind = urlObj.searchParams.get('kind') as DataSource['kind'] | null
+      const library = urlObj.searchParams.get('library')
+      const searchStr = (urlObj.searchParams.get('search') || '').toLowerCase()
+      const usedOnly = urlObj.searchParams.get('used_only') === 'true' || urlObj.searchParams.get('used_only') === '1'
+      const catalog = await scanDataSources(options.projectRoot)
+      const libraries = library ? catalog.libraries.filter(l => l.name === library) : catalog.libraries
+      let entries = catalog.project_entries
+      if (kind) entries = entries.filter(e => e.kind === kind)
+      if (searchStr) entries = entries.filter(e => e.name.toLowerCase().includes(searchStr))
+      if (usedOnly) entries = entries.filter(e => e.used_count > 0)
+      res.end(JSON.stringify({ libraries, project_entries: entries, scannedAt: catalog.scannedAt }, null, 2))
+      return
+    }
+
+    if (path === 'api-schemas' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const kindFilter = urlObj.searchParams.get('kind')
+      const detail = urlObj.searchParams.get('detail') === 'true' || urlObj.searchParams.get('detail') === '1'
+      const devServerUrl = deriveDevServerUrl(req)
+      const catalog = await scanApiSchemas(options.projectRoot, { devServerUrl })
+      let schemas = catalog.schemas
+      if (kindFilter) schemas = schemas.filter(s => s.kind === kindFilter)
+      if (!detail) {
+        schemas = schemas.map(s => ({ ...s, operations: [] }))
+      }
+      res.end(JSON.stringify({ schemas, scannedAt: catalog.scannedAt }, null, 2))
+      return
+    }
+
+    if (path === 'api-operation' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const opPath = urlObj.searchParams.get('path') || ''
+      const method = urlObj.searchParams.get('method') || undefined
+      const schemaLocation = urlObj.searchParams.get('schema_location') || undefined
+      if (!opPath) return sendError(res, 400, 'Missing path parameter')
+      const devServerUrl = deriveDevServerUrl(req)
+      const catalog = await scanApiSchemas(options.projectRoot, { devServerUrl })
+      const normMethod = method ? method.toUpperCase() : undefined
+      const matches: Array<{ schema_location: string; schema_kind: string; operation: unknown }> = []
+      for (const schema of catalog.schemas) {
+        if (schemaLocation && schema.location !== schemaLocation) continue
+        for (const op of schema.operations) {
+          if (op.path !== opPath) continue
+          if (normMethod && op.method !== normMethod) continue
+          matches.push({ schema_location: schema.location, schema_kind: schema.kind, operation: op })
+        }
+      }
+      if (matches.length === 0) return sendError(res, 404, 'Operation not found', 'not_found')
+      res.end(JSON.stringify(matches.length === 1 ? matches[0] : { ambiguous: true, candidates: matches }, null, 2))
+      return
+    }
+
+    if (path === 'resolve-endpoint' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const target = urlObj.searchParams.get('url') || ''
+      const method = urlObj.searchParams.get('method') || undefined
+      if (!target) return sendError(res, 400, 'Missing url parameter')
+      const devServerUrl = deriveDevServerUrl(req)
+      const catalog = await scanApiSchemas(options.projectRoot, { devServerUrl })
+      const match = resolveEndpoint(catalog, target, method)
+      if (!match) {
+        res.end(JSON.stringify({ match: null }, null, 2))
+        return
+      }
+      res.end(JSON.stringify({ match }, null, 2))
+      return
+    }
+
+    if (path.startsWith('data-source-examples/') && req.method === 'GET') {
+      const name = decodeURIComponent(path.replace('data-source-examples/', ''))
+      if (!name) return sendError(res, 400, 'Missing data source name')
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const limitArg = Number(urlObj.searchParams.get('limit') || '3')
+      const limit = Number.isFinite(limitArg) ? Math.max(1, Math.min(10, limitArg)) : 3
+      const kind = (urlObj.searchParams.get('kind') || undefined) as DataSource['kind'] | undefined
+      const result = await getDataSourceExamples(options.projectRoot, name, limit, kind)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path.startsWith('data-source-details/') && req.method === 'GET') {
+      const name = decodeURIComponent(path.replace('data-source-details/', ''))
+      if (!name) return sendError(res, 400, 'Missing data source name')
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const kind = (urlObj.searchParams.get('kind') || undefined) as DataSource['kind'] | undefined
+      const file = urlObj.searchParams.get('file') || undefined
+      const contextLinesArg = Number(urlObj.searchParams.get('context_lines') || '15')
+      const contextLines = Number.isFinite(contextLinesArg) ? contextLinesArg : 15
+      const result = await resolveDataSourceDetails({
+        projectRoot: options.projectRoot,
+        name,
+        kind,
+        file,
+        contextLines,
+      })
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path.startsWith('data-source-bindings/') && req.method === 'GET') {
+      const name = decodeURIComponent(path.replace('data-source-bindings/', ''))
+      if (!name) return sendError(res, 400, 'Missing data source name')
+      const result = await resolveBindingGraph(options.projectRoot, name)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path.startsWith('component-examples/') && req.method === 'GET') {
+      const name = decodeURIComponent(path.replace('component-examples/', ''))
+      if (!name) return sendError(res, 400, 'Missing component name')
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const limitArg = Number(urlObj.searchParams.get('limit') || '3')
+      const limit = Number.isFinite(limitArg) ? Math.max(1, Math.min(10, limitArg)) : 3
+      const result = await getComponentExamples(options.projectRoot, name, limit)
+      res.end(JSON.stringify(result, null, 2))
       return
     }
 

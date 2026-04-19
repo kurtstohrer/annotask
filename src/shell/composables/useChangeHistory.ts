@@ -3,8 +3,7 @@ import type { useStyleEditor, StyleChangeRecord, ClassChangeRecord } from './use
 import type { useIframeManager } from './useIframeManager'
 import type { SelectionData } from './useSelectionModel'
 import type { ElementRole } from './useElementClassification'
-
-type ShellView = 'editor' | 'theme' | 'a11y' | 'perf'
+import type { ShellView } from './useShellNavigation'
 
 /**
  * Undo / clear / commit-as-task for the style editor's change buffer.
@@ -51,7 +50,7 @@ export function useChangeHistory(deps: {
 
   async function doClearChanges() {
     const sel = primarySelection.value
-    if (sel && shellView.value === 'theme') {
+    if (sel && shellView.value === 'design') {
       const placeholderEids = styleEditor.removeChangesFor(sel.file, parseInt(sel.line) || 0)
       for (const eid of placeholderEids) {
         await iframe.removePlaceholder(eid)
@@ -144,7 +143,7 @@ export function useChangeHistory(deps: {
     })
 
     // Remove only this selection's changes after commit (in theme view); otherwise clear all.
-    if (sel && shellView.value === 'theme') {
+    if (sel && shellView.value === 'design') {
       styleEditor.removeChangesFor(file, typeof line === 'number' ? line : parseInt(line) || 0)
     } else {
       await doClearChanges()

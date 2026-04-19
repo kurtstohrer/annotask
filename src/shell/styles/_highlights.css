@@ -26,6 +26,83 @@
   border: 2px solid color-mix(in srgb, var(--highlight-color) 50%, transparent);
 }
 
+/* Data view — per-source highlights driven by useDataHighlights.
+ * --hl-color is set inline per overlay from the annotation palette.
+ * Dotted outline only, no fill — keeps the underlying content readable. */
+.highlight.data-source {
+  background: transparent;
+  border: 2px dashed var(--hl-color);
+  opacity: 0.7;
+  transition: opacity 0.12s ease-out, border-width 0.12s ease-out;
+}
+
+.highlight.data-source.focused {
+  border-width: 3px;
+  opacity: 1;
+}
+
+.highlight.data-source.dimmed {
+  opacity: 0.15;
+}
+
+/* Components list — rects stay invisible until focused. Only the component
+ * currently hovered in the list, selected in the list, or under the cursor
+ * in the iframe gets an outline. */
+.highlight.data-source.hover-only { opacity: 0; pointer-events: none; }
+.highlight.data-source.hover-only.dimmed { opacity: 0; }
+.highlight.data-source.hover-only.focused { opacity: 1; }
+
+/* Audit > Accessibility — per-violation highlights driven by useA11yHighlights.
+ * Outline color follows the violation's impact via --severity-* tokens, so
+ * critical/serious violations stay visually distinct from moderate/minor. */
+.highlight.a11y {
+  background: transparent;
+  border: 2px dashed var(--severity-minor);
+  outline-offset: 1px;
+  opacity: 0.85;
+  transition: opacity 0.12s ease-out, border-width 0.12s ease-out;
+}
+
+.highlight.a11y[data-impact="critical"] { border-color: var(--severity-critical); }
+.highlight.a11y[data-impact="serious"] { border-color: var(--severity-serious); }
+.highlight.a11y[data-impact="moderate"] { border-color: var(--severity-moderate); }
+.highlight.a11y[data-impact="minor"] { border-color: var(--severity-minor); }
+
+.highlight.a11y.focused {
+  border-style: solid;
+  border-width: 3px;
+  opacity: 1;
+}
+
+.highlight.a11y.dimmed { opacity: 0.2; }
+
+/* Tab-order overlay — numbered badges anchored to focusable elements.
+ * Positive tabindex (anti-pattern) gets a danger ring; tab/visual mismatches
+ * get a warning ring on top of the same badge. */
+.tab-order-badge {
+  position: fixed;
+  z-index: 10001;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: monospace;
+  color: var(--text-on-accent, white);
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  border-radius: 11px;
+  pointer-events: none;
+  box-shadow: 0 1px 3px var(--shadow);
+}
+
+.tab-order-badge.positive { background: var(--danger); }
+.tab-order-badge.warn { background: var(--warning); color: var(--text); }
+.tab-order-badge.unreachable { background: var(--text-muted); opacity: 0.7; }
+
 .hover-label,
 .select-label {
   position: absolute;

@@ -2,9 +2,9 @@
 
 ## Requirements
 
-- Node.js >= 18
-- A Vite (v4+) or Webpack (v5+) project
-- Vue 3, React, Svelte, SolidJS, Astro, or plain HTML/htmx
+- Node.js 18+
+- A Vite 4+ or Webpack 5+ project
+- Vue 3, React, Svelte, SolidJS, Astro, plain HTML, or htmx
 
 ## Install
 
@@ -16,7 +16,9 @@ pnpm add -D annotask
 
 ## Configure Vite
 
-Add Annotask to your `vite.config.ts`. It must come **after** the Vue plugin:
+Annotask should be added after your framework plugin.
+
+### Vue
 
 ```ts
 import { defineConfig } from 'vite'
@@ -28,27 +30,7 @@ export default defineConfig({
 })
 ```
 
-Annotask only runs in dev mode (`vite dev`). Production builds (`vite build`) are completely clean — no transforms, no injected scripts, no API endpoints.
-
-## Configure Webpack
-
-Add the Webpack plugin to your `webpack.config.js`:
-
-```ts
-import { AnnotaskWebpackPlugin } from 'annotask/webpack'
-
-export default {
-  // ... your config
-  plugins: [
-    // ... other plugins
-    new AnnotaskWebpackPlugin()  // Only activates in development mode
-  ]
-}
-```
-
-The Webpack plugin starts a standalone server on port 24678 by default. Pass `{ port: N }` to customize.
-
-## Configure React (Vite)
+### React
 
 ```ts
 import { defineConfig } from 'vite'
@@ -60,7 +42,7 @@ export default defineConfig({
 })
 ```
 
-## Configure Svelte (Vite)
+### Svelte
 
 ```ts
 import { defineConfig } from 'vite'
@@ -72,9 +54,18 @@ export default defineConfig({
 })
 ```
 
-## Configure Astro
+### Plain HTML / htmx
 
-Add Annotask via Astro's Vite config passthrough in `astro.config.mjs`:
+```ts
+import { defineConfig } from 'vite'
+import { annotask } from 'annotask'
+
+export default defineConfig({
+  plugins: [annotask()],
+})
+```
+
+### Astro
 
 ```js
 import { defineConfig } from 'astro/config'
@@ -87,24 +78,23 @@ export default defineConfig({
 })
 ```
 
-Astro source mapping uses Astro's native `data-astro-source-*` attributes automatically.
+Annotask only runs in dev mode. Production builds stay clean: no transforms, no injected scripts, no API routes.
 
-## Configure plain HTML / htmx (Vite)
-
-No framework plugin needed — just add Annotask:
+## Configure Webpack
 
 ```ts
-import { defineConfig } from 'vite'
-import { annotask } from 'annotask'
+import { AnnotaskWebpackPlugin } from 'annotask/webpack'
 
-export default defineConfig({
-  plugins: [annotask()],
-})
+export default {
+  plugins: [
+    new AnnotaskWebpackPlugin(),
+  ],
+}
 ```
 
-Source mapping is injected into `<body>` elements via Vite's `transformIndexHtml` hook.
+The Webpack plugin starts a standalone Annotask server on port `24678` by default. Pass `{ port: N }` to customize it.
 
-## Start
+## Start the Dev Server
 
 ```bash
 npm run dev
@@ -114,64 +104,103 @@ Then open:
 
 | URL | What |
 |-----|------|
-| `http://localhost:5173/` | Your app (with a small toggle button injected) |
-| `http://localhost:5173/__annotask/` | Annotask design shell |
+| `http://localhost:5173/` | Your app, with the Annotask bridge and toggle button injected |
+| `http://localhost:5173/__annotask/` | The Annotask shell |
+| `http://localhost:5173/__annotask/api/status` | Health check |
+| `http://localhost:5173/__annotask/mcp` | MCP endpoint for AI agents |
 
-The design shell loads your app inside an iframe. Click elements to inspect them, edit styles visually, and annotate with pins, arrows, and notes.
+## Connect an AI Agent
 
-## Install AI agent skills (optional)
+Annotask supports two integration styles.
 
-Annotask includes skills for Claude Code, Codex, Copilot, and other AI agents. Install them with:
+### MCP
+
+Recommended for Claude Code, Cursor, VS Code, Windsurf, and any client that can speak MCP.
+
+```bash
+npx annotask init-mcp --editor=claude
+```
+
+Other supported editor targets: `cursor`, `vscode`, `windsurf`, `all`, or a comma-separated list such as `claude,cursor`.
+
+### Skills
+
+Install the bundled `/annotask-init` and `/annotask-apply` skills:
 
 ```bash
 npx annotask init-skills
 ```
 
-This copies skills to `.claude/skills/` and symlinks them into `.agents/skills/` by default. To target specific agents:
+Default targets are `.claude/skills/` and `.agents/skills/`. Other built-in targets include `copilot`.
+
+Examples:
 
 ```bash
-npx annotask init-skills --target=claude          # Claude Code only
-npx annotask init-skills --target=copilot          # Copilot only
-npx annotask init-skills --target=claude,agents,copilot  # All three
+npx annotask init-skills --target=claude
+npx annotask init-skills --target=claude,agents,copilot
+npx annotask init-skills --force
 ```
 
-## Initialize design tokens (optional)
+## Generate the Design Spec
 
-If you use Claude Code, run the `/annotask-init` skill to scan your project and generate a design spec:
+Run `/annotask-init` after installing skills, or ask your agent to initialize Annotask. This scans the project and writes `.annotask/design-spec.json`.
 
-```
-/annotask-init
-```
+The generated design spec powers:
 
-This creates `.annotask/design-spec.json` with detected colors, typography, spacing, and borders. The Theme page in Annotask reads this file.
+- Design token editing in the shell
+- Breakpoint detection
+- Detected icon and component-library metadata
+- Higher-signal context for agents working on `theme_update` tasks
 
-Add `.annotask/` to your `.gitignore` — it contains generated state:
+## Generated State
 
-```
-# Annotask (generated)
+Annotask writes local state under `.annotask/`, including tasks, screenshots, server discovery, and the design spec.
+
+Add it to `.gitignore` unless you explicitly want to commit that state:
+
+```gitignore
+# Annotask generated state
 .annotask/
 ```
 
-## Verify it works
+## Verify It Works
 
-1. Open `http://localhost:5173/__annotask/`
-2. Click an element in the iframe — you should see its source file, line number, and component name in the inspector panel
-3. Change a style (e.g., background color) — the change should appear instantly
-4. Open `http://localhost:5173/__annotask/api/report` — you should see a JSON report of your changes
+1. Open `http://localhost:5173/__annotask/`.
+2. Click an element in the iframe and confirm you see source file, line, and component info.
+3. Create a quick annotation or style edit and confirm it appears in the Tasks panel.
+4. Run `annotask status` or open `http://localhost:5173/__annotask/api/status`.
+5. If you configured MCP, confirm your editor can reach `POST /__annotask/mcp`.
+
+## What You Should See
+
+The current shell has three major surfaces:
+
+- **Editor**: annotations, screenshots, viewport preview, route-aware tasks
+- **Design**: tokens, inspector, layout overlay, component browser
+- **Develop**: a11y, data sources, libraries, performance, errors
 
 ## Troubleshooting
 
-**Elements don't show source info:**
-Make sure `@vitejs/plugin-vue` is listed before `annotask()` in your plugins array. Annotask's transform runs with `enforce: 'pre'` so it needs the raw SFC before Vue compiles it.
+**No source mapping on elements**
 
-**WebSocket not connecting:**
-The CLI and shell connect to `/__annotask/ws` on the same port as your dev server. Make sure the dev server is running.
+Put Annotask after the framework plugin in Vite. For Vue, Annotask needs the raw SFC template before Vue compiles it.
 
-**Changes not appearing in report:**
-Only changes where before and after values differ are included. If the computed value already matches what you set, the change is filtered out.
+**Shell opens but the app iframe is blank**
 
-**Port conflicts:**
-If your dev server runs on a port other than 5173, pass `--port` to the CLI:
-```bash
-annotask watch --port=3000
-```
+Check that the dev server is still running at the expected URL and that your app works outside Annotask.
+
+**CLI or MCP cannot find the server**
+
+Run `annotask status --server=http://localhost:PORT` or `annotask status --port=PORT`. The CLI also auto-discovers `.annotask/server.json` when available.
+
+**WebSocket updates are missing**
+
+Make sure `/__annotask/ws` is reachable and that your dev server is not behind a proxy blocking local WebSocket connections.
+
+**Changes are not showing up in the live report**
+
+Annotask filters out no-op edits. If the before and after values match, no change is emitted.
+
+**Cross-origin or MFE setup**
+
+Annotask uses a `postMessage` bridge rather than direct iframe DOM access, so separate dev-server origins can work. Keep all origins local.

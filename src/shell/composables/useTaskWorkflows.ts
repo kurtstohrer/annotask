@@ -9,6 +9,8 @@ import type { useViewportPreview } from './useViewportPreview'
 import type { useInteractionHistory } from './useInteractionHistory'
 import type { SelectionData } from './useSelectionModel'
 import type { Task } from './useTasks'
+import { resolveForSelection, resolveForElement, type DataContextProbeResult } from '../services/dataContextClient'
+import { useComponentContextCapture } from './useComponentContextCapture'
 
 export interface PendingTaskContext {
   kind: 'pin' | 'arrow' | 'highlight' | 'select'
@@ -34,6 +36,8 @@ export function useTaskWorkflows(deps: {
   taskElementRects: Ref<{ taskId: string; rect: BridgeRect }[]>
   includeHistory: Ref<boolean>
   includeElementContext: Ref<boolean>
+  includeDataContext: Ref<boolean>
+  dataContextProbe: Ref<DataContextProbeResult | null>
   currentRoute: Ref<string>
   activePanel: Ref<'tasks' | 'inspector'>
   clearSelection: () => void
@@ -54,6 +58,7 @@ export function useTaskWorkflows(deps: {
   let arrowDragResolveTimer: ReturnType<typeof setTimeout> | null = null
   const arrowTaskIds = new Set<string>()
   const restoredTaskIds = new Set<string>()
+  const componentContextCapture = useComponentContextCapture(deps.iframe)
 
   function removeTaskAnnotations(taskId: string) {
     const task = deps.taskSystem.tasks.value.find(t => t.id === taskId) as any
@@ -119,8 +124,11 @@ export function useTaskWorkflows(deps: {
     // Preserve MFE context through the deny so it isn't lost on round-trip
     const task = deps.taskSystem.tasks.value.find(t => t.id === taskId)
     if (task?.mfe) extra.mfe = task.mfe
-    const screenshotFilename = deps.screenshots.consumeScreenshot()
-    if (screenshotFilename) extra.screenshot = screenshotFilename
+    const consumed = deps.screenshots.consumeScreenshot()
+    if (consumed) {
+      extra.screenshot = consumed.filename
+      if (consumed.meta) extra.screenshot_meta = consumed.meta
+    }
     const vp = deps.viewport.effectiveViewport.value
     if (vp.width || vp.height) extra.viewport = { width: vp.width, height: vp.height }
     const cs = await deps.iframe.getColorScheme()
@@ -129,9 +137,26 @@ export function useTaskWorkflows(deps: {
       const snapshot = deps.interactionHistory.snapshotForChange(deps.currentRoute.value)
       if (snapshot.recent_actions.length > 0) extra.interaction_history = snapshot
     }
-    if (deps.includeElementContext.value && deps.primarySelection.value?.eid) {
+    // Denial is the one retry signal we always want to enrich: the user has
+    // already seen the agent's attempt and is asking for another pass, so the
+    // extra tokens of element_context / data_context pay off. Override both
+    // opt-in toggles here.
+    if (deps.primarySelection.value?.eid) {
       const ctx = await deps.iframe.getElementContext(deps.primarySelection.value.eid)
       if (ctx) extra.element_context = ctx
+      const frag = await componentContextCapture.capture(deps.primarySelection.value.eid)
+      if (frag.component || frag.rendered) {
+        const denyCtx: Record<string, unknown> = {}
+        if (frag.component) denyCtx.component = frag.component
+        if (frag.rendered) denyCtx.rendered = frag.rendered
+        extra.context = denyCtx
+      }
+    }
+    const denyFile = deps.primarySelection.value?.file || ''
+    const denyLine = deps.primarySelection.value?.line ? parseInt(deps.primarySelection.value.line) || 0 : 0
+    if (denyFile) {
+      const dc = await resolveForSelection(denyFile, denyLine)
+      if (dc) extra.data_context = dc
     }
     deps.taskSystem.updateTaskStatus(taskId, 'denied', denyFeedbackText.value.trim(), Object.keys(extra).length > 0 ? extra : undefined)
     denyingTaskId.value = null
@@ -159,9 +184,55 @@ export function useTaskWorkflows(deps: {
       const ctx = await deps.iframe.getElementContext(deps.primarySelection.value.eid)
       if (ctx) elementContextData = { element_context: ctx }
     }
-    const screenshotFilename = deps.screenshots.consumeScreenshot()
-    const screenshotData = screenshotFilename ? { screenshot: screenshotFilename } : {}
-    const task = await deps.taskSystem.createTask({ ...data, route: deps.currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...colorSchemeData, ...historyData, ...elementContextData, ...screenshotData })
+    let dataContextData: Record<string, unknown> = {}
+    // Auto-capture element-bound data_context: only attach when the binding
+    // analyzer can prove the selected element actually consumes one of the
+    // file's data sources. File-level attachment was too noisy — a task on a
+    // `<Switch>` would pick up an unrelated `useQuery` from the same file.
+    // User can still force full file-level capture via the toggle.
+    {
+      const sel = deps.primarySelection.value
+      const file = sel?.file || (typeof data.file === 'string' ? data.file : '')
+      const line = sel?.line ? (parseInt(sel.line) || 0) : (typeof data.line === 'number' ? data.line : 0)
+      if (file && line) {
+        const elementDc = await resolveForElement(file, line)
+        if (elementDc && elementDc.sources && elementDc.sources.length > 0) {
+          dataContextData = { data_context: elementDc }
+        } else if (deps.includeDataContext.value && deps.dataContextProbe.value?.hasData) {
+          // Explicit opt-in: user asked for file-level data context even when
+          // the element isn't directly bound.
+          const dc = await resolveForSelection(file, line)
+          if (dc) dataContextData = { data_context: dc }
+        }
+      }
+    }
+    // Component info is automatic — cheap DOM walk, no toggle. Captured as
+    // a fragment the shell merges into `data.context` (component + rendered
+    // ancestors). Callers can pre-populate them (arrow flow supplies both
+    // endpoints' rendered info) and we preserve what's already there.
+    let componentFragment: { component?: unknown; rendered?: unknown } = {}
+    const existingContext = (typeof data.context === 'object' && data.context && !Array.isArray(data.context))
+      ? data.context as Record<string, unknown>
+      : null
+    const hasComponentInCtx = existingContext && ('component' in existingContext || 'rendered' in existingContext)
+    if (!hasComponentInCtx) {
+      const eid = deps.primarySelection.value?.eid
+      if (eid) {
+        const frag = await componentContextCapture.capture(eid)
+        if (frag.component) componentFragment.component = frag.component
+        if (frag.rendered) componentFragment.rendered = frag.rendered
+      }
+    }
+    const mergedContext = (existingContext || Object.keys(componentFragment).length > 0)
+      ? { context: { ...(existingContext || {}), ...componentFragment } }
+      : {}
+    const consumed = deps.screenshots.consumeScreenshot()
+    const screenshotData: Record<string, unknown> = {}
+    if (consumed) {
+      screenshotData.screenshot = consumed.filename
+      if (consumed.meta) screenshotData.screenshot_meta = consumed.meta
+    }
+    const task = await deps.taskSystem.createTask({ ...data, ...mergedContext, route: deps.currentRoute.value, ...(mfe ? { mfe } : {}), ...vpData, ...colorSchemeData, ...historyData, ...elementContextData, ...dataContextData, ...screenshotData })
     if (task) deps.activePanel.value = 'tasks'
     return task
   }
@@ -295,7 +366,7 @@ export function useTaskWorkflows(deps: {
     pendingTaskText.value = ''
   }
 
-  function submitPendingArrowTask(id: string, description: string) {
+  async function submitPendingArrowTask(id: string, description: string) {
     const arrow = deps.annotations.arrows.value.find(a => a.id === id)
     if (!arrow || !description.trim()) return
     if (arrowTaskIds.has(id)) return
@@ -314,6 +385,8 @@ export function useTaskWorkflows(deps: {
     })
     const fromText = (meta.fromText as string) || ''
     const toText = (meta.toText as string) || ''
+    const fromCC = arrow.fromEid ? await componentContextCapture.capture(arrow.fromEid) : {}
+    const toCC = arrow.toEid ? await componentContextCapture.capture(arrow.toEid) : {}
     createRouteTask({
       type: 'annotation',
       description: description.trim(),
@@ -333,6 +406,11 @@ export function useTaskWorkflows(deps: {
           line: arrow.toLine || 0,
           ...(toText ? { text: toText } : {}),
         },
+        ...(fromCC.component ? { component: fromCC.component } : {}),
+        ...(fromCC.rendered ? { rendered: fromCC.rendered } : {}),
+        ...(toCC.component ? { to_component: toCC.component } : {}),
+        ...(toCC.rendered ? { to_rendered: toCC.rendered } : {}),
+
       },
     })
   }
@@ -342,7 +420,7 @@ export function useTaskWorkflows(deps: {
     if (!ctx || !pendingTaskText.value.trim()) return
 
     if (ctx.kind === 'pin') {
-      const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number; elementText?: string }
+      const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number; elementText?: string; elementSourceTag?: string }
       deps.annotations.updatePinNote(ctx.annotationId!, pendingTaskText.value.trim())
       deps.styleEditor.recordAnnotation({
         file: ctx.file, line: String(ctx.line), component: ctx.component,
@@ -358,12 +436,13 @@ export function useTaskWorkflows(deps: {
           element_tag: meta.elementTag,
           element_classes: meta.elementClasses,
           ...(meta.elementText ? { element_text: meta.elementText } : {}),
+          ...(meta.elementSourceTag ? { element_source_tag: meta.elementSourceTag } : {}),
         },
       })
     } else if (ctx.kind === 'arrow') {
-      submitPendingArrowTask(ctx.annotationId!, pendingTaskText.value.trim())
+      await submitPendingArrowTask(ctx.annotationId!, pendingTaskText.value.trim())
     } else if (ctx.kind === 'highlight') {
-      const meta = ctx.meta as { selectedText: string; elementTag: string }
+      const meta = ctx.meta as { selectedText: string; elementTag: string; elementSourceTag?: string }
       const description = pendingTaskText.value.trim()
       deps.annotations.updateHighlight(ctx.annotationId!, { prompt: description })
       const hl = deps.annotations.highlights.value.find(h => h.id === ctx.annotationId)
@@ -376,10 +455,10 @@ export function useTaskWorkflows(deps: {
         type: 'annotation', description: intent, file: ctx.file, line: parseInt(String(ctx.line)) || 0,
         component: ctx.component, action: 'text_edit',
         visual: { kind: 'highlight', annotationId: ctx.annotationId, eid: hl?.eid, rect: hl?.rect, rects: hl?.rects, color: hl?.color },
-        context: { element_tag: meta.elementTag, selected_text: meta.selectedText },
+        context: { element_tag: meta.elementTag, selected_text: meta.selectedText, ...(meta.elementSourceTag ? { element_source_tag: meta.elementSourceTag } : {}) },
       })
     } else if (ctx.kind === 'select') {
-      const meta = ctx.meta as { elementTag: string; elementClasses: string; elementText?: string }
+      const meta = ctx.meta as { elementTag: string; elementClasses: string; elementText?: string; elementSourceTag?: string }
       const description = pendingTaskText.value.trim()
       deps.styleEditor.recordAnnotation({
         file: ctx.file, line: String(ctx.line), component: ctx.component,
@@ -395,6 +474,7 @@ export function useTaskWorkflows(deps: {
           element_tag: meta.elementTag,
           element_classes: meta.elementClasses,
           ...(meta.elementText ? { element_text: meta.elementText } : {}),
+          ...(meta.elementSourceTag ? { element_source_tag: meta.elementSourceTag } : {}),
         },
       })
       if (task && currentRects.length) {
@@ -442,6 +522,7 @@ export function useTaskWorkflows(deps: {
         element_tag: primary.tag,
         element_classes: primary.classes,
         ...(primary.text ? { element_text: primary.text } : {}),
+        ...(sel.sourceTag ? { element_source_tag: sel.sourceTag } : {}),
         ...(targets.length > 1 ? {
           elements: targets.map(t => ({
             tag: t.tag, classes: t.classes, component: t.component,
@@ -477,6 +558,7 @@ export function useTaskWorkflows(deps: {
         element_tag: primary.tag,
         element_classes: primary.classes,
         ...(primary.text ? { element_text: primary.text } : {}),
+        ...(sel.sourceTag ? { element_source_tag: sel.sourceTag } : {}),
       },
     })
   }
@@ -650,6 +732,14 @@ export function useTaskWorkflows(deps: {
       line: sel ? parseInt(sel.line) || 0 : 0,
       component: sel?.component || '',
       ...(eids.length ? { visual: { kind: 'select', eids } } : {}),
+      ...(sel?.sourceTag || sel?.tagName || sel?.classes ? {
+        context: {
+          ...(sel?.tagName ? { element_tag: sel.tagName } : {}),
+          ...(sel?.classes ? { element_classes: sel.classes } : {}),
+          ...(sel?.text ? { element_text: sel.text } : {}),
+          ...(sel?.sourceTag ? { element_source_tag: sel.sourceTag } : {}),
+        },
+      } : {}),
     })
     if (task && currentRects.length) {
       deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: task.id, rect }))]

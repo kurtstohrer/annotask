@@ -2,203 +2,213 @@
 
 ## Overview
 
-Annotask is a Vite dev-server plugin with four modules:
+Annotask is a dev-only system made of five major pieces:
 
-```
-┌─────────────────────────────────────────────────────┐
-│  Vite Dev Server                                    │
-│                                                     │
-│  ┌──────────────┐  ┌────────────┐  ┌─────────────┐ │
-│  │  Transform    │  │  API       │  │  WebSocket  │ │
-│  │  Plugin       │  │  Middleware │  │  Server     │ │
-│  │  (SFC attrs)  │  │  (REST)    │  │  (live)     │ │
-│  └──────────────┘  └────────────┘  └─────────────┘ │
-│                                                     │
-│  ┌──────────────────────────────────────┐           │
-│  │  Shell UI (Vue 3 SPA at /__annotask/)│           │
-│  │  ┌────────────────────────────┐      │           │
-│  │  │  User's App (iframe)       │      │           │
-│  │  └────────────────────────────┘      │           │
-│  └──────────────────────────────────────┘           │
-│                                                     │
-│  ┌──────────────┐                                   │
-│  │  CLI          │ (external process, connects via  │
-│  │  (annotask)   │  HTTP/WS to the same server)    │
-│  └──────────────┘                                   │
-└─────────────────────────────────────────────────────┘
+```text
+app dev server
+  -> Annotask plugin / webpack integration
+  -> Annotask HTTP API + WebSocket server + MCP endpoint
+  -> Annotask shell at /__annotask/
+  -> injected bridge client inside the user app
+  -> CLI / agent clients talking to the same server
 ```
 
-## Modules
+The shell loads the user app in an iframe, but interaction is mediated through a bridge so same-origin access is not required.
 
-### Plugin (`src/plugin/`)
+## Main Modules
 
-Two Vite plugins registered together:
+### Plugin layer
 
-1. **`annotask:transform`** (`enforce: 'pre'`, `apply: 'serve'`)
-   - Transforms `.vue` SFC templates before the Vue compiler sees them
-   - Injects `data-annotask-file`, `data-annotask-line`, `data-annotask-component` attributes onto every HTML element
-   - Injects a toggle button script into the HTML page
-   - Exposes Vue runtime and registered components on `window` for the shell to use
+`src/plugin/` instruments supported frameworks during development.
 
-2. **`annotask:serve`** (`apply: 'serve'`)
-   - `configureServer` hook sets up:
-     - HTTP API middleware (`src/server/api.ts`)
-     - WebSocket server (`src/server/ws-server.ts`)
-     - Shell static file serving (`src/server/serve-shell.ts`)
-     - Design spec and task file management (`src/server/state.ts`)
+Responsibilities:
+
+- inject source-mapping attributes into rendered markup
+- inject the bridge client and toggle button into the app
+- expose enough runtime metadata for selection, inspection, and highlighting
+- start the Annotask server surface when running under Vite
 
 Key files:
 
 | File | Responsibility |
 |------|---------------|
-| `src/plugin/index.ts` | Plugin entry, registers both plugins |
-| `src/plugin/transform.ts` | SFC template parser and attribute injector |
-| `src/plugin/toggle-button.ts` | Injected floating button HTML |
-| `src/plugin/bridge-client.ts` | postMessage bridge script injected into the app |
-| `src/server/index.ts` | Server factory (`createAnnotaskServer`) |
-| `src/server/api.ts` | REST endpoints under `/__annotask/api/` |
-| `src/server/ws-server.ts` | WebSocket broadcast at `/__annotask/ws` |
-| `src/server/serve-shell.ts` | Static file server for pre-built shell |
-| `src/server/state.ts` | Project state (tasks, design spec, config files) |
-| `src/server/discovery.ts` | `.annotask/server.json` read/write for CLI discovery |
-| `src/server/standalone.ts` | Standalone HTTP server (used by Webpack plugin) |
+| `src/plugin/index.ts` | Vite plugin entry |
+| `src/plugin/transform.ts` | Source-mapping attribute injection |
+| `src/plugin/bridge-client.ts` | In-app bridge client |
+| `src/plugin/toggle-button.ts` | Floating toggle launcher |
 
-### Shell (`src/shell/`)
+### Server layer
 
-A Vue 3 SPA that serves as the design tool UI. Pre-built into `dist/shell/` during the build step and served by the plugin at `/__annotask/`.
+`src/server/` hosts the product back end.
 
-The shell loads the user's app in an iframe (same-origin, so full DOM access) and provides:
+Responsibilities:
 
-- Element inspection (click to select, see source mapping)
-- Style editing (layout, spacing, size, appearance controls)
-- Class editing (add/remove CSS classes)
-- Annotation tools (pins, arrows, drawn sections, sticky notes, text highlights)
-- Theme page (edit design tokens from the design spec)
-- Task management (create, review, accept/deny tasks)
+- task persistence and atomic writes
+- screenshot storage
+- HTTP API routes
+- WebSocket broadcast
+- design-spec loading
+- component scanning
+- data-source scanning and binding analysis
+- API schema scanning and endpoint resolution
+- source-context helpers
+
+Representative files:
+
+| File | Responsibility |
+|------|---------------|
+| `src/server/api.ts` | HTTP routes under `/__annotask/api` |
+| `src/server/ws-server.ts` | WebSocket transport |
+| `src/server/state.ts` | Task and design-spec state |
+| `src/server/component-scanner.ts` | Component-library catalog |
+| `src/server/component-examples.ts` | In-repo component examples |
+| `src/server/data-context.ts` | Task/file data-context resolution |
+| `src/server/data-source-scanner.ts` | Project data-source catalog |
+| `src/server/data-source-details.ts` | Definition-level data-source detail |
+| `src/server/api-schema-scanner.ts` | OpenAPI, GraphQL, tRPC, JSON Schema discovery |
+| `src/server/api-schema-resolver.ts` | Concrete endpoint matching |
+| `src/server/code-context.ts` | Source excerpt and drift hash |
+
+### MCP layer
+
+`src/mcp/server.ts` exposes the agent-facing tool surface at `POST /__annotask/mcp`.
+
+The MCP server is intentionally close to the HTTP API but not identical. It:
+
+- returns task summaries by default to reduce token usage
+- strips shell-only fields such as `visual`
+- trims old `agent_feedback` exchanges
+- adds tool-focused argument validation
+
+### Shell layer
+
+`src/shell/` is a Vue 3 SPA served at `/__annotask/`.
+
+Current top-level surfaces:
+
+- **Editor**: annotations, screenshots, viewport preview, pending-task creation
+- **Design**: tokens, inspector, components
+- **Develop**: a11y, data, libraries, performance, errors
+
+Important constraints:
+
+- `App.vue` is the orchestrator, not a business-logic dumping ground
+- new shell features should usually land in a composable under `src/shell/composables/`
 
 Key composables:
 
 | Composable | Purpose |
 |------------|---------|
-| `useStyleEditor` | Tracks style/class changes, builds the report |
-| `useAnnotations` | Manages pins, arrows, sections, highlights, notes |
-| `useIframeManager` | Cross-iframe DOM access and element resolution |
-| `useDesignSpec` | Fetches and caches the design spec |
-| `useInteractionMode` | Switches between select (design) and interact (app) modes |
-| `useCanvasDrawing` | Arrow and section drawing on overlay canvas |
-| `useLayoutOverlay` | Flex/grid layout visualization |
-| `useElementClassification` | Semantic role detection for selected elements |
-| `useTasks` | Task CRUD and lifecycle management |
-| `useScreenshots` | Snipping tool, screenshot upload, and pending screenshot state |
-| `useKeyboardShortcuts` | Shell keyboard handler (undo, escape, toggle panels) |
-| `useA11yScanner` | Accessibility scanning and a11y task creation |
-| `useErrorMonitor` | Console error/warn capture, deduplication, bounded tracking |
-| `usePerfMonitor` | Web Vitals, performance scanning, interaction recording, bundle analysis |
-| `useTaskWorkflows` | Task creation flows (pin, arrow, highlight, section → task) |
-| `useAnnotationRects` | rAF loop keeping annotation overlays positioned during scroll/resize |
+| `useTaskWorkflows` | Annotation-to-task creation flows |
+| `useSelectionModel` | Selected element state and source info |
+| `useStyleEditor` | Live style/class edits and change recording |
+| `useShellNavigation` | Editor / Design / Develop routing |
+| `useScreenshots` | Snipping workflow and uploads |
+| `useA11yScanner` | Accessibility scan and fix-task creation |
+| `useProjectComponents` | Components page and on-page highlighting |
+| `useDataSources` | Data view, schema catalog, and `api_update` task creation |
+| `usePerfMonitor` | Web Vitals, scans, recordings, findings |
+| `useErrorMonitor` | Error and warning capture |
+| `useShellTheme` | 18 built-in themes plus custom theme CRUD |
+| `useAnnotationRects` | Keeps overlays aligned during scroll/resize |
+| `useAutoScan` | Debounced perf auto-scan on view or route changes |
 
-### Schema (`src/schema.ts`)
+### Shared schema
 
-TypeScript types defining the report contract. This is the canonical source of truth for:
+`src/schema.ts` is the main contract definition.
 
-- `AnnotaskReport` — The change report structure
-- `AnnotaskChange` — Discriminated union of all change types
-- `AnnotaskTask` — Task in the review pipeline
-- `AnnotaskDesignSpec` — Design token specification
-- `DesignSpecToken` — Individual token with role, value, and source tracking
+It defines:
 
-### Webpack (`src/webpack/`)
+- report and change types
+- task types and statuses
+- design spec structure
+- element, component, and data context shapes
+- performance and screenshot metadata
+- API schema and data-source helper types
 
-Webpack 5 plugin providing the same functionality as the Vite plugin:
+## Bridge Model
 
-- **`AnnotaskWebpackPlugin`** — registers a pre-transform loader and starts a standalone HTTP server
-- **`src/webpack/loader.ts`** — SFC transform loader (runs before `vue-loader`)
-- Uses `src/server/standalone.ts` to start an independent HTTP + WebSocket server (default port 24678)
+Annotask uses a `postMessage` bridge rather than direct DOM calls from the shell.
 
-### CLI (`src/cli/`)
+Why:
 
-Standalone Node.js binary (`annotask`) that connects to a running dev server (Vite or Webpack):
+- works for cross-origin iframe setups
+- supports multi-server MFE development
+- keeps DOM interaction logic close to the app runtime
 
-- `watch` — WebSocket client that streams changes in real-time
-- `report` — HTTP GET to fetch current report JSON
-- `status` — Health check
-- `init-skills` — Install AI agent skill files into the project
+Bridge responsibilities include:
 
-## Cross-origin support (postMessage bridge)
+- point-to-element resolution
+- hover and click events
+- style and class application
+- layout scans
+- rendered-file discovery
+- project-component listing
+- accessibility and focus-order helpers
 
-Annotask uses a **postMessage bridge** instead of direct iframe DOM access. This enables cross-origin iframes, which is critical for Single-SPA microfrontend architectures where the MFE's Vite dev server is on a different port than the root shell.
+## Data Flow
 
-**Architecture:**
-- A **client bridge script** (`src/plugin/bridge-client.ts`) is injected into the user's app alongside the toggle button
-- The client script handles all DOM interactions: hover, click, style reads/writes, element resolution, layout scanning
-- The **shell bridge service** (`src/shell/services/iframeBridge.ts`) communicates via `window.postMessage`
-- Elements are identified by **eid** (element ID) strings, stored in a `WeakRef`-backed registry in the client
+### Annotation or design edit
 
-**Message flow:**
-- Shell sends commands: `resolve:at-point`, `style:apply`, `class:set`, `layout:scan`, etc.
-- Client pushes events: `hover:enter`, `click:element`, `route:changed`, etc.
-- Request/response pairs share an `id` field with timeouts
-- High-frequency events (hover) use `requestAnimationFrame` throttling
-
-## Data flow
-
-### Style editing
-
-```
-User clicks element in shell
-  → Client script detects click, resolves source mapping, pushes click:element event
-  → Shell receives event via postMessage, updates selection model (eid-based)
-  → User edits style in property panel
-  → Shell sends style:apply command to client via postMessage
-  → Client applies inline style, returns before value
-  → Shell records change, broadcasts via WebSocket
-  → CLI / API consumers receive the change
+```text
+user action in shell
+  -> bridge resolves target element
+  -> shell captures source info and optional context
+  -> task is written to .annotask/tasks.json
+  -> API / WebSocket / MCP consumers see the new task
 ```
 
-### Task pipeline
+### Agent workflow
 
-```
-User creates annotation/edit in shell
-  → Task written to .annotask/tasks.json (atomic write) and broadcast via WS
-  → AI agent fetches tasks via GET /api/tasks
-  → Agent locks task (status: in_progress)
-  → Agent applies change to source code
-  → Agent marks task for review (status: review) — one at a time
-  → User reviews in task detail drawer, accepts or denies
-  → Denied tasks get feedback field for agent to retry
+```text
+agent fetches task summaries
+  -> locks task with in_progress
+  -> optionally fetches screenshot / code context / component examples / data context / API schema
+  -> edits source code
+  -> marks task review with a resolution note
+  -> user accepts, denies, answers questions, or reviews blocked reason
 ```
 
-### Source mapping
+### Audit workflow
 
-The transform plugin parses SFC `<template>` blocks as raw strings (not AST) using a character-level scanner. For each opening HTML tag, it appends:
-
-```html
-<div data-annotask-file="src/components/Foo.vue"
-     data-annotask-line="5"
-     data-annotask-component="Foo">
+```text
+shell scan or monitor detects issue
+  -> shell packages finding context
+  -> creates a11y_fix / error_fix / perf_fix / api_update task
+  -> same task pipeline takes over
 ```
 
-The scanner handles:
-- Quoted attribute values (won't break on `>` inside quotes)
-- Backtick template literals
-- Self-closing tags
-- Vue directive syntax
+## Persistence
 
-Line numbers are template-relative (line 1 = first line of `<template>`).
+Annotask stores state under `.annotask/`.
 
-## Build pipeline
+Common files:
 
-```
-pnpm build
-  ├── build:shell    →  vite build (src/shell/ → dist/shell/)
-  ├── build:plugin   →  tsup:
-  │                        src/plugin/index.ts    → dist/index.js      (Vite plugin)
-  │                        src/server/index.ts    → dist/server.js     (server API)
-  │                        src/server/standalone.ts → dist/standalone.js (standalone server)
-  │                        src/webpack/index.ts   → dist/webpack.js    (Webpack plugin)
-  │                        src/webpack/loader.ts  → dist/webpack-loader.js (Webpack loader)
-  │                        src/cli/index.ts       → dist/cli.js        (CLI binary)
-  └── build:vendor   →  copies axe-core.min.js + html2canvas.min.js → dist/vendor/
-```
+- `tasks.json`
+- `design-spec.json`
+- `server.json`
+- `screenshots/`
 
-The shell is pre-built into `dist/shell/` so the plugin can serve it as static files without requiring Vue as a runtime dependency for consumers.
+Writes are atomic so task updates do not corrupt the store on concurrent activity.
+
+## Webpack Support
+
+`src/webpack/` provides Webpack 5 support with a standalone Annotask server.
+
+Key pieces:
+
+- `AnnotaskWebpackPlugin`
+- transform loader
+- standalone server bootstrap
+
+The goal is feature parity with the Vite path wherever possible.
+
+## Build Outputs
+
+`pnpm build` produces:
+
+- prebuilt shell assets in `dist/shell/`
+- plugin and server bundles
+- webpack integration bundles
+- CLI bundle
+- vendored browser dependencies such as `axe-core` and `html2canvas`

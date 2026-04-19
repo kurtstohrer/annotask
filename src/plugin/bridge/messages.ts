@@ -16,6 +16,14 @@ export function bridgeMessages(): string {
       return;
     }
 
+    if (type === 'data:watch') {
+      if (typeof window.__annotaskSetDataWatch === 'function') {
+        window.__annotaskSetDataWatch(!!(payload && payload.enabled));
+      }
+      if (id) respond(id, { ok: true });
+      return;
+    }
+
     if (type === 'mode:set') {
       currentMode = payload.mode || 'select';
       try { localStorage.setItem('annotask:mode', currentMode); } catch(e) {}
@@ -24,6 +32,10 @@ export function bridgeMessages(): string {
       } else {
         document.body.classList.add('annotask-no-select');
       }
+      // If we're leaving inspect modes, any lingering hover overlay in the
+      // shell needs to be dismissed — no further mouseover will fire to
+      // clear it.
+      if (!inspectModes[currentMode]) clearHoverState();
       return;
     }
 
@@ -40,6 +52,8 @@ export function bridgeMessages(): string {
         file: srcData.file,
         line: srcData.line,
         component: srcData.component,
+        source_tag: srcData.source_tag,
+        parent_component: findParentComponent(src.sourceEl, srcData.component),
         mfe: srcData.mfe,
         tag: src.sourceEl.tagName.toLowerCase(),
         rect: getRect(src.sourceEl),
@@ -78,7 +92,11 @@ export function bridgeMessages(): string {
 
     if (type === 'resolve:rect') {
       var rEl = getEl(payload.eid);
-      respond(id, rEl ? { rect: getRect(rEl) } : null);
+      // Reject detached nodes and zero-size rects — those paint as a stuck
+      // 4px border at (0,0) on the shell overlay otherwise.
+      if (!rEl || !rEl.isConnected) { respond(id, null); return; }
+      var r0 = getRect(rEl);
+      respond(id, (r0.width > 0 && r0.height > 0) ? { rect: r0 } : null);
       return;
     }
 
@@ -86,9 +104,247 @@ export function bridgeMessages(): string {
       var results = [];
       for (var j = 0; j < payload.eids.length; j++) {
         var re = getEl(payload.eids[j]);
-        results.push(re ? getRect(re) : null);
+        if (!re || !re.isConnected) { results.push(null); continue; }
+        var r1 = getRect(re);
+        results.push((r1.width > 0 && r1.height > 0) ? r1 : null);
       }
       respond(id, { rects: results });
+      return;
+    }
+
+    if (type === 'list:rendered-files') {
+      // Distinct data-annotask-file values from the live iframe DOM — the
+      // set of source files that contributed elements to the current route.
+      var allFileNodes = document.querySelectorAll('[data-annotask-file]');
+      var fileSet = Object.create(null);
+      for (var fii = 0; fii < allFileNodes.length; fii++) {
+        var fval = allFileNodes[fii].getAttribute('data-annotask-file');
+        if (fval) fileSet[fval] = true;
+      }
+      var fileList = [];
+      for (var fkey in fileSet) fileList.push(fkey);
+      respond(id, { files: fileList });
+      return;
+    }
+
+    if (type === 'list:project-components') {
+      // Group every [data-annotask-component] element by its component name.
+      // Record each instance's (file, line, eid, rect) so the shell can
+      // highlight them and load their definition. Uses the COMPONENT-ROOT
+      // elements — not their descendants — to avoid duplicate instances.
+      var compNodes = document.querySelectorAll('[data-annotask-component]');
+      var compBuckets = Object.create(null);
+      for (var ci = 0; ci < compNodes.length; ci++) {
+        var cnel = compNodes[ci];
+        // Skip if an ancestor has the SAME component attribute — keep the
+        // outermost element for each rendered instance.
+        var parent = cnel.parentNode;
+        var sameAncestor = false;
+        var selfComp = cnel.getAttribute('data-annotask-component');
+        while (parent && parent.nodeType === 1) {
+          if (parent.getAttribute && parent.getAttribute('data-annotask-component') === selfComp) {
+            sameAncestor = true;
+            break;
+          }
+          parent = parent.parentNode;
+        }
+        if (sameAncestor) continue;
+        var cname = selfComp || '';
+        if (!cname) continue;
+        if (!compBuckets[cname]) compBuckets[cname] = [];
+        compBuckets[cname].push({
+          file: cnel.getAttribute('data-annotask-file') || '',
+          line: cnel.getAttribute('data-annotask-line') || '',
+          eid: getEid(cnel),
+          rect: getRect(cnel),
+        });
+      }
+      var compOut = [];
+      for (var cn in compBuckets) {
+        var insts = compBuckets[cn];
+        // Primary file/line = the first instance's source attrs — used as the
+        // definition anchor for the detail pane.
+        var primary = insts[0];
+        compOut.push({
+          name: cn,
+          file: primary.file,
+          line: primary.line,
+          count: insts.length,
+          instances: insts
+        });
+      }
+      // Sort by name for stable order.
+      compOut.sort(function(a, b){ return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+      respond(id, { components: compOut });
+      return;
+    }
+
+    if (type === 'resolve:by-locations') {
+      var CAP2 = 500;
+      var locTrunc = false;
+      var locMatches = [];
+      var locs = Array.isArray(payload.locations) ? payload.locations : [];
+      // Deduplicate by file to avoid re-querying the whole file multiple times.
+      var byFile = Object.create(null);
+      for (var li = 0; li < locs.length; li++) {
+        var loc = locs[li];
+        if (!loc || typeof loc.file !== 'string') continue;
+        if (!byFile[loc.file]) byFile[loc.file] = [];
+        byFile[loc.file].push(loc);
+      }
+      for (var fname in byFile) {
+        // byFile is Object.create(null) — no prototype, so for-in only yields own keys.
+        var entries = byFile[fname];
+        var safeFile = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(fname) : fname.replace(/"/g, '\\\\"');
+        // Pull every element in this file once.
+        var fileNodes;
+        try { fileNodes = document.querySelectorAll('[data-annotask-file="' + safeFile + '"]'); }
+        catch (e) { fileNodes = []; }
+        if ((!fileNodes || fileNodes.length === 0)) {
+          var astroAll = document.querySelectorAll('[data-astro-source-file]');
+          var am = [];
+          for (var aj = 0; aj < astroAll.length; aj++) {
+            var afile = astroAll[aj].getAttribute('data-astro-source-file') || '';
+            if (afile.endsWith('/' + fname) || afile === fname) am.push(astroAll[aj]);
+          }
+          fileNodes = am;
+        }
+        // Bucket nodes by line once.
+        var nodesByLine = Object.create(null);
+        for (var ni = 0; ni < fileNodes.length; ni++) {
+          var nel = fileNodes[ni];
+          var lineAttr = nel.getAttribute('data-annotask-line') || '';
+          var lineKey = String(lineAttr);
+          if (!nodesByLine[lineKey]) nodesByLine[lineKey] = [];
+          nodesByLine[lineKey].push(nel);
+        }
+        // For each requested location, pick the matching bucket (or the full
+        // file when line === 0).
+        for (var ei = 0; ei < entries.length; ei++) {
+          var ent = entries[ei];
+          var targetLine = typeof ent.line === 'number' ? ent.line : parseInt(ent.line, 10) || 0;
+          var targetNodes;
+          if (targetLine === 0) {
+            targetNodes = fileNodes; // file-level fallback
+          } else {
+            targetNodes = nodesByLine[String(targetLine)] || [];
+          }
+          // Optional tag filter: when the caller names a source tag (e.g. the
+          // Components view picking 'Card'), only nodes whose
+          // data-annotask-source-tag matches survive. Drops nested elements
+          // that happen to share the same source line.
+          //
+          // We then reduce the kept set to *outermost* elements per instance —
+          // i.e. each rect represents one whole component instance, not every
+          // tagged descendant. This matters for compound components: Radix's
+          // <Table.Root>/<Table.Header>/<Table.Row>/<Table.Cell> all get
+          // source-tag="Table" (the JSX tag parser stops at '.'), so without
+          // a root-only reduction a single <table> would surface as 16 td/th
+          // rects instead of one clean outline around the whole element.
+          if (ent.tag && typeof ent.tag === 'string') {
+            var wanted = ent.tag;
+            var kept = [];
+            for (var tti = 0; tti < targetNodes.length; tti++) {
+              var tn = targetNodes[tti];
+              if (tn.getAttribute && tn.getAttribute('data-annotask-source-tag') === wanted) {
+                kept.push(tn);
+              }
+            }
+            var roots = [];
+            for (var ki = 0; ki < kept.length; ki++) {
+              var kn = kept[ki];
+              var hasAnc = false;
+              for (var kj = 0; kj < kept.length && !hasAnc; kj++) {
+                if (ki === kj) continue;
+                if (kept[kj].contains(kn) && kept[kj] !== kn) hasAnc = true;
+              }
+              if (!hasAnc) roots.push(kn);
+            }
+            targetNodes = roots;
+          }
+          // Leaf-only filter within this target set.
+          for (var ti = 0; ti < targetNodes.length; ti++) {
+            if (locMatches.length >= CAP2) { locTrunc = true; break; }
+            var cand = targetNodes[ti];
+            var hasDesc = false;
+            for (var tj = 0; tj < targetNodes.length && !hasDesc; tj++) {
+              if (ti === tj) continue;
+              if (cand !== targetNodes[tj] && cand.contains(targetNodes[tj])) hasDesc = true;
+            }
+            if (hasDesc) continue;
+            locMatches.push({
+              ref: ent.ref,
+              file: fname,
+              line: targetLine,
+              eid: getEid(cand),
+              rect: getRect(cand)
+            });
+          }
+          if (locTrunc) break;
+        }
+        if (locTrunc) break;
+      }
+      respond(id, { matches: locMatches, truncated: locTrunc });
+      return;
+    }
+
+    if (type === 'resolve:by-files') {
+      var CAP = 500;
+      var truncated = false;
+      var files = Array.isArray(payload.files) ? payload.files : [];
+      // Collect matched elements per file so we can do leaf-only filtering.
+      var collected = []; // { file, el, line }
+      for (var fi = 0; fi < files.length && !truncated; fi++) {
+        var fname = files[fi];
+        if (!fname || typeof fname !== 'string') continue;
+        var safeName = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(fname) : fname.replace(/"/g, '\\\\"');
+        var nodes;
+        try {
+          nodes = document.querySelectorAll('[data-annotask-file="' + safeName + '"]');
+        } catch (e) { nodes = []; }
+        // Astro fallback: same normalization as resolve:template-group (file may be a suffix)
+        if ((!nodes || nodes.length === 0)) {
+          var astroAll = document.querySelectorAll('[data-astro-source-file]');
+          var am = [];
+          for (var aj = 0; aj < astroAll.length; aj++) {
+            var afile = astroAll[aj].getAttribute('data-astro-source-file') || '';
+            if (afile.endsWith('/' + fname) || afile === fname) am.push(astroAll[aj]);
+          }
+          nodes = am;
+        }
+        for (var ni = 0; ni < nodes.length; ni++) {
+          if (collected.length >= CAP) { truncated = true; break; }
+          var nel = nodes[ni];
+          var lineAttr = nel.getAttribute('data-annotask-line') || '';
+          collected.push({ file: fname, el: nel, line: lineAttr });
+        }
+      }
+      // Leaf-only filter — drop any element that contains another matched
+      // element. Keeps overlay noise down (outer containers would otherwise
+      // stack on top of their children).
+      var elSet = new Set ? new Set() : null;
+      if (elSet) {
+        for (var ci = 0; ci < collected.length; ci++) elSet.add(collected[ci].el);
+      }
+      var outMatches = [];
+      for (var li = 0; li < collected.length; li++) {
+        var cur = collected[li];
+        var hasMatchedDescendant = false;
+        for (var lj = 0; lj < collected.length && !hasMatchedDescendant; lj++) {
+          if (li === lj) continue;
+          if (cur.el !== collected[lj].el && cur.el.contains(collected[lj].el)) {
+            hasMatchedDescendant = true;
+          }
+        }
+        if (hasMatchedDescendant) continue;
+        outMatches.push({
+          file: cur.file,
+          eid: getEid(cur.el),
+          line: cur.line,
+          rect: getRect(cur.el)
+        });
+      }
+      respond(id, { matches: outMatches, truncated: truncated });
       return;
     }
 
@@ -266,6 +522,63 @@ export function bridgeMessages(): string {
         subtree: describeEl(ctxEl, 0),
         selected_element_text: getVisibleText(ctxEl, 200)
       });
+      return;
+    }
+
+    if (type === 'resolve:component-chain') {
+      var ccEl = getEl(payload.eid);
+      if (!ccEl) { respond(id, null); return; }
+
+      function entryFromEl(el) {
+        var d = getSourceData(el);
+        // When the source_tag is PascalCase (e.g. "Switch", "Slider") it names
+        // the component the user visually selected, even when data-annotask-component
+        // points at the owning file (e.g. "App"). Always prefer it — otherwise
+        // the primary turns into the container instead of the thing clicked.
+        var st = d.source_tag || '';
+        var stIsCustom = st && st.charAt(0) >= 'A' && st.charAt(0) <= 'Z';
+        var name = stIsCustom ? st : d.component;
+        if (!name) return null;
+        var entry = { name: name };
+        if (d.file) entry.file = d.file;
+        if (d.line) {
+          var n = parseInt(d.line, 10);
+          if (!isNaN(n)) entry.line = n;
+        }
+        if (d.mfe) entry.mfe = d.mfe;
+        return entry;
+      }
+
+      // Walk up until we find the first element carrying annotask attrs —
+      // library components' inner DOM (Radix/MUI internals) have none, so
+      // the selected span/div is usually a child of the real component root.
+      var primaryEntry = entryFromEl(ccEl);
+      var anchorEl = ccEl;
+      if (!primaryEntry) {
+        var fallback = ccEl.parentElement;
+        while (fallback && fallback !== document.body && fallback !== document.documentElement) {
+          var fEntry = entryFromEl(fallback);
+          if (fEntry) { primaryEntry = fEntry; anchorEl = fallback; break; }
+          fallback = fallback.parentElement;
+        }
+      }
+      if (!primaryEntry) { respond(id, null); return; }
+
+      // Rendered HTML: the element's own outerHTML, with annotask
+      // bookkeeping attributes stripped. Truncated so the task payload stays
+      // compact — agents still see the structure of what shipped to the DOM.
+      var RENDERED_MAX = 4000;
+      var rendered = '';
+      try {
+        var raw = ccEl.outerHTML || '';
+        raw = raw.replace(/ data-annotask-[a-z-]+="[^"]*"/g, '');
+        if (raw.length > RENDERED_MAX) raw = raw.slice(0, RENDERED_MAX) + '…';
+        rendered = raw;
+      } catch (_e) { rendered = ''; }
+
+      var out = { primary: primaryEntry };
+      if (rendered) out.rendered = rendered;
+      respond(id, out);
       return;
     }
 
@@ -856,9 +1169,383 @@ export function bridgeMessages(): string {
       return;
     }
 
+    if (type === 'scroll:into-view') {
+      var sivEl = payload.eid ? getEl(payload.eid) : null;
+      if (sivEl && sivEl.scrollIntoView) {
+        try { sivEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' }); }
+        catch (_e) { try { sivEl.scrollIntoView(); } catch (_e2) {} }
+      }
+      if (id) respond(id, { ok: true });
+      return;
+    }
+
+    if (type === 'resolve:by-selectors') {
+      var selsIn = Array.isArray(payload.selectors) ? payload.selectors : [];
+      var selMatches = [];
+      for (var ssi = 0; ssi < selsIn.length; ssi++) {
+        var sel = selsIn[ssi];
+        var matchEl = null;
+        if (typeof sel === 'string' && sel) {
+          try { matchEl = document.querySelector(sel); } catch (_e) { matchEl = null; }
+        }
+        if (matchEl && matchEl.isConnected) {
+          var sRect = getRect(matchEl);
+          selMatches.push({
+            selector: sel,
+            eid: getEid(matchEl),
+            rect: (sRect.width > 0 && sRect.height > 0) ? sRect : null,
+          });
+        } else {
+          selMatches.push({ selector: sel, eid: null, rect: null });
+        }
+      }
+      respond(id, { matches: selMatches });
+      return;
+    }
+
+    if (type === 'compute:accessibility-info') {
+      var aiEids = Array.isArray(payload.eids) ? payload.eids : [];
+      var aiItems = [];
+      for (var aii = 0; aii < aiEids.length; aii++) {
+        var aiEl = getEl(aiEids[aii]);
+        if (!aiEl || !aiEl.isConnected) { aiItems.push(null); continue; }
+        aiItems.push(computeA11yInfoFor(aiEl));
+      }
+      respond(id, { items: aiItems });
+      return;
+    }
+
+    if (type === 'compute:tab-order') {
+      var allInteractive = collectFocusables(document);
+      var entries = [];
+      for (var toi = 0; toi < allInteractive.length; toi++) {
+        var foEl = allInteractive[toi];
+        var foTab = getTabIndexValue(foEl);
+        var foRect = getRect(foEl);
+        if (foRect.width === 0 && foRect.height === 0) continue;
+        entries.push({
+          eid: getEid(foEl),
+          rect: foRect,
+          tag: foEl.tagName.toLowerCase(),
+          role: getElementRole(foEl).role,
+          accessible_name: getAccessibleName(foEl).name,
+          tabindex: foTab,
+          is_positive_tabindex: typeof foTab === 'number' && foTab > 0,
+          is_disabled_focusable: isNativelyFocusable(foEl) && foTab === -1,
+          index: -1,
+          domOrder: toi,
+        });
+      }
+      // Sort by tab order: positive tabindex first (numeric ascending), then
+      // tabindex=0 / native focusables in DOM order, then tabindex=-1 elements
+      // are excluded from the sequence (kept in result for analysis).
+      var sequenced = entries.slice().filter(function(e){ return e.tabindex !== -1; });
+      sequenced.sort(function(a, b) {
+        var at = a.tabindex;
+        var bt = b.tabindex;
+        var aPos = typeof at === 'number' && at > 0;
+        var bPos = typeof bt === 'number' && bt > 0;
+        if (aPos && !bPos) return -1;
+        if (!aPos && bPos) return 1;
+        if (aPos && bPos) {
+          if (at !== bt) return at - bt;
+          return a.domOrder - b.domOrder;
+        }
+        return a.domOrder - b.domOrder;
+      });
+      var byEid = Object.create(null);
+      for (var qi = 0; qi < entries.length; qi++) byEid[entries[qi].eid] = entries[qi];
+      for (var si = 0; si < sequenced.length; si++) {
+        var e = byEid[sequenced[si].eid];
+        if (e) e.index = si + 1;
+      }
+      // Detect tab/visual-order disagreements among sequenced entries: pairs
+      // (a, b) where a comes before b in tab order but b is visually above
+      // (or to the left of) a on the same row.
+      var reorderings = [];
+      for (var ri = 0; ri < sequenced.length - 1 && reorderings.length < 20; ri++) {
+        var ra = sequenced[ri];
+        var rb = sequenced[ri + 1];
+        var dy = rb.rect.y - ra.rect.y;
+        if (dy < -8) {
+          reorderings.push({ aEid: ra.eid, bEid: rb.eid, reason: 'next-in-tab-order is visually above current' });
+        } else if (Math.abs(dy) <= 8 && rb.rect.x < ra.rect.x - 8) {
+          reorderings.push({ aEid: ra.eid, bEid: rb.eid, reason: 'next-in-tab-order is visually left of current on the same row' });
+        }
+      }
+      respond(id, { entries: entries, reorderings: reorderings });
+      return;
+    }
+
     if (id) {
       respond(id, { error: 'unsupported bridge request: ' + type });
     }
   });
+
+  // ── Accessibility helpers ────────────────────────────────
+
+  // Implicit ARIA roles for common HTML elements. Best-effort; matches the
+  // mappings most agents will recognize without becoming an exhaustive AOM.
+  var IMPLICIT_ROLES = {
+    a: function(el) { return el.hasAttribute('href') ? 'link' : 'generic'; },
+    article: 'article', aside: 'complementary', button: 'button',
+    datalist: 'listbox', dd: 'definition', details: 'group', dfn: 'term',
+    dialog: 'dialog', dt: 'term', fieldset: 'group', figure: 'figure',
+    footer: 'contentinfo', form: 'form', h1: 'heading', h2: 'heading',
+    h3: 'heading', h4: 'heading', h5: 'heading', h6: 'heading',
+    header: 'banner', hr: 'separator', img: function(el) {
+      return el.getAttribute('alt') === '' ? 'presentation' : 'img';
+    },
+    input: function(el) {
+      var t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'button' || t === 'submit' || t === 'reset' || t === 'image') return 'button';
+      if (t === 'checkbox') return 'checkbox';
+      if (t === 'radio') return 'radio';
+      if (t === 'range') return 'slider';
+      if (t === 'search') return 'searchbox';
+      if (t === 'text' || t === 'email' || t === 'tel' || t === 'url' || t === 'password') return 'textbox';
+      if (t === 'number') return 'spinbutton';
+      return 'textbox';
+    },
+    li: 'listitem', main: 'main', nav: 'navigation', ol: 'list', ul: 'list',
+    option: 'option', output: 'status', progress: 'progressbar',
+    section: function(el) {
+      return (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby')) ? 'region' : 'generic';
+    },
+    select: 'combobox', summary: 'button', table: 'table', tbody: 'rowgroup',
+    td: 'cell', textarea: 'textbox', tfoot: 'rowgroup', th: 'columnheader',
+    thead: 'rowgroup', tr: 'row'
+  };
+
+  function getElementRole(el) {
+    var explicit = el.getAttribute('role');
+    if (explicit) return { role: explicit, source: 'explicit' };
+    var tag = el.tagName.toLowerCase();
+    var resolver = IMPLICIT_ROLES[tag];
+    if (typeof resolver === 'function') return { role: resolver(el), source: 'implicit' };
+    if (typeof resolver === 'string') return { role: resolver, source: 'implicit' };
+    return { role: '', source: 'none' };
+  }
+
+  function normalizeText(s) {
+    return (s || '').replace(/\\s+/g, ' ').trim();
+  }
+
+  function getAccessibleName(el) {
+    // 1. aria-labelledby
+    var labelledby = el.getAttribute('aria-labelledby');
+    if (labelledby) {
+      var ids = labelledby.split(/\\s+/);
+      var parts = [];
+      for (var li = 0; li < ids.length; li++) {
+        var ref = document.getElementById(ids[li]);
+        if (ref) parts.push(normalizeText(ref.textContent));
+      }
+      var joined = parts.join(' ').trim();
+      if (joined) return { name: joined.slice(0, 200), source: 'aria-labelledby' };
+    }
+    // 2. aria-label
+    var ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel && ariaLabel.trim()) return { name: ariaLabel.trim().slice(0, 200), source: 'aria-label' };
+    // 3. Form-control label association
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea' || tag === 'meter' || tag === 'progress') {
+      var labelText = '';
+      var idAttr = el.getAttribute('id');
+      if (idAttr) {
+        try {
+          var labelEl = document.querySelector('label[for="' + (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(idAttr) : idAttr) + '"]');
+          if (labelEl) labelText = normalizeText(labelEl.textContent);
+        } catch(e) {}
+      }
+      if (!labelText) {
+        var ancL = el.parentElement;
+        while (ancL) {
+          if (ancL.tagName && ancL.tagName.toLowerCase() === 'label') {
+            labelText = normalizeText(ancL.textContent);
+            break;
+          }
+          ancL = ancL.parentElement;
+        }
+      }
+      if (labelText) return { name: labelText.slice(0, 200), source: 'label' };
+    }
+    // 4. img alt
+    if (tag === 'img' || (tag === 'input' && (el.getAttribute('type') || '').toLowerCase() === 'image')) {
+      var alt = el.getAttribute('alt');
+      if (alt !== null) return { name: alt.trim().slice(0, 200), source: 'alt' };
+    }
+    // 5. Native value (button[value], input[type=button|submit|reset])
+    if (tag === 'input') {
+      var t = (el.getAttribute('type') || 'text').toLowerCase();
+      if (t === 'button' || t === 'submit' || t === 'reset') {
+        var v = el.getAttribute('value');
+        if (v) return { name: v.trim().slice(0, 200), source: 'value' };
+      }
+    }
+    // 6. text content (button, link, heading, etc.)
+    var txt = normalizeText(el.textContent || '');
+    if (txt) return { name: txt.slice(0, 200), source: 'text' };
+    // 7. title attribute
+    var title = el.getAttribute('title');
+    if (title && title.trim()) return { name: title.trim().slice(0, 200), source: 'title' };
+    // 8. placeholder (last resort, anti-pattern but useful as a hint)
+    var ph = el.getAttribute('placeholder');
+    if (ph && ph.trim()) return { name: ph.trim().slice(0, 200), source: 'placeholder' };
+    return { name: '', source: 'none' };
+  }
+
+  function isNativelyFocusable(el) {
+    var tag = el.tagName.toLowerCase();
+    if (tag === 'a' || tag === 'area') return el.hasAttribute('href');
+    if (tag === 'button' || tag === 'select' || tag === 'textarea') return !el.disabled;
+    if (tag === 'input') return !el.disabled && (el.getAttribute('type') || '').toLowerCase() !== 'hidden';
+    if (tag === 'audio' || tag === 'video') return el.hasAttribute('controls');
+    if (tag === 'summary' || tag === 'iframe') return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  function getTabIndexValue(el) {
+    var raw = el.getAttribute('tabindex');
+    if (raw === null) return null;
+    var n = parseInt(raw, 10);
+    return isNaN(n) ? null : n;
+  }
+
+  function isHiddenForA11y(el) {
+    if (el.hasAttribute('hidden')) return true;
+    if ((el.getAttribute('aria-hidden') || '').toLowerCase() === 'true') return true;
+    var cs = window.getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return true;
+    return false;
+  }
+
+  function collectFocusables(root) {
+    var out = [];
+    // Order traversal matches DOM order.
+    var walker = document.createTreeWalker(root.body || root, NodeFilter.SHOW_ELEMENT, null);
+    var node = walker.nextNode();
+    while (node) {
+      if (!isHiddenForA11y(node)) {
+        var ti = getTabIndexValue(node);
+        if (isNativelyFocusable(node) || (ti !== null && ti >= -1)) {
+          out.push(node);
+        }
+      }
+      node = walker.nextNode();
+    }
+    return out;
+  }
+
+  function parseColor(str) {
+    // Returns { r, g, b, a } or null.
+    if (!str) return null;
+    var m = str.match(/rgba?\\(\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*,\\s*([\\d.]+)(?:\\s*,\\s*([\\d.]+))?\\s*\\)/);
+    if (m) return { r: parseFloat(m[1]), g: parseFloat(m[2]), b: parseFloat(m[3]), a: m[4] !== undefined ? parseFloat(m[4]) : 1 };
+    return null;
+  }
+
+  function rgbToHex(c) {
+    function h(n) { var s = Math.round(n).toString(16); return s.length === 1 ? '0' + s : s; }
+    return '#' + h(c.r) + h(c.g) + h(c.b);
+  }
+
+  function relativeLuminance(c) {
+    var rs = c.r / 255, gs = c.g / 255, bs = c.b / 255;
+    function ch(v) { return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+    return 0.2126 * ch(rs) + 0.7152 * ch(gs) + 0.0722 * ch(bs);
+  }
+
+  function contrastRatio(c1, c2) {
+    var l1 = relativeLuminance(c1);
+    var l2 = relativeLuminance(c2);
+    var hi = Math.max(l1, l2);
+    var lo = Math.min(l1, l2);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  function getEffectiveBackground(el) {
+    var node = el;
+    while (node && node !== document.documentElement) {
+      var bg = parseColor(window.getComputedStyle(node).backgroundColor);
+      if (bg && bg.a >= 0.99) return bg;
+      node = node.parentElement;
+    }
+    // Default to white when we walk off the top with no opaque background.
+    return { r: 255, g: 255, b: 255, a: 1 };
+  }
+
+  function probeFocusIndicator(el) {
+    // Heuristic: probe outline/box-shadow on the resting state. Actually
+    // focusing the element would steal focus from the user, so we approximate
+    // using the default computed style. Returns 'visible' when an outline is
+    // already declared (typical for components with permanent focus rings) or
+    // 'unknown' otherwise.
+    var cs = window.getComputedStyle(el);
+    var ow = parseFloat(cs.outlineWidth) || 0;
+    if (ow > 0 && cs.outlineStyle && cs.outlineStyle !== 'none') return 'visible';
+    if (cs.boxShadow && cs.boxShadow !== 'none') return 'visible';
+    return 'unknown';
+  }
+
+  function computeA11yInfoFor(el) {
+    var nameInfo = getAccessibleName(el);
+    var roleInfo = getElementRole(el);
+    var ti = getTabIndexValue(el);
+    var focusable = isNativelyFocusable(el) || (ti !== null && ti >= 0);
+    var indicator = focusable ? probeFocusIndicator(el) : 'unknown';
+    var ariaAttrs = [];
+    var attrs = el.attributes;
+    for (var ai = 0; ai < attrs.length; ai++) {
+      var an = attrs[ai].name;
+      if (an.indexOf('aria-') === 0 || an === 'role') {
+        ariaAttrs.push({ name: an, value: attrs[ai].value });
+      }
+    }
+    var info = {
+      eid: getEid(el),
+      tag: el.tagName.toLowerCase(),
+      accessible_name: nameInfo.name,
+      name_source: nameInfo.source,
+      role: roleInfo.role,
+      role_source: roleInfo.source,
+      tabindex: ti,
+      focusable: focusable,
+      focus_indicator: indicator,
+      aria_attrs: ariaAttrs
+    };
+    // Contrast: compute when element has visible non-whitespace text.
+    var hasText = false;
+    for (var ci = 0; ci < el.childNodes.length; ci++) {
+      var n = el.childNodes[ci];
+      if (n.nodeType === 3 && n.textContent && n.textContent.trim()) { hasText = true; break; }
+    }
+    if (hasText) {
+      var cs2 = window.getComputedStyle(el);
+      var fg = parseColor(cs2.color);
+      var bg = getEffectiveBackground(el);
+      if (fg && bg) {
+        var ratio = contrastRatio(fg, bg);
+        var fontSizePx = parseFloat(cs2.fontSize) || 16;
+        var fontWeight = parseInt(cs2.fontWeight, 10) || 400;
+        var isLarge = fontSizePx >= 24 || (fontSizePx >= 18.66 && fontWeight >= 700);
+        info.contrast = {
+          foreground: rgbToHex(fg),
+          background: rgbToHex(bg),
+          ratio: Math.round(ratio * 100) / 100,
+          aa_normal: ratio >= 4.5,
+          aa_large: ratio >= 3,
+          aaa_normal: ratio >= 7,
+          aaa_large: ratio >= 4.5,
+        };
+        if (isLarge) {
+          info.contrast.aa_normal = ratio >= 3;
+          info.contrast.aaa_normal = ratio >= 4.5;
+        }
+      }
+    }
+    return info;
+  }
 `
 }

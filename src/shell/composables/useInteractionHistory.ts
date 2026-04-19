@@ -5,6 +5,8 @@ export type InteractionEventType = 'route_change' | 'action'
 export interface InteractionEntry {
   event: InteractionEventType
   route: string
+  /** Epoch ms. Lets agents reason about ordering and gaps in the trace. */
+  timestamp: number
   data: Record<string, unknown>
 }
 
@@ -27,7 +29,7 @@ export function useInteractionHistory() {
     for (const [k, v] of Object.entries(data)) {
       if (v !== '') clean[k] = v
     }
-    history.value.push({ event, route, data: clean })
+    history.value.push({ event, route, timestamp: Date.now(), data: clean })
     if (history.value.length > MAX_ENTRIES) {
       history.value.splice(0, history.value.length - MAX_ENTRIES)
     }

@@ -63,6 +63,10 @@ export function useAnnotationRects(deps: {
       for (let i = 0; i < eids.length; i++) {
         const rect = rects[i]
         if (!rect) continue
+        // Defensive: even if the bridge leaks a zero-size rect for a detached
+        // or off-layout element, don't paint it — the 2px border would
+        // render as a stuck dot at origin.
+        if (rect.width <= 0 || rect.height <= 0) continue
         for (const entry of eidEntries.get(eids[i])!) {
           if (entry.type === 'arrow') {
             const arrow = annotations.arrows.value.find(a => a.id === entry.id)

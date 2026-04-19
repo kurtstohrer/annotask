@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useSolarSystem } from '../composables/useSolarSystem'
 import type { Planet } from '../types'
+
+const solar = useSolarSystem()
+solar.load()
 
 type PlanetHit = { planet: Planet; x: number; y: number; r: number }
 

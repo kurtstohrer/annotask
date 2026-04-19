@@ -40,6 +40,13 @@ export interface ResolvedElement {
   file: string
   line: string
   component: string
+  /** JSX/template tag name as written in source (e.g. "Button", "Flex").
+   *  PascalCase source_tag signals a custom/library component, even when the
+   *  DOM tag is a plain HTML element (because the library root forwarded attrs). */
+  source_tag?: string
+  /** Nearest ancestor component whose data-annotask-component differs from
+   *  `component`. Empty when the element has no distinct wrapping component. */
+  parent_component?: string
   mfe?: string
   tag: string
   rect: BridgeRect
@@ -61,6 +68,208 @@ export interface TemplateGroupResult {
 
 export interface ResolveRectsPayload {
   eids: string[]
+}
+
+/**
+ * Bulk lookup of every element whose `data-annotask-file` attribute matches
+ * one of the given file paths. Used by the Data view to highlight which DOM
+ * elements are sourced from which project data source.
+ */
+export interface ResolveByFilesPayload {
+  files: string[]
+}
+
+export interface ResolveByFilesMatch {
+  file: string
+  eid: string
+  line: string
+  rect: BridgeRect
+}
+
+export interface ResolveByFilesResult {
+  matches: ResolveByFilesMatch[]
+  /** True when the per-request rect cap was hit and the result was truncated. */
+  truncated?: boolean
+}
+
+/**
+ * Precise location-level lookup used by the Data view. Each location narrows
+ * to one element: the one whose `data-annotask-file` equals `file` AND whose
+ * `data-annotask-line` equals `line`. `line: 0` is treated as a wildcard —
+ * the match turns into a file-level lookup (back-compat with the file-level
+ * fallback analyzer). `ref` is an opaque token round-tripped in the response
+ * so callers can attribute matches back to the originating site.
+ */
+export interface ResolveByLocation {
+  file: string
+  line: number
+  /** Optional source tag filter. When present, only elements whose
+   *  `data-annotask-source-tag` matches this tag name count as a hit —
+   *  lets the Components view pick the outer Card root instead of an
+   *  inner Checkbox that happens to share the same source line. */
+  tag?: string
+  ref?: string
+}
+
+export interface ResolveByLocationsPayload {
+  locations: ResolveByLocation[]
+}
+
+export interface ResolveByLocationsMatch {
+  ref?: string
+  file: string
+  line: number
+  eid: string
+  rect: BridgeRect
+}
+
+export interface ResolveByLocationsResult {
+  matches: ResolveByLocationsMatch[]
+  truncated?: boolean
+}
+
+/**
+ * Lists every project-defined component currently rendered in the iframe,
+ * grouped by name. `file` / `line` point at the first instance's root
+ * element (the definition anchor). `instances` carries per-instance
+ * (file, line, eid, rect) so the shell can drive highlights.
+ */
+export interface ProjectComponentInstance {
+  file: string
+  line: string
+  eid: string
+  rect: BridgeRect
+}
+
+export interface ProjectComponentInfo {
+  name: string
+  file: string
+  line: string
+  count: number
+  instances: ProjectComponentInstance[]
+}
+
+export interface ListProjectComponentsResult {
+  components: ProjectComponentInfo[]
+}
+
+/**
+ * Resolves a list of CSS selectors against the iframe DOM. Used by the a11y
+ * highlight overlay to convert axe's `node.target` selectors into eids + rects.
+ * For each selector, returns the first matching element's eid + rect, or null.
+ */
+export interface ResolveBySelectorsPayload {
+  selectors: string[]
+}
+
+export interface ResolveBySelectorsMatch {
+  selector: string
+  eid: string | null
+  rect: BridgeRect | null
+}
+
+export interface ResolveBySelectorsResult {
+  matches: ResolveBySelectorsMatch[]
+}
+
+// ── Accessibility Inspection ───────────────────────────
+
+/**
+ * Per-element accessibility metadata that the shell shows in the inspector
+ * and attaches to a11y_fix tasks. Fields:
+ * - `accessible_name`: computed name (simplified AccName algorithm)
+ * - `name_source`: which signal produced the name (aria-label, labelledby, alt, label, text, none)
+ * - `role`: explicit ARIA role or inferred from tag
+ * - `role_source`: 'explicit' | 'implicit' | 'none'
+ * - `tabindex`: numeric tabindex if set
+ * - `focusable`: whether the element receives keyboard focus
+ * - `focus_indicator`: 'visible' | 'none' | 'unknown' — outline/box-shadow probe
+ * - `contrast`: foreground/background hex + ratio + WCAG levels (only when text)
+ * - `aria_attrs`: list of ARIA attributes present and their values
+ */
+export interface AccessibilityInfo {
+  eid: string
+  tag: string
+  accessible_name: string
+  name_source: 'aria-labelledby' | 'aria-label' | 'label' | 'alt' | 'title' | 'text' | 'placeholder' | 'value' | 'none'
+  role: string
+  role_source: 'explicit' | 'implicit' | 'none'
+  tabindex: number | null
+  focusable: boolean
+  focus_indicator: 'visible' | 'none' | 'unknown'
+  contrast?: {
+    foreground: string
+    background: string
+    ratio: number
+    aa_normal: boolean
+    aa_large: boolean
+    aaa_normal: boolean
+    aaa_large: boolean
+  }
+  aria_attrs: Array<{ name: string; value: string }>
+}
+
+export interface ComputeAccessibilityInfoPayload {
+  eids: string[]
+}
+
+export interface ComputeAccessibilityInfoResult {
+  items: Array<AccessibilityInfo | null>
+}
+
+// ── Tab-order Inspection ───────────────────────────────
+
+/**
+ * Single entry in the computed tab order. `index` is 1-based position in the
+ * sequence (skip elements get index = -1). `domOrder` is the element's
+ * absolute position in document order among focusables. When `index` and
+ * `domOrder` disagree, the element is part of a tab/visual-order mismatch.
+ */
+export interface TabOrderEntry {
+  eid: string
+  rect: BridgeRect
+  tag: string
+  role: string
+  accessible_name: string
+  tabindex: number | null
+  is_positive_tabindex: boolean
+  is_disabled_focusable: boolean
+  index: number
+  domOrder: number
+}
+
+export interface ComputeTabOrderResult {
+  entries: TabOrderEntry[]
+  /** Element pairs where DOM order and tab order disagree (visual flow vs keyboard flow). */
+  reorderings: Array<{ aEid: string; bEid: string; reason: string }>
+}
+
+// ── Component Chain Resolution ─────────────────────────
+
+/**
+ * Walks the owning-component chain for a selected element. `primary` is the
+ * component whose template renders the element (from `data-annotask-*`
+ * attributes on the element itself); `ancestors` are outer components
+ * wrapping it, nearest first. Library/category are filled server-side; the
+ * bridge only reports what is on the DOM.
+ */
+export interface ResolveComponentChainPayload {
+  eid: string
+}
+
+export interface ComponentChainEntry {
+  name: string
+  file?: string
+  line?: number
+  mfe?: string
+}
+
+export interface ResolveComponentChainResult {
+  primary: ComponentChainEntry
+  /** Rendered outerHTML of the selected element, with data-annotask-* attrs
+   *  stripped. Truncated to ~4KB — agents see what shipped to the DOM without
+   *  bloating the task payload. */
+  rendered?: string
 }
 
 // ── Style Operations ────────────────────────────────────
@@ -164,6 +373,8 @@ export interface HoverEnterEvent {
   tag: string
   file: string
   component: string
+  source_tag?: string
+  parent_component?: string
   rect: BridgeRect
 }
 
@@ -173,6 +384,8 @@ export interface ClickElementEvent {
   file: string
   line: string
   component: string
+  source_tag?: string
+  parent_component?: string
   mfe?: string
   tag: string
   classes: string
@@ -194,6 +407,7 @@ export interface SelectionTextEvent {
   file: string
   line: number
   component: string
+  source_tag?: string
   mfe?: string
   tag: string
   rect?: { x: number; y: number; width: number; height: number }

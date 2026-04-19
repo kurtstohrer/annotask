@@ -53,6 +53,7 @@ export function bridgeRegistry(): string {
     var file = el.getAttribute('data-annotask-file') || '';
     var line = el.getAttribute('data-annotask-line') || '';
     var component = el.getAttribute('data-annotask-component') || '';
+    var sourceTag = el.getAttribute('data-annotask-source-tag') || '';
 
     if (!file && el.getAttribute('data-astro-source-file')) {
       var astroFile = el.getAttribute('data-astro-source-file') || '';
@@ -70,12 +71,42 @@ export function bridgeRegistry(): string {
 
     var mfe = el.getAttribute('data-annotask-mfe') || '';
 
-    return { file: file, line: line, component: component, mfe: mfe };
+    return { file: file, line: line, component: component, source_tag: sourceTag, mfe: mfe };
   }
 
   function getRect(el) {
     var r = el.getBoundingClientRect();
     return { x: r.x, y: r.y, width: r.width, height: r.height };
+  }
+
+  /** Find the enclosing component, but only when sourceEl is actually
+   *  at a component boundary (i.e., its first instrumented ancestor
+   *  belongs to a different component). Returns '' when sourceEl is
+   *  interior markup of its own component — the shell uses an empty
+   *  parent_component to distinguish a component root from an element
+   *  nested inside one.
+   *
+   *  Vue's single-root attribute fallthrough overwrites a child
+   *  component's template-stamped data-annotask-* attributes with the
+   *  parent's values. That means the DOM root of <Header> ends up with
+   *  data-annotask-component="App" and data-annotask-source-tag="Header".
+   *  When walking up from an interior element (currentComponent="Header")
+   *  we detect that case by matching the ancestor's source-tag against
+   *  the current component name — that ancestor is the fallthrough'd
+   *  root of our own component, not a true boundary. */
+  function findParentComponent(sourceEl, currentComponent) {
+    if (!sourceEl || !sourceEl.parentElement) return '';
+    var cur = sourceEl.parentElement;
+    while (cur && cur !== document.body && cur !== document.documentElement) {
+      var c = cur.getAttribute && cur.getAttribute('data-annotask-component');
+      if (c) {
+        var st = cur.getAttribute && cur.getAttribute('data-annotask-source-tag');
+        if (st && st === currentComponent) return '';
+        return c === currentComponent ? '' : c;
+      }
+      cur = cur.parentElement;
+    }
+    return '';
   }
 `
 }

@@ -170,6 +170,30 @@ describe('API endpoints', () => {
       expect(status).toBe(400)
       expect(data.error.message).toContain('object')
     })
+
+    it('rejects unknown task type', async () => {
+      const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'bogus_type',
+        description: 'Should be rejected',
+      })
+      expect(status).toBe(400)
+      expect(data.error.message).toMatch(/task type|enum|type/i)
+    })
+
+    it('accepts every canonical task type', async () => {
+      const canonical = [
+        'annotation', 'section_request', 'style_update', 'theme_update',
+        'a11y_fix', 'error_fix', 'perf_fix', 'api_update',
+      ]
+      for (const type of canonical) {
+        const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
+          type,
+          description: `canonical ${type}`,
+        })
+        expect(status, `type=${type}`).toBe(200)
+        expect(data.type, `type=${type}`).toBe(type)
+      }
+    })
   })
 
   describe('PATCH /api/tasks/:id', () => {

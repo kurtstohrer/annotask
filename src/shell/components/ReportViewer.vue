@@ -4,6 +4,8 @@ import Prism from 'prismjs'
 import 'prismjs/components/prism-json'
 import 'prismjs/components/prism-yaml'
 import yaml from 'js-yaml'
+import { stripTaskVisual, trimAgentFeedback } from '../../shared/task-summary'
+import { useLocalStorageEnum } from '../composables/useLocalStorageRef'
 
 const props = defineProps<{
   tasks: Array<Record<string, unknown>>
@@ -16,12 +18,20 @@ const emit = defineEmits<{
 const format = ref<'json' | 'yaml'>('json')
 const copied = ref(false)
 const wrapLines = ref(false)
+const viewMode = useLocalStorageEnum('annotask:reportView', ['api', 'agent'] as const, 'api')
+
+const transformedTasks = computed(() => {
+  if (viewMode.value === 'agent') {
+    return props.tasks.map(t => trimAgentFeedback(stripTaskVisual(t)))
+  }
+  return props.tasks
+})
 
 const taskData = computed(() => {
-  if (!props.tasks.length) return null
+  if (!transformedTasks.value.length) return null
   return {
     version: '1.0',
-    tasks: props.tasks,
+    tasks: transformedTasks.value,
   }
 })
 
@@ -74,6 +84,9 @@ function onKeydown(e: KeyboardEvent) {
           </div>
           <button :class="['wrap-btn', { active: wrapLines }]" @click="wrapLines = !wrapLines" title="Wrap lines">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="13 15 10 18 13 21"/><path d="M3 18h4"/></svg>
+          </button>
+          <button :class="['wrap-btn', { active: viewMode === 'agent' }]" @click="viewMode = viewMode === 'agent' ? 'api' : 'agent'" :title="viewMode === 'agent' ? 'Agent/MCP truncated response — click to show full API response' : 'Full API response — click to show agent/MCP truncated response'">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/><path d="M8 14h.01"/><path d="M16 14h.01"/><path d="M9 18h6"/></svg>
           </button>
           <button class="copy-btn" @click="copy" :disabled="!taskData">
             <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>

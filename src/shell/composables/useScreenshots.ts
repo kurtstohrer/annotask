@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import type { useIframeManager } from './useIframeManager'
+import type { ScreenshotMeta } from '../../schema'
 
 type IframeManager = ReturnType<typeof useIframeManager>
 
@@ -8,6 +9,7 @@ export function useScreenshots(iframe: IframeManager) {
   const snipRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
   const snipStart = ref<{ x: number; y: number } | null>(null)
   const pendingScreenshot = ref<string | null>(null)
+  const pendingScreenshotMeta = ref<ScreenshotMeta | null>(null)
 
   function startSnip() {
     snipActive.value = true
@@ -53,6 +55,22 @@ export function useScreenshots(iframe: IframeManager) {
       })
       const { filename } = await resp.json()
       pendingScreenshot.value = filename
+      const viewport = iframe.getIframeViewport()
+      if (viewport) {
+        const meta: ScreenshotMeta = {
+          viewport_rect: viewport,
+          device_pixel_ratio: window.devicePixelRatio || 1,
+        }
+        if (clipRect) {
+          meta.crop_rect = {
+            x: Math.round(clipRect.x),
+            y: Math.round(clipRect.y),
+            w: Math.round(clipRect.width),
+            h: Math.round(clipRect.height),
+          }
+        }
+        pendingScreenshotMeta.value = meta
+      }
     } catch {
       console.warn('Screenshot upload failed')
     }
@@ -66,13 +84,22 @@ export function useScreenshots(iframe: IframeManager) {
 
   function removeScreenshot() {
     pendingScreenshot.value = null
+    pendingScreenshotMeta.value = null
   }
 
-  /** Consume the pending screenshot (returns filename and clears it) */
-  function consumeScreenshot(): string | null {
-    const s = pendingScreenshot.value
+  /**
+   * Consume the pending screenshot. Returns the filename and the spatial meta
+   * captured at snip time (viewport, devicePixelRatio, crop rect), both
+   * cleared. Callers can merge task-specific fields (element_rect,
+   * arrow_endpoints, section_bounds) onto the returned meta.
+   */
+  function consumeScreenshot(): { filename: string; meta: ScreenshotMeta | null } | null {
+    const filename = pendingScreenshot.value
+    const meta = pendingScreenshotMeta.value
     pendingScreenshot.value = null
-    return s
+    pendingScreenshotMeta.value = null
+    if (!filename) return null
+    return { filename, meta }
   }
 
   return {
@@ -80,6 +107,7 @@ export function useScreenshots(iframe: IframeManager) {
     snipRect,
     snipStart,
     pendingScreenshot,
+    pendingScreenshotMeta,
     startSnip,
     onSnipDown,
     onSnipMove,

@@ -55,8 +55,11 @@
       <TaskOptionsToggles
         :include-history="includeHistory"
         :include-element-context="includeElementContext"
+        :include-data-context="includeDataContext"
+        :data-context-probe="dataContextProbe"
         @update:includeHistory="$emit('update:includeHistory', $event)"
         @update:includeElementContext="$emit('update:includeElementContext', $event)"
+        @update:includeDataContext="$emit('update:includeDataContext', $event)"
       />
 
       <ScreenshotUploader
@@ -76,6 +79,7 @@
 <script setup lang="ts">
 import TaskOptionsToggles from './TaskOptionsToggles.vue'
 import ScreenshotUploader from './ScreenshotUploader.vue'
+import type { DataContextProbeResult } from '../services/dataContextClient'
 
 export interface PendingTaskCreation {
   kind: 'pin' | 'arrow' | 'select' | 'highlight'
@@ -94,6 +98,8 @@ interface Props {
   pendingScreenshot?: string | null
   includeHistory: boolean
   includeElementContext: boolean
+  includeDataContext: boolean
+  dataContextProbe: DataContextProbeResult | null
 }
 
 defineProps<Props>()
@@ -103,6 +109,7 @@ defineEmits<{
   (e: 'update:pendingTaskText', value: string): void
   (e: 'update:includeHistory', value: boolean): void
   (e: 'update:includeElementContext', value: boolean): void
+  (e: 'update:includeDataContext', value: boolean): void
   (e: 'start-snip'): void
   (e: 'remove-screenshot'): void
 }>()

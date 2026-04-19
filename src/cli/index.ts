@@ -98,6 +98,24 @@ if (command === 'watch') {
   listComponents()
 } else if (command === 'component') {
   showComponent()
+} else if (command === 'code-context') {
+  fetchCodeContext()
+} else if (command === 'component-examples') {
+  fetchComponentExamples()
+} else if (command === 'data-context') {
+  fetchDataContext()
+} else if (command === 'data-sources') {
+  fetchDataSources()
+} else if (command === 'data-source-examples') {
+  fetchDataSourceExamples()
+} else if (command === 'data-source-details') {
+  fetchDataSourceDetails()
+} else if (command === 'api-schemas') {
+  fetchApiSchemas()
+} else if (command === 'api-operation') {
+  fetchApiOperation()
+} else if (command === 'resolve-endpoint') {
+  resolveEndpointCmd()
 } else if (command === 'mcp') {
   runMcpStdio()
 } else if (command === 'help' || command === '--help') {
@@ -767,6 +785,237 @@ async function showComponent() {
   }
 }
 
+// ── Code context: resolve a task to grounded source context ─────
+
+async function fetchCodeContext() {
+  const taskId = args[1]
+  if (!taskId) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask code-context <task-id> [--context-lines=N]`)
+    process.exit(1)
+  }
+  const ctxLinesArg = args.find(a => a.startsWith('--context-lines='))?.split('=')[1]
+  const qs = ctxLinesArg ? `?context_lines=${encodeURIComponent(ctxLinesArg)}` : ''
+  try {
+    const res = await fetch(`${apiUrl}/code-context/${encodeURIComponent(taskId)}${qs}`)
+    if (res.status === 404) {
+      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
+      process.exit(1)
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch code context: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Component examples: in-repo usage sites for a component ─────
+
+async function fetchComponentExamples() {
+  const name = args[1]
+  if (!name) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask component-examples <ComponentName> [--limit=N]`)
+    process.exit(1)
+  }
+  const limitArg = args.find(a => a.startsWith('--limit='))?.split('=')[1]
+  const qs = limitArg ? `?limit=${encodeURIComponent(limitArg)}` : ''
+  try {
+    const res = await fetch(`${apiUrl}/component-examples/${encodeURIComponent(name)}${qs}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch component examples: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Data context: resolve data sources for a task ──────
+
+async function fetchDataContext() {
+  const taskId = args[1]
+  if (!taskId) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask data-context <task-id> [--refresh]`)
+    process.exit(1)
+  }
+  const refresh = args.includes('--refresh')
+  try {
+    // --refresh always forces a fresh resolve via the taskId endpoint, which
+    // only returns stored data_context when absent — so to force-refresh we
+    // call the resolve endpoint directly.
+    let res: Response
+    if (refresh) {
+      const tasksRes = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}`)
+      if (tasksRes.status === 404) {
+        console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
+        process.exit(1)
+      }
+      const task = await tasksRes.json() as Record<string, unknown>
+      const file = typeof task.file === 'string' ? task.file : ''
+      const line = typeof task.line === 'number' ? task.line : 0
+      if (!file) { console.error(`${color('31', '[Annotask]')} Task has no file reference`); process.exit(1) }
+      res = await fetch(`${apiUrl}/data-context/resolve?file=${encodeURIComponent(file)}&line=${line}`)
+    } else {
+      res = await fetch(`${apiUrl}/data-context/${encodeURIComponent(taskId)}`)
+      if (res.status === 404) {
+        console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
+        process.exit(1)
+      }
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch data context: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Data sources: project-wide catalog ─────────────────
+
+async function fetchDataSources() {
+  const kind = args.find(a => a.startsWith('--kind='))?.split('=')[1]
+  const library = args.find(a => a.startsWith('--library='))?.split('=')[1]
+  const search = args.find(a => a.startsWith('--search='))?.split('=')[1]
+  const usedOnly = args.includes('--used-only')
+  const params = new URLSearchParams()
+  if (kind) params.set('kind', kind)
+  if (library) params.set('library', library)
+  if (search) params.set('search', search)
+  if (usedOnly) params.set('used_only', 'true')
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  try {
+    const res = await fetch(`${apiUrl}/data-sources${qs}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch data sources: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Data source examples: in-repo usages of one name ───
+
+async function fetchDataSourceExamples() {
+  const name = args[1]
+  if (!name) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask data-source-examples <name> [--kind=composable|signal|store|fetch|graphql|loader|rpc] [--limit=N]`)
+    process.exit(1)
+  }
+  const kind = args.find(a => a.startsWith('--kind='))?.split('=')[1]
+  const limit = args.find(a => a.startsWith('--limit='))?.split('=')[1]
+  const params = new URLSearchParams()
+  if (kind) params.set('kind', kind)
+  if (limit) params.set('limit', limit)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  try {
+    const res = await fetch(`${apiUrl}/data-source-examples/${encodeURIComponent(name)}${qs}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch data source examples: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Data source details: definition of one name ────────
+
+async function fetchDataSourceDetails() {
+  const name = args[1]
+  if (!name) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask data-source-details <name> [--kind=K] [--file=PATH] [--context-lines=N]`)
+    process.exit(1)
+  }
+  const kind = args.find(a => a.startsWith('--kind='))?.split('=')[1]
+  const file = args.find(a => a.startsWith('--file='))?.split('=')[1]
+  const contextLines = args.find(a => a.startsWith('--context-lines='))?.split('=')[1]
+  const params = new URLSearchParams()
+  if (kind) params.set('kind', kind)
+  if (file) params.set('file', file)
+  if (contextLines) params.set('context_lines', contextLines)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  try {
+    const res = await fetch(`${apiUrl}/data-source-details/${encodeURIComponent(name)}${qs}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch data source details: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── API schemas ────────────────────────────────────────
+
+async function fetchApiSchemas() {
+  const kind = args.find(a => a.startsWith('--kind='))?.split('=')[1]
+  const detail = args.includes('--detail')
+  const params = new URLSearchParams()
+  if (kind) params.set('kind', kind)
+  if (detail) params.set('detail', 'true')
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  try {
+    const res = await fetch(`${apiUrl}/api-schemas${qs}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch api schemas: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+async function fetchApiOperation() {
+  const opPath = args[1]
+  if (!opPath) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask api-operation <path> [--method=GET] [--schema-location=PATH]`)
+    process.exit(1)
+  }
+  const method = args.find(a => a.startsWith('--method='))?.split('=')[1]
+  const schemaLocation = args.find(a => a.startsWith('--schema-location='))?.split('=').slice(1).join('=')
+  const params = new URLSearchParams()
+  params.set('path', opPath)
+  if (method) params.set('method', method)
+  if (schemaLocation) params.set('schema_location', schemaLocation)
+  try {
+    const res = await fetch(`${apiUrl}/api-operation?${params.toString()}`)
+    if (res.status === 404) {
+      console.error(`${color('31', '[Annotask]')} Operation not found: ${opPath}`)
+      process.exit(1)
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch api operation: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+async function resolveEndpointCmd() {
+  const url = args[1]
+  if (!url) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask resolve-endpoint <url> [--method=GET]`)
+    process.exit(1)
+  }
+  const method = args.find(a => a.startsWith('--method='))?.split('=')[1]
+  const params = new URLSearchParams()
+  params.set('url', url)
+  if (method) params.set('method', method)
+  try {
+    const res = await fetch(`${apiUrl}/resolve-endpoint?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to resolve endpoint: ${err.message}`)
+    process.exit(1)
+  }
+}
+
 // ── MCP: stdio transport (proxies to HTTP MCP endpoint) ──
 
 import { createInterface } from 'node:readline'
@@ -843,6 +1092,15 @@ function printHelp() {
   component       Show detailed props for a specific component
   update-task     Update a task's status / resolution / feedback
   screenshot      Download a task's screenshot
+  code-context    Resolve a task to grounded source context (excerpt, symbol, imports, hash)
+  component-examples  Find in-repo usages of a component (snippet + import path)
+  data-context    Resolve (or return stored) data_context for a task (hooks/stores/fetch refs)
+  data-sources    List detected data libraries + project-specific hooks/stores/fetch wrappers
+  data-source-examples  Find in-repo usages of a data source by name (symmetric with component-examples)
+  data-source-details  Fetch the definition of a data source by name (signature, excerpt, siblings)
+  api-schemas     List discovered OpenAPI / GraphQL / tRPC schemas (add --detail for full operations)
+  api-operation   Fetch one operation by path (+ optional --method / --schema-location)
+  resolve-endpoint  Match a concrete URL against discovered schemas; returns best-match operation
   init-skills     Install AI agent skills to your project
   init-mcp        Write editor MCP config (Claude Code / Cursor / VS Code / Windsurf)
   mcp             Start MCP server (stdio transport, proxies to dev server)
@@ -863,8 +1121,18 @@ function printHelp() {
                     (colors, typography, spacing, borders, breakpoints,
                     icons, components, framework)
   --library=NAME    components / component: restrict to one library
-  --limit=N         components: max results per library (default 50)
+  --limit=N         components / component-examples / data-source-examples: max results (default 50 / 3 / 3)
   --offset=N        components: skip the first N results (pagination)
+  --context-lines=N code-context: lines of context around task.line (default 15, max 200)
+                    data-source-details: lines around the definition (default 15, max 40)
+  --file=PATH       data-source-details: disambiguate by file when multiple definitions share a name
+  --refresh         data-context: force a fresh scan even if the task has stored data_context
+  --used-only       data-sources: restrict project entries to used_count > 0
+  --kind=K          data-sources / data-source-examples: filter by composable|signal|store|fetch|graphql|loader|rpc
+                    api-schemas: filter by openapi|graphql|trpc|jsonschema
+  --method=M        api-operation / resolve-endpoint: HTTP method (GET/POST/...) or GraphQL "query"/"mutation"
+  --schema-location=L api-operation: disambiguate when multiple schemas contain the same path
+  --search=Q        data-sources: substring match on project entry name
   --force           Overwrite existing skills / MCP entries (for init-skills, init-mcp)
   --target=NAME     Comma-separated targets (default: claude,agents)
                     Built-in: claude, agents, copilot

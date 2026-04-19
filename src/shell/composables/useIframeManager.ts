@@ -8,6 +8,10 @@ import type {
   CheckSourceMappingResult, ColorSwatch, ColorSchemeResult,
   InsertPlaceholderResult, InsertVueComponentResult,
   InteractionMode, PerfScanResult, PerfRecording,
+  ResolveComponentChainResult,
+  ResolveBySelectorsResult, ResolveBySelectorsMatch,
+  ComputeAccessibilityInfoResult, AccessibilityInfo,
+  ComputeTabOrderResult, TabOrderEntry,
 } from '../../shared/bridge-types'
 
 export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
@@ -86,6 +90,14 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     return { x: shellX - f.left, y: shellY - f.top }
   }
 
+  /** Visible iframe viewport size in iframe-local coordinates. */
+  function getIframeViewport(): { w: number; h: number } | null {
+    const iframe = iframeRef.value
+    if (!iframe) return null
+    const f = iframe.getBoundingClientRect()
+    return { w: Math.round(f.width), h: Math.round(f.height) }
+  }
+
   // ── Bridge-based operations (async) ────────────────────
 
   async function resolveElementAt(shellX: number, shellY: number): Promise<ResolvedElement | null> {
@@ -128,6 +140,80 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
       const result = await bridge.request<{ rects: (BridgeRect | null)[] }>('resolve:rects', { eids: [...eids] })
       return result.rects.map(r => r ? (toShellRect(r) || r) : null)
     } catch { return eids.map(() => null) }
+  }
+
+  /**
+   * Ask the iframe for every element whose `data-annotask-file` matches one of
+   * the supplied files. Drives the Data view's "where does this render" overlay.
+   */
+  async function getFileElementRects(files: string[]): Promise<{ matches: Array<{ file: string; eid: string; line: string; rect: BridgeRect }>; truncated: boolean }> {
+    if (files.length === 0) return { matches: [], truncated: false }
+    try {
+      const result = await bridge.request<{ matches: Array<{ file: string; eid: string; line: string; rect: BridgeRect }>; truncated?: boolean }>(
+        'resolve:by-files',
+        { files: [...files] },
+      )
+      const matches = (result.matches || []).map(m => ({
+        file: m.file,
+        eid: m.eid,
+        line: m.line,
+        rect: toShellRect(m.rect) || m.rect,
+      }))
+      return { matches, truncated: !!result.truncated }
+    } catch { return { matches: [], truncated: false } }
+  }
+
+  /**
+   * Ask the iframe for the distinct set of `data-annotask-file` values
+   * currently rendered — the source files contributing to this route.
+   */
+  async function listRenderedFiles(): Promise<{ files: string[] }> {
+    try {
+      const result = await bridge.request<{ files: string[] }>('list:rendered-files', {})
+      return { files: result.files || [] }
+    } catch { return { files: [] } }
+  }
+
+  /**
+   * Ask the iframe for every project component currently rendered. Returns
+   * each component's representative file/line plus per-instance eid/rect.
+   * Drives the Components view.
+   */
+  async function listProjectComponents(): Promise<{ components: Array<{ name: string; file: string; line: string; count: number; instances: Array<{ file: string; line: string; eid: string; rect: BridgeRect }> }> }> {
+    try {
+      const result = await bridge.request<{ components: Array<{ name: string; file: string; line: string; count: number; instances: Array<{ file: string; line: string; eid: string; rect: BridgeRect }> }> }>(
+        'list:project-components',
+        {},
+      )
+      const components = (result.components || []).map(c => ({
+        ...c,
+        instances: c.instances.map(i => ({ ...i, rect: toShellRect(i.rect) || i.rect })),
+      }))
+      return { components }
+    } catch { return { components: [] } }
+  }
+
+  /**
+   * Ask the iframe for precise per-location matches. Each input location is
+   * `(file, line)`; line=0 means "every element in this file" (file-level
+   * fallback). Drives the Data view overlay once binding analysis lands.
+   */
+  async function getLocationElementRects(locations: Array<{ file: string; line: number; ref?: string; tag?: string }>): Promise<{ matches: Array<{ ref?: string; file: string; line: number; eid: string; rect: BridgeRect }>; truncated: boolean }> {
+    if (locations.length === 0) return { matches: [], truncated: false }
+    try {
+      const result = await bridge.request<{ matches: Array<{ ref?: string; file: string; line: number; eid: string; rect: BridgeRect }>; truncated?: boolean }>(
+        'resolve:by-locations',
+        { locations: locations.map(l => ({ file: l.file, line: l.line, ref: l.ref, tag: l.tag })) },
+      )
+      const matches = (result.matches || []).map(m => ({
+        ref: m.ref,
+        file: m.file,
+        line: m.line,
+        eid: m.eid,
+        rect: toShellRect(m.rect) || m.rect,
+      }))
+      return { matches, truncated: !!result.truncated }
+    } catch { return { matches: [], truncated: false } }
   }
 
   async function getComputedStyles(eid: string, properties: string[]): Promise<Record<string, string>> {
@@ -277,6 +363,12 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     } catch { return null }
   }
 
+  async function getComponentChain(eid: string): Promise<ResolveComponentChainResult | null> {
+    try {
+      return await bridge.request<ResolveComponentChainResult | null>('resolve:component-chain', { eid })
+    } catch { return null }
+  }
+
   async function captureScreenshot(clipRect: { x: number; y: number; width: number; height: number } | null): Promise<{ dataUrl?: string; error?: string }> {
     try {
       return await bridge.request('screenshot:capture', { rect: clipRect }, 15000)
@@ -287,6 +379,56 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     try {
       return await bridge.request('a11y:scan', { eid }, 30000) // longer timeout for axe load
     } catch { return { violations: [], error: 'timeout' } }
+  }
+
+  async function scrollIntoView(eid: string): Promise<void> {
+    if (!eid) return
+    try { await bridge.request('scroll:into-view', { eid }, 2000) } catch {}
+  }
+
+  /**
+   * Resolve a list of CSS selectors against the iframe DOM. For each input
+   * selector, returns the first matching element's eid + rect (in shell
+   * coordinates) — or null on no match. Used by useA11yHighlights to convert
+   * axe's `node.target` selectors into renderable overlays.
+   */
+  async function resolveBySelectors(selectors: string[]): Promise<ResolveBySelectorsMatch[]> {
+    if (selectors.length === 0) return []
+    try {
+      const result = await bridge.request<ResolveBySelectorsResult>('resolve:by-selectors', { selectors: [...selectors] })
+      return (result.matches || []).map(m => ({
+        selector: m.selector,
+        eid: m.eid,
+        rect: m.rect ? (toShellRect(m.rect) || m.rect) : null,
+      }))
+    } catch { return selectors.map(s => ({ selector: s, eid: null, rect: null })) }
+  }
+
+  /**
+   * Compute per-element accessibility metadata (computed name, role,
+   * tabindex, focus indicator, contrast, ARIA attrs) for a list of eids.
+   * Drives the inspector "Accessibility" section and the per-element a11y
+   * payload attached to a11y_fix tasks.
+   */
+  async function computeAccessibilityInfo(eids: string[]): Promise<(AccessibilityInfo | null)[]> {
+    if (eids.length === 0) return []
+    try {
+      const result = await bridge.request<ComputeAccessibilityInfoResult>('compute:accessibility-info', { eids: [...eids] })
+      return result.items || eids.map(() => null)
+    } catch { return eids.map(() => null) }
+  }
+
+  /**
+   * Walk the iframe DOM in tab order. Returns every focusable element with
+   * its sequence index, tabindex value, accessible name, and any DOM-vs-tab
+   * order disagreements that signal a keyboard/visual reordering bug.
+   */
+  async function computeTabOrder(): Promise<{ entries: TabOrderEntry[]; reorderings: ComputeTabOrderResult['reorderings'] }> {
+    try {
+      const result = await bridge.request<ComputeTabOrderResult>('compute:tab-order', {}, 5000)
+      const entries = (result.entries || []).map(e => ({ ...e, rect: toShellRect(e.rect) || e.rect }))
+      return { entries, reorderings: result.reorderings || [] }
+    } catch { return { entries: [], reorderings: [] } }
   }
 
   async function scanPerf(): Promise<PerfScanResult> {
@@ -319,11 +461,16 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     // Coordinates
     toShellRect,
     toIframeCoords,
+    getIframeViewport,
     // Element resolution
     resolveElementAt,
     findTemplateGroup,
     getElementRect,
     getElementRects,
+    getFileElementRects,
+    getLocationElementRects,
+    listProjectComponents,
+    listRenderedFiles,
     // Style operations
     getComputedStyles,
     applyStyleVia,
@@ -335,8 +482,13 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     // Classification
     classifyElement,
     getElementContext,
+    getComponentChain,
     captureScreenshot,
     scanA11y,
+    scrollIntoView,
+    resolveBySelectors,
+    computeAccessibilityInfo,
+    computeTabOrder,
     scanPerf,
     startPerfRecording,
     stopPerfRecording,
@@ -365,6 +517,8 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     setMode,
     // Bridge events
     onBridgeEvent: bridge.on,
+    offBridgeEvent: bridge.off,
+    sendBridgeMessage: bridge.send,
     onBridgeReady: bridge.onBridgeReady,
   }
 }

@@ -1,6 +1,6 @@
 # Annotask
 
-Visual UI design tool for web apps (Vue, React, Svelte, SolidJS, Astro, plain HTML/htmx). Developers make visual changes in the browser and Annotask generates structured reports that AI agents can apply to source code. Works with Vite and Webpack.
+Visual UI design and review tool for web apps (Vue, React, Svelte, SolidJS, Astro, plain HTML/htmx). Developers can annotate the UI, inspect and edit styles live, audit runtime issues, and let AI agents apply the resulting structured tasks to source code. Works with Vite and Webpack.
 
 ## MCP Server
 
@@ -14,8 +14,18 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_create_task` | Create a new pending task |
 | `annotask_delete_task` | Delete a task and its screenshot |
 | `annotask_get_design_spec` | Design spec summary, or full tokens for a `category` (colors, typography, etc.) |
-| `annotask_get_components` | Search component libraries by name. Returns up to 20 results per library |
+| `annotask_get_components` | Search component libraries by name, library, category, or usage state |
+| `annotask_get_component` | Get full detail for one component by name |
+| `annotask_get_component_examples` | Get real in-repo usage examples for a component |
 | `annotask_get_screenshot` | Task screenshot as base64 PNG |
+| `annotask_get_code_context` | Ground a task to current source context (excerpt, symbol, imports, hash) |
+| `annotask_get_data_context` | Resolve task data context |
+| `annotask_get_data_sources` | List detected data libraries and project data sources |
+| `annotask_get_data_source_examples` | Get real in-repo usage examples for a data source |
+| `annotask_get_data_source_details` | Get definition-level detail for a data source |
+| `annotask_get_api_schemas` | List discovered OpenAPI, GraphQL, tRPC, and JSON Schema sources |
+| `annotask_get_api_operation` | Fetch one API operation by path |
+| `annotask_resolve_endpoint` | Match a concrete URL to a known API operation |
 
 ### Applying tasks via MCP
 
@@ -56,6 +66,15 @@ annotask update-task <id> --status=<status>   # Update task status
 annotask screenshot <id>     # Download a task's screenshot
 annotask components [search] # List components (add --mcp for JSON)
 annotask component <Name>    # Show component props
+annotask code-context <id>   # Ground task to current source excerpt
+annotask component-examples Button # Real in-repo component usage examples
+annotask data-context <id>   # Resolve task data context
+annotask data-sources        # List data libraries + project data sources
+annotask data-source-examples useUserQuery # Real in-repo data-source usages
+annotask data-source-details useUserQuery  # Definition-level data-source detail
+annotask api-schemas         # Discovered API schemas
+annotask api-operation /users --method=GET # One resolved API operation
+annotask resolve-endpoint /api/users/42    # Match a concrete URL to a known schema
 annotask init-skills         # Install agent skills into project
 annotask init-mcp            # Write editor MCP config (--editor=claude|cursor|vscode|windsurf|all)
 annotask mcp                 # Start MCP stdio server (proxies to dev server)
@@ -69,7 +88,8 @@ that matches the `annotask_*` MCP tool responses (`visual` stripped,
 Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 `--mfe=NAME` (filter by MFE), `--output=PATH` (screenshot), `--mcp`,
 `--detail` (tasks), `--status=STATUS` (tasks), `--category=NAME` (design-spec),
-`--library=NAME` / `--limit=N` / `--offset=N` (components).
+`--library=NAME` / `--limit=N` / `--offset=N` (components), `--context-lines=N`,
+`--refresh`, `--used-only`, `--kind=K`, `--method=M`, `--schema-location=L`, `--search=Q`.
 
 ## Annotask API
 
@@ -80,6 +100,21 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `PATCH /__annotask/api/tasks/:id` — Update task status
 - `DELETE /__annotask/api/tasks/:id` — Delete a task and its screenshot
 - `GET /__annotask/api/design-spec` — Design spec (tokens, framework, breakpoints)
+- `GET /__annotask/api/components` — Component library catalog
+- `GET /__annotask/api/component-usage` — Project component usage index
+- `GET /__annotask/api/component-examples/:name` — In-repo component usage examples
+- `GET /__annotask/api/code-context/:taskId` — Ground task to current source context
+- `GET /__annotask/api/source-excerpt` — Direct source excerpt by file/line
+- `GET /__annotask/api/data-context/:taskId` — Stored or resolved task data context
+- `GET /__annotask/api/data-context/probe|resolve|element` — Shell data-context helpers
+- `GET /__annotask/api/data-sources` — Project data-source catalog
+- `GET /__annotask/api/data-source-examples/:name` — In-repo data-source usage examples
+- `GET /__annotask/api/data-source-details/:name` — Definition-level data-source detail
+- `GET /__annotask/api/data-source-bindings/:name` — Binding graph for highlights
+- `GET /__annotask/api/api-schemas` — API schema catalog
+- `GET /__annotask/api/api-operation` — One API operation by path
+- `GET /__annotask/api/resolve-endpoint` — Resolve a concrete URL to a known operation
+- `GET|POST /__annotask/api/performance` — Performance snapshots
 - `POST /__annotask/api/screenshots` — Upload a screenshot
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
 - `GET /__annotask/api/status` — Health check
@@ -210,6 +245,7 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
 - **Error monitoring** — Console error/warn capture with deduplication, bounded memory, one-click fix tasks
 - **Performance monitoring** — Web Vitals, DOM/resource/bundle analysis, interaction recording, perf score, one-click fix tasks
+- **Data view** — Discovered data sources, schema matching, page highlights, and `api_update` task creation
 - **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept (max 4MB)
 - **Task detail drawer** — Slide-out detail view with markdown rendering, inline editing, screenshot lightbox, element/file display, interaction log, JSON view, delete button
 - **Task lifecycle** — `pending → in_progress → review → accepted/denied` with `needs_info` (agent asks questions) and `blocked` (agent can't apply) statuses, resolution messages, live status updates
@@ -228,16 +264,22 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 
 ## Task Types
 
+Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth. HTTP, MCP, and CLI creation boundaries enforce this allow-list via `z.enum(TASK_TYPES)`.
+
 | Type | Source | Description |
 |------|--------|-------------|
 | `annotation` | Pins, arrows, notes, text highlights | User intent described in `description`, optional `action` and `context` |
+| `section_request` | Drawn sections | New content area with `description` and `placement` |
 | `style_update` | Inspector style/class edits | CSS changes in `context.changes` array with `property`, `before`, `after` |
 | `theme_update` | Theme page token edits | Design token changes with `category`, `role`, `before`, `after`, `cssVar` |
-| `section_request` | Drawn sections | New content area with `description` and `placement` |
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
+| `error_fix` | Errors tab "Fix" action | Console error/warning with `level`, `occurrences`, `errorId` in `context` |
+| `perf_fix` | Perf tab "Fix" action | Performance finding with `metric`, `value`, `unit`, `severity`, `category`, `findingId` in `context` |
+| `api_update` | Data view | Backend-contract edits for in-repo data sources; `context` carries `data_source_name`, `data_source_kind`, `schema_location`, `schema_kind`, `endpoint`, and desired change metadata |
 
 ## Task Lifecycle
 
 ```
 pending → in_progress (agent locks) → review (agent done) → accepted (removed) or denied (with feedback)
+                         └→ needs_info (agent asks) / blocked (cannot apply)
 ```

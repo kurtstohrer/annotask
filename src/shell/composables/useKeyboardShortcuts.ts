@@ -5,7 +5,6 @@ export interface KeyboardShortcutDeps {
   snipActive: Ref<boolean>
   showReportPanel: Ref<boolean>
   showShortcuts: Ref<boolean>
-  showContext: Ref<boolean>
   showSettings: Ref<boolean>
   pendingTaskCreation: Ref<unknown | null>
   primarySelection: Ref<unknown | null>
@@ -39,7 +38,6 @@ export function useKeyboardShortcuts(deps: KeyboardShortcutDeps) {
 
     if (key === '?' || (key === '/' && e.shiftKey)) {
       showShortcuts.value = !showShortcuts.value
-      if (showShortcuts.value) deps.showContext.value = false
       return
     }
 
@@ -47,7 +45,6 @@ export function useKeyboardShortcuts(deps: KeyboardShortcutDeps) {
       if (deps.snipActive.value) { deps.cancelSnip(); return }
       if (deps.showReportPanel.value) { deps.showReportPanel.value = false; return }
       if (showShortcuts.value) { showShortcuts.value = false; return }
-      if (deps.showContext.value) { deps.showContext.value = false; return }
       if (deps.showSettings.value) { deps.showSettings.value = false; return }
       if (deps.pendingTaskCreation.value) { deps.cancelPendingTask(); return }
       deps.primarySelection.value = null

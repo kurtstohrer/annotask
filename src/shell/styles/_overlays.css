@@ -386,6 +386,153 @@
   margin: 0;
 }
 
+/* Sub-nav for sections with anchors */
+.help-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 4px 24px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.help-subnav-link {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  border-radius: 4px;
+  text-decoration: none;
+  cursor: pointer;
+  background: none;
+  border: none;
+  text-align: left;
+  font: inherit;
+  font-size: 11px;
+  display: block;
+  width: 100%;
+}
+
+.help-subnav-link:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.help-subnav-link.active {
+  background: var(--accent-muted);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Diagrams */
+.help-diagram {
+  margin: 4px 0 28px;
+  padding: 20px 16px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.help-diagram .flow-diagram {
+  max-height: 320px;
+}
+
+.help-diagram-caption {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* Ordered/unordered lists inside help pages */
+.help-list {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.65;
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+
+.help-list li {
+  margin: 4px 0;
+}
+
+.help-list li code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 1px 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* Big cross-link card (e.g. "See the full task lifecycle") */
+.help-link-card {
+  display: block;
+  margin: 20px 0 12px;
+  padding: 14px 16px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.help-link-card:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+
+.help-link-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.help-link-card-desc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.help-link-card-desc code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* Inline link in help body */
+.help-inline-link {
+  color: var(--text-link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--text-link) 40%, transparent);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.help-inline-link:hover {
+  text-decoration-color: var(--text-link);
+}
+
+/* Inline code in help body */
+.help-text code,
+.help-intro code,
+.help-feature p code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 1px 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+}
+
 /* Snipping overlay — macOS-style: selected area clear, surroundings dimmed */
 .snip-overlay {
   position: fixed;

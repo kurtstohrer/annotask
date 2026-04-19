@@ -1,241 +1,327 @@
 # API Reference
 
-All endpoints are served by the dev server (Vite or Webpack) at `/__annotask/`. They are only available in dev mode.
+All endpoints are served under `/__annotask/` by the dev server in development mode.
 
-CORS is restricted to localhost origins (`localhost`, `127.0.0.1`, `::1`). Mutating requests (POST, PATCH, DELETE) from non-local origins are rejected with `403 Forbidden`.
+CORS is restricted to local origins such as `localhost`, `127.0.0.1`, and `::1`. Mutating requests from non-local origins are rejected.
 
 ## HTTP Endpoints
 
 ### GET /api/report
 
-Returns the current change report. Supports `?mfe=NAME` to filter changes by MFE identity.
+Returns the current live change report.
 
-**Response:**
-```json
-{
-  "version": "1.0",
-  "project": {
-    "framework": "vue",
-    "styling": ["scoped-css"],
-    "root": "/absolute/path/to/project"
-  },
-  "changes": [
-    {
-      "id": "change-1",
-      "type": "style_update",
-      "description": "Changed background-color on div",
-      "file": "src/components/Header.vue",
-      "section": "template",
-      "line": 5,
-      "component": "Header",
-      "element": "div",
-      "property": "background-color",
-      "before": "rgb(255, 255, 255)",
-      "after": "#1a1a2e"
-    }
-  ]
-}
-```
+Supports `?mfe=NAME`.
 
 ### GET /api/tasks
 
-Returns all tasks in the pipeline.
+Returns all tasks.
 
-**Response:**
-```json
-{
-  "version": "1.0",
-  "tasks": [
-    {
-      "id": "task-abc",
-      "type": "annotation",
-      "status": "pending",
-      "description": "Make header text larger",
-      "file": "src/components/Header.vue",
-      "line": 3,
-      "component": "Header",
-      "intent": "Increase the heading font size to 2rem",
-      "action": "text_edit",
-      "context": { "element_tag": "h1" },
-      "createdAt": 1711612800000,
-      "updatedAt": 1711612800000
-    }
-  ]
-}
-```
+Supports `?mfe=NAME`.
 
 ### GET /api/tasks/:id
 
-Returns the full task object for a single task by ID, including `context`, `element_context`, `interaction_history`, `agent_feedback`, and any other stored fields.
+Returns the full task object.
 
-**Response:** the task object, or `404` if not found.
+Useful fields include:
+
+- `context`
+- `viewport`
+- `color_scheme`
+- `interaction_history`
+- `element_context`
+- `data_context`
+- `agent_feedback`
+- `blocked_reason`
+- `resolution`
+- `screenshot` and `screenshot_meta`
 
 ### POST /api/tasks
 
 Create a new task.
 
-**Request body:**
-```json
-{
-  "type": "annotation",
-  "description": "Add padding to card",
-  "file": "src/components/Card.vue",
-  "line": 2,
-  "intent": "Add 16px padding to the card container"
-}
-```
+Accepted task types are defined by `TASK_TYPES` in `src/schema.ts`:
 
-**Response:** `201` with the created task object.
+- `annotation`
+- `section_request`
+- `style_update`
+- `theme_update`
+- `a11y_fix`
+- `error_fix`
+- `perf_fix`
+- `api_update`
+
+Server-controlled fields such as `id`, `status`, `createdAt`, and `updatedAt` are generated automatically.
 
 ### PATCH /api/tasks/:id
 
-Update a task's status, description, or other fields.
+Update an existing task.
 
-Only whitelisted fields are accepted: `status`, `description`, `notes`, `screenshot`, `feedback`, `intent`, `action`, `context`, `viewport`, `interaction_history`, `element_context`, `mfe`. Unknown fields are silently dropped.
+Accepted fields currently include:
 
-**Request body (lock for agent work):**
-```json
-{ "status": "in_progress" }
+- `status`
+- `description`
+- `notes`
+- `screenshot`
+- `feedback`
+- `intent`
+- `action`
+- `context`
+- `viewport`
+- `color_scheme`
+- `interaction_history`
+- `element_context`
+- `data_context`
+- `screenshot_meta`
+- `mfe`
+- `agent_feedback`
+- `blocked_reason`
+- `resolution`
+
+Valid statuses:
+
+- `pending`
+- `in_progress`
+- `applied`
+- `review`
+- `accepted`
+- `denied`
+- `needs_info`
+- `blocked`
+
+Typical lifecycle:
+
+```text
+pending -> in_progress -> review -> accepted | denied
+                           \-> needs_info
+                           \-> blocked
 ```
 
-**Request body (mark for review):**
-```json
-{ "status": "review" }
-```
+Notes:
 
-**Request body (deny with feedback and screenshot):**
-```json
-{
-  "status": "denied",
-  "feedback": "The color should be darker, closer to #0a0a1e",
-  "screenshot": "screenshot-1711800000-ab3kf.png"
-}
-```
-
-**Request body (edit description):**
-```json
-{ "description": "Updated task description with **markdown** support" }
-```
-
-**Valid statuses:** `pending`, `in_progress`, `applied`, `review`, `accepted`, `denied`, `needs_info`, `blocked`
-
-**Typical lifecycle:**
-```
-pending → in_progress (agent locks) → review (agent done) → accepted (removed) or denied (with feedback)
-```
-
-`needs_info` is auto-set when an agent sends `questions` on a PATCH. `blocked` is auto-set when an agent sends `blocked_reason`.
-
-Screenshots: max 4MB, uploaded via POST /api/screenshots.
+- `questions` are represented on the stored task as `agent_feedback`
+- `blocked_reason` records why a task could not be completed
+- `resolution` records a short completion note when an agent moves a task to `review`
+- transitions are validated server-side
 
 ### DELETE /api/tasks/:id
 
-Delete a task and clean up its associated screenshot.
-
-**Response:** `200` with `{ "deleted": true }`.
-
-### POST /api/screenshots
-
-Upload a screenshot (base64-encoded PNG, max 4MB).
-
-**Request body:**
-```json
-{ "data": "data:image/png;base64,..." }
-```
-
-**Response:** `201` with `{ "filename": "screenshot-1711800000-ab3kf.png" }`.
-
-### GET /screenshots/:filename
-
-Serve a previously uploaded screenshot file.
+Deletes a task and its screenshot, if present.
 
 ### GET /api/design-spec
 
-Returns the current design spec (from `.annotask/design-spec.json`).
-
-### GET /api/config
-
-Deprecated. Backward-compatible wrapper — use `/api/design-spec` instead.
+Returns the current design spec from `.annotask/design-spec.json`.
 
 ### GET /api/components
 
-Returns the component library catalog detected for the project, including props, types, defaults, slots, events, and descriptions. See [component-discovery.md](component-discovery.md) for the extraction details.
+Returns the detected component-library catalog including libraries, components, props, slots, events, tags, and descriptions.
+
+### GET /api/component-usage
+
+Returns the project usage index for detected components.
+
+### GET /api/component-examples/:name
+
+Returns real in-repo usage examples for a component name.
+
+Query params:
+
+- `limit` default `3`, max `10`
+
+### GET /api/code-context/:taskId
+
+Resolves a task's current source excerpt, enclosing symbol, import block, and excerpt hash.
+
+Query params:
+
+- `context_lines` default `15`, max `200`
+
+### GET /api/source-excerpt
+
+Direct file-and-line source excerpt helper used by the shell.
+
+Query params:
+
+- `file` required
+- `line` default `1`
+- `context_lines` default `15`, max `200`
+
+### GET /api/data-context/:taskId
+
+Returns stored `data_context` for a task or resolves it on demand.
+
+### GET /api/data-context/probe
+
+Lightweight capability probe used by the shell to decide whether data context is worth offering.
+
+Query params:
+
+- `file` required
+
+### GET /api/data-context/resolve
+
+Resolve file-and-line data context.
+
+Query params:
+
+- `file` required
+- `line` optional
+
+### GET /api/data-context/element
+
+Resolve element-focused data context for a file and line.
+
+Query params:
+
+- `file` required
+- `line` optional
+
+### GET /api/data-sources
+
+Returns the project data-source catalog plus detected libraries.
+
+Query params:
+
+- `kind`
+- `library`
+- `search`
+- `used_only=true|1`
+
+### GET /api/data-source-examples/:name
+
+Returns real in-repo usage examples for a data source.
+
+Query params:
+
+- `kind`
+- `limit` default `3`, max `10`
+
+### GET /api/data-source-details/:name
+
+Returns definition-level detail for a project data source.
+
+Query params:
+
+- `kind`
+- `file`
+- `context_lines` default `15`, max `40`
+
+### GET /api/data-source-bindings/:name
+
+Returns the binding graph used by the shell's page-highlighting overlays.
+
+### GET /api/api-schemas
+
+Returns the discovered API schema catalog.
+
+Sources can include OpenAPI, GraphQL, tRPC, and JSON Schema.
+
+Query params:
+
+- `kind`
+- `detail=true|1`
+
+### GET /api/api-operation
+
+Returns one API operation by path, optionally narrowed by method and schema location.
+
+Query params:
+
+- `path` required
+- `method`
+- `schema_location`
+
+### GET /api/resolve-endpoint
+
+Matches a concrete URL to the discovered schema catalog.
+
+Query params:
+
+- `url` required
+- `method`
 
 ### GET /api/performance
 
-Returns the latest performance snapshot captured by the shell (Web Vitals, DOM stats, resource timings, bundle analysis).
+Returns the latest performance snapshot stored by the shell.
 
 ### POST /api/performance
 
-Store a new performance snapshot. Called by the shell's perf monitor; not intended for external callers.
+Stores a performance snapshot. Used by the shell.
+
+### POST /api/screenshots
+
+Upload a base64-encoded PNG screenshot.
+
+Current limit: 4 MB.
+
+### GET /screenshots/:filename
+
+Serves a stored screenshot.
 
 ### GET /api/status
 
-Health check. Returns `{ "status": "ok", "version": "<package-version>" }` when the server is running. Used by `annotask status` and by stdio MCP proxies to verify the dev server is up.
+Health check endpoint.
 
 ## WebSocket
 
-Connect to `ws://localhost:5173/__annotask/ws`.
+Connect to `/__annotask/ws`.
 
-### Events (server → client)
+### Server -> client events
 
-| Event | Payload | When |
-|-------|---------|------|
-| `report:updated` | Full `AnnotaskReport` | A change was made in the shell (broadcast to other clients) |
-| `report:current` | Full `AnnotaskReport` | On connection (if data exists) or in response to `get:report` |
-| `changes:cleared` | `null` | All changes were cleared |
+| Event | Payload |
+|-------|---------|
+| `report:updated` | Full `AnnotaskReport` |
+| `report:current` | Full `AnnotaskReport` |
+| `changes:cleared` | `null` |
 
-### Events (client → server)
+### Client -> server events
 
-| Event | Payload | Purpose |
-|-------|---------|---------|
-| `report:updated` | Full `AnnotaskReport` | Client reports new changes |
-| `changes:cleared` | `{}` | Client cleared all changes |
-| `get:report` | `{}` | Request the current report |
+| Event | Payload |
+|-------|---------|
+| `report:updated` | Full `AnnotaskReport` |
+| `changes:cleared` | `{}` |
+| `get:report` | `{}` |
 
-### Message format
-
-All messages are JSON with `event`, `data`, and `timestamp` fields:
-```json
-{
-  "event": "report:updated",
-  "data": { ... },
-  "timestamp": 1711612800000
-}
-```
-
-## Change types
-
-The `changes` array in a report can contain these types:
-
-| Type | Description | Key fields |
-|------|-------------|------------|
-| `style_update` | Inline style change | `property`, `before`, `after` |
-| `class_update` | CSS class change | `before.classes`, `after.classes` |
-| `annotation` | Design intent note | `intent`, `action?`, `context?` |
-| `section_request` | Drawn area for new content | `prompt`, `position`, `dimensions` |
-| `component_insert` | New element added | `component.tag`, `insert_position` |
-| `component_move` | Element reordered | `element`, `move_to` |
-| `scoped_style_update` | Scoped CSS change (experimental) | `selector`, `before`, `after` |
-| `prop_update` | Component prop change (experimental) | `before`, `after` |
-| `component_delete` | Element removed (experimental) | `element` |
-
-See `src/schema.ts` for full TypeScript definitions.
+Messages are JSON objects with `event`, `data`, and `timestamp`.
 
 ## MCP Server
 
-`POST /__annotask/mcp` — [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http). Accepts JSON-RPC 2.0 requests, returns tool results. This is the recommended way for AI agents to interact with Annotask.
+`POST /__annotask/mcp` implements Streamable HTTP MCP with JSON-RPC 2.0.
 
-Available tools:
+Current tool surface:
 
-| Tool | Description |
-|------|-------------|
-| `annotask_get_tasks` | List task summaries (supports `status` and `mfe` filters; `detail=true` for full objects) |
-| `annotask_get_task` | Get full detail for a single task by ID (context, element_context, agent_feedback) |
-| `annotask_create_task` | Create a new pending task |
-| `annotask_update_task` | Transition status, set resolution, ask questions, mark blocked |
-| `annotask_delete_task` | Delete a task and clean up its screenshot |
-| `annotask_get_design_spec` | Design spec summary, or full tokens for a `category` (colors, typography, etc.) |
-| `annotask_get_components` | Search component libraries by name (up to 20 results per library) |
-| `annotask_get_component` | Full detail for one component by name (disambiguates across libraries) |
-| `annotask_get_screenshot` | Task screenshot as base64 PNG |
+| Tool | Purpose |
+|------|---------|
+| `annotask_get_tasks` | List task summaries or full tasks |
+| `annotask_get_task` | Fetch one full task |
+| `annotask_update_task` | Transition status, set resolution, ask questions, or mark blocked |
+| `annotask_create_task` | Create a pending task |
+| `annotask_delete_task` | Delete a task and screenshot |
+| `annotask_get_design_spec` | Design-spec summary or category slice |
+| `annotask_get_components` | Search detected component libraries |
+| `annotask_get_component` | Full detail for one component |
+| `annotask_get_component_examples` | Real in-repo component usages |
+| `annotask_get_screenshot` | Fetch a screenshot as base64 PNG |
+| `annotask_get_code_context` | Ground a task to current source |
+| `annotask_get_data_context` | Resolve task data context |
+| `annotask_get_data_sources` | Project data-source catalog |
+| `annotask_get_data_source_examples` | Real in-repo data-source usages |
+| `annotask_get_data_source_details` | Definition-level data-source detail |
+| `annotask_get_api_schemas` | Discovered schema catalog |
+| `annotask_get_api_operation` | One API operation by path |
+| `annotask_resolve_endpoint` | Resolve a concrete URL to a known operation |
+
+## Change Types
+
+The live report's `changes[]` union currently includes:
+
+- `style_update`
+- `class_update`
+- `scoped_style_update` experimental
+- `prop_update` experimental
+- `component_insert`
+- `component_move`
+- `component_delete` experimental
+- `annotation`
+- `section_request`
+
+See `src/schema.ts` for the canonical TypeScript definitions.
