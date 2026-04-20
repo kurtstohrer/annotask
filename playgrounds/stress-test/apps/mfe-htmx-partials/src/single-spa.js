@@ -9,7 +9,22 @@
 
 import '@annotask/stress-ui-tokens/tokens.css'
 import '@picocss/pico/css/pico.min.css'
-import 'htmx.org'
+import htmx from 'htmx.org'
+
+// Vite's ESM bundle of htmx exports it as default but doesn't assign
+// window.htmx. Under single-spa other code (annotask, Playwright probes)
+// may expect the global — set it so we match the CDN/UMD behavior.
+if (typeof window !== 'undefined' && !window.htmx) {
+  window.htmx = htmx
+}
+
+// htmx 2.x defaults `selfRequestsOnly = true`, which rejects any fetch
+// to a different origin as `htmx:invalidPath`. Under single-spa the
+// MFE runs on the host origin (:4200) and needs to reach the Rust
+// service on :4360 — that's cross-origin by definition. Opt out.
+if (htmx.config) {
+  htmx.config.selfRequestsOnly = false
+}
 
 const HTML = `
 <main class="container">
@@ -60,8 +75,19 @@ export async function mount(props) {
   container = document.getElementById(`single-spa-application:${props.name}`)
   if (!container) throw new Error('[htmx-partials] mount target not found')
   container.innerHTML = HTML
-  if (window.htmx) {
-    window.htmx.process(container)
+  htmx.process(container)
+
+  // `hx-trigger="load"` only fires on elements htmx sees during
+  // DOMContentLoaded. Under single-spa we inject the fragment after the
+  // host has already loaded, so we kick off the initial fetch
+  // explicitly. Clicking Refresh still uses the declarative
+  // `click from:#htmx-refresh-btn` trigger.
+  const health = container.querySelector('#htmx-health')
+  if (health) {
+    htmx.ajax('GET', 'http://localhost:4360/api/health-fragment', {
+      target: health,
+      swap: 'innerHTML',
+    })
   }
 }
 

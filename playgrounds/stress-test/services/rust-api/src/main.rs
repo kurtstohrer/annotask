@@ -42,6 +42,20 @@ fn handle(mut stream: TcpStream, port: u16) -> std::io::Result<()> {
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
 
+    // htmx adds custom HX-* headers to every request, which triggers a
+    // CORS preflight. Handle OPTIONS before anything else.
+    if method == "OPTIONS" {
+        let response = "HTTP/1.1 204 No Content\r\n\
+            Access-Control-Allow-Origin: *\r\n\
+            Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+            Access-Control-Allow-Headers: *\r\n\
+            Access-Control-Max-Age: 86400\r\n\
+            Content-Length: 0\r\n\r\n";
+        stream.write_all(response.as_bytes())?;
+        stream.flush()?;
+        return Ok(());
+    }
+
     let (status, content_type, body) = match (method, path) {
         ("GET", "/api/health") => (
             "200 OK",
@@ -67,7 +81,13 @@ fn handle(mut stream: TcpStream, port: u16) -> std::io::Result<()> {
     };
 
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\n\
+        Content-Type: {content_type}\r\n\
+        Content-Length: {len}\r\n\
+        Access-Control-Allow-Origin: *\r\n\
+        Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+        Access-Control-Allow-Headers: *\r\n\r\n\
+        {body}",
         status = status,
         content_type = content_type,
         len = body.len(),

@@ -36,7 +36,9 @@ for (const mfe of MFES) {
 
 // Blade is served by Laravel (SSR full-HTML, cross-origin). single-spa
 // supports "legacy" apps via a custom lifecycle — here we manage an
-// iframe. Same mount/unmount routing semantics as the ESM MFEs.
+// iframe. Same mount/unmount routing semantics as the ESM MFEs. Before
+// iframing, probe /api/health so we can show a friendly fallback when
+// the Laravel container isn't up (instead of a blank iframe).
 registerApplication({
   name: '@stress/blade-legacy-lab',
   app: async () => ({
@@ -45,6 +47,33 @@ registerApplication({
       const target = document.getElementById(`single-spa-application:${props.name}`)
       if (!target) return
       target.innerHTML = ''
+
+      let healthy = false
+      try {
+        const res = await fetch('http://localhost:4350/api/health', { signal: AbortSignal.timeout(2000) })
+        healthy = res.ok
+      } catch {
+        healthy = false
+      }
+
+      if (!healthy) {
+        target.innerHTML = `
+          <section style="padding:32px;max-width:720px;font-family:system-ui,sans-serif;color:#e8ecf1;">
+            <h1 style="margin:0 0 8px;font-size:20px;">Blade Legacy Lab — service not running</h1>
+            <p style="color:#8793a6;margin:0 0 16px;line-height:1.55;">
+              The Laravel service on <code>:4350</code> didn't respond. Blade pages are
+              rendered server-side by Laravel, which runs via Docker Compose.
+              Start it from the stress-test directory:
+            </p>
+            <pre style="background:#0f1623;border:1px solid #1e2836;border-radius:8px;padding:14px 16px;margin:0 0 12px;color:#c6d1e1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;">just laravel</pre>
+            <p style="color:#8793a6;margin:0;font-size:13px;">
+              Once <code>http://localhost:4350/api/health</code> returns 200, reload this route.
+            </p>
+          </section>
+        `
+        return
+      }
+
       const iframe = document.createElement('iframe')
       iframe.src = 'http://localhost:4350/'
       iframe.title = 'Blade Legacy Lab'
