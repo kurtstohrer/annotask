@@ -26,10 +26,44 @@ function activeForHash(hash: string) {
   return (loc: Location) => loc.hash === hash || loc.hash.startsWith(hash + '/')
 }
 
+// @vitejs/plugin-react-swc expects the React Fast Refresh runtime globals
+// to be set before any JSX-transformed module runs. Under single-spa the
+// React MFE's own index.html preamble never executes (we import its
+// module cross-origin). We install the preamble lazily — only when the
+// React route activates — so the host page isn't blocked on a fetch to
+// :4210 when the React MFE isn't running. Matters for pages that iframe
+// the host (like /__annotask/).
+let reactPreamblePromise: Promise<void> | null = null
+function ensureReactPreamble(): Promise<void> {
+  if (reactPreamblePromise) return reactPreamblePromise
+  reactPreamblePromise = (async () => {
+    const g = globalThis as unknown as Record<string, unknown>
+    g.$RefreshReg$ = () => {}
+    g.$RefreshSig$ = () => (type: unknown) => type
+    g.__vite_plugin_react_preamble_installed__ = true
+    try {
+      const mod = await import(/* @vite-ignore */ 'http://localhost:4210/@react-refresh')
+      const RefreshRuntime = (mod as { default?: { injectIntoGlobalHook?: (w: unknown) => void } }).default ?? mod
+      ;(RefreshRuntime as { injectIntoGlobalHook?: (w: unknown) => void }).injectIntoGlobalHook?.(window)
+    } catch {
+      // React MFE not running — the preamble flag alone lets the SWC
+      // plugin's runtime check pass, and $Refresh* globals are harmless
+      // no-ops. Hot-reload won't work cross-origin anyway.
+    }
+  })()
+  return reactPreamblePromise
+}
+
 for (const mfe of MFES) {
+  const isReact = mfe.name === '@stress/react-workflows'
   registerApplication({
     name: mfe.name,
-    app: () => import(/* @vite-ignore */ mfe.url),
+    app: isReact
+      ? async () => {
+          await ensureReactPreamble()
+          return import(/* @vite-ignore */ mfe.url)
+        }
+      : () => import(/* @vite-ignore */ mfe.url),
     activeWhen: activeForHash(mfe.hash) as never,
   })
 }
