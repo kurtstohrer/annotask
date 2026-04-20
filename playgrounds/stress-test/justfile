@@ -128,6 +128,40 @@ compose-up:
 compose-down:
     cd {{ROOT}} && pnpm stress-test:down
 
+# ── annotask init ───────────────────────────────────────
+
+# Print the project roots where /annotask-init should be run in Claude Code (per-MFE design specs).
+init-list:
+    #!/usr/bin/env bash
+    HERE={{justfile_directory()}}
+    echo "Run /annotask-init in each of these stress-lab roots via Claude Code:"
+    echo
+    echo "  Host:"
+    echo "    cd $HERE/apps/host-single-spa"
+    echo
+    echo "  MFEs:"
+    for dir in "$HERE"/apps/mfe-*; do
+        echo "    cd $dir"
+    done
+    echo
+    echo "Services (Java, Laravel, Go, Node, Rust, FastAPI) don't need init —"
+    echo "annotask-init targets JS framework projects only."
+    echo
+    echo "/annotask-init is a Claude Code slash command, not a CLI — each MFE"
+    echo "must have its dev server running first so the skill can read design"
+    echo "tokens, component catalogue, and OpenAPI schemas live."
+
+# Install .claude/skills/ + editor MCP config in host + every MFE (idempotent).
+init-skills:
+    #!/usr/bin/env bash
+    set -e
+    HERE={{justfile_directory()}}
+    CLI={{ROOT}}/dist/cli.js
+    for dir in "$HERE"/apps/host-single-spa "$HERE"/apps/mfe-*; do
+        echo "→ $dir"
+        (cd "$dir" && node "$CLI" init-skills && node "$CLI" init-mcp --editor=claude)
+    done
+
 # ── Tests ───────────────────────────────────────────────
 
 # Run the stress-lab Playwright suite (boots every dev server, runs specs, tears down).
