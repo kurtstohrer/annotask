@@ -517,35 +517,54 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
       urlConstants.set(uc[1], uc[2])
     }
 
+    // Dedup by `(method, endpoint)` so GET + PATCH on the same path both
+    // survive. A plain `endpoint` key silently drops the mutation when a
+    // read call to the same URL appears earlier in the same file.
     const seenEndpoints = new Set<string>()
-    const pushEndpoint = (args: string, index: number) => {
+    const pushEndpoint = (args: string, index: number, method?: string) => {
       const endpoint = extractEndpointFromArgs(args, baseUrls, urlConstants)
       if (!endpoint) return
-      if (seenEndpoints.has(endpoint)) return
-      seenEndpoints.add(endpoint)
+      const key = `${method ?? ''} ${endpoint}`
+      if (seenEndpoints.has(key)) return
+      seenEndpoints.add(key)
       const line = content.slice(0, index).split('\n').length
       const hint_symbols = collectHintSymbols(content, index)
       acc.push({
         kind: 'fetch',
         name: endpointToName(endpoint),
-        display_name: endpointToDisplayName(endpoint),
+        display_name: endpointToDisplayName(endpoint, method),
         file,
         line,
         endpoint,
+        ...(method ? { method } : {}),
         used_count: 0,
         ...(hint_symbols.length > 0 ? { hint_symbols } : {}),
       })
     }
 
     // Direct calls: fetch('/x'), axios.get('...'), ofetch(...), $fetch(...).
-    const inlineCallRe = /\b(fetch|axios\.(?:get|post|put|patch|delete)|ofetch|\$fetch)\s*\(([\s\S]{0,400}?)\)/g
+    // `fetch(...)` args often contain nested `()` from `encodeURIComponent`,
+    // `JSON.stringify`, template expressions, etc. A non-greedy regex stops
+    // at the first inner `)` and misses the options object, so
+    // `extractCallArgs` walks forward from `(` balancing parens, strings, and
+    // template backticks to capture the full argument list.
+    const inlineCallRe = /\b(fetch|axios\.(?:get|post|put|patch|delete)|ofetch|\$fetch)\s*\(/g
     let m: RegExpExecArray | null
-    while ((m = inlineCallRe.exec(content)) !== null) pushEndpoint(m[2], m.index)
+    while ((m = inlineCallRe.exec(content)) !== null) {
+      const call = m[1]
+      const argsStart = m.index + m[0].length
+      const args = extractCallArgs(content, argsStart)
+      if (args === null) continue
+      pushEndpoint(args, m.index, extractHttpMethod(call, args))
+    }
 
     // Two-step builds: `const url = new URL(`${API_BASE}/x`); fetch(url)`.
     // Common pattern when callers append searchParams before dispatching —
     // without this scan pass those endpoints are invisible, so every service
     // whose main route is constructed this way loses its catalog entry.
+    // No method is knowable from the URL ctor alone, so leave `method`
+    // undefined — the accompanying `fetch(url, …)` call (captured by
+    // inlineCallRe above) produces the method-bearing entry.
     const urlCtorRe = /\bnew\s+URL\s*\(([\s\S]{0,400}?)\)/g
     while ((m = urlCtorRe.exec(content)) !== null) pushEndpoint(m[1], m.index)
 
@@ -555,15 +574,108 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
     // bare path ("/api/health-fragment") or a full URL ("http://host/...").
     const isMarkupish = /\.(vue|svelte|astro|html)$/.test(file)
     if (isMarkupish) {
-      const hxAttrRe = /\shx-(?:get|post|put|patch|delete)\s*=\s*['"]([^'"]+)['"]/gi
+      const hxAttrRe = /\shx-(get|post|put|patch|delete)\s*=\s*['"]([^'"]+)['"]/gi
       while ((m = hxAttrRe.exec(content)) !== null) {
-        const raw = m[1]
+        const verb = m[1].toUpperCase()
+        const raw = m[2]
         // Skip bindings like hx-get="{{ dynamic }}" that aren't concrete.
         if (raw.includes('{') || raw.includes('$')) continue
-        pushEndpoint(`"${raw}"`, m.index)
+        pushEndpoint(`"${raw}"`, m.index, verb)
       }
     }
   }
+}
+
+/**
+ * Walk forward from the `(` of a call expression and return the full argument
+ * list (up to but not including the matching `)`). Balances nested parens,
+ * brackets, and braces; skips over single/double/backtick strings and
+ * template-literal `${…}` expressions so a `)` inside a string doesn't close
+ * the call early. Returns `null` if the call is unterminated within
+ * `MAX_ARGS_SPAN` chars (malformed / truncated source).
+ */
+const MAX_ARGS_SPAN = 2000
+function extractCallArgs(source: string, start: number): string | null {
+  const end = Math.min(source.length, start + MAX_ARGS_SPAN)
+  let depth = 1
+  let i = start
+  while (i < end) {
+    const c = source[i]
+    if (c === '"' || c === "'") {
+      i = skipString(source, i, c, end)
+      if (i < 0) return null
+      continue
+    }
+    if (c === '`') {
+      i = skipTemplate(source, i, end)
+      if (i < 0) return null
+      continue
+    }
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') {
+      depth--
+      if (depth === 0) return source.slice(start, i)
+    }
+    i++
+  }
+  return null
+}
+
+function skipString(source: string, i: number, quote: string, end: number): number {
+  i++
+  while (i < end) {
+    const c = source[i]
+    if (c === '\\') { i += 2; continue }
+    if (c === quote) return i + 1
+    if (c === '\n') return i  // unterminated — bail without failing
+    i++
+  }
+  return -1
+}
+
+function skipTemplate(source: string, i: number, end: number): number {
+  i++
+  while (i < end) {
+    const c = source[i]
+    if (c === '\\') { i += 2; continue }
+    if (c === '`') return i + 1
+    if (c === '$' && source[i + 1] === '{') {
+      let depth = 1
+      i += 2
+      while (i < end && depth > 0) {
+        const cc = source[i]
+        if (cc === '{') depth++
+        else if (cc === '}') depth--
+        else if (cc === '"' || cc === "'") { i = skipString(source, i, cc, end); if (i < 0) return -1; continue }
+        else if (cc === '`') { i = skipTemplate(source, i, end); if (i < 0) return -1; continue }
+        i++
+      }
+      continue
+    }
+    i++
+  }
+  return -1
+}
+
+/**
+ * Resolve the HTTP verb for an inline fetch / axios / ofetch / $fetch call.
+ *
+ *   axios.get(…)                    → GET
+ *   axios.patch(url, body)          → PATCH
+ *   fetch(url, { method: 'PATCH' }) → PATCH
+ *   fetch(url)                      → GET   (HTTP default)
+ *   ofetch(url, { method: "POST" }) → POST
+ *
+ * When the options argument is a variable we can't inspect, default to GET —
+ * that matches the browser's behavior when `method` is omitted. Returning
+ * `undefined` would collapse the entry back into the pre-fix dedup bucket.
+ */
+function extractHttpMethod(call: string, args: string): string {
+  const axiosVerb = call.match(/^axios\.(get|post|put|patch|delete)$/)
+  if (axiosVerb) return axiosVerb[1].toUpperCase()
+  const inline = args.match(/\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]/)
+  if (inline) return inline[1].toUpperCase()
+  return 'GET'
 }
 
 /**
@@ -705,21 +817,26 @@ function extractEndpointFromArgs(args: string, baseUrls: Map<string, string>, ur
 
 /**
  * Readable label for the Data view list — keeps host + port visible so the
- * user can tell same-path-different-host endpoints apart at a glance.
+ * user can tell same-path-different-host endpoints apart at a glance. When a
+ * method is known, prefix it so GET/PATCH/etc. pairs on the same path stay
+ * distinguishable in the sidebar.
  *
- * Absolute URLs:         `localhost:4320 /api/health`
- * Host-only (rare):      `localhost:4320 /`
- * Relative paths:        `/api/health`
+ * Absolute URLs:         `localhost:4320 GET /api/health`
+ * Host-only (rare):      `localhost:4320 GET /`
+ * Relative paths:        `PATCH /api/tenants/`
+ * Method unknown:        `/api/health`
  */
-function endpointToDisplayName(endpoint: string): string {
+function endpointToDisplayName(endpoint: string, method?: string): string {
   const cleaned = endpoint.replace(/[?#].*$/, '')
+  const prefix = method ? `${method} ` : ''
   const hostMatch = cleaned.match(/^https?:\/\/([^/]+)(\/.*)?$/)
   if (hostMatch) {
     const host = hostMatch[1]
     const path = hostMatch[2] || '/'
-    return `${host} ${path}`
+    return `${host} ${prefix}${path}`
   }
-  return cleaned.startsWith('/') ? cleaned : `/${cleaned}`
+  const path = cleaned.startsWith('/') ? cleaned : `/${cleaned}`
+  return `${prefix}${path}`
 }
 
 /** Turn `/api/users/:id` or `https://host/api/workflows` into a camelCase identifier. */
