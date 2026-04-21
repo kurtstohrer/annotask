@@ -3,7 +3,7 @@ import { ref, computed, watch, type Ref, type MaybeRef, toRef } from 'vue'
 import { useDesignSpec } from '../composables/useDesignSpec'
 import { useThemePreview } from '../composables/useThemePreview'
 import { useTasks } from '../composables/useTasks'
-import type { DesignSpecToken, DesignSpecTheme, ColorSchemeInfo } from '../../schema'
+import type { DesignSpecToken, DesignSpecTheme, DesignSpecThemeSelector, ColorSchemeInfo } from '../../schema'
 import type { ColorSchemeResult } from '../../shared/bridge-types'
 import ColorPalettePicker from './ColorPalettePicker.vue'
 import ThemeLibrariesTab from './ThemeLibrariesTab.vue'
@@ -21,7 +21,7 @@ const props = defineProps<{
    * the app actually switches — without this, clicking only pins the edit
    * target and the user has to toggle the app manually to preview.
    */
-  activateColorScheme?: (selector: unknown, all: unknown[]) => Promise<void>
+  activateColorScheme?: (selector: DesignSpecThemeSelector | null | undefined, all?: DesignSpecThemeSelector[]) => Promise<void>
 }>()
 
 const { designSpec, isInitialized, isLoading } = useDesignSpec()

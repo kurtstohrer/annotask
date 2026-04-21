@@ -13,6 +13,7 @@ import type {
   ComputeAccessibilityInfoResult, AccessibilityInfo,
   ComputeTabOrderResult, TabOrderEntry,
 } from '../../shared/bridge-types'
+import type { DesignSpecThemeSelector } from '../../schema'
 
 export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   const currentRoute = ref('/')
@@ -363,15 +364,9 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
    * 'color-scheme:changed' push which seeds `colorScheme` — but we also set it
    * optimistically so the UI updates without a round-trip.
    */
-  type SelectorLike = {
-    kind: 'attribute' | 'class' | 'media' | 'default'
-    host?: 'html' | 'body'
-    name?: string
-    value?: string
-  }
   async function activateColorScheme(
-    selector: SelectorLike | null | undefined,
-    all: SelectorLike[] = []
+    selector: DesignSpecThemeSelector | null | undefined,
+    all: DesignSpecThemeSelector[] = []
   ): Promise<void> {
     const iframe = iframeRef.value
     const doc = iframe?.contentDocument
