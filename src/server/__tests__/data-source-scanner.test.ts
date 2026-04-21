@@ -116,6 +116,46 @@ describe('scanDataSources — proxy-aware resolved_endpoint', () => {
     }
   })
 
+  it('keeps GET + PATCH on the same endpoint as distinct entries (issue #31)', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'annotask-scan-'))
+    try {
+      await fsp.writeFile(path.join(tmp, 'package.json'), JSON.stringify({
+        name: 'root', dependencies: { 'vue-router': '4.0.0' },
+      }))
+      await fsp.mkdir(path.join(tmp, 'src', 'pages', 'TenantEditPage'), { recursive: true })
+      await fsp.writeFile(
+        path.join(tmp, 'src', 'pages', 'TenantEditPage', 'TenantEditPage.jsx'),
+        `
+          export function TenantEditPage({ platformId }) {
+            const [original, setOriginal] = useState(null);
+            useEffect(() => {
+              fetch(\`/api/tenants/\${encodeURIComponent(platformId)}\`, { signal: new AbortController().signal })
+                .then(r => r.json()).then(setOriginal);
+            }, [platformId]);
+
+            const handleSubmit = async (patch) => {
+              const res = await fetch(\`/api/tenants/\${encodeURIComponent(platformId)}\`, {
+                method: 'PATCH',
+                body: JSON.stringify(patch),
+              });
+              return res.json();
+            };
+          }
+        `,
+      )
+      clearDataSourceCache()
+      const cat = await scanDataSources(tmp)
+      const tenantEntries = cat.project_entries.filter(
+        e => e.file.endsWith('TenantEditPage.jsx') && e.endpoint === '/api/tenants/',
+      )
+      const methods = tenantEntries.map(e => e.method).sort()
+      expect(methods).toEqual(['GET', 'PATCH'])
+      expect(tenantEntries.find(e => e.method === 'PATCH')?.display_name).toBe('PATCH /api/tenants/')
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it('leaves resolved_endpoint undefined when no vite.config is reachable', async () => {
     const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'annotask-scan-'))
     try {

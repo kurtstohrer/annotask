@@ -272,6 +272,11 @@ export interface ProjectDataEntry {
   line?: number
   /** Endpoint or query key extracted from the definition body, when a literal. */
   endpoint?: string
+  /** HTTP verb for inline fetch / axios / ofetch / $fetch / htmx entries —
+   *  upper-case (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`). Two calls to the
+   *  same endpoint with different methods produce distinct entries; the
+   *  method is part of the scanner's dedup key. */
+  method?: string
   /** Path-only endpoints (`/api/health`) resolved to an absolute URL via the
    *  nearest vite.config's server.proxy — so a Vue MFE that proxies `/api` to
    *  FastAPI at :4320 doesn't get its highlights attributed to Go at :4330

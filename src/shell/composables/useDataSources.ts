@@ -178,9 +178,11 @@ async function rebuildHighlightSources(): Promise<void> {
 }
 
 /** Composite key so binding graphs for same-named entries across MFEs
- *  (apiHealth in every stress-test MFE) stay distinct in the map. */
+ *  (apiHealth in every stress-test MFE) stay distinct in the map. Method is
+ *  included so a GET + PATCH pair on the same endpoint keeps two rows rather
+ *  than collapsing to one. */
 function entryBindingKey(entry: ProjectDataEntry): string {
-  return `${entry.file}\u0001${entry.name}`
+  return `${entry.file}\u0001${entry.name}\u0002${entry.method ?? ''}`
 }
 
 /**
