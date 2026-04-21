@@ -1,27 +1,40 @@
 import { expect, test } from '@playwright/test'
 
-test('host renders overview and lists every MFE', async ({ page }) => {
+test('host renders overview with MFE cards and the sidebar mounts', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Host (single-spa root)' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Annotask Stress Lab' })).toBeVisible()
 
-  // Nav is made of <a> links with the hash route. Every MFE must appear.
-  const mfes = [
+  // Sidebar brand from the React sidebar MFE.
+  await expect(page.getByRole('heading', { name: 'Annotask', level: 1 })).toBeVisible()
+
+  // Sidebar nav links must show every MFE label, including Overview.
+  const mfeLinks = [
+    'Overview',
     'Vue · Data Lab',
     'React · Workflows',
     'Svelte · Streaming',
-    'Solid · Component Lab',
-    'Blade · Legacy Lab',
+    'Solid · Components',
     'htmx · Partials',
   ]
-  for (const label of mfes) {
+  for (const label of mfeLinks) {
     await expect(page.getByRole('link', { name: new RegExp(label) })).toBeVisible()
   }
+})
+
+test('sidebar theme toggle flips <html data-theme>', async ({ page }) => {
+  await page.goto('/')
+  // The sidebar toggle button lives inside the persistent sidebar MFE.
+  const toggle = page.getByRole('button', { name: 'Toggle theme' })
+  await toggle.click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await toggle.click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 })
 
 // ── single-spa route mounts ────────────────────────────────
 // Each MFE is loaded into the host's DOM as a real single-spa application
 // (ESM cross-origin import of src/single-spa.*), not an iframe. These
-// tests click the nav link and assert the MFE's heading renders inside
+// tests click the sidebar link and assert the MFE's heading renders inside
 // the host document — no iframe traversal needed.
 
 interface SpaMfe {
@@ -31,11 +44,11 @@ interface SpaMfe {
 }
 
 const spaMfes: SpaMfe[] = [
-  { label: 'Vue · Data Lab',        hash: '#/vue',    heading: 'Vue Data Lab' },
-  { label: 'React · Workflows',     hash: '#/react',  heading: 'React Workflows' },
-  { label: 'Svelte · Streaming',    hash: '#/svelte', heading: 'Svelte Streaming' },
-  { label: 'Solid · Component Lab', hash: '#/solid',  heading: 'Solid Component Lab' },
-  { label: 'htmx · Partials',       hash: '#/htmx',   heading: 'htmx Partials' },
+  { label: 'Vue · Data Lab',      hash: '#/vue',    heading: 'Vue Data Lab' },
+  { label: 'React · Workflows',   hash: '#/react',  heading: 'React Workflows' },
+  { label: 'Svelte · Streaming',  hash: '#/svelte', heading: 'Svelte Streaming' },
+  { label: 'Solid · Components',  hash: '#/solid',  heading: 'Solid Component Lab' },
+  { label: 'htmx · Partials',     hash: '#/htmx',   heading: 'htmx Partials' },
 ]
 
 for (const mfe of spaMfes) {
@@ -47,17 +60,3 @@ for (const mfe of spaMfes) {
     await expect(page.getByRole('heading', { name: mfe.heading })).toBeVisible()
   })
 }
-
-test('single-spa mounts Blade Legacy Lab as an iframe under #/blade', async ({ page, request }) => {
-  const probe = await request
-    .get('http://localhost:4350/api/health', { failOnStatusCode: false })
-    .catch(() => null)
-  test.skip(!probe || !probe.ok(), 'Laravel service not running — start with `just laravel`')
-
-  await page.goto('/')
-  await page.getByRole('link', { name: /Blade · Legacy Lab/ }).click()
-  await expect(page).toHaveURL(/#\/blade$/)
-  // Blade is iframe-mounted (single-spa legacy app pattern for SSR).
-  const frame = page.frameLocator('iframe[title="Blade Legacy Lab"]')
-  await expect(frame.getByRole('heading', { name: 'Blade Legacy Lab' })).toBeVisible()
-})

@@ -30,6 +30,7 @@ export interface ResolveArgs {
   kind?: DataSource['kind']
   file?: string
   contextLines?: number
+  workspaceRoot?: string
 }
 
 /**
@@ -37,7 +38,7 @@ export interface ResolveArgs {
  * not-found marker. Callers should test `'error' in result` to disambiguate.
  */
 export async function resolveDataSourceDetails(args: ResolveArgs): Promise<DataSourceDetailsResult> {
-  const { projectRoot, name, kind, file } = args
+  const { projectRoot, name, kind, file, workspaceRoot } = args
   const contextLines = clampContext(args.contextLines)
 
   const catalog = await scanDataSources(projectRoot)
@@ -62,7 +63,7 @@ export async function resolveDataSourceDetails(args: ResolveArgs): Promise<DataS
   }
 
   const entry = candidates[0]
-  return await buildDetails(projectRoot, entry, catalog.project_entries, contextLines)
+  return await buildDetails(projectRoot, entry, catalog.project_entries, contextLines, workspaceRoot)
 }
 
 async function buildDetails(
@@ -70,10 +71,11 @@ async function buildDetails(
   entry: ProjectDataEntry,
   allEntries: ProjectDataEntry[],
   contextLines: number,
+  workspaceRoot?: string,
 ): Promise<DataSourceDetails> {
   const line = entry.line ?? 1
 
-  const resolved = resolveProjectFile(projectRoot, entry.file)
+  const resolved = resolveProjectFile(projectRoot, entry.file, workspaceRoot)
   const siblings = collectSiblings(entry, allEntries)
 
   if (!resolved) {

@@ -21,7 +21,9 @@ describe('createProjectState — task store serialization', () => {
     const t = await state.addTask({ type: 'annotation', description: 'hello' }) as any
     expect(t.id).toMatch(/^task-/)
     expect(t.status).toBe('pending')
-    // Round-trips through disk
+    // Round-trips through disk — flush completes in background after the
+    // response resolves, so tests that read raw disk must drain first.
+    await state.flush()
     const onDisk = JSON.parse(fs.readFileSync(path.join(root, '.annotask', 'tasks.json'), 'utf-8'))
     expect(onDisk.tasks).toHaveLength(1)
     expect(onDisk.tasks[0].id).toBe(t.id)
@@ -53,6 +55,7 @@ describe('createProjectState — task store serialization', () => {
     expect(final.blocked_reason).toBe('E')
 
     // Disk agrees with memory.
+    await state.flush()
     const onDisk = JSON.parse(fs.readFileSync(path.join(root, '.annotask', 'tasks.json'), 'utf-8'))
     expect(onDisk.tasks[0]).toMatchObject({
       description: 'A', feedback: 'B', resolution: 'C', notes: 'D', blocked_reason: 'E',
@@ -71,6 +74,7 @@ describe('createProjectState — task store serialization', () => {
 
     const tasks = state.getTasks().tasks
     expect(tasks).toHaveLength(N)
+    await state.flush()
     const onDisk = JSON.parse(fs.readFileSync(path.join(root, '.annotask', 'tasks.json'), 'utf-8'))
     expect(onDisk.tasks).toHaveLength(N)
     state.dispose()
@@ -92,6 +96,7 @@ describe('createProjectState — task store serialization', () => {
     expect(notFound).toHaveLength(1)
 
     expect(state.getTasks().tasks).toHaveLength(0)
+    await state.flush()
     state.dispose()
   })
 
@@ -108,6 +113,8 @@ describe('createProjectState — task store serialization', () => {
     await state.updateTask(t.id, { status: 'review' })
     await state.updateTask(t.id, { status: 'accepted' })
 
+    // Screenshot unlink chains off the flush, so wait for disk work to settle.
+    await state.flush()
     expect(state.getTasks().tasks).toHaveLength(0)
     expect(fs.existsSync(path.join(shotDir, shotName))).toBe(false)
     state.dispose()
@@ -130,6 +137,7 @@ describe('createProjectState — task store serialization', () => {
     await state.deleteTask(safe.id)
     await state.deleteTask(unsafe.id)
 
+    await state.flush()
     expect(fs.existsSync(path.join(shotDir, safeName))).toBe(false)
     expect(fs.existsSync(sensitive)).toBe(true)
     state.dispose()

@@ -154,7 +154,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
           pendingTaskCreation.value = {
             ...pendingTaskCreation.value,
             label: `${selectedEids.value.length} element${selectedEids.value.length === 1 ? '' : 's'} selected`,
-            meta: { ...pendingTaskCreation.value.meta, selectedElements: [...elements, { eid, file, line, component, tag: tagName, classes }] },
+            meta: { ...pendingTaskCreation.value.meta, selectedElements: [...elements, { eid, file, line, component, tag: tagName, classes, ...(source_tag ? { source_tag } : {}), ...(parent_component ? { parent_component } : {}) }] },
           }
         }
       }
@@ -180,7 +180,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
           meta: {
             elementTag: tagName, elementClasses: classes, elementText: text || '',
             ...(source_tag ? { elementSourceTag: source_tag } : {}),
-            selectedElements: [{ eid, file, line, component, tag: tagName, classes, text: text || '' }],
+            selectedElements: [{ eid, file, line, component, tag: tagName, classes, text: text || '', ...(source_tag ? { source_tag } : {}), ...(parent_component ? { parent_component } : {}) }],
           },
         }
         pendingTaskText.value = ''

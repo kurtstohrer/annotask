@@ -1,13 +1,13 @@
 <template>
-  <aside class="panel">
+  <aside class="panel" data-testid="tasks-panel">
     <div class="panel-source">
       <span class="source-path" style="color:var(--text)">Tasks</span>
-      <span class="component-badge">{{ totalTasks }}</span>
+      <span class="component-badge" data-testid="tasks-count">{{ totalTasks }}</span>
       <button :class="['new-task-toggle json-toggle', { active: showReportPanel }]"
         @click="$emit('update:showReportPanel', !showReportPanel)" title="View all tasks as JSON">
         JSON
       </button>
-      <button class="new-task-toggle" @click="$emit('toggle-new-task')" title="Create a general task (not tied to an element)">
+      <button data-testid="btn-new-task" class="new-task-toggle" @click="$emit('toggle-new-task')" title="Create a general task (not tied to an element)">
         {{ showNewTaskForm ? '−' : '+' }} New
       </button>
     </div>
@@ -15,6 +15,7 @@
     <!-- New task form (collapsible) -->
     <div v-if="showNewTaskForm" class="new-task-form">
       <textarea
+        data-testid="input-task-description"
         :value="newTaskText"
         @input="$emit('update:newTaskText', ($event.target as HTMLTextAreaElement).value)"
         class="new-task-input" rows="2" placeholder="Describe a change..."
@@ -22,11 +23,11 @@
       />
       <TaskOptionsToggles
         :include-history="includeHistory"
-        :include-element-context="includeElementContext"
+        :include-rendered-html="includeRenderedHtml"
         :include-data-context="includeDataContext"
         :data-context-probe="dataContextProbe"
         @update:includeHistory="$emit('update:includeHistory', $event)"
-        @update:includeElementContext="$emit('update:includeElementContext', $event)"
+        @update:includeRenderedHtml="$emit('update:includeRenderedHtml', $event)"
         @update:includeDataContext="$emit('update:includeDataContext', $event)"
       />
       <ScreenshotUploader
@@ -35,7 +36,7 @@
         @remove-screenshot="$emit('remove-screenshot')"
       />
       <div class="new-task-actions">
-        <button class="submit-btn" :disabled="!newTaskText.trim()" @click="$emit('submit-new-task')">Add</button>
+        <button data-testid="btn-submit-new-task" class="submit-btn" :disabled="!newTaskText.trim()" @click="$emit('submit-new-task')">Add</button>
         <button class="cancel-btn" @click="$emit('cancel-new-task')">Cancel</button>
       </div>
     </div>
@@ -52,7 +53,7 @@
         :deny-feedback-text="denyFeedbackText"
         :pending-screenshot="pendingScreenshot"
         :include-history="includeHistory"
-        :include-element-context="includeElementContext"
+        :include-rendered-html="includeRenderedHtml"
         :include-data-context="includeDataContext"
         :data-context-probe="dataContextProbe"
         @open-detail="$emit('open-detail', $event)"
@@ -63,7 +64,7 @@
         @cancel-deny="$emit('cancel-deny')"
         @update:denyFeedbackText="$emit('update:denyFeedbackText', $event)"
         @update:includeHistory="$emit('update:includeHistory', $event)"
-        @update:includeElementContext="$emit('update:includeElementContext', $event)"
+        @update:includeRenderedHtml="$emit('update:includeRenderedHtml', $event)"
         @update:includeDataContext="$emit('update:includeDataContext', $event)"
         @start-snip="$emit('start-snip')"
         @remove-screenshot="$emit('remove-screenshot')"
@@ -89,7 +90,7 @@ interface Props {
   denyFeedbackText: string
   pendingScreenshot?: string | null
   includeHistory: boolean
-  includeElementContext: boolean
+  includeRenderedHtml: boolean
   includeDataContext: boolean
   dataContextProbe: DataContextProbeResult | null
 }
@@ -100,7 +101,7 @@ defineEmits<{
   (e: 'update:newTaskText', value: string): void
   (e: 'update:denyFeedbackText', value: string): void
   (e: 'update:includeHistory', value: boolean): void
-  (e: 'update:includeElementContext', value: boolean): void
+  (e: 'update:includeRenderedHtml', value: boolean): void
   (e: 'update:includeDataContext', value: boolean): void
   (e: 'toggle-new-task'): void
   (e: 'submit-new-task'): void

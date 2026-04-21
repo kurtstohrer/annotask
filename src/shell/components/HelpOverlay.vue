@@ -6,7 +6,7 @@
           <button
             :class="['help-nav-btn', { active: helpSection === item.id || isChildActive(item) }]"
             @click="$emit('update:helpSection', item.id)">
-            <span v-html="item.icon"></span>
+            <Icon :name="item.icon" />
             {{ item.label }}
           </button>
           <div v-if="item.children && (helpSection === item.id || isChildActive(item))" class="help-subnav">
@@ -32,7 +32,7 @@
 
         <div class="help-cards">
           <button v-for="card in helpCards" :key="card.id" class="help-card" @click="$emit('update:helpSection', card.id)">
-            <span v-html="card.icon"></span>
+            <Icon :name="card.icon" />
             <span class="help-card-title">{{ card.title }}</span>
             <span class="help-card-desc">{{ card.desc }}</span>
           </button>
@@ -108,7 +108,7 @@
         <p class="help-intro">Inspect and edit your app's visual design. The <strong>Design</strong> tab has three sub-sections: <strong>Tokens</strong>, <strong>Inspector</strong>, and <strong>Components</strong>. Edits are recorded as tasks that map back to your source code and design tokens.</p>
 
         <h3 id="design-tokens" class="help-section-title">Tokens</h3>
-        <p class="help-text">View and edit design tokens — colors, typography, spacing, borders, shadows. Annotask detects CSS custom properties and organizes them by category. Edits create <strong>theme_update</strong> tasks with token name, category, before/after values, and the CSS variable reference.</p>
+        <p class="help-text">View and edit design tokens — colors, typography, spacing, borders, shadows. Annotask detects CSS custom properties and organizes them by category. Clicking Commit bundles every edit from that session into a single <strong>theme_update</strong> task; the agent applies all source-file changes in one pass and patches <code>.annotask/design-spec.json</code> so the Tokens page hot-reloads.</p>
 
         <h3 id="design-inspector" class="help-section-title">Inspector</h3>
         <p class="help-text">Click any element to inspect its computed styles. Edit properties inline — changes apply live and are recorded as <strong>style_update</strong> tasks. Class editing lets you add, remove, or toggle CSS classes. Undo with <kbd class="mod">Ctrl</kbd><kbd>Z</kbd>.</p>
@@ -229,12 +229,12 @@
 
         <div class="help-cards">
           <button class="help-card" @click="$emit('update:helpSection', 'apply-skill')">
-            <span v-html="icons.applySkill"></span>
+            <Icon :name="icons.applySkill" />
             <span class="help-card-title">/annotask-apply</span>
             <span class="help-card-desc">Triage pending + denied tasks, group by touched resources, apply each group, then sweep for anything that landed mid-run.</span>
           </button>
           <button class="help-card" @click="$emit('update:helpSection', 'init-skill')">
-            <span v-html="icons.initSkill"></span>
+            <Icon :name="icons.initSkill" />
             <span class="help-card-title">/annotask-init</span>
             <span class="help-card-desc">Scan the project for framework, design tokens, icons, and component libraries. Write <code>.annotask/design-spec.json</code>.</span>
           </button>
@@ -289,7 +289,7 @@
 
         <div class="help-diagram">
           <FlowDiagram :label="diagrams.initScan.label" :nodes="diagrams.initScan.nodes" :edges="diagrams.initScan.edges" />
-          <div class="help-diagram-caption">The scanner reads your project, classifies tokens into semantic roles, and writes the design spec.</div>
+          <div class="help-diagram-caption">The scanner detects theme variants, then classifies tokens into semantic roles and writes the design spec with per-variant values.</div>
         </div>
 
         <h3 id="init-triggers" class="help-section-title">Triggers</h3>
@@ -298,10 +298,20 @@
         <h3 id="init-framework" class="help-section-title">Framework Detection</h3>
         <p class="help-text">Reads <code>package.json</code> to identify the framework (Vue / React / Svelte / Solid) and version. Detects styling approaches: <code>tailwind</code>, <code>scoped-css</code>, <code>css-modules</code>.</p>
 
-        <h3 id="init-tokens" class="help-section-title">Token Scanning</h3>
-        <p class="help-text">Five token categories are extracted and classified into semantic roles:</p>
+        <h3 id="init-themes" class="help-section-title">Theme Variants</h3>
+        <p class="help-text">Before any tokens are resolved, the scanner detects which theme variants the project supports so every value can be captured under each one. Signals are checked in order; the first match wins:</p>
         <ul class="help-list">
-          <li><strong>Colors</strong> — from <code>:root</code> declarations, <code>@theme</code> blocks (Tailwind v4), or <code>tailwind.config</code> (v3). Classified as <code>primary</code>, <code>secondary</code>, <code>accent</code>, <code>background</code>, <code>surface</code>, <code>text</code>, <code>text-muted</code>, <code>border</code>, <code>danger</code>, <code>warning</code>, <code>success</code>, <code>info</code>. Max 30 tokens.</li>
+          <li><strong>Tailwind <code>.dark</code> class</strong> — <code>.dark</code> / <code>:root.dark</code> / <code>html.dark</code> blocks, Tailwind v3 <code>darkMode: 'class'</code>, or a v4 <code>@custom-variant dark</code>. Emits <code>light</code> + <code>dark</code> variants.</li>
+          <li><strong>Data attributes</strong> — <code>[data-theme]</code>, <code>[data-bs-theme]</code>, <code>[data-mui-color-scheme]</code>, <code>[data-mantine-color-scheme]</code>, <code>[data-color-scheme]</code>. One variant per distinct value.</li>
+          <li><strong><code>@media (prefers-color-scheme: dark)</code></strong> — emits a <code>dark</code> variant gated by a media selector.</li>
+          <li><strong>Single theme</strong> — nothing above matches; emits a single <code>default</code> variant.</li>
+        </ul>
+        <p class="help-text">Each variant ships with a <code>selector</code> (<code>class</code>, <code>attribute</code>, <code>media</code>, or <code>default</code>) describing how it's activated in the DOM, plus a top-level <code>defaultTheme</code>. That lets the shell mirror whatever your iframe is currently showing and lets <code>theme_update</code> tasks carry the exact variant they came from.</p>
+
+        <h3 id="init-tokens" class="help-section-title">Token Scanning</h3>
+        <p class="help-text">Five token categories are extracted and classified into semantic roles. Colors and typography are resolved under <em>every</em> detected theme variant — variants that don't override a token inherit the base value, so every token has a value for every variant.</p>
+        <ul class="help-list">
+          <li><strong>Colors</strong> — from <code>:root</code>, variant scopes (<code>:root.dark</code>, <code>[data-theme="…"]</code>, <code>@media (prefers-color-scheme: dark) :root</code>), <code>@theme</code> blocks (Tailwind v4), or <code>tailwind.config</code> (v3). Classified as <code>primary</code>, <code>secondary</code>, <code>accent</code>, <code>background</code>, <code>surface</code>, <code>text</code>, <code>text-muted</code>, <code>border</code>, <code>danger</code>, <code>warning</code>, <code>success</code>, <code>info</code>. Max 30 tokens.</li>
           <li><strong>Typography</strong> — font families (<code>heading</code> / <code>body</code> / <code>mono</code>), scale (<code>xs</code>–<code>4xl</code>), and used weights.</li>
           <li><strong>Spacing</strong> — roles <code>xs</code>–<code>4xl</code>. Max 12 tokens.</li>
           <li><strong>Border radius</strong> — roles <code>sm</code>, <code>md</code>, <code>lg</code>, <code>xl</code>, <code>full</code>.</li>
@@ -313,7 +323,7 @@
         <p class="help-text"><strong>Component libraries</strong> — PrimeVue, Vuetify, Element Plus, Headless UI, Radix Vue, Naive UI, shadcn/ui. When detected, imports across <code>src/</code> are scanned to populate the <code>used</code> list of component names.</p>
 
         <h3 id="init-output" class="help-section-title">Output</h3>
-        <p class="help-text">Writes <code>.annotask/design-spec.json</code> with every token in a uniform shape: <code>role</code>, <code>value</code>, <code>cssVar</code>, <code>source</code>, <code>sourceFile</code>, <code>sourceLine</code>. The <code>cssVar</code> + <code>sourceFile</code> + <code>sourceLine</code> fields are what let the apply skill edit the right file when a <code>theme_update</code> task lands.</p>
+        <p class="help-text">Writes <code>.annotask/design-spec.json</code>. The top of the file lists every detected <code>themes[]</code> variant (with its <code>selector</code>) and the <code>defaultTheme</code>. Every token has a uniform shape: <code>role</code>, <code>values</code> (a map keyed by theme id — e.g. <code>{ "light": "#3b82f6", "dark": "#60a5fa" }</code>), <code>cssVar</code>, <code>source</code>, <code>sourceFile</code>, <code>sourceLine</code>. Single-theme apps use <code>{ "default": "…" }</code>. The <code>cssVar</code> + <code>sourceFile</code> + <code>sourceLine</code> fields are what let the apply skill edit the right file when a <code>theme_update</code> task lands, and the variant id on each edit tells it <em>which</em> scope to patch.</p>
         <p class="help-text">Also adds <code>.annotask/</code> to <code>.gitignore</code> (the spec is regenerated per developer) and deletes the legacy <code>.annotask/config.json</code> if present.</p>
       </div>
 
@@ -335,6 +345,7 @@
 
 <script setup lang="ts">
 import FlowDiagram, { type FlowNode, type FlowEdge } from './FlowDiagram.vue'
+import Icon, { type IconName } from './Icon.vue'
 
 export type HelpSection =
   | 'overview' | 'annotate' | 'design' | 'audit'
@@ -356,24 +367,24 @@ function isChildActive(item: { children?: Array<{ id: HelpSection }> }): boolean
   return !!item.children?.some((c) => c.id === props.helpSection)
 }
 
-const icons = {
-  overview: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-  annotate: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
-  design: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>',
-  audit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
-  context: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l2 4h4v14H3V7h4l2-4z"/><circle cx="12" cy="14" r="3"/></svg>',
-  tasks: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
-  agent: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M7 8V6a5 5 0 0 1 10 0v2"/><circle cx="9" cy="14" r="1" fill="currentColor"/><circle cx="15" cy="14" r="1" fill="currentColor"/></svg>',
-  skills: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.39 7.36H22l-6.2 4.51L18.18 22 12 17.3 5.82 22l2.38-8.13L2 9.36h7.61L12 2z"/></svg>',
-  applySkill: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/><path d="M13 3l3 3"/></svg>',
-  initSkill: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-4.35-4.35"/><circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6"/></svg>',
-  settings: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m16.5-7.5l-4 4m-7 7l-4 4m15 0l-4-4m-7-7l-4-4"/></svg>',
+const icons: Record<string, IconName> = {
+  overview: 'circle-help',
+  annotate: 'pencil',
+  design: 'palette',
+  audit: 'code',
+  context: 'clipboard-list',
+  tasks: 'clipboard-check',
+  agent: 'bot',
+  skills: 'star',
+  applySkill: 'square-check-big',
+  initSkill: 'scan-search',
+  settings: 'settings',
 }
 
 const navItems: Array<{
   id: HelpSection
   label: string
-  icon: string
+  icon: IconName
   children?: Array<{ id: HelpSection; label: string }>
 }> = [
   { id: 'overview', label: 'Overview', icon: icons.overview },
@@ -393,7 +404,7 @@ const navItems: Array<{
   { id: 'settings', label: 'Settings', icon: icons.settings },
 ]
 
-const helpCards: Array<{ id: HelpSection; title: string; desc: string; icon: string }> = [
+const helpCards: Array<{ id: HelpSection; title: string; desc: string; icon: IconName }> = [
   { id: 'annotate', title: 'Annotate', desc: 'Pin, arrow, section, and highlight tools to mark up your UI and create tasks', icon: icons.annotate },
   { id: 'design', title: 'Design', desc: 'Edit tokens, inspect element styles, and explore components', icon: icons.design },
   { id: 'audit', title: 'Audit', desc: 'A11y, data sources, performance, and runtime errors — all turned into fix tasks', icon: icons.audit },
@@ -494,22 +505,27 @@ const diagrams: Record<string, { label: string; nodes: FlowNode[]; edges: FlowEd
     label: 'Init skill: scan project, classify, write spec',
     nodes: [
       { id: 'pkg',     label: 'package.json',   sublabel: 'framework + deps',    col: 0, row: 0, variant: 'muted' },
-      { id: 'css',     label: 'CSS files',      sublabel: ':root · @theme',      col: 0, row: 1, variant: 'muted' },
+      { id: 'css',     label: 'CSS files',      sublabel: ':root · @theme · variants', col: 0, row: 1, variant: 'muted' },
       { id: 'tw',      label: 'tailwind.config',sublabel: 'v3 theme.extend',     col: 0, row: 2, variant: 'muted' },
       { id: 'src',     label: 'src/**',         sublabel: 'component imports',   col: 0, row: 3, variant: 'muted' },
-      { id: 'scanner', label: 'Scanner',        sublabel: 'classify by role',    col: 2, row: 1, colSpan: 1, variant: 'accent' },
-      { id: 'colors',  label: 'Colors',         sublabel: '12 semantic roles',   col: 4, row: 0, variant: 'info' },
+      { id: 'variants',label: 'Theme Variants', sublabel: 'class · attr · media',col: 2, row: 0, variant: 'warning' },
+      { id: 'scanner', label: 'Scanner',        sublabel: 'classify · per variant', col: 2, row: 2, colSpan: 1, variant: 'accent' },
+      { id: 'colors',  label: 'Colors',         sublabel: 'values per variant',  col: 4, row: 0, variant: 'info' },
       { id: 'typo',    label: 'Typography',     sublabel: 'families + scale',    col: 4, row: 1, variant: 'info' },
       { id: 'spacing', label: 'Spacing · Radius',sublabel: 'xs–4xl',             col: 4, row: 2, variant: 'info' },
       { id: 'libs',    label: 'Icons · Components',sublabel: 'detected + used',  col: 4, row: 3, variant: 'info' },
-      { id: 'spec',    label: 'design-spec.json',sublabel: '.annotask/',         col: 6, row: 1, colSpan: 1, variant: 'success' },
-      { id: 'theme',   label: 'Design → Tokens',sublabel: 'editable in shell',   col: 6, row: 2, variant: 'purple' },
+      { id: 'spec',    label: 'design-spec.json',sublabel: 'themes[] + tokens',  col: 6, row: 1, colSpan: 1, variant: 'success' },
+      { id: 'theme',   label: 'Design → Tokens',sublabel: 'editable per variant',col: 6, row: 2, variant: 'purple' },
     ],
     edges: [
       { from: 'pkg',     to: 'scanner' },
+      { from: 'css',     to: 'variants' },
       { from: 'css',     to: 'scanner' },
+      { from: 'tw',      to: 'variants', dashed: true },
       { from: 'tw',      to: 'scanner' },
       { from: 'src',     to: 'scanner' },
+      { from: 'variants',to: 'scanner',  label: 'scopes' },
+      { from: 'variants',to: 'spec',     dashed: true, label: 'themes[]' },
       { from: 'scanner', to: 'colors' },
       { from: 'scanner', to: 'typo' },
       { from: 'scanner', to: 'spacing' },

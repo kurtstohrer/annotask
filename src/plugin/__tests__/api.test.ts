@@ -65,6 +65,10 @@ describe('API endpoints', () => {
       tasks.splice(idx, 1)
       return { deleted: id }
     },
+    saveInteractionHistory: async (_id: string, _snapshot: unknown) => { /* no-op for tests */ },
+    readInteractionHistory: async (_id: string) => null,
+    saveRenderedHtml: async (_id: string, _html: string) => { /* no-op for tests */ },
+    readRenderedHtml: async (_id: string) => null,
     getPerformance: () => perfSnapshot,
     setPerformance: (data: unknown) => { perfSnapshot = data },
   }

@@ -9,7 +9,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | Tool | Description |
 |------|-------------|
 | `annotask_get_tasks` | List task summaries — filter by `status`, `mfe`. Use `detail=true` for full objects |
-| `annotask_get_task` | Get full detail for a single task by ID (context, element_context, agent_feedback) |
+| `annotask_get_task` | Get full detail for a single task by ID (context, agent_feedback) |
 | `annotask_update_task` | Transition status, set resolution, ask questions, mark blocked |
 | `annotask_create_task` | Create a new pending task |
 | `annotask_delete_task` | Delete a task and its screenshot |

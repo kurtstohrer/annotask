@@ -2,9 +2,12 @@
 // http://localhost:4220/src/single-spa.ts.
 
 import '@annotask/stress-ui-tokens/tokens.css'
+import { bootstrapTheme } from '@annotask/stress-ui-tokens'
 import { createApp, h } from 'vue'
 import singleSpaVue from 'single-spa-vue'
 import App from './App.vue'
+
+bootstrapTheme()
 
 const lifecycles = singleSpaVue({
   createApp,

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useDataSources } from '../composables/useDataSources'
-import { colorForSource } from '../composables/useDataHighlights'
 import { useLocalStorageEnum } from '../composables/useLocalStorageRef'
+import { useWorkspace } from '../composables/useWorkspace'
 import DataSourceDetailPane from './DataSourceDetailPane.vue'
+import MfeFilterDropdown from './MfeFilterDropdown.vue'
+import Icon from './Icon.vue'
 import type { DataSource } from '../../schema'
 
 const props = withDefaults(defineProps<{
@@ -14,6 +16,8 @@ const props = withDefaults(defineProps<{
 }>(), { variant: 'data' })
 
 const ds = useDataSources()
+const ws = useWorkspace()
+onMounted(() => { ws.load() })
 
 type DataTab = 'apis' | 'hooks'
 const storedTab = useLocalStorageEnum<DataTab>('annotask:dataTab', ['apis', 'hooks'], 'apis')
@@ -53,6 +57,60 @@ function matchCount(name: string): number {
   return n
 }
 
+/** Distinct source names present in the current overlay rects. Drives the
+ *  "On page" filter and its pill count — a source is on-page iff it has at
+ *  least one rendered highlight rect right now. */
+const onPageSet = computed<Set<string>>(() => {
+  const s = new Set<string>()
+  for (const h of props.highlightRects) s.add(h.sourceName)
+  return s
+})
+
+/** Hooks and schemas after the On-page pill is applied on top of the
+ *  composable's MFE filter. Kept in the component (not the composable)
+ *  because `onPage` depends on `highlightRects`, which is a live prop. */
+const visibleDataSources = computed(() => {
+  const base = ds.filteredDataSources.value
+  if (ds.filterMode.value !== 'onPage') return base
+  const on = onPageSet.value
+  return base.filter(item => on.has(hookSourceName(item)))
+})
+
+const visibleApiSchemas = computed(() => {
+  const base = ds.filteredApiSchemas.value
+  if (ds.filterMode.value !== 'onPage') return base
+  const on = onPageSet.value
+  return base.filter(item => on.has(item.schema.location))
+})
+
+/** Count used by the On-page pill. Counts items in the composable's base
+ *  (MFE-filtered) list whose sourceName appears in the current overlay rects. */
+const onPageCount = computed(() => {
+  const on = onPageSet.value
+  if (activeTab.value === 'hooks') {
+    let n = 0
+    for (const item of ds.filteredDataSources.value) {
+      if (on.has(hookSourceName(item))) n++
+    }
+    return n
+  }
+  if (activeTab.value === 'apis') {
+    let n = 0
+    for (const item of ds.filteredApiSchemas.value) {
+      if (on.has(item.schema.location)) n++
+    }
+    return n
+  }
+  return 0
+})
+
+/** Source name used by useDataSources for a hook row — file-qualified so
+ *  same-named entries in sibling MFEs (`apiHealth` in every stress-test
+ *  MFE) stay addressable distinctly for per-row highlight counts. */
+function hookSourceName(item: { file: string; name: string }): string {
+  return `${item.file}\u0001${item.name}`
+}
+
 /** Multi-line tooltip summary for a data-source row. */
 function hookTooltip(item: { name: string; dataKind: DataSource['kind']; file: string; line?: number; endpoint?: string; used_count: number }): string {
   const lines: string[] = [
@@ -61,7 +119,7 @@ function hookTooltip(item: { name: string; dataKind: DataSource['kind']; file: s
   ]
   if (item.endpoint) lines.push(`Endpoint: ${item.endpoint}`)
   if (item.used_count > 0) lines.push(`${item.used_count} reference${item.used_count === 1 ? '' : 's'} in src/`)
-  const matches = matchCount(item.name)
+  const matches = matchCount(hookSourceName(item))
   if (matches > 0) lines.push(`${matches} element${matches === 1 ? '' : 's'} highlighted on this route`)
   return lines.join('\n')
 }
@@ -170,7 +228,7 @@ function cancelCreate() {
           <span v-if="ds.dataSourceItems.value.length" class="data-tab-badge">{{ ds.dataSourceItems.value.length }}</span>
         </button>
       </div>
-      <div class="data-search">
+      <div v-if="activeTab === 'libraries'" class="data-search">
         <input
           type="search"
           :placeholder="filterPlaceholder"
@@ -178,8 +236,33 @@ function cancelCreate() {
           @input="ds.filterText.value = ($event.target as HTMLInputElement).value"
         />
       </div>
-      <button class="data-btn" @click="ds.reload()" :disabled="ds.isLoading.value">
-        {{ ds.isLoading.value ? 'Loading…' : 'Reload' }}
+      <div v-else class="filter-group" role="tablist" aria-label="Visibility filter">
+        <button
+          :class="['filter-btn', { active: ds.filterMode.value === 'all' }]"
+          @click="ds.filterMode.value = 'all'"
+          :title="activeTab === 'apis' ? 'Show every detected API schema' : 'Show every detected project hook, store, or fetch wrapper'"
+        >All</button>
+        <button
+          :class="['filter-btn', { active: ds.filterMode.value === 'onPage' }]"
+          @click="ds.filterMode.value = 'onPage'"
+          :title="activeTab === 'apis' ? 'Show only schemas with highlights on the current route' : 'Show only hooks with highlights on the current route'"
+        >
+          On page
+          <span v-if="onPageCount" class="filter-count">{{ onPageCount }}</span>
+        </button>
+      </div>
+      <MfeFilterDropdown
+        v-if="ws.hasAnyMfes.value && activeTab !== 'libraries'"
+        :label="activeTab === 'apis' ? 'APIs' : 'Hooks'"
+      />
+      <button
+        class="data-btn icon"
+        :title="ds.isLoading.value ? 'Loading…' : 'Reload'"
+        :aria-label="ds.isLoading.value ? 'Loading' : 'Reload'"
+        :disabled="ds.isLoading.value"
+        @click="ds.reload()"
+      >
+        <Icon name="rotate-cw" :size="14" :stroke-width="2" :class="{ spinning: ds.isLoading.value }" />
       </button>
     </div>
 
@@ -195,26 +278,29 @@ function cancelCreate() {
           <div v-if="ds.isLoading.value && ds.dataSourceItems.value.length === 0" class="data-empty">
             Loading hooks…
           </div>
-          <div v-else-if="ds.filteredDataSources.value.length === 0" class="data-empty">
-            <p v-if="ds.filterText.value">No matches for "{{ ds.filterText.value }}"</p>
+          <div v-else-if="visibleDataSources.length === 0" class="data-empty">
+            <p v-if="ds.filterMode.value === 'onPage'">No hooks have highlights on this route. Switch to <strong>All</strong> to browse every detected hook.</p>
             <p v-else>No project hooks, stores, or fetch wrappers detected.</p>
             <p class="data-empty-hint">Annotask scans <code>src/</code> for composables, stores, signals, fetch wrappers, GraphQL ops, and tRPC routers.</p>
           </div>
           <div v-else class="data-list-groups">
             <button
-              v-for="item in ds.filteredDataSources.value" :key="item.id"
+              v-for="item in visibleDataSources" :key="item.id"
+              data-testid="data-source-item"
+              :data-source-name="item.name"
+              :data-source-kind="item.dataKind"
               class="data-list-item"
               :class="{ selected: item.id === ds.selectedId.value }"
               :title="hookTooltip(item)"
               @click="ds.select(item.id)"
             >
               <div class="item-row">
-                <span class="item-swatch" :style="{ background: colorForSource(item.name) }" />
+                <span class="item-swatch" :style="{ background: ds.colorForEntry(item.name) }" />
                 <span class="item-kind" :data-kind="item.dataKind">{{ kindLabel(item.dataKind) }}</span>
                 <span class="item-name">{{ item.name }}</span>
                 <span v-if="item.endpoint" class="item-endpoint">{{ item.endpoint }}</span>
-                <span v-if="matchCount(item.name) > 0" class="item-match">
-                  {{ matchCount(item.name) }} el
+                <span v-if="matchCount(hookSourceName(item)) > 0" class="item-match">
+                  {{ matchCount(hookSourceName(item)) }} el
                 </span>
                 <span v-if="item.used_count > 0" class="item-used">{{ item.used_count }} ref{{ item.used_count === 1 ? '' : 's' }}</span>
                 <span class="item-file">{{ item.file }}</span>
@@ -228,21 +314,21 @@ function cancelCreate() {
           <div v-if="ds.isLoading.value && ds.apiSchemaItems.value.length === 0" class="data-empty">
             Loading APIs…
           </div>
-          <div v-else-if="ds.filteredApiSchemas.value.length === 0" class="data-empty">
-            <p v-if="ds.filterText.value">No matches for "{{ ds.filterText.value }}"</p>
+          <div v-else-if="visibleApiSchemas.length === 0" class="data-empty">
+            <p v-if="ds.filterMode.value === 'onPage'">No API schemas have highlights on this route. Switch to <strong>All</strong> to browse the full catalog.</p>
             <p v-else>No API schemas detected.</p>
             <p class="data-empty-hint">Annotask scans for OpenAPI/Swagger, GraphQL SDL, tRPC routers, and JSON Schema files — plus dev-server introspection probes.</p>
           </div>
           <div v-else class="data-list-groups">
             <button
-              v-for="item in ds.filteredApiSchemas.value" :key="item.id"
+              v-for="item in visibleApiSchemas" :key="item.id"
               class="data-list-item"
               :class="{ selected: item.id === ds.selectedId.value }"
               :title="apiTooltip(item)"
               @click="ds.select(item.id)"
             >
               <div class="item-row">
-                <span class="item-swatch" :style="{ background: colorForSource(item.schema.location) }" />
+                <span class="item-swatch" :style="{ background: ds.colorForSchema(item.schema.location) }" />
                 <span class="item-kind" data-kind="schema">{{ item.schema.kind }}</span>
                 <span class="item-name">{{ item.schema.title || item.schema.location }}</span>
                 <span class="item-badge" :class="{ warn: !item.schema.in_repo }">
@@ -293,9 +379,7 @@ function cancelCreate() {
       <div v-else class="data-detail">
         <div class="detail-back-bar">
           <button class="data-back-btn" @click="ds.clearSelection()" :title="`Back to ${activeTab === 'apis' ? 'APIs' : activeTab === 'hooks' ? 'Hooks' : 'Libraries'} list`">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
+            <Icon name="chevron-left" :size="12" :stroke-width="2.5" />
             <span>Back</span>
           </button>
         </div>
@@ -303,7 +387,7 @@ function cancelCreate() {
         <template v-if="ds.selectedItem.value.kind === 'data-source'">
           <div class="detail-header">
             <div class="detail-title-row">
-              <span class="detail-dot" :style="{ background: colorForSource(ds.selectedItem.value.name) }" :title="`Highlight color for ${ds.selectedItem.value.name}`" />
+              <span class="detail-dot" :style="{ background: ds.colorForEntry(ds.selectedItem.value.name) }" :title="`Highlight color for ${ds.selectedItem.value.name}`" />
               <span class="item-kind" :data-kind="ds.selectedItem.value.dataKind">{{ kindLabel(ds.selectedItem.value.dataKind) }}</span>
               <span class="detail-name">{{ ds.selectedItem.value.name }}</span>
               <span v-if="selectedSchemaBadge" class="item-badge" :class="{ warn: selectedSchemaBadge.tone === 'warn' }">
@@ -311,7 +395,7 @@ function cancelCreate() {
               </span>
             </div>
             <div v-if="ds.selectedSchemaLink.value?.schema_in_repo" class="detail-actions">
-              <button class="data-btn primary" @click="openCreate">Create API Update Task</button>
+              <button data-testid="btn-create-api-task" class="data-btn primary" @click="openCreate">Create API Update Task</button>
             </div>
             <div v-else-if="ds.selectedSchemaLink.value && !ds.selectedSchemaLink.value.schema_in_repo" class="detail-note">
               External API — schema cannot be edited from here.
@@ -337,7 +421,7 @@ function cancelCreate() {
             </label>
             <div v-if="createError" class="create-error">{{ createError }}</div>
             <div class="create-actions">
-              <button class="data-btn primary" @click="submitCreate">Create task</button>
+              <button data-testid="btn-submit-api-task" class="data-btn primary" @click="submitCreate">Create task</button>
               <button class="data-btn" @click="cancelCreate">Cancel</button>
             </div>
           </div>
@@ -352,7 +436,7 @@ function cancelCreate() {
         <template v-else-if="ds.selectedItem.value.kind === 'api-schema'">
           <div class="detail-header">
             <div class="detail-title-row">
-              <span class="detail-dot" :style="{ background: colorForSource(ds.selectedItem.value.schema.location) }" :title="`Highlight color for ${ds.selectedItem.value.schema.location}`" />
+              <span class="detail-dot" :style="{ background: ds.colorForSchema(ds.selectedItem.value.schema.location) }" :title="`Highlight color for ${ds.selectedItem.value.schema.location}`" />
               <span class="item-kind" data-kind="schema">{{ ds.selectedItem.value.schema.kind }}</span>
               <span class="detail-name">{{ ds.selectedItem.value.schema.title || ds.selectedItem.value.schema.location }}</span>
               <span class="item-badge" :class="{ warn: !ds.selectedItem.value.schema.in_repo }">
@@ -444,6 +528,7 @@ function cancelCreate() {
 }
 .data-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -497,11 +582,50 @@ function cancelCreate() {
 }
 .data-search {
   flex: 1;
+  min-width: 160px;
+}
+.filter-group {
+  display: flex;
+  gap: 2px;
+  background: var(--surface-2);
+  padding: 2px;
+  border-radius: 4px;
+}
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  border-radius: 3px;
+  cursor: pointer;
+  font-weight: 500;
+}
+.filter-btn:hover { color: var(--text); background: var(--surface-3); }
+.filter-btn.active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border);
+}
+.filter-count {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.filter-btn.active .filter-count {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
 }
 .data-search input {
   width: 100%;
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 7px 10px;
+  font-size: 13px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -520,8 +644,23 @@ function cancelCreate() {
   cursor: pointer;
   border-radius: 4px;
 }
-.data-btn:hover {
+.data-btn:hover:not(:disabled) {
   background: var(--surface-3);
+}
+.data-btn.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 6px;
+  color: var(--text-muted);
+}
+.data-btn.icon:hover:not(:disabled) { color: var(--text); }
+.spinning {
+  animation: annotask-spin 0.9s linear infinite;
+}
+@keyframes annotask-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 .data-btn.primary {
   background: var(--accent);

@@ -22,6 +22,9 @@ export interface A11yViolation {
     file?: string
     line?: string
     component?: string
+    // Set on synthetic tab-order violations where we already know the
+    // element's bridge id and can skip the selector→eid resolve step.
+    eid?: string
   }>
 }
 
@@ -95,13 +98,6 @@ export function useA11yScanner(
     const eidBySelector = new Map<string, string | null>()
     for (const r of resolved) eidBySelector.set(r.selector, r.eid)
 
-    // Always attach element_context for a11y_fix. Structural a11y issues
-    // (landmarks, headings, label/input pairings) cannot be reasoned about
-    // without the ancestor layout chain. Mirrors the override useTaskWorkflows
-    // applies on denial — same justification, different trigger.
-    const contextEid = primaryEid || eids[0] || null
-    const elementContext = contextEid ? await iframe.getElementContext(contextEid) : null
-
     taskSystem.createTask({
       type: 'a11y_fix',
       description: `Fix accessibility: ${violation.help}`,
@@ -110,7 +106,6 @@ export function useA11yScanner(
       component: firstWithSource?.component || '',
       route: currentRoute.value,
       ...(colorScheme ? { color_scheme: colorScheme } : {}),
-      ...(elementContext ? { element_context: elementContext } : {}),
       context: {
         ...(frag.component ? { component: frag.component } : {}),
         ...(frag.rendered ? { rendered: frag.rendered } : {}),

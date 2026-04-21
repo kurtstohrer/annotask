@@ -96,8 +96,12 @@ export function clearDataContextCache() {
 
 // ── Public API ──────────────────────────────────────────
 
-export async function probeDataContext(projectRoot: string, relFile: string): Promise<DataContextProbe> {
-  const resolved = resolveProjectFile(projectRoot, relFile)
+export async function probeDataContext(
+  projectRoot: string,
+  relFile: string,
+  workspaceRoot?: string,
+): Promise<DataContextProbe> {
+  const resolved = resolveProjectFile(projectRoot, relFile, workspaceRoot)
   if (!resolved) return { hasData: false }
   const absPath = resolved.absolutePath
   // Canonicalize through realpath so symlink aliases share cache entries.
@@ -129,8 +133,9 @@ export async function resolveDataContext(
   relFile: string,
   line: number,
   schemaOpts: ScanOptions = {},
+  workspaceRoot?: string,
 ): Promise<DataContext> {
-  const resolved = resolveProjectFile(projectRoot, relFile)
+  const resolved = resolveProjectFile(projectRoot, relFile, workspaceRoot)
   if (!resolved) return { sources: [] }
   const absPath = resolved.absolutePath
   let content: string
@@ -205,9 +210,10 @@ export async function resolveElementDataContext(
   relFile: string,
   line: number,
   schemaOpts: ScanOptions = {},
+  workspaceRoot?: string,
 ): Promise<DataContext> {
   if (!relFile || !line) return { sources: [] }
-  const full = await resolveDataContext(projectRoot, relFile, line, schemaOpts)
+  const full = await resolveDataContext(projectRoot, relFile, line, schemaOpts, workspaceRoot)
   if (full.sources.length === 0) return { sources: [] }
 
   const LINE_TOLERANCE = 3

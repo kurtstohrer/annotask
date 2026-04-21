@@ -1,17 +1,20 @@
 <script>
   import { Dialog } from 'bits-ui'
-  import { workflows, metrics } from '@annotask/stress-fixtures'
+  import { workflows, metrics as seedMetrics } from '@annotask/stress-fixtures'
 
   let health = $state(null)
   let error = $state(null)
   let loading = $state(true)
   let detailOpen = $state(false)
   let detailWorkflow = $state(null)
+  let metricSeries = $state(seedMetrics)
+  let metricFilter = $state('all')
+  let metricError = $state(null)
 
   // Absolute URL — works solo (:4230) and under single-spa (:4200).
   const API_BASE = 'http://localhost:4330'
 
-  async function load() {
+  async function loadHealth() {
     loading = true
     error = null
     try {
@@ -23,6 +26,31 @@
     } finally {
       loading = false
     }
+  }
+
+  async function loadMetrics(name) {
+    metricError = null
+    const url = new URL(`${API_BASE}/api/metrics`)
+    if (name && name !== 'all') url.searchParams.set('name', name)
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      metricSeries = await res.json()
+    } catch (err) {
+      metricError = err instanceof Error ? err.message : String(err)
+      // fall back to seed fixtures
+      metricSeries = name === 'all' ? seedMetrics : seedMetrics.filter((m) => m.name === name)
+    }
+  }
+
+  function setMetricFilter(name) {
+    metricFilter = name
+    loadMetrics(name)
+  }
+
+  function refresh() {
+    loadHealth()
+    loadMetrics(metricFilter)
   }
 
   function pillClass(status) {
@@ -47,10 +75,19 @@
     }
   }
 
-  load()
+  function filterFor(name) {
+    return function () {
+      setMetricFilter(name)
+    }
+  }
+
+  const METRIC_NAMES = ['all', 'requests_per_second', 'p95_latency_ms']
+
+  loadHealth()
+  loadMetrics('all')
 </script>
 
-<main>
+<main class="svelte-mfe">
   <header>
     <h1>Svelte Streaming</h1>
     <p class="sub">
@@ -62,7 +99,7 @@
     <h2>What this stresses</h2>
     <ul>
       <li>Svelte 5 runes + <code>bits-ui</code> Dialog component discovery</li>
-      <li>Go-backed telemetry series + live updates</li>
+      <li>Go-backed telemetry — live <code>/api/metrics?name=</code> filter</li>
       <li>Route-persistence + localStorage under fast-changing data</li>
     </ul>
   </section>
@@ -70,7 +107,7 @@
   <section class="panel">
     <div class="row">
       <h2 style="margin:0">Upstream health</h2>
-      <button class="btn" type="button" onclick={load}>Refresh</button>
+      <button class="btn" type="button" onclick={refresh}>Refresh</button>
     </div>
     {#if loading}
       <p>Loading /api/health…</p>
@@ -107,8 +144,22 @@
   </section>
 
   <section class="panel">
-    <h2>Metric series (from shared-fixtures)</h2>
-    {#each metrics as series}
+    <div class="row">
+      <h2 style="margin:0">Metric series <small style="color: var(--stress-text-muted); font-weight: 400">(Go /api/metrics)</small></h2>
+      <div class="pill-group">
+        {#each METRIC_NAMES as name}
+          <button
+            type="button"
+            class={metricFilter === name ? 'btn active' : 'btn'}
+            onclick={filterFor(name)}
+          >{name}</button>
+        {/each}
+      </div>
+    </div>
+    {#if metricError}
+      <p class="err"><small>Go metrics unreachable (<code>{metricError}</code>) — showing fixture fallback.</small></p>
+    {/if}
+    {#each metricSeries as series}
       <h3 style="font-size: 13px; color: var(--stress-text-muted); margin: 12px 0 4px">
         {series.name} <span class="pill">{series.unit}</span>
       </h3>
@@ -123,8 +174,8 @@
 
 <Dialog.Root bind:open={detailOpen}>
   <Dialog.Portal>
-    <Dialog.Overlay class="dialog-overlay" />
-    <Dialog.Content class="dialog-content">
+    <Dialog.Overlay class="svelte-mfe-dialog-overlay" />
+    <Dialog.Content class="svelte-mfe-dialog-content">
       <Dialog.Title>
         <h3>{detailWorkflow?.title ?? 'Workflow'}</h3>
       </Dialog.Title>

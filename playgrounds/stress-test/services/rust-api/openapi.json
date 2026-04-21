@@ -1,0 +1,89 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Annotask Stress Lab — rust-api",
+    "description": "htmx-partials backend. Stdlib-only (no serde / no axum) so cargo run stays subsecond; the spec is hand-maintained alongside main.rs.",
+    "version": "0.0.1"
+  },
+  "servers": [
+    { "url": "http://localhost:4360" }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Service health (JSON)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health-fragment": {
+      "get": {
+        "tags": ["htmx"],
+        "summary": "Service health as an htmx-consumable HTML fragment",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/html": {
+                "schema": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/component-usage": {
+      "get": {
+        "tags": ["components"],
+        "summary": "Cross-framework component usage fixtures",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/ComponentUsage" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "required": ["status", "service", "port", "version"],
+        "properties": {
+          "status":  { "type": "string", "enum": ["ok", "degraded", "down"] },
+          "service": { "type": "string" },
+          "port":    { "type": "integer" },
+          "version": { "type": "string" }
+        }
+      },
+      "ComponentUsage": {
+        "type": "object",
+        "required": ["id", "name", "framework", "library", "uses"],
+        "properties": {
+          "id":        { "type": "string" },
+          "name":      { "type": "string" },
+          "framework": { "type": "string" },
+          "library":   { "type": "string" },
+          "uses":      { "type": "integer" }
+        }
+      }
+    }
+  }
+}

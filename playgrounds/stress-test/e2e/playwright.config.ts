@@ -1,13 +1,13 @@
 import { defineConfig, devices } from '@playwright/test'
 
 // Stress-lab Playwright config. Boots the 5 native MFEs + host + the 4
-// fast native services (fastapi, node, go, rust). The Blade slot is
-// served by Laravel and Java-backed React data is served by Java — both
-// docker-only. Specs that depend on those assert tolerant fallbacks when
+// fast native services (fastapi, node, go, rust). Java-backed React data
+// is docker-only. Specs that depend on it assert tolerant fallbacks when
 // the service isn't reachable.
 
 const webServers = [
   { name: 'stress-host', command: 'pnpm dev:stress-host', url: 'http://localhost:4200' },
+  { name: 'stress-react-sidebar', command: 'pnpm dev:stress-react-sidebar', url: 'http://localhost:4250' },
   { name: 'stress-react-workflows', command: 'pnpm dev:stress-react-workflows', url: 'http://localhost:4210' },
   { name: 'stress-vue-data-lab', command: 'pnpm dev:stress-vue-data-lab', url: 'http://localhost:4220' },
   { name: 'stress-svelte-streaming', command: 'pnpm dev:stress-svelte-streaming', url: 'http://localhost:4230' },
@@ -23,9 +23,10 @@ export default defineConfig({
   testDir: '.',
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  fullyParallel: false,
+  fullyParallel: true,
+  workers: 7,
   retries: 0,
-  reporter: [['list']],
+  reporter: [['list'], ['./annotask/reporter.ts']],
   use: {
     trace: 'on-first-retry',
     baseURL: 'http://localhost:4200',

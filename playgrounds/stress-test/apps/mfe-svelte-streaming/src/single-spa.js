@@ -3,8 +3,11 @@
 
 import '@annotask/stress-ui-tokens/tokens.css'
 import './app.css'
+import { bootstrapTheme } from '@annotask/stress-ui-tokens'
 import { mount as svelteMount, unmount as svelteUnmount } from 'svelte'
 import App from './App.svelte'
+
+bootstrapTheme()
 
 let instance = null
 

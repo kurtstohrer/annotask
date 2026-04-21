@@ -11,7 +11,9 @@ const sharedActivePicker = ref<{ id: symbol; panel: OpenPanel } | null>(null)
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useColorPalette, type ColorSwatch } from '../composables/useColorPalette'
+import { useDesignSpec } from '../composables/useDesignSpec'
 import CustomColorPicker from './CustomColorPicker.vue'
+import Icon from './Icon.vue'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -25,7 +27,20 @@ const emit = defineEmits<{
   'token-select': [role: string, value: string]
 }>()
 
-const { tokenCategory } = useColorPalette()
+// User-selected theme variant for the palette. null = follow the iframe's
+// active variant. Each picker instance has its own local override so one
+// open popover doesn't change sibling pickers.
+const themeOverride = ref<string | null>(null)
+const { tokenCategory, activeThemeId } = useColorPalette(themeOverride)
+const { designSpec } = useDesignSpec()
+const paletteThemes = computed(() => {
+  const themes = designSpec.value?.themes
+  return Array.isArray(themes) ? themes : []
+})
+const showVariantTabs = computed(() => paletteThemes.value.length > 1)
+function selectVariant(id: string) {
+  themeOverride.value = themeOverride.value === id ? null : id
+}
 
 const instanceId = Symbol('picker')
 
@@ -158,12 +173,7 @@ onUnmounted(() => {
         :class="{ active: openPanel === 'tokens' }"
         title="Design tokens"
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-          <rect x="0" y="0" width="7" height="7" rx="1.5" />
-          <rect x="9" y="0" width="7" height="7" rx="1.5" />
-          <rect x="0" y="9" width="7" height="7" rx="1.5" />
-          <rect x="9" y="9" width="7" height="7" rx="1.5" />
-        </svg>
+        <Icon name="grid-2x2" :size="12" />
       </button>
       <span v-if="currentMatch && showTokens" class="color-match">{{ currentMatch }}</span>
     </div>
@@ -178,6 +188,15 @@ onUnmounted(() => {
       <template v-if="openPanel === 'tokens'">
         <div class="palette-header">
           <span class="palette-title">Design Tokens</span>
+        </div>
+        <div v-if="showVariantTabs" class="palette-variant-bar">
+          <button
+            v-for="t in paletteThemes"
+            :key="t.id"
+            :class="['palette-variant-tab', { active: t.id === activeThemeId }]"
+            @click="selectVariant(t.id)"
+            :title="t.id === activeThemeId ? 'Showing ' + t.name + ' values' : 'Show ' + t.name + ' values'"
+          >{{ t.name }}</button>
         </div>
         <div class="palette-body">
           <div v-if="tokenCategory" class="var-grid">
@@ -260,6 +279,34 @@ onUnmounted(() => {
 .palette-header {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
+}
+
+.palette-variant-bar {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.palette-variant-tab {
+  flex: 1;
+  padding: 4px 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: all 0.1s;
+}
+.palette-variant-tab:hover { background: var(--surface); color: var(--text); }
+.palette-variant-tab.active {
+  background: var(--surface);
+  border-color: var(--accent);
+  color: var(--text);
 }
 .palette-title {
   font-size: 11px;

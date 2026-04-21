@@ -255,21 +255,21 @@
 }
 
 .help-page-title {
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text);
-  margin: 0 0 8px;
+  margin: 0 0 10px;
 }
 
 .help-intro {
-  font-size: 13px;
+  font-size: 15px;
   color: var(--text);
   line-height: 1.6;
   margin: 0 0 28px;
 }
 
 .help-section-title {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -280,10 +280,10 @@
 }
 
 .help-text {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
   line-height: 1.65;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
 
 .help-text strong {
@@ -295,14 +295,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 16px;
-  padding: 0 4px;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 5px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 3px;
   font-family: inherit;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
   vertical-align: middle;
@@ -338,13 +338,13 @@
 }
 
 .help-card-title {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
 }
 
 .help-card-desc {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text);
   line-height: 1.5;
 }
@@ -373,14 +373,14 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 4px;
 }
 
 .help-feature p {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
   line-height: 1.6;
   margin: 0;
@@ -438,7 +438,7 @@
 
 .help-diagram-caption {
   margin-top: 10px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   text-align: center;
   line-height: 1.5;
@@ -446,10 +446,10 @@
 
 /* Ordered/unordered lists inside help pages */
 .help-list {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
   line-height: 1.65;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   padding-left: 20px;
 }
 
@@ -486,14 +486,14 @@
 }
 
 .help-link-card-title {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text);
   margin-bottom: 4px;
 }
 
 .help-link-card-desc {
-  font-size: 11.5px;
+  font-size: 13px;
   color: var(--text-muted);
   line-height: 1.5;
 }

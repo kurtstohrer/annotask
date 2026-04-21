@@ -5,6 +5,8 @@ import { createWSServer, type AnnotaskWSServer } from './ws-server.js'
 import { createShellMiddleware } from './serve-shell.js'
 import { createProjectState, type ProjectState } from './state.js'
 import { createMcpMiddleware } from '../mcp/server.js'
+import { scanComponentLibraries } from './component-scanner.js'
+import { scanComponentUsage } from './component-usage.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -18,6 +20,10 @@ export interface AnnotaskServer {
 
 export interface AnnotaskServerOptions {
   projectRoot: string
+  /** Extra HTTP endpoints to probe for OpenAPI / GraphQL schemas. */
+  apiSchemaUrls?: string[]
+  /** Extra project-relative schema file paths. */
+  apiSchemaFiles?: string[]
 }
 
 export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskServer {
@@ -26,6 +32,8 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
 
   const apiMiddleware = createAPIMiddleware({
     projectRoot: options.projectRoot,
+    apiSchemaUrls: options.apiSchemaUrls,
+    apiSchemaFiles: options.apiSchemaFiles,
     getReport: () => wsServer.getReport(),
     getConfig: () => state.getConfig(),
     getDesignSpec: () => state.getDesignSpec(),
@@ -33,6 +41,10 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     addTask: (task) => state.addTask(task),
     updateTask: (id, updates) => state.updateTask(id, updates),
     deleteTask: (id) => state.deleteTask(id),
+    saveInteractionHistory: (id, snapshot) => state.saveInteractionHistory(id, snapshot),
+    readInteractionHistory: (id) => state.readInteractionHistory(id),
+    saveRenderedHtml: (id, html) => state.saveRenderedHtml(id, html),
+    readRenderedHtml: (id) => state.readRenderedHtml(id),
     getPerformance: () => state.getPerformanceSnapshot(),
     setPerformance: (data) => state.setPerformanceSnapshot(data),
   })
@@ -44,9 +56,28 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     addTask: (task) => state.addTask(task),
     updateTask: (id, updates) => state.updateTask(id, updates),
     deleteTask: (id) => state.deleteTask(id),
+    readInteractionHistory: (id) => state.readInteractionHistory(id),
+    readRenderedHtml: (id) => state.readRenderedHtml(id),
   })
 
   const shellMiddleware = createShellMiddleware()
+
+  // Warm the component caches in the background so the first Components-tab
+  // open and first MCP call hit populated data. Scanners coalesce concurrent
+  // calls, so a request arriving mid-scan will piggyback on this one.
+  //
+  // Deferred via `setImmediate` so the heavy synchronous prefix of each scan
+  // (workspace discovery does readFileSync + yaml.load; package resolution
+  // does bursts of existsSync/readFileSync) yields to Vite's own boot work
+  // and doesn't starve the event loop for requests arriving in the same tick.
+  setImmediate(() => {
+    void scanComponentLibraries(options.projectRoot).catch(err => {
+      console.warn('[Annotask] Component library pre-scan failed:', err)
+    })
+    void scanComponentUsage(options.projectRoot).catch(err => {
+      console.warn('[Annotask] Component usage pre-scan failed:', err)
+    })
+  })
 
   const middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     // MCP → API → shell (shell is SPA fallback).

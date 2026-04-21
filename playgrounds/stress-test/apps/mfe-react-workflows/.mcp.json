@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "annotask": {
-      "type": "http",
-      "url": "http://127.0.0.1:4210/__annotask/mcp"
+      "command": "npx",
+      "args": [
+        "annotask",
+        "mcp"
+      ]
     }
   }
 }

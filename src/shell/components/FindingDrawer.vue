@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import Icon from './Icon.vue'
+
 defineProps<{
   title: string
   severity: string
@@ -16,7 +18,7 @@ function onKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="fd-overlay" @keydown="onKeydown" tabindex="-1">
+  <div class="fd-overlay" data-testid="finding-drawer" @keydown="onKeydown" tabindex="-1">
     <div class="fd-backdrop" @click="emit('close')" />
     <aside class="fd-drawer">
       <header class="fd-header">
@@ -25,7 +27,7 @@ function onKeydown(e: KeyboardEvent) {
           <span class="fd-title">{{ title }}</span>
         </div>
         <button class="fd-close" @click="emit('close')" title="Close">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          <Icon name="x" :size="16" />
         </button>
       </header>
       <div class="fd-body">
@@ -33,7 +35,7 @@ function onKeydown(e: KeyboardEvent) {
       </div>
       <footer class="fd-footer">
         <span v-if="tasked" class="fd-tasked">Task created</span>
-        <button v-else class="fd-fix-btn" @click="emit('create-task')">Create Fix Task</button>
+        <button v-else data-testid="btn-create-fix-task" class="fd-fix-btn" @click="emit('create-task')">Create Fix Task</button>
       </footer>
     </aside>
   </div>

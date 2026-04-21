@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import ComponentPreview from './ComponentPreview.vue'
+import Icon from './Icon.vue'
 
 interface LibraryProp {
   name: string
@@ -107,7 +108,7 @@ onMounted(refresh)
       <div class="list-panel">
         <div class="list-toolbar">
           <div class="search-wrap">
-            <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <Icon class="search-icon" name="search" :size="13" :stroke-width="2.5" />
             <input
               v-model="searchQuery"
               type="text"
@@ -119,10 +120,7 @@ onMounted(refresh)
             Used <span class="filter-count">{{ totalUsed }}</span>
           </button>
           <button class="refresh-btn" :disabled="loading" @click="refresh" title="Rescan libraries">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" :class="{ spinning: loading }">
-              <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" />
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-            </svg>
+            <Icon name="rotate-cw" :size="13" :stroke-width="2.5" :class="{ spinning: loading }" />
           </button>
         </div>
 
@@ -131,7 +129,7 @@ onMounted(refresh)
           <span>Scanning libraries...</span>
         </div>
         <div v-else-if="totalComponents === 0" class="empty-state">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          <Icon name="package" :size="24" :stroke-width="1.5" />
           <span>No component libraries found</span>
           <span class="empty-hint">Install a component library to see it here.</span>
         </div>
@@ -139,7 +137,7 @@ onMounted(refresh)
         <div v-else class="lib-list">
           <!-- Context info nav item -->
           <button :class="['context-nav', { selected: !selectedComponent }]" @click="showContextPage">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            <Icon name="info" />
             <span>Component Context</span>
           </button>
 

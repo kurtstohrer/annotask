@@ -1,50 +1,74 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <title>Stress Lab — htmx Partials</title>
   </head>
   <body>
-    <main class="container">
-      <header>
-        <hgroup>
-          <h1>htmx Partials</h1>
-          <p>MFE <code>htmx-partials</code> · port 4260 · backed by Rust on :4360 · Pico.css</p>
-        </hgroup>
-      </header>
-
-      <article>
-        <h2>What this stresses</h2>
-        <ul>
-          <li>Server-driven HTML fragments via <code>hx-get</code></li>
-          <li>DOM mutation after load — annotask must follow swapped elements</li>
-          <li>Pico.css classless component styling on Rust-served fragments</li>
-        </ul>
-      </article>
-
-      <article>
+    <div class="htmx-shell">
+      <main class="container-fluid">
         <header>
           <hgroup>
-            <h2>Upstream health</h2>
-            <p>Swapped in from the Rust service.</p>
+            <h1>htmx Partials</h1>
+            <p>MFE <code>htmx-partials</code> · port 4260 · backed by Rust on :4360 · Pico.css</p>
           </hgroup>
         </header>
 
-        <div
-          id="health"
-          hx-get="/api/health-fragment"
-          hx-trigger="load, click from:#refresh-btn"
-          hx-swap="innerHTML"
-        >
-          <p><em>Loading <code>/api/health-fragment</code>…</em></p>
-        </div>
+        <article>
+          <h2>What this stresses</h2>
+          <ul>
+            <li>Server-driven HTML fragments via <code>hx-get</code></li>
+            <li>DOM mutation after load — annotask must follow swapped elements</li>
+            <li>Pico.css classless component styling on Rust-served fragments</li>
+          </ul>
+        </article>
 
-        <footer>
-          <button id="refresh-btn" type="button" class="secondary">Refresh</button>
-          <small>If Rust is down the panel stays empty. Start with <code>just rust</code>.</small>
-        </footer>
-      </article>
-    </main>
+        <article>
+          <header>
+            <hgroup>
+              <h2>Upstream health</h2>
+              <p>Swapped in from the Rust service.</p>
+            </hgroup>
+          </header>
+
+          <div
+            id="health"
+            hx-get="/api/health-fragment"
+            hx-trigger="load, click from:#refresh-btn"
+            hx-swap="innerHTML"
+          >
+            <p><em>Loading <code>/api/health-fragment</code>…</em></p>
+          </div>
+
+          <footer>
+            <button id="refresh-btn" type="button" class="secondary">Refresh</button>
+            <small>If Rust is down the panel stays empty. Start with <code>just rust</code>.</small>
+          </footer>
+        </article>
+
+        <article>
+          <header>
+            <hgroup>
+              <h2>Component usage</h2>
+              <p>HTML fragment from Rust <code>/api/component-usage-fragment</code>.</p>
+            </hgroup>
+          </header>
+
+          <div
+            id="component-usage"
+            hx-get="/api/component-usage-fragment"
+            hx-trigger="load, click from:#usage-refresh-btn"
+            hx-swap="innerHTML"
+          >
+            <p><em>Loading <code>/api/component-usage-fragment</code>…</em></p>
+          </div>
+
+          <footer>
+            <button id="usage-refresh-btn" type="button" class="secondary">Refresh</button>
+          </footer>
+        </article>
+      </main>
+    </div>
 
     <script type="module" src="/src/main.js"></script>
   </body>

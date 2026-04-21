@@ -1,41 +1,100 @@
-/* Cross-MFE design tokens. Each MFE imports this file so a theme edit in
- * one place cascades to every stack. Annotask's token-edit flow works on
- * these variables regardless of which MFE is in focus. */
+/* Cross-MFE design tokens. Every MFE imports this file so a theme edit in
+ * one place cascades to every stack. The host sets
+ * `document.documentElement.dataset.theme = 'light' | 'dark'` and the
+ * sidebar MFE owns the toggle. Framework component libraries (Mantine,
+ * Naive UI, Radix Themes, Pico.css) mirror the same flag via their own
+ * providers. */
 
 :root {
+  color-scheme: light;
+
   /* Surfaces */
-  --stress-bg: #f8fafc;
+  --stress-bg: #f4f7fb;
   --stress-surface: #ffffff;
-  --stress-surface-2: #f1f5f9;
-  --stress-border: #e2e8f0;
+  --stress-surface-2: #eef2f8;
+  --stress-surface-3: #e1e8f2;
+  --stress-border: #d6deea;
+  --stress-border-strong: #b5c2d4;
 
   /* Text */
-  --stress-text: #1a202c;
-  --stress-text-muted: #64748b;
+  --stress-text: #0f1623;
+  --stress-text-muted: #556477;
+  --stress-text-subtle: #8492a8;
+  --stress-text-on-accent: #ffffff;
 
-  /* Accent + semantic */
-  --stress-accent: #1d64e3;
-  --stress-accent-hover: #1850b9;
-  --stress-success: #16a34a;
-  --stress-warning: #d97706;
+  /* Accent */
+  --stress-accent: #2563eb;
+  --stress-accent-hover: #1d4fd1;
+  --stress-accent-subtle: #e1ebff;
+  --stress-accent-subtle-text: #1849b8;
+  --stress-focus-ring: #2563eb;
+
+  /* Semantic */
+  --stress-success: #15803d;
+  --stress-warning: #b45309;
   --stress-danger: #b91c1c;
+  --stress-info: #0369a1;
+
+  /* Sidebar (dark in both modes by design — gives the shell a persistent
+   * identity independent of content theme) */
+  --stress-sidebar-bg: #0d1424;
+  --stress-sidebar-surface: #152139;
+  --stress-sidebar-surface-2: #1c2a49;
+  --stress-sidebar-border: #1f2c4b;
+  --stress-sidebar-text: #e7eefb;
+  --stress-sidebar-text-muted: #8ea0bd;
+  --stress-sidebar-accent: #5a8dff;
+  --stress-sidebar-accent-text: #ffffff;
 
   /* Layout */
   --stress-radius: 10px;
   --stress-radius-sm: 6px;
+  --stress-radius-pill: 999px;
   --stress-gutter: 18px;
+  --stress-sidebar-width: 260px;
+  --stress-shadow-sm: 0 1px 2px rgba(15, 22, 35, 0.06);
+  --stress-shadow-md: 0 8px 24px rgba(15, 22, 35, 0.10);
   --stress-font: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   --stress-font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 :root.dark,
 :root[data-theme="dark"] {
-  --stress-bg: #0b1220;
-  --stress-surface: #111a2e;
-  --stress-surface-2: #1a2540;
-  --stress-border: #233152;
+  color-scheme: dark;
+
+  --stress-bg: #262626;
+  --stress-surface: #191919;
+  --stress-surface-2: #181818;
+  --stress-surface-3: #0d0d0d;
+  --stress-border: #363636;
+  --stress-border-strong: #303030;
+
   --stress-text: #e7eefb;
-  --stress-text-muted: #8a9ab8;
-  --stress-accent: #5a8dff;
+  --stress-text-muted: #9caabf;
+  --stress-text-subtle: #647198;
+  --stress-text-on-accent: #ffffff;
+
+  --stress-accent: #00dcb3;
   --stress-accent-hover: #3a71ec;
+  --stress-accent-subtle: #1a2848;
+  --stress-accent-subtle-text: #a8c0ff;
+  --stress-focus-ring: #5a8dff;
+
+  --stress-success: #34d399;
+  --stress-warning: #fbbf24;
+  --stress-danger: #f87171;
+  --stress-info: #38bdf8;
+
+  --stress-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --stress-shadow-md: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+
+/* Baseline document styles. Each MFE imports tokens.css at entry, so
+ * these apply to solo dev pages AND within the host (where the host's
+ * CSS re-asserts them anyway). */
+html, body {
+  margin: 0;
+  background: var(--stress-bg);
+  color: var(--stress-text);
+  font-family: var(--stress-font);
 }

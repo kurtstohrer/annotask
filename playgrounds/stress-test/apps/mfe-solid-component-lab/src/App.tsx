@@ -1,8 +1,8 @@
 import { createResource, createSignal, For, Show } from 'solid-js'
 import { Tabs } from '@kobalte/core/tabs'
 import { Button } from '@kobalte/core/button'
-import type { Health } from '@annotask/stress-contracts'
-import { componentUsage, workflows } from '@annotask/stress-fixtures'
+import type { Health, Product } from '@annotask/stress-contracts'
+import { componentUsage, products as seedProducts, workflows } from '@annotask/stress-fixtures'
 
 // Absolute URL — works both solo (:4240 → :4340) and single-spa (:4200 → :4340).
 const API_BASE = 'http://localhost:4340'
@@ -13,12 +13,25 @@ async function fetchHealth(): Promise<Health> {
   return res.json()
 }
 
+type ProductCategory = 'all' | 'hardware' | 'software' | 'service'
+const CATEGORIES: ProductCategory[] = ['all', 'hardware', 'software', 'service']
+
+async function fetchProducts(category: ProductCategory): Promise<Product[]> {
+  const url = new URL(`${API_BASE}/api/products`)
+  if (category !== 'all') url.searchParams.set('category', category)
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export function App() {
   const [reloadKey, setReloadKey] = createSignal(0)
   const [health] = createResource(reloadKey, fetchHealth)
+  const [category, setCategory] = createSignal<ProductCategory>('all')
+  const [products] = createResource(category, fetchProducts)
 
   return (
-    <main>
+    <main class="solid-mfe">
       <header>
         <h1>Solid Component Lab</h1>
         <p class="sub">
@@ -31,6 +44,7 @@ export function App() {
         <ul>
           <li><code>createResource</code> + signals for nested reactive data</li>
           <li>Kobalte headless primitives (<code>Tabs</code>, <code>Button</code>) — component discovery</li>
+          <li>Node <code>/api/products?category=</code> filter exercised via Products tab</li>
           <li>Solid JSX template compilation with annotask data attributes</li>
         </ul>
       </section>
@@ -60,11 +74,70 @@ export function App() {
 
       <section class="panel">
         <h2>Shared-data tabs</h2>
-        <Tabs defaultValue="workflows">
+        <Tabs defaultValue="products">
           <Tabs.List class="tabs-list">
+            <Tabs.Trigger value="products" class="tabs-trigger">Products (Node API)</Tabs.Trigger>
             <Tabs.Trigger value="workflows" class="tabs-trigger">Workflows</Tabs.Trigger>
             <Tabs.Trigger value="components" class="tabs-trigger">Component usage</Tabs.Trigger>
           </Tabs.List>
+
+          <Tabs.Content value="products">
+            <div class="row" style={{ 'margin-bottom': '8px' }}>
+              <div class="pill-group">
+                <For each={CATEGORIES}>{(c) => (
+                  <Button
+                    class={category() === c ? 'btn active' : 'btn'}
+                    onClick={() => setCategory(c)}
+                  >{c}</Button>
+                )}</For>
+              </div>
+              <small style={{ color: 'var(--stress-text-muted)' }}>
+                GET {API_BASE}/api/products{category() === 'all' ? '' : `?category=${category()}`}
+              </small>
+            </div>
+            <Show when={products.loading}>
+              <p>Loading /api/products…</p>
+            </Show>
+            <Show when={products.error}>
+              <p class="err">
+                Node /api/products unreachable — showing fixture fallback.
+              </p>
+              <table>
+                <thead>
+                  <tr><th>ID</th><th>Name</th><th>Category</th><th>Price</th><th>Stock</th></tr>
+                </thead>
+                <tbody>
+                  <For each={seedProducts}>{(p) => (
+                    <tr>
+                      <td><code>{p.id}</code></td>
+                      <td>{p.name}</td>
+                      <td>{p.category}</td>
+                      <td>${(p.price_cents / 100).toFixed(2)}</td>
+                      <td>{p.in_stock ? 'yes' : 'no'}</td>
+                    </tr>
+                  )}</For>
+                </tbody>
+              </table>
+            </Show>
+            <Show when={products() && !products.error}>
+              <table>
+                <thead>
+                  <tr><th>ID</th><th>Name</th><th>Category</th><th>Price</th><th>Stock</th></tr>
+                </thead>
+                <tbody>
+                  <For each={products()!}>{(p) => (
+                    <tr>
+                      <td><code>{p.id}</code></td>
+                      <td>{p.name}</td>
+                      <td>{p.category}</td>
+                      <td>${(p.price_cents / 100).toFixed(2)}</td>
+                      <td>{p.in_stock ? 'yes' : 'no'}</td>
+                    </tr>
+                  )}</For>
+                </tbody>
+              </table>
+            </Show>
+          </Tabs.Content>
 
           <Tabs.Content value="workflows">
             <table>

@@ -14,13 +14,35 @@ ROOT := justfile_directory() + "/../.."
 default:
     @just --list --unsorted
 
-# Start native services + host + every MFE. Ctrl-C tears it down.
-# Java + Laravel are Docker-only — start with `just compose-up` separately.
+# Start native services + host + every MFE + Java (via docker compose).
+# Ctrl-C tears everything down. Skips Java silently when docker isn't on
+# the PATH — the rest of the stack still comes up.
 up:
     #!/usr/bin/env bash
     set -e
     cd {{ROOT}}
-    trap 'jobs -p | xargs -r kill' EXIT INT TERM
+    COMPOSE_FILE=playgrounds/stress-test/docker-compose.yml
+    JAVA_UP=0
+    if command -v docker >/dev/null 2>&1; then
+        if docker info >/dev/null 2>&1; then
+            echo "[stress-lab] starting java-api via docker compose (detached)..."
+            docker compose -f "$COMPOSE_FILE" up -d --build java-api \
+                >/tmp/stress-java.log 2>&1 && JAVA_UP=1 \
+                || echo "[stress-lab] WARN: docker compose failed — see /tmp/stress-java.log"
+        else
+            echo "[stress-lab] docker present but daemon unreachable — skipping Java"
+        fi
+    else
+        echo "[stress-lab] docker not installed — skipping Java (install docker to enable :4310)"
+    fi
+    cleanup() {
+        jobs -p | xargs -r kill 2>/dev/null || true
+        if [ "$JAVA_UP" = "1" ]; then
+            echo "[stress-lab] stopping java-api..."
+            docker compose -f "$COMPOSE_FILE" stop java-api >/dev/null 2>&1 || true
+        fi
+    }
+    trap cleanup EXIT INT TERM
     echo "[stress-lab] starting native services..."
     pnpm dev:stress-fastapi   >/tmp/stress-fastapi.log   2>&1 &
     pnpm dev:stress-node-api  >/tmp/stress-node-api.log  2>&1 &
@@ -29,34 +51,46 @@ up:
     sleep 1
     echo "[stress-lab] starting frontends..."
     pnpm dev:stress-host                 >/tmp/stress-host.log    2>&1 &
+    pnpm dev:stress-react-sidebar        >/tmp/stress-sidebar.log 2>&1 &
     pnpm dev:stress-vue-data-lab         >/tmp/stress-vue.log     2>&1 &
     pnpm dev:stress-react-workflows      >/tmp/stress-react.log   2>&1 &
     pnpm dev:stress-svelte-streaming     >/tmp/stress-svelte.log  2>&1 &
     pnpm dev:stress-solid-component-lab  >/tmp/stress-solid.log   2>&1 &
     pnpm dev:stress-htmx-partials        >/tmp/stress-htmx.log    2>&1 &
     sleep 3
+    JAVA_STATUS="http://localhost:4310"
+    [ "$JAVA_UP" = "0" ] && JAVA_STATUS="(docker unavailable)"
     echo
     echo "  Host        http://localhost:4200"
+    echo "  Sidebar     http://localhost:4250"
     echo "  Vue         http://localhost:4220   FastAPI  http://localhost:4320"
-    echo "  React       http://localhost:4210   Java     http://localhost:4310 (docker)"
+    echo "  React       http://localhost:4210   Java     $JAVA_STATUS"
     echo "  Svelte      http://localhost:4230   Go       http://localhost:4330"
     echo "  Solid       http://localhost:4240   Node     http://localhost:4340"
-    echo "  Blade       http://localhost:4350 (docker — served by Laravel)"
     echo "  htmx        http://localhost:4260   Rust     http://localhost:4360"
     echo
-    echo "  Logs: /tmp/stress-*.log   |   Stop: Ctrl-C (or just down)"
+    echo "  Logs: /tmp/stress-*.log (+ /tmp/stress-java.log)"
+    echo "  Stop: Ctrl-C (or just down)"
     wait
 
-# Kill anything listening on stress-test ports.
+# Kill anything listening on stress-test ports. Also stops the Java docker
+# container started by `just up`.
 down:
     #!/usr/bin/env bash
-    for p in 4200 4210 4220 4230 4240 4260 4310 4320 4330 4340 4350 4360; do
+    for p in 4200 4210 4220 4230 4240 4250 4260 4320 4330 4340 4360; do
         pid=$(lsof -ti:$p 2>/dev/null || true)
         if [ -n "$pid" ]; then
             kill "$pid" 2>/dev/null || true
             echo "[stress-lab] stopped port $p (pid $pid)"
         fi
     done
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        COMPOSE_FILE={{ROOT}}/playgrounds/stress-test/docker-compose.yml
+        if docker compose -f "$COMPOSE_FILE" ps --services --filter status=running 2>/dev/null | grep -q java-api; then
+            echo "[stress-lab] stopping java-api (docker)..."
+            docker compose -f "$COMPOSE_FILE" stop java-api >/dev/null 2>&1 || true
+        fi
+    fi
 
 # Tail all dev-server logs written by `just up`.
 logs:
@@ -69,6 +103,10 @@ host:
     cd {{ROOT}} && pnpm dev:stress-host
 
 # ── MFEs ────────────────────────────────────────────────
+
+# React sidebar MFE — :4250 (persistent shell chrome for every route)
+sidebar:
+    cd {{ROOT}} && pnpm dev:stress-react-sidebar
 
 # Vue data-lab MFE — :4220 (backed by FastAPI :4320)
 vue:
@@ -114,13 +152,9 @@ rust:
 java:
     cd {{ROOT}} && docker compose -f playgrounds/stress-test/docker-compose.yml up --build java-api
 
-# Laravel — :4350. Serves the Blade slot + JSON API. First build ~3–6 min.
-laravel:
-    cd {{ROOT}} && docker compose -f playgrounds/stress-test/docker-compose.yml up --build laravel
-
 # ── Docker compose (full stack) ─────────────────────────
 
-# Build + start every compose-wired service (fastapi, node, go, rust, java, laravel).
+# Build + start every compose-wired service (fastapi, node, go, rust, java).
 compose-up:
     cd {{ROOT}} && pnpm stress-test:up
 
@@ -144,7 +178,7 @@ init-list:
         echo "    cd $dir"
     done
     echo
-    echo "Services (Java, Laravel, Go, Node, Rust, FastAPI) don't need init —"
+    echo "Services (Java, Go, Node, Rust, FastAPI) don't need init —"
     echo "annotask-init targets JS framework projects only."
     echo
     echo "/annotask-init is a Claude Code slash command, not a CLI — each MFE"

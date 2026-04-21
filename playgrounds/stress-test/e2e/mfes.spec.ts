@@ -21,14 +21,3 @@ for (const mfe of mfes) {
     await expect(page.getByRole('heading', { name: mfe.heading })).toBeVisible()
   })
 }
-
-// Laravel serves the Blade slot at :4350 and is docker-only. Run only when
-// it's actually reachable so the native-only dev flow stays green.
-test('mfe blade-legacy-lab boots at http://localhost:4350/ (Laravel required)', async ({ page, request }) => {
-  const probe = await request
-    .get('http://localhost:4350/api/health', { failOnStatusCode: false })
-    .catch(() => null)
-  test.skip(!probe || !probe.ok(), 'Laravel service not running — start with `just laravel`')
-  await page.goto('http://localhost:4350/')
-  await expect(page.getByRole('heading', { name: 'Blade Legacy Lab' })).toBeVisible()
-})

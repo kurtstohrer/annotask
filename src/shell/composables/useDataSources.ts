@@ -13,8 +13,18 @@ import type {
   ProjectDataEntry,
   SourceBindingGraph,
 } from '../../schema'
-import { colorForSource } from './useDataHighlights'
+import { buildPositionalPalette, colorForSource } from './useDataHighlights'
 import type { DataHighlightSource, DataHighlightSite } from './useDataHighlights'
+import { useWorkspace } from './useWorkspace'
+import { useLocalStorageEnum } from './useLocalStorageRef'
+
+/** Filter mode for the Data-view list. Search is replaced by a two-mode toggle
+ *  for APIs and Hooks:
+ *  - `all`: every scanned hook / API schema
+ *  - `onPage`: items with at least one highlight rect on the current iframe
+ *    route (driven by the caller's `highlightRects`, so the overlay rAF loop
+ *    has to be running before this mode picks anything up) */
+export type DataFilterMode = 'all' | 'onPage'
 
 /** Adapter handed over by App.vue so selection/load events can drive highlights without a cyclic import. */
 export interface DataHighlightsAdapter {
@@ -68,6 +78,11 @@ const libraryUsages = ref<LibraryUsage[]>([])
 const isLibraryUsagesLoading = ref(false)
 
 const filterText = ref('')
+const filterMode = useLocalStorageEnum<DataFilterMode>(
+  'annotask:dataFilterMode',
+  ['all', 'onPage'],
+  'all',
+)
 
 /** Per-source binding graph, keyed by source name. Populated after loadAll. */
 const bindingsByName = ref<Map<string, SourceBindingGraph>>(new Map())
@@ -127,8 +142,12 @@ async function rebuildHighlightSources(): Promise<void> {
 
   const results = await Promise.all(
     entries.map(async entry => {
+      // Pass `file` so the server picks this MFE's entry (same endpoint-
+      // derived name exists in every MFE) and threads the right
+      // `hint_symbols` — the fetch result variables — into the analyzer.
+      const qs = `?file=${encodeURIComponent(entry.file)}`
       const graph = await fetchJson<SourceBindingGraph>(
-        `data-source-bindings/${encodeURIComponent(entry.name)}`,
+        `data-source-bindings/${encodeURIComponent(entry.name)}${qs}`,
       )
       return { entry, graph }
     }),
@@ -137,14 +156,77 @@ async function rebuildHighlightSources(): Promise<void> {
   const graphMap = new Map<string, SourceBindingGraph>()
   const fileMap = new Map<string, string[]>()
   for (const { entry, graph } of results) {
+    // Only surface entries the binding analyzer could actually locate in
+    // the template / JSX. We used to fall back to the fetch call's JS line
+    // when the graph was empty, but that line never matches a data-annotask
+    // tag (only markup carries them), and the bridge's old file-level
+    // retry ended up highlighting every instrumented element in the file —
+    // including hardcoded template content — which is exactly the "painting
+    // non-data things" noise the Data tab was producing.
     if (!graph || graph.sites.length === 0) continue
-    graphMap.set(entry.name, graph)
+    // Key by (file, name) — multiple MFEs declare the same endpoint-derived
+    // name (e.g. `apiHealth` in every MFE), so a name-only key would drop
+    // every graph except the last one into the map.
+    const entryKey = entryBindingKey(entry)
+    graphMap.set(entryKey, graph)
     const files = new Set<string>()
     for (const s of graph.sites) files.add(normalizeFile(s.file))
-    fileMap.set(entry.name, [...files])
+    fileMap.set(entryKey, [...files])
   }
   bindingsByName.value = graphMap
   consumerFilesByName.value = fileMap
+}
+
+/** Composite key so binding graphs for same-named entries across MFEs
+ *  (apiHealth in every stress-test MFE) stay distinct in the map. */
+function entryBindingKey(entry: ProjectDataEntry): string {
+  return `${entry.file}\u0001${entry.name}`
+}
+
+/**
+ * Positional color map for project data entries. `entryBindingKey(entry)` is
+ * the canonical key (same one the overlay uses), but we also alias by bare
+ * `entry.name` so the sidebar row swatches — which only know the display
+ * name — render the same color as the overlay. Positional order matches the
+ * catalog's `project_entries` order, which is deterministic for a given scan.
+ */
+const entryColors = computed<Map<string, string>>(() => {
+  const out = new Map<string, string>()
+  const cat = catalog.value
+  if (!cat) return out
+  const palette = buildPositionalPalette(cat.project_entries.length)
+  cat.project_entries.forEach((entry, i) => {
+    const color = palette[i]
+    out.set(entryBindingKey(entry), color)
+    // First-wins aliasing: two MFEs may share an entry name (`apiHealth`) —
+    // the first one's color wins for the name-only lookup. The composite-key
+    // lookup still disambiguates for overlays.
+    if (!out.has(entry.name)) out.set(entry.name, color)
+  })
+  return out
+})
+
+/**
+ * Positional color map for API schemas in catalog order. Keyed by
+ * `schema.location` (the same key overlays use).
+ */
+const schemaColors = computed<Map<string, string>>(() => {
+  const out = new Map<string, string>()
+  const palette = buildPositionalPalette(schemas.value.length)
+  schemas.value.forEach((s, i) => {
+    out.set(s.location, palette[i])
+  })
+  return out
+})
+
+/** Look up the positional color for a project entry by composite or bare name. */
+function colorForEntry(key: string): string {
+  return entryColors.value.get(key) ?? colorForSource(key)
+}
+
+/** Look up the positional color for an API schema by `schema.location`. */
+function colorForSchema(location: string): string {
+  return schemaColors.value.get(location) ?? colorForSource(location)
 }
 
 /** Build the hooks tab's highlight source list from the cached binding graphs. */
@@ -153,7 +235,7 @@ function buildHookHighlightSources(): DataHighlightSource[] {
   if (!cat) return []
   const out: DataHighlightSource[] = []
   for (const entry of cat.project_entries) {
-    const graph = bindingsByName.value.get(entry.name)
+    const graph = bindingsByName.value.get(entryBindingKey(entry))
     if (!graph || graph.sites.length === 0) continue
     const sites: DataHighlightSite[] = graph.sites.map(s => ({
       file: normalizeFile(s.file),
@@ -162,13 +244,34 @@ function buildHookHighlightSources(): DataHighlightSource[] {
       // `planet.moons` later if we want to render tainted_symbols.
     }))
     out.push({
-      name: entry.name,
+      // Per-entry unique name so two MFEs both calling `apiHealth` stay
+      // distinct in the overlay adapter (same dedup logic that needed
+      // fixing for cross-library components).
+      name: entryBindingKey(entry),
       kind: entry.kind,
       sites,
-      defaultLabel: entry.name,
+      defaultLabel: entry.display_name ?? entry.name,
+      color: colorForEntry(entryBindingKey(entry)),
     })
   }
   return out
+}
+
+/** Does an entry path match an operation path? Exact equality, or with
+ *  OpenAPI-style `{id}` / Express-style `:id` placeholder segments treated
+ *  as wildcards. Same length is required — no substring fallback. */
+function matchesOpPath(opPath: string | undefined, entryPath: string): boolean {
+  if (!opPath) return false
+  if (opPath === entryPath) return true
+  const opParts = opPath.split('/').filter(Boolean)
+  const entryParts = entryPath.split('/').filter(Boolean)
+  if (opParts.length !== entryParts.length) return false
+  for (let i = 0; i < opParts.length; i++) {
+    const p = opParts[i]
+    if ((p.startsWith('{') && p.endsWith('}')) || p.startsWith(':')) continue
+    if (p !== entryParts[i]) return false
+  }
+  return true
 }
 
 /**
@@ -176,25 +279,53 @@ function buildHookHighlightSources(): DataHighlightSource[] {
  * highlight "source" whose sites are the union of sites from every project
  * data source whose endpoint matches one of the schema's operations.
  * Per-site label = the matched operation's path.
+ *
+ * Origin matching: entry endpoints are resolved against the MFE's Vite proxy
+ * server-side (`entry.resolved_endpoint`), and schemas carry `origin` either
+ * from their probe URL or OpenAPI `servers[]`. When both sides have origins,
+ * we require an exact match — otherwise `/api/health` on an MFE that proxies
+ * to FastAPI ends up painting into the go-api schema's highlights too.
  */
 function buildApiHighlightSources(): DataHighlightSource[] {
   const cat = catalog.value
   if (!cat) return []
   const out: DataHighlightSource[] = []
+  const originOf = (raw: string | undefined): string | null => {
+    if (!raw) return null
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return null
+    try { return new URL(raw).origin } catch { return null }
+  }
+  const pathOf = (raw: string): string => {
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
+    try { return new URL(raw).pathname } catch { return raw }
+  }
+  // An entry's origin comes from its resolved_endpoint (proxy-aware) first,
+  // falling back to a literal absolute URL in `endpoint`. We also pre-compute
+  // the set of origins covered by any schema so we can drop filesystem
+  // schemas (no origin) whose operations are already claimed by an HTTP-
+  // probed schema at the entry's real origin.
+  const schemaOrigins = new Set<string>()
+  for (const s of schemas.value) {
+    const o = s.origin ?? originOf(s.location)
+    if (o) schemaOrigins.add(o)
+  }
   for (const schema of schemas.value) {
+    const schemaOrigin = schema.origin ?? originOf(schema.location)
     const sites: DataHighlightSite[] = []
     const seen = new Set<string>()
     for (const entry of cat.project_entries) {
       if (!entry.endpoint) continue
-      const match = schema.operations.find(op => {
-        if (!op.path) return false
-        if (op.path === entry.endpoint) return true
-        const a = op.path.toLowerCase()
-        const b = entry.endpoint!.toLowerCase()
-        return a.includes(b) || b.includes(a)
-      })
+      const entryUrl = entry.resolved_endpoint ?? entry.endpoint
+      const entryOrigin = originOf(entryUrl)
+      // Strict origin match when both sides know their origin.
+      if (schemaOrigin && entryOrigin && schemaOrigin !== entryOrigin) continue
+      // When the entry has a known origin but this schema doesn't, skip if
+      // another schema covers the entry's origin — that's the right owner.
+      if (!schemaOrigin && entryOrigin && schemaOrigins.has(entryOrigin)) continue
+      const entryPath = pathOf(entryUrl)
+      const match = schema.operations.find(op => matchesOpPath(op.path, entryPath))
       if (!match) continue
-      const graph = bindingsByName.value.get(entry.name)
+      const graph = bindingsByName.value.get(entryBindingKey(entry))
       if (!graph) continue
       const opLabel = match.path
       // Overlays use the schema-level color (same as the sidebar swatch) for
@@ -214,6 +345,7 @@ function buildApiHighlightSources(): DataHighlightSource[] {
       kind: 'rpc',
       sites,
       defaultLabel: schema.location,
+      color: colorForSchema(schema.location),
     })
   }
   return out
@@ -363,10 +495,22 @@ async function loadLibraryUsages(lib: DataSourceLibrary): Promise<void> {
  */
 function matchSchemaForEntry(entry: ProjectDataEntry, all: ApiSchema[]): { schema: ApiSchema; operation?: ApiSchema['operations'][number] } | null {
   if (!entry.endpoint) return null
-  const needle = entry.endpoint.toLowerCase()
+  const originOf = (raw: string): string | null => {
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return null
+    try { return new URL(raw).origin } catch { return null }
+  }
+  const pathOf = (raw: string): string => {
+    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
+    try { return new URL(raw).pathname } catch { return raw }
+  }
+  const entryOrigin = originOf(entry.endpoint)
+  const entryPath = pathOf(entry.endpoint)
+  const needle = entryPath.toLowerCase()
   for (const schema of all) {
+    const schemaOrigin = originOf(schema.location)
+    if (schemaOrigin && entryOrigin && schemaOrigin !== entryOrigin) continue
     for (const op of schema.operations) {
-      if (op.path && (op.path === entry.endpoint || op.path.toLowerCase().includes(needle) || needle.includes(op.path.toLowerCase()))) {
+      if (op.path && (op.path === entryPath || op.path.toLowerCase().includes(needle) || needle.includes(op.path.toLowerCase()))) {
         return { schema, operation: op }
       }
     }
@@ -443,22 +587,76 @@ const libraries = computed(() => catalog.value?.libraries ?? [])
 
 const filteredDataSources = computed<DataSourceItem[]>(() => {
   const q = filterText.value.trim().toLowerCase()
-  if (!q) return dataSourceItems.value
-  return dataSourceItems.value.filter(item =>
-    item.name.toLowerCase().includes(q)
-    || item.file.toLowerCase().includes(q)
-    || (item.endpoint?.toLowerCase().includes(q) ?? false),
-  )
+  const ws = useWorkspace()
+  const selected = ws.selectedMfes.value
+  let items = dataSourceItems.value
+  if (q) {
+    items = items.filter(item =>
+      item.name.toLowerCase().includes(q)
+      || item.file.toLowerCase().includes(q)
+      || (item.endpoint?.toLowerCase().includes(q) ?? false),
+    )
+  }
+  if (selected.size > 0) {
+    items = items.filter(item => {
+      const id = ws.mfeForFile(item.file)
+      return !!id && selected.has(id)
+    })
+  }
+  return items
 })
 
 const filteredApiSchemas = computed<ApiSchemaItem[]>(() => {
   const q = filterText.value.trim().toLowerCase()
-  if (!q) return apiSchemaItems.value
-  return apiSchemaItems.value.filter(item =>
-    item.schema.location.toLowerCase().includes(q)
-    || (item.schema.title?.toLowerCase().includes(q) ?? false)
-    || item.schema.kind.includes(q),
-  )
+  const ws = useWorkspace()
+  const selected = ws.selectedMfes.value
+  let items = apiSchemaItems.value
+  if (q) {
+    items = items.filter(item =>
+      item.schema.location.toLowerCase().includes(q)
+      || (item.schema.title?.toLowerCase().includes(q) ?? false)
+      || item.schema.kind.includes(q),
+    )
+  }
+  if (selected.size > 0) {
+    // A schema belongs to an MFE when either its own location is a file in
+    // that MFE, OR any of its operations are consumed by a project-entry
+    // file in that MFE (lets an external FastAPI schema show up under the
+    // Vue data-lab MFE that actually calls it).
+    const cat = catalog.value
+    const originOf = (raw: string): string | null => {
+      if (!raw.startsWith('http://') && !raw.startsWith('https://')) return null
+      try { return new URL(raw).origin } catch { return null }
+    }
+    const pathOf = (raw: string): string => {
+      if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
+      try { return new URL(raw).pathname } catch { return raw }
+    }
+    items = items.filter(item => {
+      const locId = ws.mfeForFile(item.schema.location)
+      if (locId && selected.has(locId)) return true
+      if (!cat) return false
+      const schemaOrigin = originOf(item.schema.location)
+      for (const entry of cat.project_entries) {
+        if (!entry.endpoint) continue
+        const entryId = ws.mfeForFile(entry.file)
+        if (!entryId || !selected.has(entryId)) continue
+        const entryOrigin = originOf(entry.endpoint)
+        if (schemaOrigin && entryOrigin && schemaOrigin !== entryOrigin) continue
+        const entryPath = pathOf(entry.endpoint)
+        const match = item.schema.operations.find(op => {
+          if (!op.path) return false
+          if (op.path === entryPath) return true
+          const a = op.path.toLowerCase()
+          const b = entryPath.toLowerCase()
+          return a.includes(b) || b.includes(a)
+        })
+        if (match) return true
+      }
+      return false
+    })
+  }
+  return items
 })
 
 const filteredLibraries = computed(() => {
@@ -506,7 +704,8 @@ function select(id: string): void {
   loadDetails(item)
   // Focus mapping depends on which tab's highlight context is active.
   if (item.kind === 'data-source' && activeHighlightTab === 'hooks') {
-    highlightsAdapter?.setFocus(item.name)
+    // Composite key matches the source name buildHookHighlightSources uses.
+    highlightsAdapter?.setFocus(`${item.file}\u0001${item.name}`)
   } else if (item.kind === 'api-schema' && activeHighlightTab === 'apis') {
     highlightsAdapter?.setFocus(item.schema.location)
   } else {
@@ -599,6 +798,7 @@ export function useDataSources() {
     filteredApiSchemas,
     filteredLibraries,
     filterText,
+    filterMode,
     selectedId,
     selectedItem,
     selectedSchemaLink,
@@ -614,5 +814,7 @@ export function useDataSources() {
     clearSelection,
     reload: loadAll,
     createApiUpdateTask,
+    colorForEntry,
+    colorForSchema,
   }
 }

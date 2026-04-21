@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
+import Icon from './Icon.vue'
 
 interface PreviewProp {
   name: string
@@ -286,7 +287,7 @@ async function copySnippet() {
 <template>
   <div class="cp-root">
     <button class="cp-back" @click="emit('back')" title="Back to component list">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      <Icon name="chevron-left" :size="12" :stroke-width="2.5" />
       Back
     </button>
 

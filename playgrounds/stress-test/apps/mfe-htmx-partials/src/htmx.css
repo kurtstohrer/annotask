@@ -1,0 +1,35 @@
+/* Pico.css ships its own light/dark themes via [data-theme]. The shared
+ * stress tokens already drive [data-theme] on <html>, so Pico follows
+ * automatically. These rules give the MFE full-bleed behaviour inside
+ * the host's content area and align a few accent colours with the rest
+ * of the lab. */
+
+.htmx-shell {
+  min-height: 100%;
+  padding: 32px 40px;
+  background: var(--stress-bg);
+  color: var(--stress-text);
+}
+.htmx-shell > .container-fluid {
+  max-width: 1100px;
+  margin: 0;
+}
+.htmx-shell article {
+  background: var(--stress-surface);
+  border: 1px solid var(--stress-border);
+  border-radius: var(--stress-radius);
+}
+.htmx-shell :is(h1, h2, h3, h4) {
+  color: var(--stress-text);
+}
+.htmx-shell :is(p, li, dd, dt, small) {
+  color: var(--stress-text);
+}
+.htmx-shell code {
+  font-family: var(--stress-font-mono);
+  font-size: 12px;
+  background: var(--stress-surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--stress-text);
+}

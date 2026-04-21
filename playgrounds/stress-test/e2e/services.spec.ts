@@ -61,22 +61,3 @@ test('service java-api lists workflows (Docker required)', async ({ request }) =
   expect(body.length).toBeGreaterThan(0)
   expect(body[0]).toMatchObject({ id: expect.stringMatching(/^wf-/), status: expect.any(String) })
 })
-
-test('service laravel reports healthy (Docker required)', async ({ request }) => {
-  const probe = await request
-    .get('http://localhost:4350/api/health', { failOnStatusCode: false })
-    .catch(() => null)
-  test.skip(!probe || !probe.ok(), 'Laravel service not running — start with `just laravel`')
-  const body = await probe!.json()
-  expect(body).toMatchObject({ status: 'ok', service: 'laravel' })
-})
-
-test('laravel Blade home renders the workflow queue (Docker required)', async ({ page, request }) => {
-  const probe = await request
-    .get('http://localhost:4350/api/health', { failOnStatusCode: false })
-    .catch(() => null)
-  test.skip(!probe || !probe.ok(), 'Laravel service not running — start with `just laravel`')
-  await page.goto('http://localhost:4350/')
-  await expect(page.getByRole('heading', { name: 'Workflow queue' })).toBeVisible()
-  await expect(page.getByText('New lease request')).toBeVisible()
-})

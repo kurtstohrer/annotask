@@ -238,11 +238,43 @@
   border: none;
   border-radius: 4px;
   cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
 }
 
 .submit-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Pulse ring on the pending-task "Add Task" CTA. Only while the form is
+ * actionable (not disabled, not mid-submit) so we don't distract during the
+ * loading spinner or when there's no text to submit. Scoped to the pending
+ * panel so the inline Add button in the tasks sidebar stays quiet. */
+@keyframes annotask-add-task-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  70%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+.pending-task-actions .submit-btn:not(:disabled):not(.is-submitting) {
+  animation: annotask-add-task-pulse 2.2s ease-out infinite;
+}
+
+.pending-task-actions .submit-btn:not(:disabled):hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pending-task-actions .submit-btn {
+    animation: none;
+    transition: background 0.12s ease;
+  }
+  .pending-task-actions .submit-btn:not(:disabled):hover {
+    transform: none;
+  }
 }
 
 .cancel-btn {
@@ -498,6 +530,41 @@
 .pending-task-actions .submit-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.pending-task-actions .submit-btn.is-submitting {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  opacity: 1;
+  cursor: progress;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 70%, white 30%) 50%,
+    var(--accent) 100%
+  );
+  background-size: 200% 100%;
+  animation: submit-btn-shimmer 1.2s linear infinite;
+}
+
+.submit-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--text-on-accent) 40%, transparent);
+  border-top-color: var(--text-on-accent);
+  animation: submit-spinner-spin 0.7s linear infinite;
+}
+
+@keyframes submit-btn-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes submit-spinner-spin {
+  to { transform: rotate(360deg); }
 }
 
 .pending-task-actions .cancel-btn {

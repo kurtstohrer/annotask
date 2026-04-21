@@ -4,20 +4,14 @@
 
 import '@annotask/stress-ui-tokens/tokens.css'
 import '@mantine/core/styles.css'
+import { bootstrapTheme } from '@annotask/stress-ui-tokens'
 
 import * as React from 'react'
 import * as ReactDOMClient from 'react-dom/client'
 import singleSpaReact from 'single-spa-react'
-import { MantineProvider } from '@mantine/core'
-import { App } from './App'
+import { Root } from './Root'
 
-function Root() {
-  return (
-    <MantineProvider defaultColorScheme="light">
-      <App />
-    </MantineProvider>
-  )
-}
+bootstrapTheme()
 
 const lifecycles = singleSpaReact({
   React,

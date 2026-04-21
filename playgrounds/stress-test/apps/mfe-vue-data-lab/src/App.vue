@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import {
   NAlert,
   NBadge,
   NButton,
+  NButtonGroup,
   NCard,
   NConfigProvider,
   NDataTable,
@@ -14,21 +15,40 @@ import {
   NSpace,
   NTag,
   NText,
+  darkTheme,
   type DataTableColumns,
+  type GlobalTheme,
 } from 'naive-ui'
 import type { Health, Product, Workflow, WorkflowStatus } from '@annotask/stress-contracts'
 import { products, workflows as seedWorkflows } from '@annotask/stress-fixtures'
+import { getTheme, onThemeChange, type StressTheme } from '@annotask/stress-ui-tokens'
+import HealthDashboard from './HealthDashboard.vue'
 
-// Absolute URL — works both solo (browser at :4220) and single-spa
-// (browser at :4200). CORS is open on FastAPI.
 const API_BASE = 'http://localhost:4320'
+
+const currentHash = ref(typeof window === 'undefined' ? '' : window.location.hash || '')
+function onHashChange() {
+  currentHash.value = window.location.hash || ''
+}
+const view = computed<'health' | 'data-lab'>(() =>
+  currentHash.value.startsWith('#/vue/health') ? 'health' : 'data-lab',
+)
 
 const health = ref<Health | null>(null)
 const healthError = ref<string | null>(null)
 const loading = ref(true)
 const rows = ref<Workflow[]>(seedWorkflows)
+const statusFilter = ref<WorkflowStatus | 'all'>('all')
+const transitioning = ref<string | null>(null)
+const lastTransition = ref<string | null>(null)
 
-async function load() {
+const stressTheme = ref<StressTheme>(getTheme())
+const naiveTheme = computed<GlobalTheme | null>(() =>
+  stressTheme.value === 'dark' ? darkTheme : null,
+)
+let unsubscribeTheme: (() => void) | null = null
+
+async function loadHealth() {
   loading.value = true
   healthError.value = null
   try {
@@ -42,7 +62,62 @@ async function load() {
   }
 }
 
-onMounted(load)
+async function loadWorkflows() {
+  const url = new URL(`${API_BASE}/api/workflows`)
+  if (statusFilter.value !== 'all') url.searchParams.set('status', statusFilter.value)
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const body = (await res.json()) as Workflow[]
+    rows.value = body
+  } catch {
+    // keep seed data if fastapi is down
+  }
+}
+
+async function setFilter(next: WorkflowStatus | 'all') {
+  statusFilter.value = next
+  await loadWorkflows()
+}
+
+const NEXT_STATUS: Record<WorkflowStatus, WorkflowStatus | null> = {
+  pending: 'in_progress',
+  in_progress: 'review',
+  review: 'accepted',
+  accepted: null,
+  denied: null,
+}
+
+async function advance(wf: Workflow) {
+  const next = NEXT_STATUS[wf.status]
+  if (!next) return
+  transitioning.value = wf.id
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/workflows/${wf.id}/transitions?to=${next}`,
+      { method: 'POST' },
+    )
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const body = (await res.json()) as { transition_id: string; status: WorkflowStatus }
+    lastTransition.value = `${wf.id} → ${body.status} (${body.transition_id.slice(0, 8)})`
+    await loadWorkflows()
+  } catch (err) {
+    lastTransition.value = `${wf.id} transition failed: ${err instanceof Error ? err.message : err}`
+  } finally {
+    transitioning.value = null
+  }
+}
+
+onMounted(() => {
+  unsubscribeTheme = onThemeChange((t) => (stressTheme.value = t))
+  window.addEventListener('hashchange', onHashChange)
+  loadHealth()
+  loadWorkflows()
+})
+onUnmounted(() => {
+  unsubscribeTheme?.()
+  window.removeEventListener('hashchange', onHashChange)
+})
 
 const statusTone: Record<WorkflowStatus, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
   pending: 'warning',
@@ -61,6 +136,25 @@ const workflowColumns = computed<DataTableColumns<Workflow>>(() => [
     key: 'status',
     width: 130,
     render: (row) => h(NTag, { type: statusTone[row.status] ?? 'default', size: 'small', round: true }, () => row.status),
+  },
+  {
+    title: 'Action',
+    key: 'action',
+    width: 140,
+    render: (row) => {
+      const next = NEXT_STATUS[row.status]
+      if (!next) return h(NText, { depth: 3 }, () => '—')
+      return h(
+        NButton,
+        {
+          size: 'tiny',
+          type: 'primary',
+          loading: transitioning.value === row.id,
+          onClick: () => advance(row),
+        },
+        () => `→ ${next}`,
+      )
+    },
   },
 ])
 
@@ -82,12 +176,17 @@ const productColumns = computed<DataTableColumns<Product>>(() => [
       h(NTag, { type: row.in_stock ? 'success' : 'default', size: 'small' }, () => (row.in_stock ? 'yes' : 'no')),
   },
 ])
+
+const STATUS_FILTERS: Array<WorkflowStatus | 'all'> = [
+  'all', 'pending', 'in_progress', 'review', 'accepted', 'denied',
+]
 </script>
 
 <template>
-  <NConfigProvider>
-    <NLayout class="page">
-      <NLayoutContent content-style="padding: 28px 32px; max-width: 900px;">
+  <HealthDashboard v-if="view === 'health'" />
+  <NConfigProvider v-else :theme="naiveTheme">
+    <NLayout style="background: var(--stress-bg); min-height: 100%">
+      <NLayoutContent content-style="padding: 32px 40px;">
         <header class="header">
           <h1>Vue Data Lab</h1>
           <p class="sub">
@@ -99,14 +198,15 @@ const productColumns = computed<DataTableColumns<Product>>(() => [
           <NCard title="What this stresses" size="small">
             <ul>
               <li>Vue composables + typed API client — FastAPI OpenAPI discovery</li>
-              <li>Naive UI <code>NDataTable</code> component discovery</li>
+              <li>Naive UI <code>NDataTable</code>, <code>NLayout</code> component discovery</li>
+              <li>Workflow status filter + POST transitions against FastAPI</li>
               <li>Tasks routed under <code>mfe: vue-data-lab</code></li>
             </ul>
           </NCard>
 
           <NCard title="Upstream health" size="small">
             <template #header-extra>
-              <NButton size="small" :loading="loading" @click="load">Refresh</NButton>
+              <NButton size="small" :loading="loading" @click="loadHealth">Refresh</NButton>
             </template>
             <NAlert v-if="healthError" type="error" :show-icon="false" title="FastAPI unreachable" style="margin-bottom: 8px;">
               <code>{{ healthError }}</code> — start with <code>just fastapi</code>.
@@ -123,10 +223,25 @@ const productColumns = computed<DataTableColumns<Product>>(() => [
           </NCard>
 
           <NCard title="Workflows" size="small">
+            <template #header-extra>
+              <NButtonGroup size="tiny">
+                <NButton
+                  v-for="s in STATUS_FILTERS"
+                  :key="s"
+                  :type="statusFilter === s ? 'primary' : 'default'"
+                  @click="setFilter(s)"
+                >
+                  {{ s }}
+                </NButton>
+              </NButtonGroup>
+            </template>
+            <NAlert v-if="lastTransition" type="info" :show-icon="false" style="margin-bottom: 8px;">
+              <code>{{ lastTransition }}</code>
+            </NAlert>
             <NDataTable :columns="workflowColumns" :data="rows" size="small" :bordered="false" />
           </NCard>
 
-          <NCard title="Products" size="small">
+          <NCard title="Products (shared-fixtures)" size="small">
             <NDataTable :columns="productColumns" :data="products" size="small" :bordered="false" />
           </NCard>
         </NSpace>
@@ -136,9 +251,21 @@ const productColumns = computed<DataTableColumns<Product>>(() => [
 </template>
 
 <style>
-html, body { margin: 0; font-family: var(--stress-font); color: var(--stress-text); background: var(--stress-bg); }
-.page { background: var(--stress-bg); min-height: 100vh; }
-.header h1 { margin: 0 0 4px; font-size: 22px; }
-.sub { color: var(--stress-text-muted); margin: 0 0 16px; font-size: 13px; }
-code { font-family: var(--stress-font-mono); font-size: 12px; background: var(--stress-surface-2); padding: 1px 5px; border-radius: 4px; }
+.page {
+  min-height: 100%;
+  padding: 32px 40px;
+  background: var(--stress-bg);
+  color: var(--stress-text);
+}
+.header h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: -0.01em; }
+.sub { color: var(--stress-text-muted); margin: 0 0 20px; font-size: 13px; }
+.page code,
+.n-layout code {
+  font-family: var(--stress-font-mono);
+  font-size: 12px;
+  background: var(--stress-surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--stress-text);
+}
 </style>

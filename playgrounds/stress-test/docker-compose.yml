@@ -36,12 +36,3 @@ services:
       - "4310:4310"
     environment:
       - PORT=4310
-
-  laravel:
-    build: ./services/laravel
-    ports:
-      - "4350:4350"
-    environment:
-      - PORT=4350
-      - APP_ENV=local
-      - APP_DEBUG=true

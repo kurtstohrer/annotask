@@ -178,37 +178,6 @@ export interface SectionRequestChange extends BaseChange {
   prompt: string
 }
 
-/** Simplified DOM node for element context */
-export interface ElementNode {
-  tag: string
-  classes?: string
-  text?: string
-  children?: ElementNode[]
-  childrenTruncated?: number
-}
-
-/** Ancestor layout info */
-export interface AncestorInfo {
-  tag: string
-  display: string
-  classes?: string
-  component?: string
-  flexDirection?: string
-  gridTemplateColumns?: string
-  gridTemplateRows?: string
-  gap?: string
-  overflow?: string
-  childCount?: number
-}
-
-/** Element context: parent layout chain + child structure */
-export interface ElementContext {
-  ancestors: AncestorInfo[]
-  subtree: ElementNode
-  /** Visible label text of the selected element (aria-label/title/textContent, <=200 chars). */
-  selected_element_text?: string
-}
-
 /**
  * Minimal component reference stored inside a task's `context` object.
  * Attached in two places:
@@ -294,12 +263,28 @@ export interface DataSourceLibrary {
 export interface ProjectDataEntry {
   kind: DataSource['kind']
   name: string
+  /** Human-readable label used in the Data view list — preserves host/port +
+   *  HTTP path (e.g. `localhost:4320 /api/health`) so same-path-different-host
+   *  endpoints stay distinguishable to the user even when `name` normalizes
+   *  to a short identifier. Optional — falls back to `name` when missing. */
+  display_name?: string
   file: string
   line?: number
   /** Endpoint or query key extracted from the definition body, when a literal. */
   endpoint?: string
+  /** Path-only endpoints (`/api/health`) resolved to an absolute URL via the
+   *  nearest vite.config's server.proxy — so a Vue MFE that proxies `/api` to
+   *  FastAPI at :4320 doesn't get its highlights attributed to Go at :4330
+   *  just because both schemas expose `/api/health`. */
+  resolved_endpoint?: string
   /** Non-definition references to `name` across src/. Ranking signal. */
   used_count: number
+  /** Inline-fetch entries get an endpoint-derived name (`apiHealth`) that
+   *  never appears verbatim in source, so the binding analyzer has nothing
+   *  to match against. The scanner populates this with the local variable(s)
+   *  that actually hold the fetch result (`health`, `workflows`, …) so the
+   *  analyzer can trace those identifiers into template / JSX sites. */
+  hint_symbols?: string[]
 }
 
 /** Project-wide catalog of data sources — the data-library equivalent of ComponentCatalog. */
@@ -432,6 +417,11 @@ export interface ApiSchema {
   source: 'file' | 'dev-server'
   /** Filesystem path (relative to projectRoot) or URL the schema came from. */
   location: string
+  /** Origin this schema describes (e.g. `http://localhost:4320`). Used to
+   *  scope highlight matches so the same path on different services stays
+   *  attributed to the right service. Populated from the OpenAPI `servers`
+   *  field for filesystem specs, or from `location` for HTTP probes. */
+  origin?: string
   title?: string
   version?: string
   /**
@@ -584,7 +574,6 @@ export interface AnnotaskTask {
   viewport?: ViewportInfo
   color_scheme?: ColorSchemeInfo
   interaction_history?: InteractionSnapshot
-  element_context?: ElementContext
   data_context?: DataContext              // codebase-derived data source info for the selected element
   screenshot?: string       // Screenshot filename, served at /__annotask/screenshots/{filename}
   screenshot_meta?: ScreenshotMeta       // spatial metadata for the screenshot
@@ -602,10 +591,31 @@ export interface AnnotaskTaskList {
   tasks: AnnotaskTask[]
 }
 
+/** How a theme variant is activated in the user's app (used to match iframe detection) */
+export interface DesignSpecThemeSelector {
+  kind: 'attribute' | 'class' | 'media' | 'default'
+  host?: 'html' | 'body'        // attribute / class host element
+  name?: string                 // attribute name ('data-theme') or class name ('dark')
+  value?: string                // attribute value ('dark')
+  media?: string                // '(prefers-color-scheme: dark)'
+}
+
+/** One theme variant — 'light', 'dark', or a named theme like 'forest' / 'solarized' */
+export interface DesignSpecTheme {
+  id: string                    // stable id used to key per-variant token values
+  name: string                  // human label
+  scheme?: 'light' | 'dark'     // classification for fallback matching when the iframe only reports scheme
+  selector: DesignSpecThemeSelector
+}
+
 /** A single design token with semantic role and source tracking */
 export interface DesignSpecToken {
   role: string          // semantic: 'primary', 'background', 'heading-font', 'base-size', etc.
-  value: string         // resolved: '#3b82f6', 'Inter, sans-serif', '16px'
+  /**
+   * Resolved value per theme variant. Keyed by DesignSpecTheme.id.
+   * Tokens that don't vary across variants carry the same value for each id.
+   */
+  values: Record<string, string>
   cssVar?: string       // '--color-primary' (enables live preview when present)
   source: string        // human-readable: 'var(--color-primary)', 'tailwind.config:colors.primary'
   sourceFile?: string   // 'src/assets/main.css'
@@ -620,6 +630,10 @@ export interface AnnotaskDesignSpec {
     version: string
     styling: string[]
   }
+  /** Theme variants detected in the app. Absent/empty ⇒ single-theme app. */
+  themes?: DesignSpecTheme[]
+  /** Theme id used when no selector matches the iframe's current state. */
+  defaultTheme?: string
   colors: DesignSpecToken[]
   typography: {
     families: DesignSpecToken[]

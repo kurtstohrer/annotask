@@ -1,29 +1,36 @@
 # Annotask Setup Guide
 
-## 1. Install
+`docs/setup.md` is the full reference. This file is the short version for getting a project running quickly.
+
+## Requirements
+
+- Node.js 18+
+- Vite 4+ or Webpack 5+
+- A supported frontend stack: Vue, React, Svelte, Solid, Astro, HTML, or htmx
+
+Astro, HTML, and htmx are Vite-first paths.
+
+## Install
 
 ```bash
 npm install -D annotask
 ```
 
-## 2. Add the Plugin
+## Add The Plugin
 
-Annotask should come after your framework plugin.
-
-### Vite
+Vite example:
 
 ```ts
+import { defineConfig } from 'vite'
+import vue from '@vitejs/plugin-vue'
 import { annotask } from 'annotask'
 
 export default defineConfig({
-  plugins: [
-    vue(),    // or react(), svelte(), solid() - omit for plain HTML/htmx
-    annotask(),
-  ],
+  plugins: [vue(), annotask()],
 })
 ```
 
-### SolidJS
+Solid example:
 
 ```ts
 import { defineConfig } from 'vite'
@@ -35,187 +42,130 @@ export default defineConfig({
 })
 ```
 
-### Astro
-
-```js
-import { defineConfig } from 'astro/config'
-import { annotask } from 'annotask'
-
-export default defineConfig({
-  vite: {
-    plugins: [annotask()],
-  },
-})
-```
-
-Astro source mapping uses Astro's native `data-astro-source-*` attributes automatically.
-
-### Webpack
+Webpack example:
 
 ```ts
 import { AnnotaskWebpackPlugin } from 'annotask/webpack'
 
-plugins: [new AnnotaskWebpackPlugin()]
+export default {
+  plugins: [new AnnotaskWebpackPlugin()],
+}
 ```
 
-## 3. Start Your Dev Server
+Annotask should come after the framework plugin in Vite.
+
+## Start The Dev Server
 
 ```bash
 npm run dev
 ```
 
-Then open `http://localhost:5173/__annotask/`.
+Then open:
 
-## 4. Connect Your AI Agent
+- app: `http://localhost:5173/`
+- shell: `http://localhost:5173/__annotask/`
+- status: `http://localhost:5173/__annotask/api/status`
+- MCP: `http://localhost:5173/__annotask/mcp`
 
-Annotask supports two integration styles: **MCP** and **skills**.
+## Connect Your Agent
 
-### Option A: MCP
-
-Recommended for Claude Code, Cursor, VS Code, Windsurf, and other MCP clients.
-
-Quick setup:
+Recommended: MCP.
 
 ```bash
 npx annotask init-mcp --editor=claude
 ```
 
-Manual config example:
+Supported editor targets:
 
-```json
-{
-  "mcpServers": {
-    "annotask": {
-      "type": "url",
-      "url": "http://localhost:5173/__annotask/mcp"
-    }
-  }
-}
-```
+- `claude`
+- `cursor`
+- `vscode`
+- `windsurf`
+- `all`
 
-For stdio-only MCP clients:
-
-```json
-{
-  "mcpServers": {
-    "annotask": {
-      "command": "npx",
-      "args": ["annotask", "mcp"]
-    }
-  }
-}
-```
-
-### MCP Tools
-
-Current tool surface:
-
-- `annotask_get_tasks`, `annotask_get_task`, `annotask_update_task`, `annotask_create_task`, `annotask_delete_task`
-- `annotask_get_design_spec`
-- `annotask_get_components`, `annotask_get_component`, `annotask_get_component_examples`
-- `annotask_get_screenshot`, `annotask_get_code_context`
-- `annotask_get_data_context`, `annotask_get_data_sources`, `annotask_get_data_source_examples`, `annotask_get_data_source_details`
-- `annotask_get_api_schemas`, `annotask_get_api_operation`, `annotask_resolve_endpoint`
-
-### Typical MCP Workflow
-
-1. `annotask_get_tasks` to find actionable work.
-2. `annotask_update_task` with `status: "in_progress"` to lock a task.
-3. Pull deeper context only when needed: screenshot, code context, components, data context, API schemas.
-4. Edit source files.
-5. `annotask_update_task` with `status: "review"` and a `resolution` note.
-6. Use `questions` or `blocked_reason` when the task cannot be completed directly.
-
-### Option B: Skills
-
-Install the bundled skills:
+Or install the bundled skills:
 
 ```bash
 npx annotask init-skills
 ```
 
-Default targets are `.claude/skills/` and `.agents/skills/`. Built-in alternate target: `copilot`.
+Default skill targets:
 
-Available skills:
+- `.claude/skills/`
+- `.agents/skills/`
 
-| Skill | What it does |
-|-------|--------------|
-| `/annotask-init` | Scans the project and generates `.annotask/design-spec.json` |
-| `/annotask-apply` | Pulls pending and denied tasks, applies changes, and marks them for review |
+Optional built-in target:
 
-## 5. Generate the Design Spec
+- `.copilot/skills/`
+
+## Generate The Design Spec
 
 Run `/annotask-init` after installing skills, or ask your agent to initialize Annotask.
 
 This writes `.annotask/design-spec.json`, which powers:
 
-- Design token editing
-- breakpoint metadata
-- component and icon library discovery
-- better grounding for `theme_update` work
+- Design > Tokens
+- theme-aware token editing
+- component and icon metadata
+- better grounding for `theme_update` tasks
 
-## 6. What the Current Shell Includes
+## Monorepos And MFEs
 
-Annotask is organized into three main surfaces:
+Annotask is workspace-aware. It can scan sibling packages in pnpm, npm, Yarn, Bun, and Lerna workspaces.
 
-- **Editor**: annotations, screenshots, viewport controls, route-aware tasks
-- **Design**: tokens, inspector, layout overlay, component browser
-- **Develop**: a11y, data sources, libraries, performance, errors
-
-## 7. Generated State
-
-Annotask writes local state under `.annotask/`.
-
-Typical contents:
-
-- `tasks.json`
-- `design-spec.json`
-- `server.json`
-- `screenshots/`
-
-Add it to `.gitignore` unless you intentionally want to commit it.
-
-## Micro-frontends
-
-For MFE setups where multiple apps render into one root shell:
-
-### MFE child
+For MFE children pointing at a root shell:
 
 ```ts
 annotask({
-  mfe: '@myorg/my-mfe',
+  mfe: '@myorg/catalog',
   server: 'http://localhost:24678',
 })
 ```
 
-### Root shell
+Webpack root shell:
 
 ```ts
 plugins: [new AnnotaskWebpackPlugin({ port: 24678 })]
 ```
 
-When `server` is set, the child skips starting its own Annotask server and forwards to the root shell's server instead.
+Tasks created from MFE elements keep the `mfe` field and can be filtered in the shell, CLI, HTTP API, and MCP tools.
 
-Tasks created from MFE elements carry the `mfe` field and can be filtered through MCP, CLI, or HTTP.
+## Generated State
+
+Annotask writes state under `.annotask/`:
+
+- `tasks.json`
+- `design-spec.json`
+- `server.json`
+- `performance.json`
+- `screenshots/`
+
+Usually this should be ignored in git:
+
+```gitignore
+.annotask/
+```
 
 ## Troubleshooting
 
-**Elements do not show source info**
+**No source mapping on elements**
 
-Make sure Annotask is listed after the framework plugin in Vite. For Astro and plain HTML/htmx, source mapping is handled through their dedicated integration paths.
+Put Annotask after the framework plugin in Vite.
 
-**MCP is not connecting**
+**Shell loads but the iframe is blank**
 
-The dev server must be running. Check `annotask status` and confirm the MCP endpoint is reachable at `/__annotask/mcp`.
+Make sure the app itself still works at the dev-server URL.
 
-**WebSocket updates are missing**
+**CLI or MCP cannot find the server**
 
-The shell and CLI connect to `/__annotask/ws` on the same port as the Annotask server.
+Use `annotask status --server=http://localhost:PORT` or check `.annotask/server.json`.
 
-**Changes are not appearing in the report**
+**Cross-origin or MFE setup**
 
-No-op edits are filtered out. If the computed before and after values are identical, no change is emitted.
+Annotask uses a `postMessage` bridge, so local cross-origin iframe setups can work without direct DOM access.
 
-**Cross-origin or MFE iframe**
+## Full Docs
 
-Annotask uses a `postMessage` bridge rather than direct iframe DOM access, so separate local dev-server origins can still work.
+- detailed setup: [`docs/setup.md`](docs/setup.md)
+- CLI reference: [`docs/cli.md`](docs/cli.md)
+- API reference: [`docs/api.md`](docs/api.md)

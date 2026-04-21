@@ -2,5 +2,6 @@ packages:
   - 'playgrounds/simple/*'
   - 'playgrounds/stress-test/apps/*'
   - 'playgrounds/stress-test/packages/*'
+  - 'playgrounds/stress-test/services/node-api'
 onlyBuiltDependencies:
   - esbuild

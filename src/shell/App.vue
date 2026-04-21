@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useStyleEditor } from './composables/useStyleEditor'
 import { useInteractionMode } from './composables/useInteractionMode'
-import { useDesignSpec } from './composables/useDesignSpec'
+import { useDesignSpec, setActiveColorScheme } from './composables/useDesignSpec'
 import { useLayoutOverlay } from './composables/useLayoutOverlay'
 import { useAnnotations } from './composables/useAnnotations'
 import { useIframeManager } from './composables/useIframeManager'
@@ -73,12 +73,40 @@ const interactionHistory = useInteractionHistory()
 
 // ── State ──────────────────────────────────────────────
 const iframeRef = ref<HTMLIFrameElement | null>(null)
+const canvasAreaRef = ref<HTMLDivElement | null>(null)
+
+// Canvas-area-relative positioning for overlays that need to be clipped to
+// the iframe area. `toShellRect` returns viewport coords (for position: fixed
+// overlays like hover/select), but the data/a11y overlays render inside a
+// clipping layer whose origin is canvas-area's top-left — subtracting that
+// origin here keeps them from drawing over the shell chrome when the iframe
+// scrolls its own content. Also used for any future overlays that should stay
+// clipped to the iframe area.
+function overlayStyle(
+  r: { x: number; y: number; width: number; height: number },
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const cr = canvasAreaRef.value?.getBoundingClientRect()
+  const cx = cr?.left ?? 0
+  const cy = cr?.top ?? 0
+  return {
+    left: (r.x - cx) + 'px',
+    top: (r.y - cy) + 'px',
+    width: r.width + 'px',
+    height: r.height + 'px',
+    ...extra,
+  }
+}
 const { mode: interactionMode } = useInteractionMode()
 const { isInitialized: configInitialized } = useDesignSpec()
 const { shellView, designSection, developSection, activePanel } = useShellNavigation({ interactionMode })
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
+// Keep the shared active-theme signal in sync with the iframe so views that
+// don't see iframe.colorScheme directly (e.g. the token palette popover) can
+// still resolve the iframe's current design-spec variant.
+watch(iframe.colorScheme, (cs) => setActiveColorScheme(cs), { immediate: true })
 const arrowColor = useLocalStorageRef('annotask:arrowColor', '#ef4444')
 const highlightColor = useLocalStorageRef('annotask:highlightColor', '#f59e0b')
 const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value, () => discardUncommittedAnnotations())
@@ -90,8 +118,14 @@ const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK
 // Markup visibility toggles
 const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
 const includeHistory = useLocalStorageBool('annotask:includeHistory', false)
-const includeElementContext = useLocalStorageBool('annotask:includeElementContext', false)
-const includeDataContext = useLocalStorageBool('annotask:includeDataContext', false)
+// Intentionally non-persistent: every session starts with rendered HTML off so
+// tasks don't accidentally carry a large outerHTML blob from a prior opt-in.
+const includeRenderedHtml = ref(false)
+// Not persisted: data context should only be "on" when the currently selected
+// element sits in a file with detected data sources. The watcher below flips
+// this on/off as selection changes — stale localStorage values would make it
+// look enabled for selections that have no data mapping.
+const includeDataContext = ref(false)
 const screenshots = useScreenshots(iframe)
 const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
 const showThemeEditor = ref(false)
@@ -125,28 +159,7 @@ watch(primarySelection, (sel, old) => {
   }
 })
 
-// Hover/selection label formatting. A PascalCase component gets shown in
-// angle brackets (e.g. `<Button>`) with its enclosing component as the
-// suffix (`<Button> · App`). Plain HTML elements inside a regular template
-// fall back to the tag form (`<span> · App`).
-function formatElementLabel(info: { tag: string; component: string; source_tag?: string; parent_component?: string } | null): { bracket: string; suffix: string } {
-  if (!info) return { bracket: '', suffix: '' }
-  const isPascal = (s?: string) => !!s && /^[A-Z]/.test(s)
-  // Preferred: data-annotask-source-tag is the JSX/template tag name as written
-  // in source — "Button", "Flex", "PlanetCard". When it's PascalCase it identifies
-  // a component invocation, even in frameworks (like React) where the rendered
-  // DOM element doesn't carry a distinct data-annotask-component.
-  if (isPascal(info.source_tag) && info.source_tag !== info.tag) {
-    return { bracket: info.source_tag as string, suffix: info.component || '' }
-  }
-  // Fallback: element is the root of a custom component in frameworks that
-  // forward attrs across component boundaries (Vue). Recognize by a different
-  // PascalCase component on the ancestor chain.
-  if (isPascal(info.component) && isPascal(info.parent_component) && info.parent_component !== info.component) {
-    return { bracket: info.component, suffix: info.parent_component as string }
-  }
-  return { bracket: info.tag, suffix: info.component || '' }
-}
+import { formatElementLabel } from './utils/elementLabel'
 
 const hoverLabel = computed(() => formatElementLabel(hoverInfo.value))
 const selectLabel = computed(() => {
@@ -182,14 +195,9 @@ watch(primarySelection, (sel) => {
     if (token !== dataContextProbeToken) return  // selection moved on while probing
     lastProbedFile = file
     dataContextProbe.value = result
-    // Auto-check on transition to hasData:true; only auto-uncheck when it
-    // transitions to hasData:false (respects an explicit user uncheck within
-    // the same truthy window).
-    if (result?.hasData) {
-      if (!includeDataContext.value) includeDataContext.value = true
-    } else {
-      includeDataContext.value = false
-    }
+    // Leave includeDataContext off by default. Auto-uncheck when the probed
+    // selection has no data so a stale opt-in doesn't leak across elements.
+    if (!result?.hasData) includeDataContext.value = false
   }, 150)
 })
 
@@ -197,14 +205,73 @@ watch(primarySelection, (sel) => {
 const a11yScanner = useA11yScanner(iframe, taskSystem, primarySelection as any, currentRoute)
 const { a11yViolations, a11yLoading, a11yError, a11yScanned, a11yTaskRules, scanA11y, createA11yTask } = a11yScanner
 const detailA11yViolation = ref<A11yViolation | null>(null)
-function onCreateA11yTask(v: A11yViolation) { createA11yTask(v); detailA11yViolation.value = null }
 
 // A11y violation overlays — only render when the user is on the Audit > A11y view.
 // Lifecycle is tied to the scan: when violations clear (rescan / route change /
 // panel reset), the overlays clear automatically via the composable's watchers.
 const a11yHighlightActive = computed(() => shellView.value === 'develop' && developSection.value === 'a11y')
 const a11yFocusedRule = ref<string | null>(null)
-const a11yHighlights = useA11yHighlights({ iframe, violations: a11yViolations, active: a11yHighlightActive, focusedRule: a11yFocusedRule })
+
+// Tab/focus order overlay — opt-in, toggled from the A11y panel header.
+const tabOrder = useTabOrderOverlay({ iframe, active: a11yHighlightActive })
+
+// Synthetic violations derived from flagged tab-order badges, grouped by flag
+// type so they render as first-class entries in the main violations list
+// (clickable, hover-highlighted, drawer-openable).
+const TAB_ORDER_FLAG_META: Record<Exclude<TabOrderBadge['flag'], null>, { impact: string; help: string; description: string }> = {
+  positive: {
+    impact: 'serious',
+    help: 'Avoid positive tabindex values',
+    description: 'Positive tabindex values break the expected DOM tab order and make focus hard to predict. Use tabindex="0" or remove it.',
+  },
+  reorder: {
+    impact: 'moderate',
+    help: 'Tab order should match visual order',
+    description: 'The DOM tab order does not match the visual reading order. Keyboard users will traverse the page in a surprising sequence.',
+  },
+  unreachable: {
+    impact: 'serious',
+    help: 'Interactive elements must be reachable by keyboard',
+    description: 'A native interactive element has tabindex="-1", making it unreachable by keyboard users.',
+  },
+}
+const TAB_ORDER_HELP_URL = 'https://www.w3.org/WAI/WCAG21/Understanding/focus-order.html'
+const tabOrderViolations = computed<A11yViolation[]>(() => {
+  if (!tabOrder.enabled.value) return []
+  const byFlag = new Map<Exclude<TabOrderBadge['flag'], null>, TabOrderBadge[]>()
+  for (const b of tabOrder.badges.value) {
+    if (!b.flag) continue
+    const arr = byFlag.get(b.flag) ?? []
+    arr.push(b)
+    byFlag.set(b.flag, arr)
+  }
+  const out: A11yViolation[] = []
+  for (const [flag, badges] of byFlag) {
+    const meta = TAB_ORDER_FLAG_META[flag]
+    out.push({
+      id: `tab-order:${flag}`,
+      impact: meta.impact,
+      description: meta.description,
+      help: meta.help,
+      helpUrl: TAB_ORDER_HELP_URL,
+      nodes: badges.length,
+      elements: badges.map(b => ({
+        html: `<${b.tag}>${b.accessible_name || ''}</${b.tag}>`.trim(),
+        target: '',
+        failureSummary: b.reason || meta.help,
+        eid: b.eid,
+      })),
+    })
+  }
+  return out
+})
+const mergedA11yViolations = computed<A11yViolation[]>(() => {
+  return tabOrderViolations.value.length
+    ? [...a11yViolations.value, ...tabOrderViolations.value]
+    : a11yViolations.value
+})
+
+const a11yHighlights = useA11yHighlights({ iframe, violations: mergedA11yViolations, active: a11yHighlightActive, focusedRule: a11yFocusedRule })
 function onSelectA11yViolation(v: A11yViolation) {
   detailA11yViolation.value = v
   // Pull the user's eye to where the violation lives. We pick the first
@@ -217,26 +284,24 @@ function onSelectA11yViolation(v: A11yViolation) {
 // the next scan.
 watch(a11yHighlightActive, (v) => { if (!v) a11yFocusedRule.value = null })
 
-// Tab/focus order overlay — opt-in, toggled from the A11y panel header.
-const tabOrder = useTabOrderOverlay({ iframe, active: a11yHighlightActive })
 async function createTabOrderTask(b: TabOrderBadge) {
   const colorScheme = await iframe.getColorScheme()
-  const elementContext = await iframe.getElementContext(b.eid)
+  // Tab-order findings have no source file — omit `file`/`line`/`component`
+  // rather than sending empty strings, because the server's SafeSourceFile
+  // schema rejects `''` (.min(1)) and the POST returns 400.
   await taskSystem.createTask({
     type: 'a11y_fix',
     description: `Fix tab order: ${b.reason || 'tab/visual order mismatch'}`,
-    file: '',
-    line: 0,
-    component: '',
     route: currentRoute.value,
     ...(colorScheme ? { color_scheme: colorScheme } : {}),
-    ...(elementContext ? { element_context: elementContext } : {}),
     context: {
-      rule: 'tab-order',
+      // Scope by flag so the "tasked" badge in the merged violations list
+      // lines up with the synthetic violation id (tab-order:<flag>).
+      rule: `tab-order:${b.flag ?? 'unknown'}`,
       impact: b.flag === 'positive' ? 'serious' : 'moderate',
       description: 'Synthetic finding from Annotask tab-order overlay (not from axe).',
       help: b.reason || 'Tab order does not match expected DOM/visual flow.',
-      helpUrl: 'https://www.w3.org/WAI/WCAG21/Understanding/focus-order.html',
+      helpUrl: TAB_ORDER_HELP_URL,
       affected_elements: 1,
       tab_order: { index: b.index, tabindex: b.tabindex, flag: b.flag, dom_order: b.domOrder },
       elements: [{
@@ -258,6 +323,21 @@ async function createTabOrderTask(b: TabOrderBadge) {
       }],
     },
   })
+}
+
+function onCreateA11yTask(v: A11yViolation) {
+  if (v.id.startsWith('tab-order:')) {
+    // Tab-order violations bundle multiple flagged elements; emit one fix
+    // task per element so each element's context is captured separately.
+    for (const el of v.elements || []) {
+      if (!el.eid) continue
+      const badge = tabOrder.badges.value.find(b => b.eid === el.eid)
+      if (badge) createTabOrderTask(badge)
+    }
+  } else {
+    createA11yTask(v)
+  }
+  detailA11yViolation.value = null
 }
 
 const errorMonitor = useErrorMonitor(iframe, taskSystem, currentRoute)
@@ -309,7 +389,7 @@ attachComponentsHighlights(sharedAdapter)
 // avoids direct contentDocument access and survives iframe navigations.
 const dataTooltip = ref<{ x: number; y: number; label: string; color: string } | null>(null)
 
-interface DataHoverPayload { file: string; line: string | number; tag?: string; clientX: number; clientY: number }
+interface DataHoverPayload { file: string; line: string | number; tag?: string; module?: string; clientX: number; clientY: number }
 
 iframe.onBridgeEvent('data:hover', (payload: DataHoverPayload) => {
   if (!dataHighlightActive.value) {
@@ -325,20 +405,32 @@ iframe.onBridgeEvent('data:hover', (payload: DataHoverPayload) => {
   }
   const lineNum = typeof payload.line === 'number' ? payload.line : Number(payload.line) || 0
   const tag = payload?.tag ?? ''
+  const hoverModule = payload?.module ?? ''
   // Prefer tag-based match when available — multiple components can share
   // one file, so matching only on file+line (with line:0 wildcards) would
   // always pick the first-registered source. The iframe reports the hovered
   // element's `data-annotask-source-tag`, which uniquely identifies the
   // library component (or other tagged source) under the cursor.
   //
-  // If a tag was reported but no source matches it, treat that as "hovering
-  // something we don't track" and clear focus — don't fall back to the
-  // line-match, which would otherwise light up whichever source happened to
-  // be registered first in this file (the infamous "every hover = Badge").
+  // When a `source-module` is also on the hovered element (emitted by the
+  // plugin transform for imported components), we require rect's own
+  // `module` to match as either exact package name or a subpath prefix. That
+  // disambiguates two libraries exporting the same component name (Mantine
+  // Button vs Radix Button) so the sidebar highlights the correct row.
+  //
+  // If a tag was reported but no source matches, clear focus — don't fall
+  // back to the line-match, which would otherwise light up whichever source
+  // happened to be registered first in this file.
   const rects = dataHighlights.rects.value
   let hit: typeof rects[number] | undefined
   if (tag) {
-    hit = rects.find(r => r.file === file && r.sourceName === tag)
+    hit = rects.find(r => {
+      if (r.file !== file) return false
+      if (r.tag !== tag) return false
+      if (!r.module) return true
+      if (!hoverModule) return true
+      return hoverModule === r.module || hoverModule.startsWith(r.module + '/')
+    })
   } else {
     hit = rects.find(r => r.file === file && (r.line === lineNum || r.line === 0))
   }
@@ -387,12 +479,12 @@ const contextMenu = ref({ visible: false, x: 0, y: 0 })
 const taskWorkflows = useTaskWorkflows({
   iframe, annotations, taskSystem, styleEditor, screenshots, viewport, interactionHistory,
   primarySelection, selectedEids, selectionRects, taskElementRects,
-  includeHistory, includeElementContext, includeDataContext, dataContextProbe,
+  includeHistory, includeRenderedHtml, includeDataContext, dataContextProbe,
   currentRoute, activePanel,
   clearSelection, startAnnotationLoop,
 })
 const {
-  pendingTaskCreation, pendingTaskText,
+  pendingTaskCreation, pendingTaskText, submittingPendingTask,
   routeTasks,
   showNewTaskForm, newTaskText,
   denyingTaskId, denyFeedbackText,
@@ -530,7 +622,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
     <!-- Main -->
     <div class="main">
       <!-- Canvas / iframe -->
-      <div class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
+      <div ref="canvasAreaRef" class="canvas-area" :class="{ 'viewport-active': !viewport.isFullWidth.value }"
         @pointerdown="shellView === 'editor' ? onCanvasPointerDown($event) : undefined"
         @pointermove="shellView === 'editor' ? onCanvasPointerMove($event) : undefined"
         @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined">
@@ -555,40 +647,34 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           </div>
         </template>
 
-        <!-- Data/Components views: highlight elements sourced from the selected source(s).
-             In the Components list, all on-page components are pre-registered
-             so iframe-hover can light up list rows — but the rect itself should
-             stay invisible until the user actually focuses one. The `hover-only`
-             modifier flips the default opacity off for that case.
+        <!-- Data/Components + Audit > Accessibility overlays.
+             These render many rects at once (one per matched element) and the
+             iframe can scroll any of them out of view. `.overlay-layer` clips
+             to canvas-area bounds via overflow:hidden, and the child rects use
+             position: absolute with coords shifted to canvas-area's origin —
+             so they never leak over the toolbar, sidebar, or panels when the
+             iframe content scrolls.
 
-             Focus semantics:
+             Focus semantics for data-source overlays:
              - `focusedEid` set   → only that specific rect is focused (iframe hover)
              - `focusedName` only → every rect with matching sourceName is focused (row hover / selection)
              - Neither             → nothing is focused, nothing is dimmed -->
-        <template v-if="dataHighlightActive">
-          <div v-for="h in dataHighlights.rects.value" :key="'dh-' + h.eid"
-            class="highlight data-source"
-            :class="rectClass(h)"
-            :style="{
-              left: h.rect.x + 'px', top: h.rect.y + 'px',
-              width: h.rect.width + 'px', height: h.rect.height + 'px',
-              '--hl-color': h.color,
-            }" />
-        </template>
+        <div class="overlay-layer">
+          <template v-if="dataHighlightActive">
+            <div v-for="h in dataHighlights.rects.value" :key="'dh-' + h.eid"
+              class="highlight data-source"
+              :class="rectClass(h)"
+              :style="overlayStyle(h.rect, { '--hl-color': h.color })" />
+          </template>
 
-        <!-- Audit > Accessibility: outline every violating element using the
-             current scan's results. Color follows impact via --severity-* vars.
-             Cleared automatically when violations reset (rescan / route change). -->
-        <template v-if="a11yHighlightActive">
-          <div v-for="h in a11yHighlights.rects.value" :key="'a11y-' + h.ruleId + '-' + h.eid"
-            class="highlight a11y"
-            :class="a11yHighlights.classFor(h)"
-            :data-impact="h.impact"
-            :style="{
-              left: h.rect.x + 'px', top: h.rect.y + 'px',
-              width: h.rect.width + 'px', height: h.rect.height + 'px',
-            }" />
-        </template>
+          <template v-if="a11yHighlightActive">
+            <div v-for="h in a11yHighlights.rects.value" :key="'a11y-' + h.ruleId + '-' + h.eid"
+              class="highlight a11y"
+              :class="a11yHighlights.classFor(h)"
+              :data-impact="h.impact"
+              :style="overlayStyle(h.rect)" />
+          </template>
+        </div>
 
         <!-- Tab/focus order overlay — numbered badges. Only rendered while
              the user has opted in via the panel toggle. -->
@@ -651,6 +737,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           :iframeRef="iframeRef"
           :iframe="iframe"
           :getColorScheme="iframe.getColorScheme"
+          :colorScheme="iframe.colorScheme.value"
           :primarySelection="primarySelection"
           :selectionSummary="selectionSummary"
           :selectedElementRole="selectedElementRole"
@@ -676,12 +763,13 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :selected-eids-count="selectedEids.length"
         :pending-screenshot="pendingScreenshot"
         :include-history="includeHistory"
-        :include-element-context="includeElementContext"
+        :include-rendered-html="includeRenderedHtml"
         :include-data-context="includeDataContext"
         :data-context-probe="dataContextProbe"
+        :submitting="submittingPendingTask"
         @update:pendingTaskText="pendingTaskText = $event"
         @update:includeHistory="includeHistory = $event"
-        @update:includeElementContext="includeElementContext = $event"
+        @update:includeRenderedHtml="includeRenderedHtml = $event"
         @update:includeDataContext="includeDataContext = $event"
         @submit="submitPendingTask"
         @cancel="cancelPendingTask"
@@ -700,14 +788,14 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :deny-feedback-text="denyFeedbackText"
         :pending-screenshot="pendingScreenshot"
         :include-history="includeHistory"
-        :include-element-context="includeElementContext"
+        :include-rendered-html="includeRenderedHtml"
         :include-data-context="includeDataContext"
         :data-context-probe="dataContextProbe"
         @update:showReportPanel="showReportPanel = $event"
         @update:newTaskText="newTaskText = $event"
         @update:denyFeedbackText="denyFeedbackText = $event"
         @update:includeHistory="includeHistory = $event"
-        @update:includeElementContext="includeElementContext = $event"
+        @update:includeRenderedHtml="includeRenderedHtml = $event"
         @update:includeDataContext="includeDataContext = $event"
         @toggle-new-task="showNewTaskForm = !showNewTaskForm"
         @submit-new-task="submitNewTask"
@@ -745,7 +833,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
 
       <!-- Audit > A11y panel -->
       <A11yPanel v-else-if="shellView === 'develop' && developSection === 'a11y'"
-        :a11y-violations="a11yViolations"
+        :a11y-violations="mergedA11yViolations"
         :a11y-loading="a11yLoading"
         :a11y-error="a11yError"
         :a11y-scanned="a11yScanned"
@@ -753,12 +841,9 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :focused-rule="a11yFocusedRule"
         :tab-order-enabled="tabOrder.enabled.value"
         :tab-order-loading="tabOrder.loading.value"
-        :tab-order-badges="tabOrder.badges.value"
         @select-violation="onSelectA11yViolation"
         @focus-rule="a11yFocusedRule = $event"
         @toggle-tab-order="tabOrder.toggle()"
-        @scroll-to="(eid) => iframe.scrollIntoView(eid)"
-        @create-tab-order-task="createTabOrderTask"
       />
 
       <!-- Audit Panel (Develop > Performance or Errors) -->

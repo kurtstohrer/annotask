@@ -47,7 +47,7 @@ Response (compact task summaries):
 
 Each task summary has: `id`, `type`, `status`, `description`, `file`, `line`, and optionally `component`, `action`, `screenshot`, `feedback` (on denied tasks), `blocked_reason`, `resolution`.
 
-For full task details (context, element_context, viewport, interaction_history, agent_feedback), use `annotask_get_task` MCP tool or `npx annotask task <id> --mcp` for a single task (`npx annotask tasks --mcp --detail` for the full list). Only fetch full details when the summary doesn't provide enough context to apply the change.
+For full task details (context, viewport, interaction_history, agent_feedback), use `annotask_get_task` MCP tool or `npx annotask task <id> --mcp` for a single task (`npx annotask tasks --mcp --detail` for the full list). Only fetch full details when the summary doesn't provide enough context to apply the change.
 
 ### Screenshot reference
 
@@ -262,8 +262,6 @@ Read the task type and apply accordingly:
   }
   ```
 
-  Annotask also attaches `element_context` (ancestor layout chain + DOM subtree) to every `a11y_fix` task — use it to decide whether the fix lives at the markup, component, layout, or token layer.
-
   If `screenshot_meta` is present (the user manually attached one with the snip tool), retrieve it via `annotask_get_screenshot` before proposing visual changes (color-contrast, focus rings).
 
   **Per-rule playbook.** Most rules fall into one of these patterns — match by `context.rule`:
@@ -274,7 +272,7 @@ Read the task type and apply accordingly:
   | `label`, `form-field-multiple-labels` | Markup | Wrap input in `<label>` or add `aria-labelledby` referencing visible text. `a11y.accessible_name` shows what (if anything) the input currently exposes — when `name_source === 'placeholder'`, the input has no real label. |
   | `button-name`, `link-name`, `input-button-name` | Markup | Add visible text content or `aria-label`. For icon-only buttons add a visually hidden `<span class="sr-only">` (or your project's equivalent). Don't add `title` — it's not reliable for SR users. |
   | `image-alt`, `role-img-alt`, `svg-img-alt` | Markup | `alt=""` for decorative imagery, descriptive `alt` for informational. For `<img>` that conveys text, use the text. For SVG icons that pair with visible text, use `aria-hidden="true"`. |
-  | `landmark-one-main`, `region`, `landmark-no-duplicate-banner`, `landmark-no-duplicate-contentinfo` | Layout component | Wrap the page's primary content in `<main>`. Add `role="region"` + `aria-label` to top-level layout containers. These almost always live in a layout component (e.g. `App.vue`, `_layout.tsx`, `RootLayout`), not in leaf components — `element_context.ancestors` will show the closest landmark-eligible ancestor. |
+  | `landmark-one-main`, `region`, `landmark-no-duplicate-banner`, `landmark-no-duplicate-contentinfo` | Layout component | Wrap the page's primary content in `<main>`. Add `role="region"` + `aria-label` to top-level layout containers. These almost always live in a layout component (e.g. `App.vue`, `_layout.tsx`, `RootLayout`), not in leaf components. |
   | `heading-order`, `page-has-heading-one`, `empty-heading` | Content/layout | Insert/promote `<h1>`; renumber subsequent levels so the outline is contiguous. Usually a layout/section component change, not a leaf change. |
   | `aria-allowed-attr`, `aria-required-attr`, `aria-valid-attr-value`, `aria-roles`, `aria-required-children`, `aria-required-parent` | Markup | Read `elements[i].a11y.role` and `aria_attrs` to see exactly what's set. Reference the WAI-ARIA roles spec (`helpUrl`) for the role's allowed attributes. Remove disallowed attrs; add required ones. |
   | `aria-hidden-focus`, `aria-hidden-body` | Markup | An element with `aria-hidden="true"` cannot contain focusable descendants. Either remove `aria-hidden`, or move the focusable elements outside (or set `tabindex="-1"` and ensure they're never the focus target). |
@@ -287,25 +285,34 @@ Read the task type and apply accordingly:
 
   **General rules:**
   - Prefer **pattern fixes** over instance fixes. When `elements` contains many entries that share the same `file`/`component`, change the source component once — don't paste the same fix N times.
-  - Use `element_context.ancestors` to decide whether a fix needs to land in a parent component (e.g. landmark wrapping must happen at the layout level).
   - For the synthetic `tab-order` rule, the offending element is in `elements[0].a11y.eid` and the failure type is in `context.tab_order.flag`. There is no `helpUrl` from axe — use the linked WCAG focus-order page in `context.helpUrl`.
   - When `a11y.accessible_name` is empty and `a11y.focusable` is true, the element is unreachable for screen readers — naming is the highest-priority fix.
 
-- **`theme_update`**: A design token value change from the Theme page. The `context` object contains:
-  - `category`: which token category (`colors`, `typography.families`, `typography.scale`, `spacing`, `borders.radius`)
-  - `role`: semantic role name (e.g., `primary`, `background`, `heading`)
-  - `before`: old value (`null` if this is a new token)
-  - `after`: new value
-  - `cssVar`: CSS variable name if backed by one (e.g., `--color-primary`)
-  - `sourceFile` / `sourceLine`: where the current value is defined
-  - `styling`: array of project styling methods (e.g., `["tailwind", "scoped-css"]`)
-  - `isNew`: `true` if this is a brand-new token being added
+- **`theme_update`**: One or more design token value changes committed together from the Theme page. A single task now covers every edit the user made in one Commit click — do not expect one task per token. The `context` object contains:
+  - `edits`: array of token edits. Each entry has:
+    - `category`: `colors` | `typography.families` | `typography.scale` | `spacing` | `borders.radius`
+    - `role`: semantic role name (e.g. `primary`, `background`, `heading`)
+    - `cssVar`: CSS variable name if backed by one (e.g. `--color-primary`), or `null`
+    - `theme_variant`: the theme id this edit targets (e.g. `light`, `dark`)
+    - `theme_selector`: how that variant is activated in the DOM — `{kind:'default'}`, `{kind:'attribute',host,name,value}`, `{kind:'class',host,name}`, or `{kind:'media',media}` — tells you which CSS block owns this variable (`:root`, `:root[data-theme="dark"]`, `.dark`, `@media (prefers-color-scheme: dark)`)
+    - `before`: old value (`null` for new tokens)
+    - `after`: new value
+    - `sourceFile` / `sourceLine`: where the current declaration lives (both `null` for new tokens — you pick the location)
+    - `isNew`: `true` if this token didn't exist before
+  - `styling`: array of project styling methods (e.g. `["tailwind", "scoped-css"]`)
+  - `specFile`: relative path to the design spec (typically `.annotask/design-spec.json`)
 
   **How to apply:**
-  - If `cssVar` is set and `sourceFile` is provided: find the CSS variable declaration in the source file and update its value.
-  - If the source references a Tailwind config: update the corresponding key in `tailwind.config.*`.
-  - If `isNew` is true: add the new variable/config entry in the most appropriate location (`:root` block in the main CSS file, or Tailwind config `theme.extend`).
-  - After applying, update `.annotask/design-spec.json` to reflect the new value so the Theme page stays in sync.
+  1. **Group `context.edits` by `sourceFile`.** For each file (skipping `null`/`isNew` for now), open it once, apply every edit against its file in a single Edit-batch, save. Use `theme_selector` + `cssVar` to locate the right declaration block — e.g. an edit with `theme_selector: {kind:'attribute',host:'html',name:'data-theme',value:'dark'}` belongs inside `:root[data-theme="dark"] { … }`, a `{kind:'default'}` edit belongs in the base `:root { … }` block.
+  2. **Tailwind config edits:** if `cssVar` is `null` and `sourceFile` references `tailwind.config.*`, update the corresponding key. If edits span both Tailwind and raw CSS, handle each file independently.
+  3. **New tokens (`isNew: true`):** add the CSS variable to the declaration block matching `theme_selector`. If no block exists for that variant yet, create one (e.g. add `:root[data-theme="dark"] { --new-var: …; }` at the end of the main tokens file). After writing, remember the final file path and line for step 4.
+  4. **Patch `.annotask/design-spec.json` once at the end.** Resolve `context.specFile` against the MFE root (the directory containing `.annotask/`). For each edit:
+     - Existing token: find `spec.<category>` — note dotted categories like `typography.families` map to nested paths — locate the entry by `role`, then set `values[theme_variant] = after`.
+     - New token: append a token object with `role`, `values: { [theme_variant]: after }`, `cssVar`, and fresh `sourceFile` / `sourceLine` pointing at where you added the declaration in step 3.
+     - When writing, keep the existing JSON formatting (same indentation, trailing newline) so the file watcher's next broadcast is clean.
+  5. The server watches `design-spec.json`; saving it fires a `designspec:updated` push and the Theme page refetches automatically.
+
+  **Worked example:** `context.edits = [{ category:'colors', role:'background', cssVar:'--stress-bg', theme_variant:'light', theme_selector:{kind:'default'}, before:'#f4f7fb', after:'#ff00ff', sourceFile:'../../packages/shared-ui-tokens/tokens.css', sourceLine:12, isNew:false }, { category:'colors', role:'text', cssVar:'--stress-text', theme_variant:'dark', theme_selector:{kind:'attribute',host:'html',name:'data-theme',value:'dark'}, before:'#e7eefb', after:'#ffeb3b', sourceFile:'../../packages/shared-ui-tokens/tokens.css', sourceLine:65, isNew:false }]` → open `tokens.css` once, update `--stress-bg` in the `:root` block and `--stress-text` in the `:root[data-theme="dark"]` block, save. Then open `.annotask/design-spec.json`, set `colors[?role=='background'].values.light = '#ff00ff'` and `colors[?role=='text'].values.dark = '#ffeb3b'`, save. Mark the task `review` with resolution `"Updated 2 color tokens in tokens.css and design-spec.json"`.
 
 - **`api_update`**: In-repo backend-contract edit. Created from the shell's Data view when the user selects an internal data source (`schema_in_repo === true`) and fills in a desired change. Only valid for in-repo schemas — external APIs cannot be edited from Annotask and should be marked `blocked` with an explanation if a request implies one.
 

@@ -19,6 +19,13 @@ export interface AnnotaskOptions {
    *  plugin handles the server and UI injection. Writes .annotask/server.json
    *  pointing to this URL so skills/CLI connect to the root. */
   server?: string
+  /** Extra HTTP endpoints to probe for OpenAPI / GraphQL schemas. Useful
+   *  when backend services run on ports annotask can't auto-discover
+   *  (non-docker-compose setups, remote staging, etc.). */
+  apiSchemaUrls?: string[]
+  /** Extra project-relative schema file paths (openapi.yaml, schema.graphql,
+   *  *.schema.json). Takes precedence over filesystem auto-discovery. */
+  apiSchemaFiles?: string[]
 }
 
 export function annotask(options: AnnotaskOptions = {}): Plugin[] {
@@ -53,6 +60,13 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       // virtual modules handled by framework plugins' own load hooks.
       if (id.includes('?')) return null
       if (!id.endsWith('.vue') && !id.endsWith('.svelte') && !/\.[jt]sx$/.test(id)) return null
+      // Never instrument library source. Headless UI libs (Kobalte, Radix,
+      // Headless UI, bits-ui, etc.) render user-provided elements through
+      // their own internal JSX — if we stamp those internal files with
+      // data-annotask-* attrs, the library's DOM output carries the library's
+      // source path instead of the user's call-site, which breaks the arrow
+      // tool's source resolution.
+      if (id.includes('/node_modules/')) return null
       if (!fs.existsSync(id)) return null
 
       const raw = fs.readFileSync(id, 'utf-8')
@@ -105,7 +119,11 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
     apply: 'serve',
 
     configureServer(server: ViteDevServer) {
-      const uiServer = createAnnotaskServer({ projectRoot })
+      const uiServer = createAnnotaskServer({
+        projectRoot,
+        apiSchemaUrls: options.apiSchemaUrls,
+        apiSchemaFiles: options.apiSchemaFiles,
+      })
 
       // Mount middleware on Vite's connect instance
       server.middlewares.use(uiServer.middleware)
@@ -122,7 +140,7 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         const addr = server.httpServer?.address()
         const port = typeof addr === 'object' && addr ? addr.port : 5173
         const host = typeof addr === 'object' && addr ? addr.address : undefined
-        writeServerInfo(projectRoot, port, host)
+        writeServerInfo(projectRoot, port, host, mfe)
       })
 
       console.log('[Annotask] Design tool available at /__annotask/')

@@ -40,14 +40,14 @@ export function validateTransition(current: unknown, next: unknown): string | nu
 export const POSTABLE_TASK_FIELDS: ReadonlySet<string> = new Set([
   'type', 'description', 'file', 'line', 'component', 'mfe', 'route',
   'intent', 'action', 'context', 'viewport', 'color_scheme', 'interaction_history',
-  'element_context', 'screenshot', 'visual',
+  'screenshot', 'visual',
 ])
 
 /** Fields that PATCH /tasks/:id is allowed to update. */
 export const PATCHABLE_TASK_FIELDS: ReadonlySet<string> = new Set([
   'status', 'description', 'notes', 'screenshot', 'feedback',
   'intent', 'action', 'context', 'viewport', 'color_scheme', 'interaction_history',
-  'element_context', 'mfe', 'agent_feedback', 'blocked_reason', 'resolution',
+  'mfe', 'agent_feedback', 'blocked_reason', 'resolution',
 ])
 
 /** Keep only whitelisted keys from `body`. */

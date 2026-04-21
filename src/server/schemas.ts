@@ -21,12 +21,14 @@ const typeError = `Invalid task type. Must be one of: ${typeValues.join(', ')}`
 export const ScreenshotName = z.string().regex(SAFE_SCREENSHOT_RE, 'Invalid screenshot filename')
 
 /**
- * A project-relative source path safe to read later. Rejects absolute paths,
- * `..` escapes, null-byte injection, and URL-looking inputs. Defense in depth
- * for endpoints that ultimately feed this into filesystem reads. The final
- * containment check still happens at read time via `resolveProjectFile`.
+ * A workspace-relative source path safe to read later. Rejects absolute
+ * paths, URL-scheme prefixes, null-byte injection, UNC paths, and colons
+ * (drive separators). `..` segments are intentionally permitted so tasks in
+ * a monorepo can reference sibling workspace packages (e.g.
+ * `../../packages/shared-ui-tokens/tokens.css`). Containment is enforced at
+ * read time by `resolveProjectFile`, which pins the resolved absolute path
+ * under the workspace root.
  */
-const SAFE_SOURCE_FILE_RE = /^(?!.*(?:^|\/)\.\.(?:\/|$))(?!\/{2,})[^\0:]+$/
 export const SafeSourceFile = z
   .string()
   .min(1, 'file must be non-empty')
@@ -35,7 +37,8 @@ export const SafeSourceFile = z
   .refine(v => !/^\\\\/.test(v), 'UNC paths are not allowed')
   .refine(v => !/^[a-z][a-z0-9+.-]*:\/\//i.test(v), 'URL-style paths are not allowed')
   .refine(v => !v.includes('\0'), 'Null bytes are not allowed')
-  .refine(v => SAFE_SOURCE_FILE_RE.test(v.replace(/^\/+/, '')), 'file may not contain .. segments')
+  .refine(v => !v.includes(':'), 'Colons are not allowed in file paths')
+  .refine(v => !/\/{2,}/.test(v.replace(/^\/+/, '')), 'File paths may not contain consecutive slashes')
 
 /** One question asked of the user in an agent_feedback thread. */
 const FeedbackQuestion = z.discriminatedUnion('type', [
@@ -87,7 +90,6 @@ export const CreateTaskBody = z.object({
   viewport: z.unknown().optional(),
   color_scheme: z.unknown().optional(),
   interaction_history: z.unknown().optional(),
-  element_context: z.unknown().optional(),
   data_context: z.unknown().optional(),
   screenshot: ScreenshotName.optional(),
   screenshot_meta: z.unknown().optional(),
@@ -108,7 +110,6 @@ export const UpdateTaskBody = z.object({
   viewport: z.unknown().optional(),
   color_scheme: z.unknown().optional(),
   interaction_history: z.unknown().optional(),
-  element_context: z.unknown().optional(),
   data_context: z.unknown().optional(),
   screenshot_meta: z.unknown().optional(),
   mfe: z.string().optional(),
@@ -199,6 +200,14 @@ export const McpGetComponentExamplesArgs = z.object({
 export const McpGetDataContextArgs = z.object({
   task_id: z.string().min(1, 'Missing required parameter: task_id'),
   refresh: z.boolean().optional(),
+})
+
+export const McpGetInteractionHistoryArgs = z.object({
+  task_id: z.string().min(1, 'Missing required parameter: task_id'),
+})
+
+export const McpGetRenderedHtmlArgs = z.object({
+  task_id: z.string().min(1, 'Missing required parameter: task_id'),
 })
 
 const DataSourceKindEnum = z.enum(['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc'])

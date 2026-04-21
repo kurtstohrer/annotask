@@ -22,10 +22,11 @@ import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 import yaml from 'js-yaml'
 import type { ApiSchema, ApiSchemaCatalog, ApiOperation } from '../schema.js'
+import { resolveWorkspace } from './workspace.js'
 
 const CACHE_TTL_MS = 60_000
 const PROBE_TIMEOUT_MS = 500
-const MAX_FILES_SCANNED = 2000
+const MAX_FILES_SCANNED = 5000
 const MAX_SCHEMA_BYTES = 8 * 1024 * 1024   // 8MB hard cap per schema doc
 const SCAN_EXTS = new Set(['.json', '.yaml', '.yml', '.graphql', '.gql', '.ts', '.tsx', '.js', '.mjs'])
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.annotask', '.next', '.nuxt', 'coverage', '.vite', '.turbo', '.svelte-kit', '.output'])
@@ -39,6 +40,7 @@ const OPENAPI_PROBE_PATHS = [
   '/swagger.json',
   '/swagger/v1/swagger.json',
   '/v3/api-docs',              // Spring Boot default
+  '/api/openapi',              // springdoc custom path (no extension)
   '/api/openapi.json',
   '/api/docs/openapi.json',
 ]
@@ -120,10 +122,10 @@ const BACKEND_DIR_HINTS = [
   'routes/api',
 ]
 
-async function detectBackendInRepo(projectRoot: string): Promise<boolean> {
+async function detectBackendInRepo(root: string): Promise<boolean> {
   for (const rel of BACKEND_DIR_HINTS) {
     try {
-      const stat = await fsp.stat(nodePath.join(projectRoot, rel))
+      const stat = await fsp.stat(nodePath.join(root, rel))
       if (stat.isDirectory()) return true
     } catch { /* not present */ }
   }
@@ -132,10 +134,15 @@ async function detectBackendInRepo(projectRoot: string): Promise<boolean> {
 
 async function scanUncached(projectRoot: string, opts: ScanOptions): Promise<ApiSchemaCatalog> {
   const schemas: ApiSchema[] = []
-  const backendInRepo = await detectBackendInRepo(projectRoot)
+  // Backend + schema discovery anchors on the workspace root so a monorepo's
+  // `services/` folder (sibling of the MFE apps) is visible to every MFE's
+  // annotask panel.
+  const ws = await resolveWorkspace(projectRoot)
+  const backendInRepo = await detectBackendInRepo(ws.root) || await detectBackendInRepo(projectRoot)
 
   // 1. Explicit config takes precedence — if set, we still do auto-discovery
-  //    but skip directories we'd otherwise walk.
+  //    but skip directories we'd otherwise walk. Explicit paths remain
+  //    relative to the declaring MFE for back-compat.
   if (opts.apiSchemaFiles && opts.apiSchemaFiles.length > 0) {
     for (const relPath of opts.apiSchemaFiles) {
       const parsed = await tryParseFile(projectRoot, relPath)
@@ -154,12 +161,13 @@ async function scanUncached(projectRoot: string, opts: ScanOptions): Promise<Api
   }
   const hasExplicit = (opts.apiSchemaFiles?.length ?? 0) + (opts.apiSchemaUrls?.length ?? 0) > 0
 
-  // 2. Filesystem auto-discovery
+  // 2. Filesystem auto-discovery — walk the whole workspace so schemas under
+  //    sibling MFEs or a top-level services/ dir are picked up.
   if (!hasExplicit) {
     const files: string[] = []
-    await walk(projectRoot, files, projectRoot)
+    await walk(ws.root, files, ws.root)
     for (const fp of files) {
-      const parsed = await tryParseFile(projectRoot, nodePath.relative(projectRoot, fp))
+      const parsed = await tryParseFile(ws.root, nodePath.relative(ws.root, fp))
       if (parsed) {
         // Dedupe by location
         if (!schemas.some(s => s.location === parsed.location)) schemas.push(parsed)
@@ -167,36 +175,168 @@ async function scanUncached(projectRoot: string, opts: ScanOptions): Promise<Api
     }
   }
 
-  // 3. Dev-server probes — only when we have a URL AND we haven't already
-  //    found schemas from explicit config (saves localhost churn).
-  if (opts.devServerUrl && !hasExplicit) {
-    // OpenAPI
-    for (const p of OPENAPI_PROBE_PATHS) {
-      const url = trimSlash(opts.devServerUrl) + p
-      if (negativeProbeCache.has(url)) continue
-      const s = await tryProbeUrl(url)
-      if (s) {
-        s.in_repo = backendInRepo
-        if (!schemas.some(x => x.location === s.location)) schemas.push(s)
-      } else {
-        negativeProbeCache.add(url)
-      }
+  // 3. Dev-server probes — only when we haven't already found schemas from
+  //    explicit config (saves localhost churn). Probes the current Vite
+  //    server AND any sibling backend services discovered via docker-compose
+  //    at the workspace root, so a monorepo like stress-test (7 MFEs + 5
+  //    backend services on their own ports) "just works" with zero config.
+  if (!hasExplicit) {
+    // A service may publish its OpenAPI both as a checked-in file AND as an
+    // HTTP endpoint (Go/Rust do this with //go:embed / include_str!). Without
+    // content-level dedup we'd surface the same API twice — once from the
+    // filesystem walk and once from the probe. Fingerprint by title + sorted
+    // operation paths so identical schemas collapse regardless of location.
+    const seenFingerprints = new Set<string>()
+    for (const s of schemas) seenFingerprints.add(schemaFingerprint(s))
+
+    const probeBases = new Set<string>()
+    if (opts.devServerUrl) probeBases.add(trimSlash(opts.devServerUrl))
+    for (const base of await discoverComposeServiceBases(projectRoot, ws.root)) {
+      probeBases.add(base)
     }
-    // GraphQL introspection
-    for (const p of GRAPHQL_PROBE_PATHS) {
-      const url = trimSlash(opts.devServerUrl) + p
-      if (negativeProbeCache.has(url)) continue
-      const s = await tryProbeGraphQL(url)
-      if (s) {
-        s.in_repo = backendInRepo
-        if (!schemas.some(x => x.location === s.location)) schemas.push(s)
-      } else {
-        negativeProbeCache.add(url)
+    for (const base of probeBases) {
+      // OpenAPI
+      for (const p of OPENAPI_PROBE_PATHS) {
+        const url = base + p
+        if (negativeProbeCache.has(url)) continue
+        const s = await tryProbeUrl(url)
+        if (s) {
+          s.in_repo = backendInRepo
+          const fp = schemaFingerprint(s)
+          if (!schemas.some(x => x.location === s.location) && !seenFingerprints.has(fp)) {
+            schemas.push(s)
+            seenFingerprints.add(fp)
+          }
+        } else {
+          negativeProbeCache.add(url)
+        }
+      }
+      // GraphQL introspection
+      for (const p of GRAPHQL_PROBE_PATHS) {
+        const url = base + p
+        if (negativeProbeCache.has(url)) continue
+        const s = await tryProbeGraphQL(url)
+        if (s) {
+          s.in_repo = backendInRepo
+          const fp = schemaFingerprint(s)
+          if (!schemas.some(x => x.location === s.location) && !seenFingerprints.has(fp)) {
+            schemas.push(s)
+            seenFingerprints.add(fp)
+          }
+        } else {
+          negativeProbeCache.add(url)
+        }
       }
     }
   }
 
   return { schemas, scannedAt: Date.now() }
+}
+
+/**
+ * Content-level identity for schema dedup. Two entries with the same kind,
+ * title, and operation set (method+path, sorted) are the same API regardless
+ * of whether one came from disk and the other from an HTTP probe. Falls back
+ * to `kind|location` when there's no title and no operations so unrelated but
+ * empty schemas stay distinct.
+ */
+function schemaFingerprint(s: ApiSchema): string {
+  const ops = s.operations.map(o => `${o.method.toUpperCase()} ${o.path}`).sort().join(',')
+  const title = s.title ?? ''
+  if (!title && !ops) return `${s.kind}|${s.location}`
+  return `${s.kind}|${title}|${ops}`
+}
+
+// ── docker-compose → probe bases ─────────────────────
+
+const composeCache = new Map<string, { at: number; bases: string[] }>()
+const COMPOSE_CACHE_TTL_MS = 60_000
+
+async function discoverComposeServiceBases(projectRoot: string, workspaceRoot: string): Promise<string[]> {
+  const cacheKey = `${projectRoot}\0${workspaceRoot}`
+  const hit = composeCache.get(cacheKey)
+  if (hit && Date.now() - hit.at < COMPOSE_CACHE_TTL_MS) return hit.bases
+  const bases = new Set<string>()
+  // Walk every directory from projectRoot up to workspaceRoot (inclusive) so
+  // a compose file at a subpath of the workspace (e.g. playgrounds/x/docker-
+  // compose.yml) is picked up even when the pnpm workspace lives higher.
+  for (const dir of ancestorsUpTo(projectRoot, workspaceRoot)) {
+    for (const base of await readComposeServiceBases(dir)) bases.add(base)
+  }
+  const list = [...bases]
+  composeCache.set(cacheKey, { at: Date.now(), bases: list })
+  return list
+}
+
+function ancestorsUpTo(from: string, to: string): string[] {
+  const fromAbs = nodePath.resolve(from)
+  const toAbs = nodePath.resolve(to)
+  const out: string[] = []
+  let dir = fromAbs
+  while (true) {
+    out.push(dir)
+    if (dir === toAbs) break
+    const parent = nodePath.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return out
+}
+
+/**
+ * Parse docker-compose.yml (and common variants) at `dir` and return
+ * http://localhost:{hostPort} for every mapped port. Supports the short form
+ * (`"4320:4320"`) and the long form (`{ published: 4320 }`). Ignores non-
+ * HTTP-ish ports (< 80) to avoid probing e.g. Postgres 5432.
+ */
+async function readComposeServiceBases(dir: string): Promise<string[]> {
+  const candidates = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']
+  let doc: unknown = null
+  for (const name of candidates) {
+    const full = nodePath.join(dir, name)
+    try {
+      if (!fs.existsSync(full)) continue
+      doc = yaml.load(await fsp.readFile(full, 'utf-8'))
+      if (doc) break
+    } catch { /* ignore malformed compose files */ }
+  }
+  if (!doc || typeof doc !== 'object') return []
+  const services = (doc as { services?: Record<string, unknown> }).services
+  if (!services || typeof services !== 'object') return []
+  const bases = new Set<string>()
+  for (const svc of Object.values(services)) {
+    if (!svc || typeof svc !== 'object') continue
+    const ports = (svc as { ports?: unknown[] }).ports
+    if (!Array.isArray(ports)) continue
+    for (const entry of ports) {
+      const port = extractHostPort(entry)
+      if (port && port >= 80) bases.add(`http://localhost:${port}`)
+    }
+  }
+  return [...bases]
+}
+
+function extractHostPort(entry: unknown): number | null {
+  if (typeof entry === 'number') return entry
+  if (typeof entry === 'string') {
+    // Accept "4320", "4320:4320", "127.0.0.1:4320:4320", "4320-4321:4320-4321"
+    const trimmed = entry.trim()
+    const parts = trimmed.split(':')
+    const hostSide = parts.length === 1 ? parts[0] : parts[parts.length - 2]
+    if (!hostSide) return null
+    const first = hostSide.split('-')[0]
+    const n = Number(first)
+    return Number.isFinite(n) ? n : null
+  }
+  if (entry && typeof entry === 'object') {
+    const pub = (entry as { published?: unknown }).published
+    if (typeof pub === 'number') return pub
+    if (typeof pub === 'string') {
+      const n = Number(pub.split('-')[0])
+      return Number.isFinite(n) ? n : null
+    }
+  }
+  return null
 }
 
 // ── Filesystem scanning ──────────────────────────────
@@ -481,6 +621,7 @@ function tryAsOpenApi(doc: unknown, location: string, source: ApiSchema['source'
   const info = (d.info && typeof d.info === 'object') ? d.info as Record<string, unknown> : {}
   const title = typeof info.title === 'string' ? info.title : undefined
   const infoVersion = typeof info.version === 'string' ? info.version : undefined
+  const origin = extractOpenApiOrigin(d, location, source)
   const components = (d.components && typeof d.components === 'object') ? (d.components as Record<string, unknown>).schemas as Record<string, unknown> | undefined : undefined
   const definitions = (d.definitions && typeof d.definitions === 'object') ? d.definitions as Record<string, unknown> : undefined
   const refPool: Record<string, unknown> = { ...(components ?? {}), ...(definitions ?? {}) }
@@ -515,12 +656,36 @@ function tryAsOpenApi(doc: unknown, location: string, source: ApiSchema['source'
     kind: 'openapi',
     source,
     location,
+    origin,
     title,
     version: infoVersion ?? version,
     in_repo: source === 'file',
     operation_count: operations.length,
     operations,
   }
+}
+
+/**
+ * Origin this schema describes — the base URL callers hit. For dev-server
+ * probes we parse it off `location` (e.g. `http://localhost:4320/openapi.json`
+ * → `http://localhost:4320`). For filesystem specs we read `servers[0].url`;
+ * localhost URLs in `servers` are common in dev-focused OpenAPI files. Returns
+ * `undefined` when no usable origin can be derived.
+ */
+function extractOpenApiOrigin(doc: Record<string, unknown>, location: string, source: ApiSchema['source']): string | undefined {
+  if (source === 'dev-server') {
+    try { return new URL(location).origin } catch { /* fall through */ }
+  }
+  const servers = doc.servers
+  if (Array.isArray(servers)) {
+    for (const s of servers) {
+      if (!s || typeof s !== 'object') continue
+      const rawUrl = (s as Record<string, unknown>).url
+      if (typeof rawUrl !== 'string') continue
+      try { return new URL(rawUrl).origin } catch { /* try next */ }
+    }
+  }
+  return undefined
 }
 
 function extractOpenApiRequestBody(op: Record<string, unknown>, refPool: Record<string, unknown>): Record<string, unknown> | undefined {

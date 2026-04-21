@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import { resolveWorkspace } from './workspace.js'
 
 export interface ScannedProp {
   name: string
@@ -186,32 +187,73 @@ export async function scanComponentLibraries(projectRoot: string): Promise<Compo
   return result
 }
 
+/**
+ * Non-blocking variant for request paths that only use the catalog for
+ * best-effort enrichment (e.g. POST /api/tasks). Returns the cached catalog
+ * if it's warm; otherwise kicks off a background scan and returns `null` so
+ * the caller can skip enrichment and respond immediately. The next call (or
+ * any awaited consumer like GET /components) will find the scan already
+ * coalesced via `inflightCatalog`.
+ *
+ * The kickoff is wrapped in `setImmediate` so the scan's synchronous prefix
+ * — `existsSync` + `readFileSync` + `yaml.load` inside `resolveWorkspace`,
+ * plus package-resolution `readFileSync` bursts — doesn't starve the event
+ * loop before the current request handler flushes its response.
+ */
+export function getCachedComponentCatalog(projectRoot: string): ComponentCatalog | null {
+  if (cachedCatalog && (Date.now() - cachedCatalogAt) < CACHE_TTL_MS) return cachedCatalog
+  if (!inflightCatalog) {
+    inflightCatalog = new Promise<ComponentCatalog>((resolve, reject) => {
+      setImmediate(() => {
+        scanComponentLibrariesUncached(projectRoot).then(resolve, reject)
+      })
+    })
+      .then(result => {
+        cachedCatalog = result
+        cachedCatalogAt = Date.now()
+        return result
+      })
+      .finally(() => { inflightCatalog = null })
+    inflightCatalog.catch(() => { /* caller already handled best-effort */ })
+  }
+  return null
+}
+
 async function scanComponentLibrariesUncached(projectRoot: string): Promise<ComponentCatalog> {
   const libraries: ScannedLibrary[] = []
 
-  // Read project's package.json to find dependencies
-  const pkgPath = path.join(projectRoot, 'package.json')
-  let deps: Record<string, string> = {}
-  try {
-    const pkg = JSON.parse(await fsp.readFile(pkgPath, 'utf-8'))
-    deps = { ...pkg.dependencies, ...pkg.devDependencies }
-  } catch { return { libraries: [], scannedAt: Date.now() } }
+  // Aggregate dependencies across every workspace package so the host's
+  // catalog includes libs that only sibling MFEs depend on (e.g. host has
+  // Radix, sibling MFE has Mantine — both should appear).
+  const ws = await resolveWorkspace(projectRoot)
+  const deps: Record<string, { version: string; from: string }> = {}
+  for (const pkgDir of ws.packages) {
+    try {
+      const pkg = JSON.parse(await fsp.readFile(path.join(pkgDir, 'package.json'), 'utf-8'))
+      const merged = { ...pkg.dependencies, ...pkg.devDependencies }
+      for (const [name, version] of Object.entries(merged)) {
+        if (!deps[name]) deps[name] = { version: String(version), from: pkgDir }
+      }
+    } catch { /* missing or unreadable package.json — skip this package */ }
+  }
+  if (Object.keys(deps).length === 0) return { libraries: [], scannedAt: Date.now() }
 
   // Check each dependency for component library patterns
-  for (const depName of Object.keys(deps)) {
+  for (const [depName, { version: depVersion, from }] of Object.entries(deps)) {
     // Skip obvious non-component packages
     if (depName.startsWith('@types/') || depName.startsWith('@vitejs/')) continue
     if (['vue', 'react', 'react-dom', 'react-router-dom', 'svelte', 'vite', 'typescript', 'annotask', 'vue-router', 'pinia'].includes(depName)) continue
 
-    const depDir = resolvePackageDir(projectRoot, depName)
+    // Resolve from the package that declared the dep so MFE-local deps are
+    // found even when the host doesn't hoist them.
+    const depDir = resolvePackageDir(from, depName) ?? resolvePackageDir(projectRoot, depName)
     if (!depDir) continue
 
     // For file: dependencies, resolve the original source directory
     // (pnpm respects "files" field, so node_modules may only have dist/)
-    const depVersion = deps[depName]
     let sourceDir: string | undefined
-    if (typeof depVersion === 'string' && depVersion.startsWith('file:')) {
-      const resolved = path.resolve(projectRoot, depVersion.replace('file:', ''))
+    if (depVersion.startsWith('file:')) {
+      const resolved = path.resolve(from, depVersion.replace('file:', ''))
       if (fs.existsSync(resolved)) sourceDir = resolved
     }
 
@@ -377,18 +419,24 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
     }))
   }
 
+  // Strategies 2 + 3 always run and merge results deduped by name. This
+  // covers libraries (like naive-ui) where Strategy 1 incidentally matches
+  // a top-level utility directory (e.g. `generic/`) and would otherwise
+  // short-circuit the deeper scans that find the real component catalog.
+  const seenNames = new Set(components.map(c => c.name))
+
   // Strategy 2: Barrel-exported packages (e.g. @radix-ui/themes, @mantine/core)
-  // If no top-level subdirectory components found, check for a component index .d.ts
-  if (components.length === 0) {
-    const barrelComponents = await scanBarrelExports(name, pkgDir)
-    components.push(...barrelComponents)
+  const barrelComponents = await scanBarrelExports(name, pkgDir)
+  for (const c of barrelComponents) {
+    if (!seenNames.has(c.name)) { components.push(c); seenNames.add(c.name) }
   }
 
   // Strategy 3: Follow package entry point — handles any library structure
-  // Reads package.json to find entry, follows re-export chains, discovers component files
-  if (components.length === 0) {
+  if (components.length < 3 || barrelComponents.length === 0) {
     const entryComponents = await scanFromEntryPoint(name, pkgDir, sourceDir)
-    components.push(...entryComponents)
+    for (const c of entryComponents) {
+      if (!seenNames.has(c.name)) { components.push(c); seenNames.add(c.name) }
+    }
   }
 
   if (components.length === 0) return null
@@ -558,45 +606,63 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
 
   const components: ScannedComponent[] = []
 
-  // Parse export lines: export { ComponentName, type ComponentNameProps } from './file.js'
-  const exportRegex = /export\s+\{[^}]*?\b(\w+)\b[^}]*\}\s+from\s+['"]\.\/([^'"]+)['"]/g
+  // Parse export blocks: export { Name1, Name2, type NameProps, default as N3 } from './file.js'
+  // First match the whole block, then split the inner list to capture ALL names.
+  const exportBlockRegex = /export\s+\{([^}]+)\}\s+from\s+['"]\.\/([^'"]+)['"]/g
   const namespaceExportRegex = /export\s+\*\s+as\s+(\w+)\s+from\s+['"]\.\/([^'"]+)['"]/g
 
   const seen = new Set<string>()
 
-  for (const regex of [exportRegex, namespaceExportRegex]) {
-    let match: RegExpExecArray | null
-    // Reset lastIndex for reuse
-    regex.lastIndex = 0
-    while ((match = regex.exec(indexContent)) !== null) {
-      const componentName = match[1]
-      const fileStem = match[2].replace(/\.js$/, '')
+  const recordExport = async (rawName: string, fileStem: string) => {
+    // "default as Button" → Button; "type ButtonProps" → skip; "Button as Btn" → Btn
+    let componentName = rawName.trim()
+    if (!componentName || /^type\s/.test(componentName)) return
+    componentName = componentName.replace(/^default\s+as\s+/, '')
+    const asMatch = componentName.match(/^(?:\w+)\s+as\s+(\w+)$/)
+    if (asMatch) componentName = asMatch[1]
+    if (!/^\w+$/.test(componentName)) return
 
-      // Skip internal helpers, icons, non-PascalCase
-      if (componentName[0] !== componentName[0].toUpperCase() || componentName[0] === componentName[0].toLowerCase()) continue
-      if (componentName.endsWith('Props') || componentName.endsWith('Icon') || componentName === 'Portal' || componentName === 'Reset') continue
-      if (seen.has(componentName)) continue
-      seen.add(componentName)
+    // Skip internal helpers, icons, non-PascalCase
+    if (componentName[0] !== componentName[0].toUpperCase() || componentName[0] === componentName[0].toLowerCase()) return
+    if (componentName.endsWith('Props') || componentName.endsWith('Emits') || componentName.endsWith('Icon')) return
+    if (componentName === 'Portal' || componentName === 'Reset') return
+    if (seen.has(componentName)) return
+    seen.add(componentName)
 
-      let props: ScannedProp[] = []
+    let props: ScannedProp[] = []
 
-      // Try .props.d.ts file first (Radix pattern: badge.props.d.ts)
-      const propDefsPath = path.join(componentsDir, `${fileStem}.props.d.ts`)
-      if (fs.existsSync(propDefsPath)) {
-        props = await extractPropsFromPropDefs(propDefsPath)
-      }
-
-      // Fallback: try the component .d.ts for *Props interface
-      if (props.length === 0) {
-        const compDtsPath = path.join(componentsDir, `${fileStem}.d.ts`)
-        if (fs.existsSync(compDtsPath)) {
-          const dtsResult = await extractPropsFromDts(compDtsPath, componentName)
-          props = dtsResult.props
-        }
-      }
-
-      components.push(makeComponent({ name: componentName, module: name, props }))
+    // Try .props.d.ts file first (Radix pattern: badge.props.d.ts)
+    const propDefsPath = path.join(componentsDir!, `${fileStem}.props.d.ts`)
+    if (fs.existsSync(propDefsPath)) {
+      props = await extractPropsFromPropDefs(propDefsPath)
     }
+
+    // Fallback: try the component .d.ts for *Props interface
+    if (props.length === 0) {
+      const compDtsPath = path.join(componentsDir!, `${fileStem}.d.ts`)
+      if (fs.existsSync(compDtsPath)) {
+        const dtsResult = await extractPropsFromDts(compDtsPath, componentName)
+        props = dtsResult.props
+      }
+    }
+
+    components.push(makeComponent({ name: componentName, module: name, props }))
+  }
+
+  let blockMatch: RegExpExecArray | null
+  exportBlockRegex.lastIndex = 0
+  while ((blockMatch = exportBlockRegex.exec(indexContent)) !== null) {
+    const fileStem = blockMatch[2].replace(/\.m?js$/, '')
+    for (const token of blockMatch[1].split(',')) {
+      await recordExport(token, fileStem)
+    }
+  }
+
+  let nsMatch: RegExpExecArray | null
+  namespaceExportRegex.lastIndex = 0
+  while ((nsMatch = namespaceExportRegex.exec(indexContent)) !== null) {
+    const fileStem = nsMatch[2].replace(/\.m?js$/, '')
+    await recordExport(nsMatch[1], fileStem)
   }
 
   // Fallback: single-barrel .d.ts with inline declarations (no per-file re-exports).
@@ -699,20 +765,21 @@ function findPackageEntry(pkgDir: string): string | null {
       const resolved = resolveModulePath(pkgDir, mapped)
       if (resolved) return resolved
     }
+
+    // Prefer the package-declared entry (module/main) over heuristic fallbacks.
+    // Skips CJS when an ESM entry exists: ESM's `export { ... } from` is what
+    // our parser understands; CJS uses `Object.defineProperty` and can't be
+    // walked the same way.
+    const declaredResolved = resolveModulePath(pkgDir, distEntry)
+    if (declaredResolved) return declaredResolved
   }
 
-  // Fallback: scan common source locations
+  // Fallback: scan common source locations (for packages without module/main)
   for (const candidate of [
     'src/components/index', 'src/lib/index', 'src/index',
     'components/index', 'lib/index', 'index',
   ]) {
     const resolved = resolveModulePath(pkgDir, candidate)
-    if (resolved) return resolved
-  }
-
-  // Last resort: use the dist entry directly (for bundled export name extraction)
-  if (distEntry) {
-    const resolved = resolveModulePath(pkgDir, distEntry)
     if (resolved) return resolved
   }
 
@@ -816,10 +883,48 @@ async function collectComponentExports(
         sourceFile: resolved,
       }))
     } else {
-      // JS/TS file — follow the chain
+      // JS/TS file — follow the chain. If the chain produces nothing AND the
+      // ref is a PascalCase named re-export (e.g. `export { default as NButton }
+      // from "./src/Button.mjs"` in compiled Vue/React libs), record it as a
+      // name-only component so consumers still see it in the catalog.
+      const before = components.length
       await collectComponentExports(resolved, pkgName, components, visited, maxDepth - 1)
+      if (components.length === before &&
+          ref.exportName !== '*' &&
+          /^[A-Z]/.test(ref.exportName) &&
+          !ref.exportName.endsWith('Props') &&
+          !ref.exportName.endsWith('Emits') &&
+          !ref.exportName.endsWith('Icon') &&
+          await looksLikeComponentModule(resolved)) {
+        components.push(makeComponent({
+          name: pascalCase(ref.exportName),
+          module: pkgName,
+          props: [],
+          sourceFile: resolved,
+        }))
+      }
     }
   }
+}
+
+/** Heuristic: does this leaf JS/TS file look like a compiled component module? */
+async function looksLikeComponentModule(filePath: string): Promise<boolean> {
+  try {
+    const content = await fsp.readFile(filePath, 'utf-8')
+    // JSX runtime imports (React, Preact, Solid) — strongest signal for a compiled component
+    if (/from\s+['"][^'"]*\/jsx-(?:runtime|dev-runtime)['"]/.test(content)) return true
+    // Vue compiled SFCs: defineComponent + setup + render
+    if (/\b(defineComponent|_createVNode|_openBlock|_createElementBlock)\b/.test(content)) return true
+    // React component factories (Mantine, Chakra, etc.) and class components
+    if (/\b(forwardRef|polymorphicFactory|[Ff]actory\s*\()|extends\s+(React\.)?(Pure)?Component\b/.test(content)) return true
+    // Svelte compiled output
+    if (/\b(SvelteComponent|create_ssr_component|\$\$_payload)\b/.test(content)) return true
+    // Solid: createComponent / template$ / hyperscript-style
+    if (/\b(createComponent|template\$|_\$template\()/.test(content)) return true
+    // Generic: the file exports a default that's called with JSX-like args
+    if (/\bexport\s+default\s+\w+\(/.test(content) && /\bjsx\w*\s*\(/.test(content)) return true
+    return false
+  } catch { return false }
 }
 
 /** Entry-point-driven component scanner */

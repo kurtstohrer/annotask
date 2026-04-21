@@ -4,8 +4,10 @@ How to work on Annotask itself.
 
 ## Prerequisites
 
-- Node.js >= 18
-- pnpm (any recent version; CI uses v10)
+- Node.js 18+
+- pnpm
+
+Some stress-test services also need language runtimes such as Python, Go, Rust, or Java if you run them outside Docker.
 
 ## Setup
 
@@ -16,151 +18,160 @@ pnpm install
 pnpm build
 ```
 
-## Day-to-day development
-
-### Run a playground
-
-```bash
-pnpm dev:vue-vite           # Vue + PrimeVue admin dashboard (port 5173)
-pnpm dev:vue-webpack        # Vue + Webpack (port 8090)
-pnpm dev:vue-primevue       # Vue + PrimeVue component showcase
-pnpm dev:react-vite         # React marketing site (port 5174)
-pnpm dev:react-radix        # React + Radix UI showcase
-pnpm dev:svelte-vite        # Svelte country explorer (port 5175)
-pnpm dev:solid-vite         # SolidJS showcase (port 5179)
-pnpm dev:html-vite          # Plain HTML + Vite (port 5176)
-pnpm dev:astro              # Astro (port 5177)
-pnpm dev:htmx-vite          # htmx + Vite (port 5178)
-pnpm dev:mfe-vite           # MFE storefront child (port 5180)
-```
-
-For playgrounds also wired into the shared FastAPI service (`playgrounds/simple/api/`), use the `justfile`: `just react`, `just svelte`, `just vue`, `just mfe` — each auto-starts the API on `:8888` if it isn't already up.
-
-Opens the playground app with Annotask enabled.
-
-Annotask shell: `http://localhost:5173/__annotask/`
+## Core Scripts
 
 ### Build
 
 ```bash
-pnpm build              # Full build (shell → plugin → vendor)
-pnpm build:shell        # Shell UI only (Vite build → dist/shell/)
-pnpm build:plugin       # Plugin + CLI only (tsup → dist/)
-pnpm build:vendor       # Copy axe-core + html2canvas to dist/vendor/
+pnpm build
+pnpm build:shell
+pnpm build:plugin
+pnpm build:vendor
 ```
 
-Build order matters: shell must be built before the plugin, because the plugin serves `dist/shell/` as static files. Vendor deps are copied last.
+Build order matters:
+
+1. `build:shell` writes `dist/shell/`
+2. `build:plugin` bundles the plugin, server, webpack integration, standalone server, loader, and CLI
+3. `build:vendor` copies pinned browser-side vendor assets into `dist/vendor/`
 
 ### Test
 
 ```bash
-pnpm test               # Run all unit tests (Vitest)
-pnpm test:watch         # Watch mode
-pnpm typecheck          # Type-check (tsc + vue-tsc)
-pnpm test:e2e           # E2E tests (Playwright, all frameworks)
+pnpm test
+pnpm test:watch
+pnpm typecheck
+pnpm test:e2e
+pnpm test:e2e:stress
 ```
 
-Unit test environments:
-- Plugin tests (`src/plugin/__tests__/`): Node
-- Shell tests (`src/shell/composables/__tests__/`): jsdom
+Current test buckets:
 
-E2E tests cover vue-vite, react-vite, svelte-vite, html-vite, astro, htmx-vite, vue-webpack, and mfe-vite. Playwright starts dev servers automatically via `webServer` config.
+- unit tests with Vitest
+- shell composable tests in jsdom
+- plugin and server tests in Node
+- Playwright end-to-end coverage for the main playgrounds
+- Playwright stress-lab coverage for the multi-MFE environment
 
-CI runs typecheck + unit tests on every push, and Playwright e2e (vue-vite + react-vite matrix) as a separate job.
-
-### Shell UI development
-
-For iterating on the shell UI without rebuilding:
+### Shell UI Work
 
 ```bash
-pnpm dev:shell          # Vite dev server for shell alone
+pnpm dev:shell
 ```
 
-This runs the shell in standalone dev mode. Note: without the plugin's iframe integration, some features (element inspection, source mapping) won't work — but you can develop UI components and layouts.
+This runs the shell on its own without a fully instrumented app iframe. Good for shell-only UI work, not enough to validate source mapping or bridge interactions.
 
-## Project structure
+## Playground Scripts
 
+Simple playgrounds:
+
+```bash
+pnpm dev:vue-vite
+pnpm dev:vue-primevue
+pnpm dev:vue-webpack
+pnpm dev:react-vite
+pnpm dev:react-radix
+pnpm dev:svelte-vite
+pnpm dev:solid-vite
+pnpm dev:html-vite
+pnpm dev:astro
+pnpm dev:htmx-vite
+pnpm dev:mfe-vite
 ```
+
+Stress-lab scripts:
+
+```bash
+pnpm dev:stress-host
+pnpm dev:stress-vue-data-lab
+pnpm dev:stress-react-workflows
+pnpm dev:stress-svelte-streaming
+pnpm dev:stress-solid-component-lab
+pnpm dev:stress-htmx-partials
+pnpm dev:stress-react-sidebar
+pnpm dev:stress-fastapi
+pnpm dev:stress-node-api
+pnpm dev:stress-go-api
+pnpm dev:stress-rust-api
+pnpm stress-test:up
+pnpm stress-test:down
+```
+
+`playgrounds/simple/` also has a `justfile` for convenience recipes like `just react`, `just svelte`, `just vue`, and `just mfe`.
+
+## Current Project Shape
+
+### Source Tree
+
+```text
 src/
-├── plugin/
-│   ├── index.ts            # Plugin entry (two Vite plugins)
-│   ├── transform.ts        # SFC template attribute injection
-│   ├── toggle-button.ts    # Injected floating button HTML
-│   ├── bridge-client.ts    # postMessage bridge script injected into app
-│   └── __tests__/          # Unit tests
-├── server/
-│   ├── index.ts            # Server factory (createAnnotaskServer)
-│   ├── api.ts              # HTTP REST middleware
-│   ├── ws-server.ts        # WebSocket broadcast server
-│   ├── serve-shell.ts      # Static file serving for shell
-│   ├── state.ts            # Project state (tasks, design spec, config)
-│   ├── discovery.ts        # .annotask/server.json read/write
-│   └── standalone.ts       # Standalone HTTP server (for Webpack)
-├── webpack/
-│   ├── index.ts            # Webpack plugin export
-│   ├── plugin.ts           # AnnotaskWebpackPlugin class
-│   └── loader.ts           # SFC transform loader
-├── shared/
-│   └── bridge-types.ts     # postMessage protocol type definitions
-├── shell/
-│   ├── main.ts             # Vue app entry
-│   ├── App.vue             # Main component (orchestrator — wires composables, no business logic)
-│   ├── index.html          # SPA template
-│   ├── components/         # UI components (TaskDetailModal, DesignPanel, ElementStyleEditor, ErrorsTab, PerfTab, overlays, controls)
-│   ├── composables/        # Vue composables (style editor, tasks, screenshots, a11y, keyboard, error monitor, perf monitor, etc.)
-│   ├── utils/              # Helpers (stripMarkdown)
-│   ├── services/           # iframe bridge & WebSocket client
-│   ├── data/               # Tailwind color palette data
-│   └── types.ts            # UI-specific types
-├── mcp/
-│   └── server.ts           # MCP server (Streamable HTTP, tools for tasks/design spec/screenshots)
-├── cli/
-│   └── index.ts            # CLI entry (annotask command)
-└── schema.ts               # Canonical TypeScript types
-
-playgrounds/
-└── simple/                  # Single-framework integration playgrounds
-    ├── api/                     # Shared FastAPI service (marketing / countries / dashboard / catalog)
-    ├── vue-vite/                # Vue admin dashboard on PrimeVue (port 5173)
-    ├── vue-webpack/             # Vue + Webpack test app (port 8090)
-    ├── vue-primevue/            # Vue + PrimeVue component showcase
-    ├── react-vite/              # React marketing site (port 5174)
-    ├── react-radix/             # React + Radix UI showcase
-    ├── svelte-vite/             # Svelte country explorer (port 5175)
-    ├── solid-vite/              # SolidJS showcase (port 5179)
-    ├── html-vite/               # Plain HTML + Vite (port 5176)
-    ├── htmx-vite/               # htmx + Vite (port 5178)
-    ├── astro/                   # Astro (port 5177)
-    ├── antenna-vite/            # Experimental playground
-    ├── mfe-vite/                # MFE storefront child (port 5180)
-    ├── justfile                 # `just react`, `just svelte`, etc.
-    └── DEMOS.md                 # Curated demo scenarios for the main playgrounds
-
-e2e/                         # Playwright browser tests
-plan/                        # Roadmap and improvement notes
-skills/                      # AI agent skills (shipped in npm package)
-.claude/skills/              # Claude Code skill definitions
-.github/workflows/           # CI pipeline
+  plugin/      Vite integration and transforms
+  server/      HTTP API, persistence, scanners, workspace discovery
+  mcp/         embedded MCP server
+  webpack/     Webpack plugin and loader
+  shell/       Vue shell UI served at /__annotask/
+  cli/         annotask CLI
+  shared/      shared task-summary and bridge helpers
+  schema.ts    canonical contracts
 ```
 
-## Key conventions
+### Workspaces
 
-- **ESM only** — no CommonJS. `"type": "module"` in package.json.
-- **Vue 3 Composition API** — shell uses `<script setup>` and composables.
-- **Vitest** for unit tests, **Playwright** for E2E.
-- **tsup** bundles the plugin and CLI. **Vite** builds the shell.
-- **pnpm workspaces** — the playground is a workspace package that depends on `annotask` via `workspace:*`.
+The pnpm workspace currently includes:
 
-## Adding a new API endpoint
+- `playgrounds/simple/*`
+- `playgrounds/stress-test/apps/*`
+- `playgrounds/stress-test/packages/*`
+- `playgrounds/stress-test/services/node-api`
 
-1. Add the route handler in `src/server/api.ts`
-2. Add corresponding TypeScript types in `src/schema.ts` if the endpoint returns a new shape
-3. Add a test in `src/plugin/__tests__/api.test.ts`
-4. If the shell consumes it, add a composable or update an existing one in `src/shell/composables/`
+Annotask's server-side scanners are workspace-aware, so contributor changes in component scanning, data scanning, or API schema discovery should be tested against both single-package playgrounds and the stress lab when relevant.
 
-## Adding a new change type
+## Shell Architecture Notes
 
-1. Define the type in `src/schema.ts` (extend the `AnnotaskChange` union)
-2. Emit the change in the relevant shell composable (usually `useStyleEditor`)
-3. Update the `/annotask-apply` skill in `.claude/skills/annotask-apply/SKILL.md` to handle it
-4. Add a test covering the new type
+- `App.vue` is still the orchestration hub and is larger than the desired long-term target
+- `ThemePage.vue` is also still oversized and under ongoing extraction pressure
+- new shell behavior should generally land in a composable under `src/shell/composables/`
+- the user-facing tabs are **Annotate**, **Design**, and **Audit**, while the internal Audit view id remains `develop`
+
+Useful shell files:
+
+- `src/shell/App.vue`
+- `src/shell/components/AppToolbar.vue`
+- `src/shell/components/HelpOverlay.vue`
+- `src/shell/composables/useShellNavigation.ts`
+- `src/shell/composables/useTaskWorkflows.ts`
+- `src/shell/composables/useProjectComponents.ts`
+- `src/shell/composables/useDataSources.ts`
+- `src/shell/composables/useWorkspace.ts`
+
+## Conventions
+
+- ESM only
+- TypeScript throughout
+- Vue 3 Composition API in the shell
+- zod-validated server and MCP boundaries
+- `src/schema.ts` and `src/shared/*` are the shared contracts and should stay strict
+- use `apply_patch` for source edits in agent workflows
+
+## Working On APIs Or Task Contracts
+
+When adding or changing a task or API surface:
+
+1. update `src/schema.ts` if the wire shape changes
+2. update shared validation in `src/server/validation.ts` or `src/server/schemas.ts`
+3. update the HTTP route in `src/server/api.ts` and MCP tooling in `src/mcp/server.ts` if needed
+4. add or update tests in `src/plugin/__tests__/` or `src/server/__tests__/`
+5. update docs in `README.md`, `docs/api.md`, `docs/cli.md`, or `docs/skills.md`
+
+## Release Workflow
+
+See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) and [`distribution.md`](distribution.md) for publishing details. The short version is:
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+npm pack --dry-run
+```
+
+Then update `package.json` and `CHANGELOG.md` together before publishing.

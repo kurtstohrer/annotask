@@ -74,19 +74,28 @@ export function bridgeEvents(): string {
     var eid = getEid(el);
     if (eid === lastHoverEid) return;
 
-    var rect = getRect(el);
-    // Skip hover on elements that cover most of the viewport — these are
-    // layout wrappers (Theme, Box, outer Flex) the user rarely wants to
-    // highlight. Clear any stuck prior highlight on the way out, otherwise
-    // the old rect lingers after the cursor crosses into a big wrapper.
-    var vw = window.innerWidth || document.documentElement.clientWidth || 1;
-    var vh = window.innerHeight || document.documentElement.clientHeight || 1;
-    if (rect.width * rect.height > vw * vh * 0.6) { clearHoverState(); return; }
-
-    lastHoverEid = eid;
-
     var source = findSourceElement(el);
     var data = getSourceData(source.sourceEl);
+    // Don't paint a hover box on elements with no source mapping — these are
+    // host/shell containers (single-spa mount wrappers, root divs) whose
+    // ancestors have no data-annotask-file. Without this gate, moving off a
+    // detached MFE element onto its still-connected parent container paints a
+    // labelless highlight the MutationObserver can't later clear.
+    if (!data.file) { clearHoverState(); return; }
+
+    var rect = getRect(el);
+    // Skip hover on un-annotated elements that cover most of the viewport —
+    // generic layout wrappers (Theme, Box, outer Flex) whose annotated
+    // ancestor was resolved via walk-up. Annotated elements always paint
+    // regardless of size: a large content section that was explicitly
+    // instrumented is a legitimate pin target the user aimed at.
+    if (!hasSourceAttr(el)) {
+      var vw = window.innerWidth || document.documentElement.clientWidth || 1;
+      var vh = window.innerHeight || document.documentElement.clientHeight || 1;
+      if (rect.width * rect.height > vw * vh * 0.6) { clearHoverState(); return; }
+    }
+
+    lastHoverEid = eid;
 
     pendingHoverData = {
       eid: eid,
@@ -299,13 +308,14 @@ export function bridgeEvents(): string {
         if (file) {
           var tag = el.getAttribute('data-annotask-source-tag') || '';
           var line = el.getAttribute('data-annotask-line') || '';
+          var moduleAttr = el.getAttribute('data-annotask-source-module') || '';
           // Remember the innermost annotated node as a fallback in case we
           // never climb into a component tag.
-          if (!fallback) fallback = { file: file, line: line, tag: tag };
+          if (!fallback) fallback = { file: file, line: line, tag: tag, module: moduleAttr };
           // Prefer the first node whose tag looks like a user component —
           // JSX / SFC component names are uppercase by convention.
           if (tag && /^[A-Z]/.test(tag.charAt(0))) {
-            found = { file: file, line: line, tag: tag };
+            found = { file: file, line: line, tag: tag, module: moduleAttr };
             break;
           }
         }
@@ -314,9 +324,9 @@ export function bridgeEvents(): string {
     }
     var picked = found || fallback;
     if (picked) {
-      dataHoverPending = { file: picked.file, line: picked.line, tag: picked.tag, clientX: e.clientX, clientY: e.clientY };
+      dataHoverPending = { file: picked.file, line: picked.line, tag: picked.tag, module: picked.module, clientX: e.clientX, clientY: e.clientY };
     } else {
-      dataHoverPending = { file: '', line: '', tag: '', clientX: e.clientX, clientY: e.clientY };
+      dataHoverPending = { file: '', line: '', tag: '', module: '', clientX: e.clientX, clientY: e.clientY };
     }
     if (!dataHoverRaf) {
       dataHoverRaf = true;
@@ -330,7 +340,7 @@ export function bridgeEvents(): string {
   function onDataWatchLeave() {
     if (!dataWatchActive) return;
     dataHoverPending = null;
-    sendToShell('data:hover', { file: '', line: '', tag: '', clientX: 0, clientY: 0 });
+    sendToShell('data:hover', { file: '', line: '', tag: '', module: '', clientX: 0, clientY: 0 });
   }
 
   document.addEventListener('mousemove', onDataWatchMove, { capture: true, passive: true });
@@ -478,5 +488,111 @@ export function bridgeEvents(): string {
   window.addEventListener('popstate', checkRoute);
   window.addEventListener('hashchange', checkRoute);
   setInterval(checkRoute, 2000);
+
+  // ── Instrumented-DOM Changes ──────────────────────────
+  // Fires a debounced 'rendered:changed' event whenever the set of
+  // [data-annotask-file] elements in the document mutates — client-side SPA
+  // navigations, single-spa MFE mount/unmount, HMR swaps, conditional
+  // rendering (dialogs, tabs, modals). The shell uses this to auto-refresh
+  // its "used on page" computation without relying on the 2s route poll.
+  var renderedChangedTimer = null;
+  function scheduleRenderedChanged() {
+    if (renderedChangedTimer) return;
+    renderedChangedTimer = setTimeout(function() {
+      renderedChangedTimer = null;
+      sendToShell('rendered:changed', {});
+    }, 250);
+  }
+  function subtreeHasInstrumented(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.hasAttribute && node.hasAttribute('data-annotask-file')) return true;
+    return !!(node.querySelector && node.querySelector('[data-annotask-file]'));
+  }
+  if (typeof MutationObserver !== 'undefined' && document.body) {
+    var renderedMo = new MutationObserver(function(muts) {
+      var renderedScheduled = false;
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        var an = m.addedNodes || [];
+        for (var a = 0; a < an.length && !renderedScheduled; a++) {
+          if (subtreeHasInstrumented(an[a])) { scheduleRenderedChanged(); renderedScheduled = true; }
+        }
+        var rn = m.removedNodes || [];
+        for (var r = 0; r < rn.length && !renderedScheduled; r++) {
+          if (subtreeHasInstrumented(rn[r])) { scheduleRenderedChanged(); renderedScheduled = true; }
+        }
+      }
+      // If the hovered element was detached by this mutation batch (single-spa
+      // MFE unmount, route swap, conditional rendering, HMR), the browser often
+      // won't fire a mouseout for it — the shell's highlight would stay stuck
+      // until the cursor happens to cross a different instrumented element.
+      if (shellShowing && lastHoverEid) {
+        var hoveredEl = getEl(lastHoverEid);
+        if (!hoveredEl || !hoveredEl.isConnected) clearHoverState();
+      }
+    });
+    renderedMo.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // ── Color Scheme Tracking ─────────────────────────────
+  // Push 'color-scheme:changed' whenever the app toggles light/dark / named
+  // theme. Relies on detectColorScheme() declared in messages.ts — function
+  // declarations are hoisted within the shared IIFE so it is safe to call
+  // from here even though messages.ts's source is concatenated after this.
+  var lastColorScheme = '';
+  var colorSchemeTimer = null;
+  function emitColorScheme() {
+    if (colorSchemeTimer) return;
+    colorSchemeTimer = setTimeout(function() {
+      colorSchemeTimer = null;
+      var r;
+      try { r = detectColorScheme(); } catch (e) { return; }
+      if (!r) return;
+      // Include marker in the dedupe key so named-theme swaps (daisyUI, Bootstrap
+      // data-bs-theme, etc.) emit even when the light/dark classification stays
+      // the same across two named dark themes.
+      var key = r.scheme + '|' + (r.marker ? (r.marker.kind + ':' + (r.marker.name || '') + ':' + (r.marker.value || '')) : '');
+      if (key === lastColorScheme) return;
+      lastColorScheme = key;
+      sendToShell('color-scheme:changed', r);
+    }, 50);
+  }
+  if (typeof MutationObserver !== 'undefined') {
+    var csAttrFilter = [
+      'class',
+      'style',
+      'data-theme',
+      'data-color-scheme',
+      'data-color-mode',
+      'data-mode',
+      'data-bs-theme',
+      'data-mui-color-scheme',
+      'data-joy-color-scheme',
+      'data-mantine-color-scheme'
+    ];
+    try {
+      var csHtmlMo = new MutationObserver(emitColorScheme);
+      csHtmlMo.observe(document.documentElement, { attributes: true, attributeFilter: csAttrFilter });
+    } catch (e) {}
+    if (document.body) {
+      try {
+        var csBodyMo = new MutationObserver(emitColorScheme);
+        csBodyMo.observe(document.body, { attributes: true, attributeFilter: csAttrFilter });
+      } catch (e) {}
+    }
+  }
+  if (window.matchMedia) {
+    try {
+      var csMql = window.matchMedia('(prefers-color-scheme: dark)');
+      if (csMql.addEventListener) csMql.addEventListener('change', emitColorScheme);
+      else if (csMql.addListener) csMql.addListener(emitColorScheme);
+    } catch (e) {}
+  }
+  // Seed the cache so the first real change is the first emission. Safe because
+  // detectColorScheme is hoisted within the shared IIFE (defined in messages.ts).
+  try {
+    var seed = detectColorScheme();
+    lastColorScheme = seed.scheme + '|' + (seed.marker ? (seed.marker.kind + ':' + (seed.marker.name || '') + ':' + (seed.marker.value || '')) : '');
+  } catch (e) {}
 `
 }

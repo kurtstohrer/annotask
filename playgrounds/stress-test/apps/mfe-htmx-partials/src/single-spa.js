@@ -1,19 +1,24 @@
 // single-spa lifecycle entry for the htmx MFE. Loaded cross-origin by
-// the host at http://localhost:4260/src/single-spa.js. We can't reuse
-// the solo index.html — under single-spa we render an HTML fragment
-// directly into the host's DOM and call htmx.process() on it.
+// the host at http://localhost:4260/src/single-spa.js.
 //
-// hx-get URLs are absolute (http://localhost:4360/...) because under
-// single-spa there is no Vite proxy; the browser is on the host origin
-// (:4200) and we need to reach the Rust service on :4360 directly.
+// We fetch the MFE's own index.html at mount time and lift its
+// `.htmx-shell` body into the host's DOM. This reuses the HTML that
+// Vite already transformed with annotask data-* attributes, so the
+// arrow/select tools get real source attribution instead of resolving
+// to an uninstrumented runtime template literal.
+//
+// Proxy-relative URLs (/api/*) are rewritten to the Rust service's
+// absolute origin because the browser is on the host's origin (:4200)
+// under single-spa — there is no Vite proxy.
 
 import '@annotask/stress-ui-tokens/tokens.css'
 import '@picocss/pico/css/pico.min.css'
+import './htmx.css'
 import htmx from 'htmx.org'
+import { bootstrapTheme } from '@annotask/stress-ui-tokens'
 
-// Vite's ESM bundle of htmx exports it as default but doesn't assign
-// window.htmx. Under single-spa other code (annotask, Playwright probes)
-// may expect the global — set it so we match the CDN/UMD behavior.
+bootstrapTheme()
+
 if (typeof window !== 'undefined' && !window.htmx) {
   window.htmx = htmx
 }
@@ -26,66 +31,72 @@ if (htmx.config) {
   htmx.config.selfRequestsOnly = false
 }
 
-const HTML = `
-<main class="container">
-  <header>
-    <hgroup>
-      <h1>htmx Partials</h1>
-      <p>MFE <code>htmx-partials</code> · mounted by single-spa · backed by Rust on :4360 · Pico.css</p>
-    </hgroup>
-  </header>
-
-  <article>
-    <h2>What this stresses</h2>
-    <ul>
-      <li>Server-driven HTML fragments via <code>hx-get</code></li>
-      <li>DOM mutation after load — annotask must follow swapped elements</li>
-      <li>Pico.css classless component styling on Rust-served fragments</li>
-    </ul>
-  </article>
-
-  <article>
-    <header>
-      <hgroup>
-        <h2>Upstream health</h2>
-        <p>Swapped in from the Rust service.</p>
-      </hgroup>
-    </header>
-    <div
-      id="htmx-health"
-      hx-get="http://localhost:4360/api/health-fragment"
-      hx-trigger="load, click from:#htmx-refresh-btn"
-      hx-swap="innerHTML"
-    >
-      <p><em>Loading health fragment…</em></p>
-    </div>
-    <footer>
-      <button id="htmx-refresh-btn" type="button" class="secondary">Refresh</button>
-      <small>If Rust is down the panel stays empty. Start with <code>just rust</code>.</small>
-    </footer>
-  </article>
-</main>
-`
+const MFE_ORIGIN = 'http://localhost:4260'
+const RUST_ORIGIN = 'http://localhost:4360'
 
 let container = null
+
+async function fetchShellHtml() {
+  const res = await fetch(`${MFE_ORIGIN}/`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`[htmx-partials] fetch index.html failed: ${res.status}`)
+  const text = await res.text()
+  const doc = new DOMParser().parseFromString(text, 'text/html')
+  const shell = doc.querySelector('.htmx-shell')
+  if (!shell) throw new Error('[htmx-partials] .htmx-shell not found in fetched index.html')
+
+  // Rewrite proxy-relative hx-get URLs to the Rust origin so they work
+  // from the host (:4200) where no /api proxy exists.
+  shell.querySelectorAll('[hx-get]').forEach((el) => {
+    const url = el.getAttribute('hx-get') || ''
+    if (url.startsWith('/api/')) el.setAttribute('hx-get', RUST_ORIGIN + url)
+  })
+
+  // The solo page uses id="health" / id="refresh-btn" / etc. — single-spa
+  // mounts multiple apps into the same document, so keep the htmx- prefixed
+  // ids stable. Map solo ids onto the namespaced versions expected below.
+  const idRewrites = {
+    health: 'htmx-health',
+    'refresh-btn': 'htmx-refresh-btn',
+    'component-usage': 'htmx-component-usage',
+    'usage-refresh-btn': 'htmx-usage-refresh-btn',
+  }
+  for (const [from, to] of Object.entries(idRewrites)) {
+    const node = shell.querySelector(`#${from}`)
+    if (node) node.id = to
+  }
+  shell.querySelectorAll('[hx-trigger]').forEach((el) => {
+    let trig = el.getAttribute('hx-trigger') || ''
+    for (const [from, to] of Object.entries(idRewrites)) {
+      trig = trig.replace(`from:#${from}`, `from:#${to}`)
+    }
+    el.setAttribute('hx-trigger', trig)
+  })
+
+  return shell.outerHTML
+}
 
 export async function bootstrap() {}
 
 export async function mount(props) {
   container = document.getElementById(`single-spa-application:${props.name}`)
   if (!container) throw new Error('[htmx-partials] mount target not found')
-  container.innerHTML = HTML
+
+  const shellHtml = await fetchShellHtml()
+  container.innerHTML = shellHtml
   htmx.process(container)
 
-  // `hx-trigger="load"` only fires on elements htmx sees during
-  // DOMContentLoaded. Under single-spa we inject the fragment after the
-  // host has already loaded, so we kick off the initial fetch
-  // explicitly. Clicking Refresh still uses the declarative
-  // `click from:#htmx-refresh-btn` trigger.
   const health = container.querySelector('#htmx-health')
   if (health) {
-    htmx.ajax('GET', 'http://localhost:4360/api/health-fragment', {
+    htmx.ajax('GET', `${RUST_ORIGIN}/api/health-fragment`, {
       target: health,
+      swap: 'innerHTML',
+    })
+  }
+
+  const usage = container.querySelector('#htmx-component-usage')
+  if (usage) {
+    htmx.ajax('GET', `${RUST_ORIGIN}/api/component-usage-fragment`, {
+      target: usage,
       swap: 'innerHTML',
     })
   }

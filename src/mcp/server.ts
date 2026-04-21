@@ -13,7 +13,19 @@ import { getDataSourceExamples } from '../server/data-source-examples.js'
 import { resolveDataSourceDetails } from '../server/data-source-details.js'
 import { scanApiSchemas } from '../server/api-schema-scanner.js'
 import { resolveEndpoint } from '../server/api-schema-resolver.js'
+import { resolveWorkspace } from '../server/workspace.js'
 import { TASK_TYPES, type DataSource } from '../schema.js'
+
+/** Monorepo root for containment checks, or `undefined` when the project is
+ *  not inside a workspace. Cached via `resolveWorkspace`. */
+async function getWorkspaceRoot(projectRoot: string): Promise<string | undefined> {
+  try {
+    const info = await resolveWorkspace(projectRoot)
+    return info.isWorkspace ? info.root : undefined
+  } catch {
+    return undefined
+  }
+}
 import {
   McpGetTasksArgs,
   McpGetTaskArgs,
@@ -27,6 +39,8 @@ import {
   McpGetCodeContextArgs,
   McpGetComponentExamplesArgs,
   McpGetDataContextArgs,
+  McpGetInteractionHistoryArgs,
+  McpGetRenderedHtmlArgs,
   McpGetDataSourcesArgs,
   McpGetDataSourceExamplesArgs,
   McpGetDataSourceDetailsArgs,
@@ -67,6 +81,8 @@ export interface McpDeps {
   addTask: (task: Record<string, unknown>) => unknown | Promise<unknown>
   updateTask: (id: string, updates: Record<string, unknown>) => unknown | Promise<unknown>
   deleteTask: (id: string) => unknown | Promise<unknown>
+  readInteractionHistory: (taskId: string) => Promise<unknown | null>
+  readRenderedHtml: (taskId: string) => Promise<string | null>
 }
 
 // ── Constants ────────────────────────────────────────
@@ -121,7 +137,7 @@ const TOOLS: ToolDef[] = [
     name: 'annotask_get_tasks',
     description:
       'Get design tasks from Annotask. Returns task summaries by default (id, type, status, description, file, line, action, screenshot). ' +
-      'Use detail=true for full objects including context, viewport, element_context, and interaction_history. ' +
+      'Use detail=true for full objects including context, viewport, and interaction_history. ' +
       'Use annotask_get_task to fetch full detail for a single task. ' +
       'Focus on "pending" and "denied" (with feedback) tasks for work to do.',
     inputSchema: {
@@ -146,7 +162,7 @@ const TOOLS: ToolDef[] = [
   {
     name: 'annotask_get_task',
     description:
-      'Get full details for a single task by ID. Returns all fields including context, element_context, interaction_history, and agent_feedback. ' +
+      'Get full details for a single task by ID. Returns all fields including context, interaction_history, and agent_feedback. ' +
       'Use this after reviewing the task summary list to get full context for a specific task.',
     inputSchema: {
       type: 'object',
@@ -311,6 +327,34 @@ const TOOLS: ToolDef[] = [
         limit: { type: 'number', description: 'Max examples to return. Default 3, max 10.' },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'annotask_get_interaction_history',
+    description:
+      'Retrieve the user\'s pre-task interaction trace: navigation path plus the last ~20 recorded actions (clicks, form submits, route changes) as of task creation. ' +
+      'Always captured server-side — the per-task "Embed interaction history" toggle only decides whether this data rides in the task payload, so use this tool whenever an annotation references a flow or sequence ("after I click submit…", "on the orders page…") and the payload itself lacks `interaction_history`. ' +
+      'Returns the stored snapshot (or the embedded copy when the user opted in). If nothing was captured (e.g. task came from an external API caller), the response has `not_captured: true`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID whose interaction history to fetch' },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'annotask_get_rendered_html',
+    description:
+      'Fetch the `outerHTML` of the element the task was attached to, captured post-render at task creation (React/Vue bindings resolved, annotask attrs stripped). ' +
+      'Always captured when a selection existed — the "Embed rendered HTML" toggle only gates embedding in the task payload. Use this when the task description references visual structure that is hard to reconstruct from source alone ("the three spans in the header", "this button\'s icon wrapper") or when you need to match existing inline markup for a style fix. ' +
+      'Response shape: `{ task_id, rendered, source }` where `source` is `"embedded"` (read from the task payload) or `"sidecar"` (loaded from the per-task store). `{ rendered: null, not_captured: true }` when no snapshot exists. Hard-capped at 200 KB per task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'The task ID whose rendered HTML to fetch' },
+      },
+      required: ['task_id'],
     },
   },
   {
@@ -634,7 +678,8 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
       const file = typeof task.file === 'string' ? task.file : ''
       const line = typeof task.line === 'number' ? task.line : 0
       if (!file) return toolError('Task has no file reference — cannot resolve code context')
-      const result = await getCodeContext(deps.projectRoot, file, line, contextLines ?? 15)
+      const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
+      const result = await getCodeContext(deps.projectRoot, file, line, contextLines ?? 15, workspaceRoot)
       return { content: [{ type: 'text', text: compact(result) }] }
     }
 
@@ -660,8 +705,47 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
       const file = typeof task.file === 'string' ? task.file : ''
       const line = typeof task.line === 'number' ? task.line : 0
       if (!file) return toolError('Task has no file reference — cannot resolve data context')
-      const result = await resolveDataContext(deps.projectRoot, file, line)
+      const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
+      const result = await resolveDataContext(deps.projectRoot, file, line, {}, workspaceRoot)
       return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_interaction_history': {
+      const parsed = parseWith(McpGetInteractionHistoryArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { task_id: taskId } = parsed.data
+      const taskData = deps.getTasks()
+      const task = taskData.tasks.find(t => t.id === taskId)
+      if (!task) return toolError(`Task not found: ${taskId}`)
+      // Prefer embedded — the user opted in, so it's guaranteed fresh relative
+      // to the task. Fall back to the sidecar (always written at creation).
+      if (task.interaction_history) {
+        return { content: [{ type: 'text', text: compact(task.interaction_history) }] }
+      }
+      const stored = await deps.readInteractionHistory(taskId)
+      if (stored == null) {
+        return { content: [{ type: 'text', text: compact({ task_id: taskId, not_captured: true }) }] }
+      }
+      return { content: [{ type: 'text', text: compact(stored) }] }
+    }
+
+    case 'annotask_get_rendered_html': {
+      const parsed = parseWith(McpGetRenderedHtmlArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { task_id: taskId } = parsed.data
+      const taskData = deps.getTasks()
+      const task = taskData.tasks.find(t => t.id === taskId)
+      if (!task) return toolError(`Task not found: ${taskId}`)
+      const ctx = task.context as Record<string, unknown> | undefined
+      const embedded = ctx && typeof ctx.rendered === 'string' ? ctx.rendered : null
+      if (embedded) {
+        return { content: [{ type: 'text', text: compact({ task_id: taskId, rendered: embedded, source: 'embedded' }) }] }
+      }
+      const stored = await deps.readRenderedHtml(taskId)
+      if (stored == null) {
+        return { content: [{ type: 'text', text: compact({ task_id: taskId, rendered: null, not_captured: true }) }] }
+      }
+      return { content: [{ type: 'text', text: compact({ task_id: taskId, rendered: stored, source: 'sidecar' }) }] }
     }
 
     case 'annotask_get_data_sources': {
@@ -732,12 +816,14 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
       const parsed = parseWith(McpGetDataSourceDetailsArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
       const { name, kind, file, context_lines } = parsed.data
+      const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
       const result = await resolveDataSourceDetails({
         projectRoot: deps.projectRoot,
         name,
         kind: kind as DataSource['kind'] | undefined,
         file,
         contextLines: context_lines,
+        workspaceRoot,
       })
       return { content: [{ type: 'text', text: compact(result) }] }
     }

@@ -1,21 +1,24 @@
 # Annotask Documentation
 
-The root `README.md` is the best product-level overview. The docs in this folder go deeper into the current API, CLI, setup, and internal architecture.
+The root [`README.md`](../README.md) is the product overview. The docs in this folder go deeper into setup, APIs, architecture, and contributor workflow.
 
-## For users
+## User Docs
 
-- **[Setup](setup.md)** — Install Annotask, wire it into Vite or Webpack, connect an agent via MCP or skills, and verify the shell.
-- **[API Reference](api.md)** — HTTP endpoints, WebSocket events, task lifecycle, and the full MCP tool surface.
-- **[CLI Reference](cli.md)** — Every `annotask` command, including design-spec, components, data, and API-schema helpers.
-- **[Skills](skills.md)** — Bundled `/annotask-init` and `/annotask-apply` skills and how they map to the current workflow.
-- **[Component discovery](component-discovery.md)** — How Annotask scans libraries, builds component catalogs, and surfaces in-repo examples.
+- [setup.md](setup.md) - install, configure Vite or Webpack, connect agents, and verify the shell
+- [cli.md](cli.md) - every `annotask` command and flag
+- [api.md](api.md) - HTTP endpoints, WebSocket events, MCP tools, error shapes, and task lifecycle
+- [skills.md](skills.md) - `/annotask-init` and `/annotask-apply`
+- [component-discovery.md](component-discovery.md) - how component scanning works and how it surfaces in the shell
 
-## For contributors
+## Contributor Docs
 
-- **[Architecture](architecture.md)** — Plugin, shell, bridge, server, data scanners, MCP server, and task flow.
-- **[Development](development.md)** — Setup, build, test, project structure, and implementation conventions.
-- **[Distribution](distribution.md)** — npm packaging, skill distribution strategy, and release notes.
+- [architecture.md](architecture.md) - plugin, bridge, server, shell, scanners, and persistence
+- [development.md](development.md) - local workflow, scripts, testing, playgrounds, and project structure
+- [distribution.md](distribution.md) - package contents, build artifacts, and publishing notes
+- [REVIEWING.md](REVIEWING.md) - PR review checklist and codebase invariants
 
-## In-app docs
+## Related Files
 
-Annotask also ships a Help overlay inside the shell. It mirrors the current workflow and is intended to stay in sync with the docs in this folder.
+- [`../SETUP.md`](../SETUP.md) - short setup guide
+- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) - contributor overview and release process
+- in-app Help overlay - product documentation embedded in the shell UI

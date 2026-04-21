@@ -1,16 +1,16 @@
 <template>
   <div class="task-toggles">
-    <label class="history-toggle">
+    <label class="history-toggle" title="Always captured server-side. Check to embed in the task payload so agents see it without calling annotask_get_interaction_history.">
       <input type="checkbox" :checked="includeHistory" @change="$emit('update:includeHistory', ($event.target as HTMLInputElement).checked)" />
-      <span>Include interaction history</span>
+      <span>Embed interaction history</span>
     </label>
-    <label class="history-toggle">
-      <input type="checkbox" :checked="includeElementContext" @change="$emit('update:includeElementContext', ($event.target as HTMLInputElement).checked)" />
-      <span>Include DOM context</span>
+    <label class="history-toggle" title="Always captured server-side. Check to embed in the task payload so agents see it without calling annotask_get_rendered_html.">
+      <input type="checkbox" :checked="includeRenderedHtml" @change="$emit('update:includeRenderedHtml', ($event.target as HTMLInputElement).checked)" />
+      <span>Embed rendered HTML</span>
     </label>
-    <label v-if="dataContextProbe?.hasData" class="history-toggle">
+    <label v-if="dataContextProbe?.hasData" class="history-toggle" title="Resolvable on demand via annotask_get_data_context. Check to embed file-level data context in the task payload.">
       <input type="checkbox" :checked="includeDataContext" @change="$emit('update:includeDataContext', ($event.target as HTMLInputElement).checked)" />
-      <span>Include data context{{ dataContextLabel }}</span>
+      <span>Embed data context{{ dataContextLabel }}</span>
     </label>
   </div>
 </template>
@@ -21,14 +21,14 @@ import type { DataContextProbeResult } from '../services/dataContextClient'
 
 interface Props {
   includeHistory: boolean
-  includeElementContext: boolean
+  includeRenderedHtml: boolean
   includeDataContext: boolean
   dataContextProbe: DataContextProbeResult | null
 }
 
 interface Emits {
   (e: 'update:includeHistory', value: boolean): void
-  (e: 'update:includeElementContext', value: boolean): void
+  (e: 'update:includeRenderedHtml', value: boolean): void
   (e: 'update:includeDataContext', value: boolean): void
 }
 

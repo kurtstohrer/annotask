@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useViewportPreview, VIEWPORT_PRESETS, type ViewportPreset } from '../composables/useViewportPreview'
+import Icon from './Icon.vue'
 
 const viewport = useViewportPreview()
 const open = ref(false)
@@ -47,13 +48,9 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 <template>
   <div ref="root" class="viewport-selector">
     <button class="vp-trigger" @click="open = !open" :title="'Preview at different screen sizes — ' + (viewport.effectiveViewport.value.label || 'Responsive')">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="2" y="3" width="20" height="14" rx="2" />
-        <line x1="8" y1="21" x2="16" y2="21" />
-        <line x1="12" y1="17" x2="12" y2="21" />
-      </svg>
+      <Icon name="monitor" :size="13" />
       <span class="vp-label">{{ displayLabel }}</span>
-      <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+      <Icon name="chevron-down" :size="8" :stroke-width="3" />
     </button>
 
     <div v-if="open" class="vp-dropdown">
@@ -100,9 +97,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
       </div>
 
       <button v-if="!viewport.isFullWidth.value" class="vp-item vp-rotate" @click="viewport.toggleRotate()">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-        </svg>
+        <Icon name="rotate-ccw" :size="12" />
         <span class="vp-item-label">Rotate</span>
       </button>
     </div>

@@ -9,7 +9,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | Tool | Description |
 |------|-------------|
 | `annotask_get_tasks` | List task summaries — filter by `status`, `mfe`. Use `detail=true` for full objects |
-| `annotask_get_task` | Get full detail for a single task by ID (context, element_context, agent_feedback) |
+| `annotask_get_task` | Get full detail for a single task by ID (context, agent_feedback) |
 | `annotask_update_task` | Transition status, set resolution, ask questions, mark blocked |
 | `annotask_create_task` | Create a new pending task |
 | `annotask_delete_task` | Delete a task and its screenshot |
@@ -20,6 +20,8 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_screenshot` | Task screenshot as base64 PNG |
 | `annotask_get_code_context` | Ground a task to current source context (excerpt, symbol, imports, hash) |
 | `annotask_get_data_context` | Resolve task data context |
+| `annotask_get_interaction_history` | Fetch a task's pre-task user trace (route path + ~20 recent actions). Always captured server-side even when the user didn't embed it in the payload |
+| `annotask_get_rendered_html` | Fetch the `outerHTML` snapshot of the task's selected element. Always captured; `source` field indicates embedded vs sidecar |
 | `annotask_get_data_sources` | List detected data libraries and project data sources |
 | `annotask_get_data_source_examples` | Get real in-repo usage examples for a data source |
 | `annotask_get_data_source_details` | Get definition-level detail for a data source |
@@ -69,6 +71,8 @@ annotask component <Name>    # Show component props
 annotask code-context <id>   # Ground task to current source excerpt
 annotask component-examples Button # Real in-repo component usage examples
 annotask data-context <id>   # Resolve task data context
+annotask interaction-history <id>  # Pre-task user trace (always captured, embed toggle decides payload inclusion)
+annotask rendered-html <id>  # outerHTML snapshot of the task's selected element
 annotask data-sources        # List data libraries + project data sources
 annotask data-source-examples useUserQuery # Real in-repo data-source usages
 annotask data-source-details useUserQuery  # Definition-level data-source detail
@@ -114,6 +118,8 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET /__annotask/api/api-schemas` — API schema catalog
 - `GET /__annotask/api/api-operation` — One API operation by path
 - `GET /__annotask/api/resolve-endpoint` — Resolve a concrete URL to a known operation
+- `GET|POST /__annotask/api/tasks/:id/interaction-history` — Per-task user-trace sidecar (always written on task create; embed toggle only gates inclusion in the task payload)
+- `GET|POST /__annotask/api/tasks/:id/rendered-html` — Per-task `outerHTML` sidecar (always written when a selection exists; 200 KB cap)
 - `GET|POST /__annotask/api/performance` — Performance snapshots
 - `POST /__annotask/api/screenshots` — Upload a screenshot
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
@@ -250,8 +256,8 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 ## Key Shell Features
 
 - **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports
-- **Interaction history** — Tracks user navigation and clicks in the app (optional, off by default)
-- **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
+- **Interaction history** — Tracks user navigation and clicks. Always captured and persisted per task to `.annotask/interaction-history/<id>.json`; the "Embed interaction history" toggle only decides whether it rides in the task payload. Agents retrieve via `annotask_get_interaction_history` when unembedded
+- **Element context / rendered HTML** — Post-render `outerHTML` of the selected element. Always captured and persisted per task to `.annotask/rendered-html/<id>.json` (200 KB cap); the "Embed rendered HTML" toggle only decides payload inclusion. Agents retrieve via `annotask_get_rendered_html`
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
 - **Error monitoring** — Console error/warn capture with deduplication, bounded memory, one-click fix tasks
 - **Performance monitoring** — Web Vitals, DOM/resource/bundle analysis, interaction recording, perf score, one-click fix tasks
@@ -281,7 +287,7 @@ Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth
 | `annotation` | Pins, arrows, notes, text highlights | User intent described in `description`, optional `action` and `context` |
 | `section_request` | Drawn sections | New content area with `description` and `placement` |
 | `style_update` | Inspector style/class edits | CSS changes in `context.changes` array with `property`, `before`, `after` |
-| `theme_update` | Theme page token edits | Design token changes with `category`, `role`, `before`, `after`, `cssVar` |
+| `theme_update` | Theme page commit | One task per commit. `context.edits[]` — each entry carries `category`, `role`, `cssVar`, `theme_variant`, `theme_selector` (how that variant is activated in the DOM — attribute/class/media/default), `before`, `after`, `sourceFile`, `sourceLine`, `isNew`. `context.specFile` is the relative path to `.annotask/design-spec.json`; the agent patches it after applying CSS edits so the Theme page hot-reloads. |
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
 | `error_fix` | Errors tab "Fix" action | Console error/warning with `level`, `occurrences`, `errorId` in `context` |
 | `perf_fix` | Perf tab "Fix" action | Performance finding with `metric`, `value`, `unit`, `severity`, `category`, `findingId` in `context` |

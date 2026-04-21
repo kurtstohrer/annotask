@@ -474,6 +474,14 @@ export interface ColorSchemeResult {
   marker?: ColorSchemeMarker
 }
 
+/**
+ * Unsolicited push from the client when the iframe's color scheme changes —
+ * class/attribute toggled on html/body, or prefers-color-scheme flips. Payload
+ * is a ColorSchemeResult. Lets the shell's Theme page follow the iframe live
+ * instead of polling.
+ */
+export type ColorSchemeChangedEvent = ColorSchemeResult
+
 // ── Insert / Move ───────────────────────────────────────
 
 export interface InsertPlaceholderPayload {

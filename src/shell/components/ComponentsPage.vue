@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { onMounted, watch, nextTick, useTemplateRef } from 'vue'
+import { onMounted, ref, watch, nextTick, useTemplateRef } from 'vue'
 import { useComponentLibrary, colorForLibrary, type LibraryComponent } from '../composables/useProjectComponents'
+import { useWorkspace } from '../composables/useWorkspace'
 import type { useIframeManager } from '../composables/useIframeManager'
+import Icon from './Icon.vue'
+import MfeFilterDropdown from './MfeFilterDropdown.vue'
 
 const props = defineProps<{
   iframe: ReturnType<typeof useIframeManager>
@@ -12,11 +15,30 @@ const props = defineProps<{
 }>()
 
 const cl = useComponentLibrary(props.iframe)
+const ws = useWorkspace()
 
-onMounted(() => { cl.load() })
+const COLLAPSED_KEY = 'annotask:componentsCollapsedLibs'
+const collapsedLibs = ref<Set<string>>(new Set())
+try {
+  const raw = localStorage.getItem(COLLAPSED_KEY)
+  if (raw) collapsedLibs.value = new Set(JSON.parse(raw))
+} catch {}
 
-// Keep the "on this page" set in sync with iframe navigation.
+function toggleLib(name: string) {
+  const next = new Set(collapsedLibs.value)
+  if (next.has(name)) next.delete(name); else next.add(name)
+  collapsedLibs.value = next
+  try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])) } catch {}
+}
+
+onMounted(() => { cl.load(); ws.load() })
+
+// Keep the "on this page" set in sync with iframe navigation + any DOM
+// mutation that adds / removes instrumented elements (single-spa mount,
+// conditional rendering, HMR). The bridge's MutationObserver emits
+// `rendered:changed` debounced so we don't thrash on dense bursts.
 props.iframe.onBridgeEvent('route:changed', () => { cl.refreshRenderedFiles() })
+props.iframe.onBridgeEvent('rendered:changed', () => { cl.refreshRenderedFiles() })
 
 // When the focused name changes *because the user hovered an element in the
 // iframe* (rather than a row here), scroll the matching row into view so the
@@ -25,7 +47,10 @@ const listRef = useTemplateRef<HTMLElement>('listRef')
 watch(() => props.focusedName, async (name) => {
   if (!name) return
   await nextTick()
-  const el = listRef.value?.querySelector<HTMLElement>(`[data-component-name="${CSS.escape(name)}"]`)
+  // focusedName is `${lib}\u0001${comp}` — strip the library prefix to find
+  // the list row by its bare component name.
+  const bare = name.includes('\u0001') ? name.split('\u0001').pop()! : name
+  const el = listRef.value?.querySelector<HTMLElement>(`[data-component-name="${CSS.escape(bare)}"]`)
   if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
 })
 
@@ -44,8 +69,8 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   if (c.deprecated) lines.push('⚠ deprecated')
   if (c.description) lines.push(c.description)
   lines.push(`${c.props.length} prop${c.props.length === 1 ? '' : 's'}` + (c.slots?.length ? ` · ${c.slots.length} slot${c.slots.length === 1 ? '' : 's'}` : '') + (c.events?.length ? ` · ${c.events.length} event${c.events.length === 1 ? '' : 's'}` : ''))
-  if (cl.usedOnPageSet.value.has(c.name)) lines.push('● on this page')
-  else if (cl.usedProjectSet.value.has(c.name)) lines.push('✓ used in this project')
+  if (cl.isOnPageInLib(lib, c.name)) lines.push('● on this page')
+  else if (cl.isUsedInLib(lib, c.name)) lines.push('✓ used in this project')
   return lines.join('\n')
 }
 </script>
@@ -84,8 +109,15 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
           <span v-if="cl.usedOnPageSet.value.size" class="filter-count">{{ cl.usedOnPageSet.value.size }}</span>
         </button>
       </div>
-      <button class="components-btn" @click="cl.load()" :disabled="cl.isLoading.value">
-        {{ cl.isLoading.value ? 'Loading…' : 'Reload' }}
+      <MfeFilterDropdown v-if="ws.hasAnyMfes.value" label="Components" />
+      <button
+        class="components-btn icon"
+        :title="cl.isLoading.value ? 'Loading…' : 'Reload components'"
+        :aria-label="cl.isLoading.value ? 'Loading components' : 'Reload components'"
+        :disabled="cl.isLoading.value"
+        @click="cl.load()"
+      >
+        <Icon name="rotate-cw" :size="14" :stroke-width="2" :class="{ spinning: cl.isLoading.value }" />
       </button>
     </div>
 
@@ -106,32 +138,45 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
         </div>
         <template v-else>
           <div v-for="lib in cl.filteredLibraries.value" :key="lib.name" class="lib-group">
-            <div class="lib-group-head">
+            <button
+              type="button"
+              class="lib-group-head"
+              :aria-expanded="!collapsedLibs.has(lib.name)"
+              :title="collapsedLibs.has(lib.name) ? `Expand ${lib.name}` : `Collapse ${lib.name}`"
+              @click="toggleLib(lib.name)"
+            >
+              <Icon
+                :name="collapsedLibs.has(lib.name) ? 'chevron-right' : 'chevron-down'"
+                :size="12"
+                :stroke-width="2.5"
+                class="lib-group-chevron"
+              />
               <span class="lib-group-name">{{ lib.name }}</span>
               <span class="lib-group-version">{{ lib.version }}</span>
               <span class="lib-group-count">{{ lib.components.length }}</span>
-            </div>
+            </button>
             <button
-              v-for="c in lib.components" :key="lib.name + c.name"
+              v-for="c in (collapsedLibs.has(lib.name) ? [] : lib.components)"
+              :key="lib.name + c.name"
               class="components-list-item"
               :class="{
                 selected: cl.selectedKey.value === `${lib.name}:::${c.name}`,
-                focused: focusedName === c.name,
-                'on-page': cl.usedOnPageSet.value.has(c.name),
+                focused: focusedName === cl.sourceName(lib.name, c.name),
+                'on-page': cl.isOnPageInLib(lib.name, c.name),
               }"
               :data-component-name="c.name"
               :title="componentTooltip(lib.name, c)"
               @click="cl.select(lib.name, c.name)"
-              @mouseenter="cl.usedOnPageSet.value.has(c.name) && cl.setFocus(c.name)"
-              @mouseleave="focusedName === c.name && cl.setFocus(null)"
+              @mouseenter="cl.isOnPageInLib(lib.name, c.name) && cl.setFocus(cl.sourceName(lib.name, c.name))"
+              @mouseleave="focusedName === cl.sourceName(lib.name, c.name) && cl.setFocus(null)"
             >
               <div class="item-row">
                 <span class="item-swatch" :style="{ background: colorForLibrary(lib.name) }" />
                 <span class="item-name" :class="{ deprecated: c.deprecated }">{{ c.name }}</span>
-                <span v-if="cl.usedOnPageSet.value.has(c.name)" class="item-onpage" title="Rendered on the current route">on page</span>
-                <span v-else-if="cl.usedProjectSet.value.has(c.name)" class="item-used" title="Referenced somewhere in this project">used</span>
-                <span v-if="matchCount(c.name) > 0" class="item-match">
-                  {{ matchCount(c.name) }} el
+                <span v-if="cl.isOnPageInLib(lib.name, c.name)" class="item-onpage" title="Rendered on the current route">on page</span>
+                <span v-else-if="cl.isUsedInLib(lib.name, c.name)" class="item-used" title="Referenced somewhere in this project">used</span>
+                <span v-if="matchCount(cl.sourceName(lib.name, c.name)) > 0" class="item-match">
+                  {{ matchCount(cl.sourceName(lib.name, c.name)) }} el
                 </span>
                 <span v-if="c.category" class="item-category">{{ c.category }}</span>
               </div>
@@ -146,9 +191,7 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
       <div v-else class="components-detail">
         <div class="detail-back-bar">
           <button class="components-back-btn" @click="cl.clearSelection()" title="Back to components list">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
+            <Icon name="chevron-left" :size="12" :stroke-width="2.5" />
             <span>Back</span>
           </button>
         </div>
@@ -158,8 +201,8 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
             <span class="detail-dot" :style="{ background: colorForLibrary(cl.selectedLibrary.value ?? '') }" />
             <span class="item-kind" data-kind="component">{{ cl.selectedLibrary.value }}</span>
             <span class="detail-name" :class="{ deprecated: cl.selectedComponent.value.deprecated }">{{ cl.selectedComponent.value.name }}</span>
-            <span v-if="cl.usedOnPageSet.value.has(cl.selectedComponent.value.name)" class="detail-onpage">on this page</span>
-            <span v-else-if="cl.usedProjectSet.value.has(cl.selectedComponent.value.name)" class="detail-used">used in project</span>
+            <span v-if="cl.isOnPageInLib(cl.selectedLibrary.value ?? '', cl.selectedComponent.value.name)" class="detail-onpage">on this page</span>
+            <span v-else-if="cl.isUsedInLib(cl.selectedLibrary.value ?? '', cl.selectedComponent.value.name)" class="detail-used">used in project</span>
           </div>
           <div v-if="cl.selectedComponent.value.description" class="detail-description">{{ cl.selectedComponent.value.description }}</div>
           <div class="detail-meta">
@@ -244,6 +287,7 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
 }
 .components-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -254,11 +298,11 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   font-weight: 600;
   font-size: 13px;
 }
-.components-search { flex: 1; }
+.components-search { flex: 1; min-width: 160px; }
 .components-search input {
   width: 100%;
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 7px 10px;
+  font-size: 13px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   color: var(--text);
@@ -315,8 +359,23 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   cursor: pointer;
   border-radius: 4px;
 }
-.components-btn:hover { background: var(--surface-3); }
+.components-btn:hover:not(:disabled) { background: var(--surface-3); }
 .components-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.components-btn.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 6px;
+  color: var(--text-muted);
+}
+.components-btn.icon:hover:not(:disabled) { color: var(--text); }
+.spinning {
+  animation: annotask-spin 0.9s linear infinite;
+}
+@keyframes annotask-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
 
 .components-error {
   padding: 8px 12px;
@@ -370,14 +429,29 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
 }
 .lib-group-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   padding: 6px 10px;
   background: var(--surface-2);
+  border: none;
   border-bottom: 1px solid var(--border);
+  color: var(--text);
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
   position: sticky;
   top: 0;
   z-index: 1;
+}
+.lib-group-head:hover { background: var(--surface-3); }
+.lib-group-head:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+.lib-group-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 .lib-group-name {
   font-family: var(--font-mono, monospace);

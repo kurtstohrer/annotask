@@ -27,6 +27,43 @@ export function transformFile(
   return null
 }
 
+/**
+ * Parse every named/default ESM import in `code` and return a map of
+ * `ImportedName → sourceModule`. Used by the tag injector so `<Button>` can
+ * carry a `data-annotask-source-module` attribute identifying which library
+ * it came from — the bridge then disambiguates two libraries that both
+ * expose `Button` even when the library wrapper swallows other data-* attrs.
+ *
+ * Deliberately regex-based to match the rest of the transform's lightweight
+ * parsing. Misses destructured re-exports / dynamic imports (rare in code
+ * that reaches the runtime as a JSX tag).
+ */
+const TRANSFORM_IMPORT_RE = /import\s*\{([^}]+)\}\s*from\s*(['"`])([^'"`]+)\2/g
+const TRANSFORM_DEFAULT_IMPORT_RE = /import\s+([A-Z][A-Za-z0-9_$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*(['"`])([^'"`]+)\2/g
+
+export function parseImports(code: string): Map<string, string> {
+  const out = new Map<string, string>()
+  let m: RegExpExecArray | null
+  TRANSFORM_IMPORT_RE.lastIndex = 0
+  while ((m = TRANSFORM_IMPORT_RE.exec(code)) !== null) {
+    const from = m[3]
+    for (const part of m[1].split(',').map(s => s.trim()).filter(Boolean)) {
+      // `Foo` → key Foo; `Foo as Bar` → key Bar (the local binding JSX uses).
+      const pair = part.split(/\s+as\s+/).map(s => s.trim())
+      const local = pair[pair.length - 1]
+      if (!/^[A-Z][A-Za-z0-9_$]*$/.test(local)) continue
+      if (!out.has(local)) out.set(local, from)
+    }
+  }
+  TRANSFORM_DEFAULT_IMPORT_RE.lastIndex = 0
+  while ((m = TRANSFORM_DEFAULT_IMPORT_RE.exec(code)) !== null) {
+    const local = m[1]
+    const from = m[3]
+    if (!out.has(local)) out.set(local, from)
+  }
+  return out
+}
+
 // ── Vue SFC ─────────────────────────────────────────────
 
 /**
@@ -54,8 +91,9 @@ export function transformVueSFC(
   const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
   const templateStartLine = code.slice(0, templateOpenTagEnd).split('\n').length
+  const imports = parseImports(code)
 
-  const injected = injectAttributes(templateContent, relativeFile, componentName, templateStartLine, { mfe })
+  const injected = injectAttributes(templateContent, relativeFile, componentName, templateStartLine, { mfe, imports })
   if (!injected) return null
 
   return code.slice(0, templateOpenTagEnd) + injected + code.slice(templateEnd)
@@ -90,6 +128,7 @@ export function transformSvelte(
   let result = ''
   let lastIndex = 0
   let changed = false
+  const imports = parseImports(code)
 
   for (const region of markupRegions) {
     // Add everything before this region (script/style blocks)
@@ -103,7 +142,7 @@ export function transformSvelte(
       relativeFile,
       componentName,
       regionStartLine,
-      { skipTags: SVELTE_SKIP_TAGS, mfe }
+      { skipTags: SVELTE_SKIP_TAGS, mfe, imports }
     )
 
     if (injected) {
@@ -143,11 +182,13 @@ export function transformJSX(
 ): string | null {
   const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
+  const imports = parseImports(code)
 
   const injected = injectAttributes(code, relativeFile, componentName, 1, {
     jsxMode: true,
     skipTags: JSX_SKIP_TAGS,
     mfe,
+    imports,
   })
 
   return injected
@@ -231,6 +272,7 @@ export function transformAstro(
   let result = ''
   let lastIndex = 0
   let changed = false
+  const imports = parseImports(code)
 
   for (const region of markupRegions) {
     result += code.slice(lastIndex, region.start)
@@ -242,6 +284,7 @@ export function transformAstro(
       jsxMode: true,
       skipTags: ASTRO_SKIP_TAGS,
       mfe,
+      imports,
     })
 
     if (injected) {
@@ -297,6 +340,11 @@ interface InjectOptions {
   skipTags?: Set<string>
   /** MFE identity for multi-project setups */
   mfe?: string
+  /** Map of `LocalName → importSource` for this file. When the scanner
+   *  lands on `<Name>` and `Name` is in the map, a `data-annotask-source-
+   *  module="<source>"` attribute is emitted. Lets the bridge tell two
+   *  libraries' Buttons apart. */
+  imports?: Map<string, string>
 }
 
 /**
@@ -316,6 +364,7 @@ export function injectAttributes(
   const skipTags = options?.skipTags ?? DEFAULT_SKIP_TAGS
   const jsxMode = options?.jsxMode ?? false
   const mfe = options?.mfe
+  const imports = options?.imports
 
   let result = ''
   let lastIndex = 0
@@ -384,7 +433,11 @@ export function injectAttributes(
       // Calculate file-relative line number
       const lineInFile = templateStartLine + template.slice(0, tagStart).split('\n').length - 1
 
-      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}" data-annotask-source-tag="${tagName}"${mfe ? ` data-annotask-mfe="${mfe}"` : ''}`
+      // Look up the import source for `tagName`. Only PascalCase identifiers
+      // end up in the map, so the attribute is skipped for DOM elements and
+      // for tags that aren't backed by an ESM import in this file.
+      const srcModule = imports?.get(tagName)
+      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}" data-annotask-source-tag="${tagName}"${srcModule ? ` data-annotask-source-module="${srcModule}"` : ''}${mfe ? ` data-annotask-mfe="${mfe}"` : ''}`
 
       // Find the insertion point: right before '>' or '/>'
       let insertAt = tagEndIndex - 1 // the '>'

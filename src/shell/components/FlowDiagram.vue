@@ -1,12 +1,7 @@
 <template>
   <div class="flow-diagram-wrap">
     <button type="button" class="flow-diagram-fs-btn" title="View larger" aria-label="View larger" @click="isOpen = true">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="15 3 21 3 21 9" />
-        <polyline points="9 21 3 21 3 15" />
-        <line x1="21" y1="3" x2="14" y2="10" />
-        <line x1="3" y1="21" x2="10" y2="14" />
-      </svg>
+      <Icon name="maximize-2" :size="13" />
     </button>
     <svg class="flow-diagram" :viewBox="`0 0 ${width} ${height}`" role="img" :aria-label="label">
       <defs>
@@ -34,7 +29,7 @@
     <Teleport to="body">
       <div v-if="isOpen" class="flow-diagram-modal" role="dialog" aria-modal="true" @click.self="isOpen = false">
         <button type="button" class="flow-diagram-modal-close" aria-label="Close" title="Close (Esc)" @click="isOpen = false">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <Icon name="x" :size="18" />
         </button>
         <div class="flow-diagram-modal-inner" @click.self="isOpen = false">
           <svg class="flow-diagram flow-diagram-modal-svg" :viewBox="`0 0 ${width} ${height}`" role="img" :aria-label="label">
@@ -68,6 +63,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import Icon from './Icon.vue'
 
 export interface FlowNode {
   id: string

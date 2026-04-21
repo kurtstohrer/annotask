@@ -86,8 +86,9 @@ export async function getCodeContext(
   relFile: string,
   line: number,
   contextLines = 15,
+  workspaceRoot?: string,
 ): Promise<CodeContext> {
-  const resolved = resolveProjectFile(projectRoot, relFile)
+  const resolved = resolveProjectFile(projectRoot, relFile, workspaceRoot)
   if (!resolved) {
     return {
       file: String(relFile),

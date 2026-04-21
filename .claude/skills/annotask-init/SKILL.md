@@ -16,12 +16,14 @@ Scans the project to detect the framework, design tokens (colors, typography, sp
 
 ## Output schema
 
-Every token uses this shape:
+Every token carries resolved values for every detected theme variant via a
+`values` map keyed by theme id. Tokens that don't change across variants repeat
+the same value under each id — this keeps every token one uniform shape.
 
 ```json
 {
   "role": "primary",
-  "value": "#3b82f6",
+  "values": { "light": "#3b82f6", "dark": "#60a5fa" },
   "cssVar": "--color-primary",
   "source": "var(--color-primary)",
   "sourceFile": "src/assets/main.css",
@@ -30,11 +32,25 @@ Every token uses this shape:
 ```
 
 - `role` — semantic name (see vocabularies below)
-- `value` — resolved value (hex color, font string, size, etc.)
+- `values` — resolved value per theme variant, keyed by theme id (`light`, `dark`, or a named theme). Single-theme apps use `{ "default": "…" }`.
 - `cssVar` — the CSS custom property name, if backed by one. Omit if not a CSS variable.
 - `source` — human-readable provenance: `var(--x)`, `tailwind.config:colors.primary`, `@theme:--color-primary`
 - `sourceFile` — relative path to the file where the value is defined
-- `sourceLine` — line number in that file
+- `sourceLine` — line number in that file (the `:root` variant's definition is fine when multiple exist)
+
+Theme variants themselves are listed at the top of the spec under `themes`,
+with a `selector` describing how each variant is activated in the DOM so the
+Annotask shell can match it against the iframe's current state:
+
+```json
+"themes": [
+  { "id": "light", "name": "Light", "scheme": "light", "selector": { "kind": "default" } },
+  { "id": "dark",  "name": "Dark",  "scheme": "dark",  "selector": { "kind": "class", "host": "html", "name": "dark" } }
+],
+"defaultTheme": "light"
+```
+
+`selector.kind` is one of `attribute` (with `name`, `value`, optional `host`), `class` (with `name`, optional `host`), `media` (with `media: '(prefers-color-scheme: dark)'`), or `default` (no selector — the base `:root` values). Apps with only one theme should emit a single `{ "id": "default", "name": "Default", "selector": { "kind": "default" } }` variant.
 
 ## Steps
 
@@ -44,21 +60,51 @@ Check `package.json` dependencies:
 - `vue` → name "vue", read version
 - `react` / `react-dom` → name "react"
 - `svelte` → name "svelte"
+- `solid-js` → name "solid"
 
 Check for styling:
 - `tailwindcss` in devDependencies or dependencies → add "tailwind" to styling array
 - Look for `<style scoped>` in `.vue` files → add "scoped-css"
 - Look for CSS module imports (`.module.css`) → add "css-modules"
 
-### 2. Scan colors
+### 2. Detect theme variants
+
+Before extracting any token values, determine which theme variants the project
+supports so you know which scopes to resolve values under. Check these signals
+in order and stop at the first match:
+
+1. **Tailwind `.dark` class** — If CSS files contain `.dark { … }` / `:root.dark { … }` / `html.dark { … }` blocks, or Tailwind v3 config has `darkMode: 'class'`, or Tailwind v4 CSS contains `@custom-variant dark (&:where(.dark, .dark *))`. Emit two variants:
+   - `{ "id": "light", "name": "Light", "scheme": "light", "selector": { "kind": "default" } }`
+   - `{ "id": "dark",  "name": "Dark",  "scheme": "dark",  "selector": { "kind": "class", "host": "html", "name": "dark" } }`
+
+2. **Data-attribute theming** — If CSS contains `[data-theme="…"]`, `[data-bs-theme="…"]`, `[data-mui-color-scheme="…"]`, `[data-mantine-color-scheme="…"]`, or `[data-color-scheme="…"]` selectors. Emit one variant per distinct attribute value:
+   - `{ "id": "<value>", "name": "<Value>", "scheme": "light|dark (if obvious)", "selector": { "kind": "attribute", "host": "html", "name": "<attr-name>", "value": "<value>" } }`
+
+3. **`@media (prefers-color-scheme: dark)` blocks** — If the project only switches via media queries. Emit:
+   - `{ "id": "light", "name": "Light", "scheme": "light", "selector": { "kind": "default" } }`
+   - `{ "id": "dark",  "name": "Dark",  "scheme": "dark",  "selector": { "kind": "media", "media": "(prefers-color-scheme: dark)" } }`
+
+4. **Single theme** — If none of the above are present:
+   - `[ { "id": "default", "name": "Default", "selector": { "kind": "default" } } ]`
+
+Set `defaultTheme` to the variant id used when no selector matches — typically `"light"` or `"default"`.
+
+### 3. Scan colors
 
 **Find color sources:**
 
-1. **CSS variables**: Search for `:root` declarations across CSS files and Vue `<style>` blocks. Extract `--variable-name: value` pairs.
+1. **CSS variables**: Search for `:root`, `:root.dark`, `html.dark`, `[data-theme="…"]`, and `@media (prefers-color-scheme: dark) :root` declarations across CSS files and Vue `<style>` blocks. Extract `--variable-name: value` pairs, remembering which variant scope each came from.
 
-2. **Tailwind v4** (version >= 4): Search for `@theme` blocks in CSS files. Extract custom properties defined within them.
+2. **Tailwind v4** (version >= 4): Search for `@theme` blocks in CSS files. Extract custom properties defined within them. `@theme` blocks without a variant selector apply to every variant.
 
 3. **Tailwind v3** (version < 4): Read `tailwind.config.js`, `tailwind.config.ts`, or `tailwind.config.mjs`. Extract `theme.extend.colors`. Convert to flat key-value pairs.
+
+**Resolve each color under every detected variant.** Produce a `values` map
+keyed by theme id. When a variant doesn't override the token, copy the base
+(`:root`/light/default) value so every token has a value for every variant.
+When a variant-specific block defines a new CSS variable that doesn't appear
+in the base scope, leave the missing variants blank (the server normalizer
+will fill them when the spec is read).
 
 **Classify into semantic roles using this fixed vocabulary:**
 
@@ -81,7 +127,11 @@ If a variable doesn't match any heuristic, use a descriptive role name derived f
 
 **Limits**: Maximum 30 color tokens. Prioritize semantic roles first, then most-used custom colors.
 
-### 3. Scan typography
+### 4. Scan typography
+
+Apply the same per-variant `values` map strategy used for colors: resolve each
+token under every detected variant, copying the base value for variants that
+don't override it.
 
 **Font families**: Search for:
 - CSS variables containing `font`, `family` in `:root` or `@theme`
@@ -102,7 +152,7 @@ Use roles: `xs`, `sm`, `base`, `lg`, `xl`, `2xl`, `3xl`, `4xl` (match by name or
 
 **Weights**: Scan component files for `font-weight` values and Tailwind weight classes (`font-bold`, `font-semibold`, etc.). List unique weights as strings: `["400", "500", "600", "700"]`.
 
-### 4. Scan spacing
+### 5. Scan spacing
 
 Search for:
 - CSS variables containing `space`, `gap`, `margin`, `padding`, `size`
@@ -113,7 +163,7 @@ Use roles: `xs`, `sm`, `md`, `lg`, `xl`, `2xl`, `3xl`, `4xl` (match by name or a
 
 **Limits**: Maximum 12 spacing tokens.
 
-### 5. Scan border radius
+### 6. Scan border radius
 
 Search for:
 - CSS variables containing `radius`, `rounded`
@@ -122,7 +172,7 @@ Search for:
 
 Use roles: `sm`, `md`, `lg`, `xl`, `full` (match by name or ascending size).
 
-### 6. Scan breakpoints
+### 7. Scan breakpoints
 
 Detect responsive breakpoints from whatever styling system the project uses. Output as a flat object mapping name → min-width value.
 
@@ -151,7 +201,7 @@ Detect responsive breakpoints from whatever styling system the project uses. Out
 
 If no breakpoints are detected, omit the `breakpoints` field (don't include an empty object).
 
-### 7. Detect icon library
+### 8. Detect icon library
 
 Check `package.json` dependencies for:
 
@@ -165,7 +215,7 @@ Check `package.json` dependencies for:
 
 Read the version from package.json.
 
-### 8. Detect component library
+### 9. Detect component library
 
 Check `package.json` dependencies for:
 
@@ -186,7 +236,7 @@ grep -rh "from '${package}" --include='*.vue' --include='*.ts' --include='*.js' 
 
 Extract component names from the imports. Read the version from package.json.
 
-### 9. Write design spec
+### 10. Write design spec
 
 Create `.annotask/design-spec.json`:
 
@@ -198,25 +248,30 @@ Create `.annotask/design-spec.json`:
     "version": "3.5.0",
     "styling": ["tailwind", "scoped-css"]
   },
+  "themes": [
+    { "id": "light", "name": "Light", "scheme": "light", "selector": { "kind": "default" } },
+    { "id": "dark",  "name": "Dark",  "scheme": "dark",  "selector": { "kind": "class", "host": "html", "name": "dark" } }
+  ],
+  "defaultTheme": "light",
   "colors": [
-    { "role": "primary", "value": "#3b82f6", "cssVar": "--color-primary", "source": "var(--color-primary)", "sourceFile": "src/assets/main.css", "sourceLine": 5 },
-    { "role": "background", "value": "#0b1120", "cssVar": "--bg", "source": "var(--bg)", "sourceFile": "src/assets/main.css", "sourceLine": 3 }
+    { "role": "primary",    "values": { "light": "#3b82f6", "dark": "#60a5fa" }, "cssVar": "--color-primary", "source": "var(--color-primary)", "sourceFile": "src/assets/main.css", "sourceLine": 5 },
+    { "role": "background", "values": { "light": "#ffffff", "dark": "#0b1120" }, "cssVar": "--bg",            "source": "var(--bg)",            "sourceFile": "src/assets/main.css", "sourceLine": 3 }
   ],
   "typography": {
     "families": [
-      { "role": "body", "value": "Inter, sans-serif", "cssVar": "--font-sans", "source": "var(--font-sans)", "sourceFile": "src/assets/main.css", "sourceLine": 10 }
+      { "role": "body", "values": { "light": "Inter, sans-serif", "dark": "Inter, sans-serif" }, "cssVar": "--font-sans", "source": "var(--font-sans)", "sourceFile": "src/assets/main.css", "sourceLine": 10 }
     ],
     "scale": [
-      { "role": "base", "value": "1rem", "cssVar": "--text-base", "source": "var(--text-base)", "sourceFile": "src/assets/main.css", "sourceLine": 15 }
+      { "role": "base", "values": { "light": "1rem", "dark": "1rem" }, "cssVar": "--text-base", "source": "var(--text-base)", "sourceFile": "src/assets/main.css", "sourceLine": 15 }
     ],
     "weights": ["400", "500", "600", "700"]
   },
   "spacing": [
-    { "role": "sm", "value": "8px", "cssVar": "--space-sm", "source": "var(--space-sm)", "sourceFile": "src/assets/main.css", "sourceLine": 20 }
+    { "role": "sm", "values": { "light": "8px", "dark": "8px" }, "cssVar": "--space-sm", "source": "var(--space-sm)", "sourceFile": "src/assets/main.css", "sourceLine": 20 }
   ],
   "borders": {
     "radius": [
-      { "role": "md", "value": "8px", "cssVar": "--radius-md", "source": "var(--radius-md)", "sourceFile": "src/assets/main.css", "sourceLine": 25 }
+      { "role": "md", "values": { "light": "8px", "dark": "8px" }, "cssVar": "--radius-md", "source": "var(--radius-md)", "sourceFile": "src/assets/main.css", "sourceLine": 25 }
     ]
   },
   "breakpoints": {
@@ -238,11 +293,11 @@ Create `.annotask/design-spec.json`:
 }
 ```
 
-### 10. Clean up old config
+### 11. Clean up old config
 
 If `.annotask/config.json` exists, delete it — it's been replaced by `design-spec.json`.
 
-### 11. Update .gitignore
+### 12. Update .gitignore
 
 Check if `.gitignore` contains `.annotask/`. If not, append:
 ```
@@ -250,7 +305,7 @@ Check if `.gitignore` contains `.annotask/`. If not, append:
 .annotask/
 ```
 
-### 12. Report to user
+### 13. Report to user
 
 Tell the user:
 - What was detected (framework, number of color/typography/spacing tokens, libraries)

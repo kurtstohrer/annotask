@@ -33,7 +33,7 @@ CSS variable.
 1. **Theme inspector → live recolor**
    - Open `/__annotask/` alongside the page.
    - Hit the sun/moon button in the nav to flip between dark and light themes.
-   - Open the annotask theme page and edit `--accent` from purple to teal.
+   - Open Annotask Design > Tokens and edit `--accent` from purple to teal.
    - Watch every CTA, badge, focus ring, and feature icon recolor at once.
 
 2. **Live style edit on the hero CTA**
@@ -66,7 +66,7 @@ CSS variable.
    - Run the perf panel. The big hero gradient + the multiple SVG icons in
      the FeatureGrid create a render-cost target.
    - Create a perf task and confirm it lands in `.annotask/tasks.json` with
-     `type: "annotation"` and a perf-specific summary.
+      `type: "perf_fix"` and a perf-specific summary.
 
 7. **Component discovery**
    - In your editor (or via MCP), call `annotask_get_components` and confirm
@@ -127,7 +127,7 @@ router so detail pages are real URLs (`#/country/JP`).
    - Reload — the route persists from localStorage.
 
 7. **Cross-component theme edit**
-   - Open the theme page and change `--accent` from teal to a coral.
+   - Open Design > Tokens and change `--accent` from teal to a coral.
    - The compare badge, the active filter chip, the focus ring, and the
      compare-button "active" state all recolor instantly.
 
@@ -150,7 +150,7 @@ system as the React playground.
      attributes should be baked into the template strings.
 
 2. **Theme token swap**
-   - Open the annotask theme page and edit `--accent` from the default blue
+   - Open Annotask Design > Tokens and edit `--accent` from the default blue
      to a warm orange.
    - The nav CTA, hero badge, stat row numbers, and feature card hovers all
      recolor.
@@ -186,7 +186,7 @@ selectors.
 ### Demo scenarios
 
 1. **Theme tokens cascading through PrimeVue**
-   - Open the theme page and change `--accent`. Confirm the KPI sparklines,
+   - Open Design > Tokens and change `--accent`. Confirm the KPI sparklines,
      active nav item, and active SelectButton all update.
    - Edit the dark surface variables and watch the DataTable rows restyle.
 

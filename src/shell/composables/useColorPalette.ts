@@ -1,4 +1,4 @@
-import { computed } from 'vue'
+import { computed, type MaybeRefOrGetter, toValue } from 'vue'
 import { useDesignSpec } from './useDesignSpec'
 
 export interface ColorSwatch {
@@ -24,21 +24,42 @@ export function rgbToHex(rgb: string): string {
 /**
  * Provides the project's design tokens (colors) as swatches for the
  * color picker. Tokens come from `useDesignSpec().designSpec.colors`.
+ *
+ * By default the palette follows the iframe's active theme variant so users
+ * see the values they're actually rendering. Pass `themeIdOverride` (e.g.
+ * from an in-popover variant switcher) to force a different variant.
  */
-export function useColorPalette() {
-  const { designSpec } = useDesignSpec()
+export function useColorPalette(themeIdOverride?: MaybeRefOrGetter<string | null | undefined>) {
+  const { designSpec, activeThemeId } = useDesignSpec()
+
+  const resolvedThemeId = computed(() => {
+    const override = toValue(themeIdOverride)
+    if (override) return override
+    return activeThemeId.value
+  })
 
   const tokenCategory = computed<ColorPaletteCategory | null>(() => {
     const colors = designSpec.value?.colors
     if (!colors?.length) return null
-    const swatches: ColorSwatch[] = colors.map((t) => ({
-      label: t.role,
-      value: t.value,
-      source: 'token' as const,
-      role: t.role,
-    }))
+    const themeId = resolvedThemeId.value
+    const fallbackThemeId = designSpec.value?.defaultTheme
+    const swatches: ColorSwatch[] = colors.map((t) => {
+      const values = t.values ?? {}
+      // Prefer the active variant; fall back to the default; finally fall back
+      // to whichever value exists so single-variant specs keep working.
+      const value = (themeId ? values[themeId] : undefined)
+        ?? (fallbackThemeId ? values[fallbackThemeId] : undefined)
+        ?? Object.values(values)[0]
+        ?? ''
+      return {
+        label: t.role,
+        value,
+        source: 'token' as const,
+        role: t.role,
+      }
+    })
     return { name: 'Tokens', swatches }
   })
 
-  return { tokenCategory }
+  return { tokenCategory, activeThemeId: resolvedThemeId }
 }

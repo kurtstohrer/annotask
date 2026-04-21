@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { PackageGroup } from '../composables/usePerfMonitor'
+import Icon from './Icon.vue'
 
 const props = defineProps<{
   /** Raw performance resource entries (from scan or recording). */
@@ -37,7 +38,7 @@ function shortenUrl(url: string): string {
 <template>
   <div v-if="props.packageGroups.length > 0" class="collapsible-section">
     <button class="collapse-toggle" @click="showPackages = !showPackages">
-      <svg :class="{ rotated: showPackages }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      <Icon :class="{ rotated: showPackages }" name="chevron-right" :size="10" :stroke-width="2.5" />
       Packages ({{ props.packageGroups.length }})
     </button>
     <div v-if="showPackages" class="resource-table">
@@ -59,7 +60,7 @@ function shortenUrl(url: string): string {
 
   <div v-if="props.resources.length > 0" class="collapsible-section">
     <button class="collapse-toggle" @click="showResources = !showResources">
-      <svg :class="{ rotated: showResources }" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      <Icon :class="{ rotated: showResources }" name="chevron-right" :size="10" :stroke-width="2.5" />
       Resources ({{ props.resources.length }})
     </button>
     <div v-if="showResources" class="resource-table">
