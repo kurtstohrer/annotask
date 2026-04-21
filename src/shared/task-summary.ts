@@ -59,12 +59,6 @@ export function buildTaskSummary(task: Record<string, unknown>): Record<string, 
     summary.placement = task.placement
   }
 
-  // Selected element text lives on element_context; surface it for quick triage.
-  if (task.element_context && typeof task.element_context === 'object' && !Array.isArray(task.element_context)) {
-    const text = (task.element_context as Record<string, unknown>).selected_element_text
-    if (typeof text === 'string' && text) summary.selected_element_text = text
-  }
-
   // Component info now lives at context.component. Lift its name/library so
   // triage sees what was selected without a detail fetch.
   if (task.context && typeof task.context === 'object' && !Array.isArray(task.context)) {

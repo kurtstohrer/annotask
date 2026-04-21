@@ -19,6 +19,13 @@ export interface AnnotaskOptions {
    *  plugin handles the server and UI injection. Writes .annotask/server.json
    *  pointing to this URL so skills/CLI connect to the root. */
   server?: string
+  /** Extra HTTP endpoints to probe for OpenAPI / GraphQL schemas. Useful
+   *  when backend services run on ports annotask can't auto-discover
+   *  (non-docker-compose setups, remote staging, etc.). */
+  apiSchemaUrls?: string[]
+  /** Extra project-relative schema file paths (openapi.yaml, schema.graphql,
+   *  *.schema.json). Takes precedence over filesystem auto-discovery. */
+  apiSchemaFiles?: string[]
 }
 
 export function annotask(options: AnnotaskOptions = {}): Plugin[] {
@@ -40,6 +47,33 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       }
     },
 
+    // Inject data-annotask-* attributes in `load`, not `transform`, so we
+    // always see the raw file contents before any other plugin transforms
+    // them. This matters for Solid (vite-plugin-solid) and React (HMR
+    // preamble), both of which are `enforce: 'pre'` and can run before us
+    // if they appear earlier in the user's plugins array. Load runs before
+    // any transform hook, so our attrs go into raw source and the
+    // framework plugin's transform then converts the annotated source
+    // normally (Solid's _tmpl$ output, React.createElement, etc.).
+    load(id) {
+      // Skip sub-requests like `file.vue?vue&type=template` — those are
+      // virtual modules handled by framework plugins' own load hooks.
+      if (id.includes('?')) return null
+      if (!id.endsWith('.vue') && !id.endsWith('.svelte') && !/\.[jt]sx$/.test(id)) return null
+      // Never instrument library source. Headless UI libs (Kobalte, Radix,
+      // Headless UI, bits-ui, etc.) render user-provided elements through
+      // their own internal JSX — if we stamp those internal files with
+      // data-annotask-* attrs, the library's DOM output carries the library's
+      // source path instead of the user's call-site, which breaks the arrow
+      // tool's source resolution.
+      if (id.includes('/node_modules/')) return null
+      if (!fs.existsSync(id)) return null
+
+      const raw = fs.readFileSync(id, 'utf-8')
+      const annotated = transformFile(raw, id, projectRoot, mfe)
+      return annotated ?? raw
+    },
+
     transform(code, id) {
       // Expose framework runtime for Annotask component rendering
       if (id.endsWith('/main.ts') || id.endsWith('/main.js') || id.endsWith('/main.tsx') || id.endsWith('/main.jsx')) {
@@ -58,40 +92,7 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         }
       }
 
-      // Transform source files to inject data-annotask-* attributes
-      // Note: .astro files are excluded because Astro's compiler runs before
-      // our transform (even with enforce: 'pre'). Astro source mapping is
-      // handled via data-astro-source-* attributes in the bridge client.
-      if (!id.endsWith('.vue') && !id.endsWith('.svelte') && !/\.[jt]sx$/.test(id)) return null
-
-      // JSX/TSX only: if another `enforce: 'pre'` plugin ran first (e.g.
-      // `@vitejs/plugin-react` when it's listed before annotask() in the
-      // user's config), `code` will contain an HMR/Fast Refresh preamble
-      // that shifts every line number we compute. Re-read the raw file from
-      // disk so our `data-annotask-line` attrs reference the user's actual
-      // source lines. We preserve the preamble by prepending it back onto
-      // our injected output.
-      let sourceForTransform = code
-      let preamble = ''
-      if (/\.[jt]sx$/.test(id)) {
-        const bareId = id.split('?')[0]
-        try {
-          const rawCode = fs.readFileSync(bareId, 'utf-8')
-          if (rawCode && code.length > rawCode.length && code.includes(rawCode)) {
-            preamble = code.slice(0, code.indexOf(rawCode))
-            sourceForTransform = rawCode
-          } else if (rawCode && rawCode !== code && rawCode.length < code.length) {
-            // Raw not found as substring (minor whitespace differences?). Fall
-            // back to `code` but log once at dev time so we can tune.
-            sourceForTransform = rawCode
-          }
-        } catch { /* file unreadable — fall back to code */ }
-      }
-
-      const result = transformFile(sourceForTransform, id, projectRoot, mfe)
-      if (!result) return null
-
-      return { code: preamble + result, map: null }
+      return null
     },
 
     transformIndexHtml(html, ctx) {
@@ -118,7 +119,11 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
     apply: 'serve',
 
     configureServer(server: ViteDevServer) {
-      const uiServer = createAnnotaskServer({ projectRoot })
+      const uiServer = createAnnotaskServer({
+        projectRoot,
+        apiSchemaUrls: options.apiSchemaUrls,
+        apiSchemaFiles: options.apiSchemaFiles,
+      })
 
       // Mount middleware on Vite's connect instance
       server.middlewares.use(uiServer.middleware)
@@ -135,7 +140,7 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         const addr = server.httpServer?.address()
         const port = typeof addr === 'object' && addr ? addr.port : 5173
         const host = typeof addr === 'object' && addr ? addr.address : undefined
-        writeServerInfo(projectRoot, port, host)
+        writeServerInfo(projectRoot, port, host, mfe)
       })
 
       console.log('[Annotask] Design tool available at /__annotask/')

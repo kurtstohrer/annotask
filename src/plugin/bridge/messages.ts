@@ -1,6 +1,120 @@
 /** postMessage handler: dispatches all message types from the Annotask shell. */
 export function bridgeMessages(): string {
   return `
+  // ── Color Scheme Detection ────────────────────────────
+  // Shared detector used by 'color-scheme:get' (on-demand) and the
+  // MutationObserver / matchMedia change listener in events.ts (push).
+  //
+  // Strategy (matches the documented behavior in CLAUDE.md):
+  //   1. Compute a ground-truth scheme from background luminance — reflects
+  //      what the viewport is actually painting, regardless of theming system.
+  //   2. Fall back to the CSS color-scheme property, then matchMedia.
+  //   3. Sniff explicit DOM markers (class / data-attr). A recognized marker
+  //      overrides luminance when unambiguous ('dark'/'light'), since explicit
+  //      dev intent should win over a heuristic.
+  function detectColorScheme() {
+    var scheme = 'light';
+    var source = 'fallback';
+    var marker = null;
+
+    try {
+      var html = document.documentElement;
+      var body = document.body;
+
+      function readBg(el) {
+        if (!el) return null;
+        var bg = '';
+        try { bg = window.getComputedStyle(el).backgroundColor || ''; } catch(e) { return null; }
+        if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return null;
+        var parts = bg.match(/[0-9.]+/g);
+        if (!parts || parts.length < 3) return null;
+        var alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
+        if (!alpha) return null;
+        return { r: parseFloat(parts[0]), g: parseFloat(parts[1]), b: parseFloat(parts[2]) };
+      }
+
+      var bg = readBg(html) || readBg(body);
+      if (bg) {
+        var lum = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b) / 255;
+        scheme = lum < 0.5 ? 'dark' : 'light';
+        source = 'background-luminance';
+      } else {
+        var declared = '';
+        try { declared = (window.getComputedStyle(html).colorScheme || '').toLowerCase(); } catch(e) {}
+        var hasDark = declared.indexOf('dark') !== -1;
+        var hasLight = declared.indexOf('light') !== -1;
+        if (hasDark && !hasLight) { scheme = 'dark'; source = 'css-color-scheme'; }
+        else if (hasLight && !hasDark) { scheme = 'light'; source = 'css-color-scheme'; }
+        else if (window.matchMedia) {
+          scheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          source = 'media-query';
+        }
+      }
+
+      var ATTR_NAMES = [
+        'data-theme',
+        'data-color-scheme',
+        'data-color-mode',
+        'data-mode',
+        'data-bs-theme',
+        'data-mui-color-scheme',
+        'data-joy-color-scheme',
+        'data-mantine-color-scheme'
+      ];
+      var hosts = [{ el: html, name: 'html' }];
+      if (body) hosts.push({ el: body, name: 'body' });
+
+      outer: for (var hi = 0; hi < hosts.length; hi++) {
+        var hostEl = hosts[hi].el;
+        for (var ai = 0; ai < ATTR_NAMES.length; ai++) {
+          var attrName = ATTR_NAMES[ai];
+          var raw = hostEl.getAttribute && hostEl.getAttribute(attrName);
+          if (raw) {
+            var val = (raw + '').toLowerCase();
+            marker = { kind: 'attribute', host: hosts[hi].name, name: attrName, value: raw };
+            if (val === 'dark' || val === 'light') { scheme = val; source = 'attribute'; }
+            break outer;
+          }
+        }
+      }
+
+      if (!marker) {
+        var CLASS_PAIRS = [
+          { dark: 'dark', light: 'light', framework: 'tailwind/generic' },
+          { dark: 'theme-dark', light: 'theme-light', framework: 'generic' },
+          { dark: 'mode-dark', light: 'mode-light', framework: 'generic' },
+          { dark: 'is-dark', light: 'is-light', framework: 'bulma/generic' },
+          { dark: 'v-theme--dark', light: 'v-theme--light', framework: 'vuetify' },
+          { dark: 'body--dark', light: 'body--light', framework: 'quasar' },
+          { dark: 'chakra-ui-dark', light: 'chakra-ui-light', framework: 'chakra' },
+          { dark: 'dark-theme', light: 'light-theme', framework: 'generic' },
+          { dark: 'dark-mode', light: 'light-mode', framework: 'generic' }
+        ];
+        classOuter: for (var ci = 0; ci < CLASS_PAIRS.length; ci++) {
+          var pair = CLASS_PAIRS[ci];
+          for (var hj = 0; hj < hosts.length; hj++) {
+            var hEl = hosts[hj].el;
+            if (!hEl || !hEl.classList) continue;
+            if (hEl.classList.contains(pair.dark)) {
+              marker = { kind: 'class', host: hosts[hj].name, name: pair.dark, framework: pair.framework };
+              scheme = 'dark'; source = 'class';
+              break classOuter;
+            }
+            if (hEl.classList.contains(pair.light)) {
+              marker = { kind: 'class', host: hosts[hj].name, name: pair.light, framework: pair.framework };
+              scheme = 'light'; source = 'class';
+              break classOuter;
+            }
+          }
+        }
+      }
+    } catch (e) {}
+
+    var result = { scheme: scheme, source: source };
+    if (marker) result.marker = marker;
+    return result;
+  }
+
   // ── Message Handler ───────────────────────────────────
   window.addEventListener('message', function(event) {
     var msg = event.data;
@@ -113,16 +227,24 @@ export function bridgeMessages(): string {
     }
 
     if (type === 'list:rendered-files') {
-      // Distinct data-annotask-file values from the live iframe DOM — the
-      // set of source files that contributed elements to the current route.
+      // Distinct (file, mfe) pairs from the live iframe DOM. We used to emit
+      // just file strings, but host-aggregated catalogs hold workspace-
+      // relative paths while the per-MFE plugin writes MFE-local
+      // data-annotask-file values — the shell pairs them back up using the
+      // mfe tag + the workspace catalog.
       var allFileNodes = document.querySelectorAll('[data-annotask-file]');
-      var fileSet = Object.create(null);
-      for (var fii = 0; fii < allFileNodes.length; fii++) {
-        var fval = allFileNodes[fii].getAttribute('data-annotask-file');
-        if (fval) fileSet[fval] = true;
-      }
+      var fileSeen = Object.create(null);
       var fileList = [];
-      for (var fkey in fileSet) fileList.push(fkey);
+      for (var fii = 0; fii < allFileNodes.length; fii++) {
+        var fnode = allFileNodes[fii];
+        var fval = fnode.getAttribute('data-annotask-file');
+        if (!fval) continue;
+        var mval = fnode.getAttribute('data-annotask-mfe') || '';
+        var fkey = fval + '\u0001' + mval;
+        if (fileSeen[fkey]) continue;
+        fileSeen[fkey] = true;
+        fileList.push(mval ? { file: fval, mfe: mval } : { file: fval });
+      }
       respond(id, { files: fileList });
       return;
     }
@@ -184,21 +306,28 @@ export function bridgeMessages(): string {
       var locTrunc = false;
       var locMatches = [];
       var locs = Array.isArray(payload.locations) ? payload.locations : [];
-      // Deduplicate by file to avoid re-querying the whole file multiple times.
+      // Deduplicate by (file, mfe) so two MFEs with the same MFE-local path
+      // (e.g. both exposing src/App.tsx) don't cross-highlight each other.
       var byFile = Object.create(null);
       for (var li = 0; li < locs.length; li++) {
         var loc = locs[li];
         if (!loc || typeof loc.file !== 'string') continue;
-        if (!byFile[loc.file]) byFile[loc.file] = [];
-        byFile[loc.file].push(loc);
+        var bucketKey = loc.file + '\u0001' + (typeof loc.mfe === 'string' ? loc.mfe : '');
+        if (!byFile[bucketKey]) byFile[bucketKey] = { file: loc.file, mfe: typeof loc.mfe === 'string' ? loc.mfe : '', entries: [] };
+        byFile[bucketKey].entries.push(loc);
       }
-      for (var fname in byFile) {
+      for (var bucketK in byFile) {
         // byFile is Object.create(null) — no prototype, so for-in only yields own keys.
-        var entries = byFile[fname];
+        var bucket = byFile[bucketK];
+        var fname = bucket.file;
+        var entries = bucket.entries;
         var safeFile = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(fname) : fname.replace(/"/g, '\\\\"');
+        var mfeAttrPart = bucket.mfe
+          ? '[data-annotask-mfe="' + ((typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(bucket.mfe) : bucket.mfe.replace(/"/g, '\\\\"')) + '"]'
+          : '';
         // Pull every element in this file once.
         var fileNodes;
-        try { fileNodes = document.querySelectorAll('[data-annotask-file="' + safeFile + '"]'); }
+        try { fileNodes = document.querySelectorAll('[data-annotask-file="' + safeFile + '"]' + mfeAttrPart); }
         catch (e) { fileNodes = []; }
         if ((!fileNodes || fileNodes.length === 0)) {
           var astroAll = document.querySelectorAll('[data-astro-source-file]');
@@ -218,14 +347,19 @@ export function bridgeMessages(): string {
           if (!nodesByLine[lineKey]) nodesByLine[lineKey] = [];
           nodesByLine[lineKey].push(nel);
         }
-        // For each requested location, pick the matching bucket (or the full
-        // file when line === 0).
+        // For each requested location, pick the matching bucket (line === 0
+        // is an explicit file-level wildcard — used by the Components view
+        // for on-page library tags). We used to also fall back to every
+        // tagged element in the file when the specific line missed; that
+        // caused the Hooks/APIs tabs to light up every hardcoded element,
+        // so precise line matching is now required — callers that want a
+        // wildcard should send line: 0 explicitly.
         for (var ei = 0; ei < entries.length; ei++) {
           var ent = entries[ei];
           var targetLine = typeof ent.line === 'number' ? ent.line : parseInt(ent.line, 10) || 0;
           var targetNodes;
           if (targetLine === 0) {
-            targetNodes = fileNodes; // file-level fallback
+            targetNodes = fileNodes; // file-level wildcard (explicit only).
           } else {
             targetNodes = nodesByLine[String(targetLine)] || [];
           }
@@ -243,12 +377,23 @@ export function bridgeMessages(): string {
           // rects instead of one clean outline around the whole element.
           if (ent.tag && typeof ent.tag === 'string') {
             var wanted = ent.tag;
+            // Optional module prefix filter — the shell passes the library's
+            // package name (or a specific subpath) so two libraries that both
+            // export a same-named component stay separate in the DOM even when
+            // the wrapper component does not forward the tag attribute.
+            // Matches exactly OR as a subpath prefix so "@kobalte/core" covers
+            // "@kobalte/core/button".
+            var modulePrefix = (typeof ent.module === 'string' && ent.module) ? ent.module : '';
             var kept = [];
             for (var tti = 0; tti < targetNodes.length; tti++) {
               var tn = targetNodes[tti];
-              if (tn.getAttribute && tn.getAttribute('data-annotask-source-tag') === wanted) {
-                kept.push(tn);
+              if (!tn.getAttribute) continue;
+              if (tn.getAttribute('data-annotask-source-tag') !== wanted) continue;
+              if (modulePrefix) {
+                var sm = tn.getAttribute('data-annotask-source-module') || '';
+                if (!(sm === modulePrefix || sm.indexOf(modulePrefix + '/') === 0)) continue;
               }
+              kept.push(tn);
             }
             var roots = [];
             for (var ki = 0; ki < kept.length; ki++) {
@@ -459,68 +604,6 @@ export function bridgeMessages(): string {
         flexDirection: isFlex ? clCs.flexDirection : undefined,
         childCount: childCount,
         isComponentUnit: role === 'component'
-      });
-      return;
-    }
-
-    if (type === 'resolve:element-context') {
-      var ctxEl = getEl(payload.eid);
-      if (!ctxEl) { respond(id, null); return; }
-
-      var ancestors = [];
-      var cur = ctxEl.parentElement;
-      for (var ai = 0; ai < 3 && cur && cur !== document.body && cur !== document.documentElement; ai++) {
-        var aCs = window.getComputedStyle(cur);
-        var aTag = cur.tagName.toLowerCase();
-        var aClasses = typeof cur.className === 'string' ? cur.className.trim() : '';
-        var aData = getSourceData(cur);
-        var ancestor = { tag: aTag, display: aCs.display };
-        if (aClasses) ancestor.classes = aClasses;
-        if (aData.component) ancestor.component = aData.component;
-        if (aCs.display.includes('flex')) {
-          ancestor.flexDirection = aCs.flexDirection;
-          if (aCs.gap && aCs.gap !== 'normal') ancestor.gap = aCs.gap;
-          ancestor.childCount = cur.children.length;
-        }
-        if (aCs.display.includes('grid')) {
-          ancestor.gridTemplateColumns = aCs.gridTemplateColumns;
-          ancestor.gridTemplateRows = aCs.gridTemplateRows;
-          if (aCs.gap && aCs.gap !== 'normal') ancestor.gap = aCs.gap;
-          ancestor.childCount = cur.children.length;
-        }
-        if (aCs.overflow && aCs.overflow !== 'visible') ancestor.overflow = aCs.overflow;
-        ancestors.push(ancestor);
-        cur = cur.parentElement;
-      }
-
-      function describeEl(el, depth) {
-        var t = el.tagName.toLowerCase();
-        var cl = typeof el.className === 'string' ? el.className.trim() : '';
-        var txt = '';
-        for (var ci = 0; ci < el.childNodes.length; ci++) {
-          if (el.childNodes[ci].nodeType === 3) {
-            var nt = el.childNodes[ci].textContent.trim();
-            if (nt) { txt = nt.substring(0, 40); break; }
-          }
-        }
-        var node = { tag: t };
-        if (cl) node.classes = cl;
-        if (txt) node.text = txt;
-        if (depth < 3 && el.children.length > 0) {
-          var kids = [];
-          for (var ki = 0; ki < el.children.length && ki < 10; ki++) {
-            kids.push(describeEl(el.children[ki], depth + 1));
-          }
-          node.children = kids;
-          if (el.children.length > 10) node.childrenTruncated = el.children.length;
-        }
-        return node;
-      }
-
-      respond(id, {
-        ancestors: ancestors,
-        subtree: describeEl(ctxEl, 0),
-        selected_element_text: getVisibleText(ctxEl, 200)
       });
       return;
     }
@@ -1035,137 +1118,7 @@ export function bridgeMessages(): string {
     }
 
     if (type === 'color-scheme:get') {
-      // Detect what scheme the user is currently looking at, in a way that
-      // works across frameworks (Tailwind, Bootstrap, MUI, Mantine, Vuetify,
-      // Quasar, Chakra, daisyUI, custom systems, plain CSS, …).
-      //
-      // Strategy:
-      //   1. Compute a ground-truth scheme from background luminance — this
-      //      reflects what the viewport is actually painting and works for any
-      //      app regardless of theming convention.
-      //   2. Fall back to the standard CSS color-scheme property, then to the
-      //      OS prefers-color-scheme media query if no background is paintable.
-      //   3. Independently sniff for common DOM markers (class / data-attr) so
-      //      the agent has a hint about WHERE to apply theme-related changes.
-      //      A recognized marker overrides luminance only when the marker
-      //      itself is unambiguous (e.g. data-bs-theme="dark"), since explicit
-      //      developer intent should win over a heuristic.
-      var scheme = 'light';
-      var source = 'fallback';
-      var marker = null;
-
-      try {
-        var html = document.documentElement;
-        var body = document.body;
-
-        // ── Step 1: Background luminance (universal ground truth) ──
-        function readBg(el) {
-          if (!el) return null;
-          var bg = '';
-          try { bg = window.getComputedStyle(el).backgroundColor || ''; } catch(e) { return null; }
-          if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return null;
-          var parts = bg.match(/[0-9.]+/g);
-          if (!parts || parts.length < 3) return null;
-          var alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
-          if (!alpha) return null;
-          return { r: parseFloat(parts[0]), g: parseFloat(parts[1]), b: parseFloat(parts[2]) };
-        }
-
-        var bg = readBg(html) || readBg(body);
-        if (bg) {
-          // Perceptual luminance approximation in sRGB
-          var lum = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b) / 255;
-          scheme = lum < 0.5 ? 'dark' : 'light';
-          source = 'background-luminance';
-        } else {
-          var declared = '';
-          try { declared = (window.getComputedStyle(html).colorScheme || '').toLowerCase(); } catch(e) {}
-          var hasDark = declared.indexOf('dark') !== -1;
-          var hasLight = declared.indexOf('light') !== -1;
-          if (hasDark && !hasLight) {
-            scheme = 'dark';
-            source = 'css-color-scheme';
-          } else if (hasLight && !hasDark) {
-            scheme = 'light';
-            source = 'css-color-scheme';
-          } else if (window.matchMedia) {
-            scheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-            source = 'media-query';
-          }
-        }
-
-        // ── Step 2: Sniff for explicit DOM markers (enrichment) ──
-        // Attribute markers — covers Bootstrap 5.3+, MUI, Mantine, Joy UI,
-        // daisyUI, Radix, shadcn, and plain "data-theme" / "data-mode" patterns.
-        var ATTR_NAMES = [
-          'data-theme',
-          'data-color-scheme',
-          'data-color-mode',
-          'data-mode',
-          'data-bs-theme',
-          'data-mui-color-scheme',
-          'data-joy-color-scheme',
-          'data-mantine-color-scheme'
-        ];
-        var hosts = [{ el: html, name: 'html' }];
-        if (body) hosts.push({ el: body, name: 'body' });
-
-        outer: for (var hi = 0; hi < hosts.length; hi++) {
-          var hostEl = hosts[hi].el;
-          for (var ai = 0; ai < ATTR_NAMES.length; ai++) {
-            var attrName = ATTR_NAMES[ai];
-            var raw = hostEl.getAttribute && hostEl.getAttribute(attrName);
-            if (raw) {
-              var val = (raw + '').toLowerCase();
-              marker = { kind: 'attribute', host: hosts[hi].name, name: attrName, value: raw };
-              if (val === 'dark' || val === 'light') {
-                scheme = val;
-                source = 'attribute';
-              }
-              break outer;
-            }
-          }
-        }
-
-        // Class markers — covers Tailwind, Vuetify, Quasar, Chakra, generic.
-        // Each entry is { dark: <className>, light: <className>, framework }.
-        if (!marker) {
-          var CLASS_PAIRS = [
-            { dark: 'dark', light: 'light', framework: 'tailwind/generic' },
-            { dark: 'theme-dark', light: 'theme-light', framework: 'generic' },
-            { dark: 'mode-dark', light: 'mode-light', framework: 'generic' },
-            { dark: 'is-dark', light: 'is-light', framework: 'bulma/generic' },
-            { dark: 'v-theme--dark', light: 'v-theme--light', framework: 'vuetify' },
-            { dark: 'body--dark', light: 'body--light', framework: 'quasar' },
-            { dark: 'chakra-ui-dark', light: 'chakra-ui-light', framework: 'chakra' },
-            { dark: 'dark-theme', light: 'light-theme', framework: 'generic' },
-            { dark: 'dark-mode', light: 'light-mode', framework: 'generic' }
-          ];
-          classOuter: for (var ci = 0; ci < CLASS_PAIRS.length; ci++) {
-            var pair = CLASS_PAIRS[ci];
-            for (var hj = 0; hj < hosts.length; hj++) {
-              var hEl = hosts[hj].el;
-              if (!hEl || !hEl.classList) continue;
-              if (hEl.classList.contains(pair.dark)) {
-                marker = { kind: 'class', host: hosts[hj].name, name: pair.dark, framework: pair.framework };
-                scheme = 'dark';
-                source = 'class';
-                break classOuter;
-              }
-              if (hEl.classList.contains(pair.light)) {
-                marker = { kind: 'class', host: hosts[hj].name, name: pair.light, framework: pair.framework };
-                scheme = 'light';
-                source = 'class';
-                break classOuter;
-              }
-            }
-          }
-        }
-      } catch (e) {}
-
-      var result = { scheme: scheme, source: source };
-      if (marker) result.marker = marker;
-      respond(id, result);
+      respond(id, detectColorScheme());
       return;
     }
 

@@ -21,16 +21,16 @@
     <div v-if="violation.elements && violation.elements.length" class="fd-detail-section">
       <span class="fd-detail-label">Affected Elements ({{ violation.nodes }})</span>
       <div v-for="(el, i) in violation.elements" :key="i" class="fd-a11y-element">
-        <code class="fd-a11y-html">{{ el.html }}</code>
+        <code v-if="el.html" class="fd-a11y-html">{{ el.html }}</code>
         <code v-if="el.target" class="fd-a11y-selector">{{ el.target }}</code>
         <p v-if="el.failureSummary" class="fd-a11y-fix">{{ el.failureSummary }}</p>
         <span v-if="el.file" class="fd-a11y-source">{{ el.file }}:{{ el.line }} &middot; {{ el.component }}</span>
 
-        <div v-if="a11yInfoBySelector.get(el.target)" class="fd-a11y-meta">
-          <div class="fd-meta-row" v-if="a11yInfoBySelector.get(el.target)!.accessible_name">
+        <div v-if="a11yInfoFor(el)" class="fd-a11y-meta">
+          <div class="fd-meta-row" v-if="a11yInfoFor(el)!.accessible_name">
             <span class="fd-meta-label">Accessible name</span>
-            <span class="fd-meta-value">"{{ a11yInfoBySelector.get(el.target)!.accessible_name }}"
-              <span class="fd-meta-source">({{ a11yInfoBySelector.get(el.target)!.name_source }})</span>
+            <span class="fd-meta-value">"{{ a11yInfoFor(el)!.accessible_name }}"
+              <span class="fd-meta-source">({{ a11yInfoFor(el)!.name_source }})</span>
             </span>
           </div>
           <div class="fd-meta-row" v-else>
@@ -39,29 +39,29 @@
           </div>
           <div class="fd-meta-row">
             <span class="fd-meta-label">Role</span>
-            <span class="fd-meta-value">{{ a11yInfoBySelector.get(el.target)!.role || '—' }}
-              <span class="fd-meta-source">({{ a11yInfoBySelector.get(el.target)!.role_source }})</span>
+            <span class="fd-meta-value">{{ a11yInfoFor(el)!.role || '—' }}
+              <span class="fd-meta-source">({{ a11yInfoFor(el)!.role_source }})</span>
             </span>
           </div>
-          <div class="fd-meta-row" v-if="a11yInfoBySelector.get(el.target)!.tabindex !== null">
+          <div class="fd-meta-row" v-if="a11yInfoFor(el)!.tabindex !== null">
             <span class="fd-meta-label">tabindex</span>
-            <span class="fd-meta-value">{{ a11yInfoBySelector.get(el.target)!.tabindex }}</span>
+            <span class="fd-meta-value">{{ a11yInfoFor(el)!.tabindex }}</span>
           </div>
-          <div class="fd-meta-row" v-if="a11yInfoBySelector.get(el.target)!.contrast">
+          <div class="fd-meta-row" v-if="a11yInfoFor(el)!.contrast">
             <span class="fd-meta-label">Contrast</span>
             <span class="fd-meta-value fd-contrast">
-              <span class="fd-swatch" :style="{ background: a11yInfoBySelector.get(el.target)!.contrast!.foreground }" />
-              <span class="fd-swatch" :style="{ background: a11yInfoBySelector.get(el.target)!.contrast!.background }" />
-              {{ a11yInfoBySelector.get(el.target)!.contrast!.ratio }}:1
-              <span class="fd-meta-source" :class="{ 'fd-pass': a11yInfoBySelector.get(el.target)!.contrast!.aa_normal, 'fd-fail': !a11yInfoBySelector.get(el.target)!.contrast!.aa_normal }">
-                {{ a11yInfoBySelector.get(el.target)!.contrast!.aa_normal ? 'AA pass' : 'AA fail' }}
+              <span class="fd-swatch" :style="{ background: a11yInfoFor(el)!.contrast!.foreground }" />
+              <span class="fd-swatch" :style="{ background: a11yInfoFor(el)!.contrast!.background }" />
+              {{ a11yInfoFor(el)!.contrast!.ratio }}:1
+              <span class="fd-meta-source" :class="{ 'fd-pass': a11yInfoFor(el)!.contrast!.aa_normal, 'fd-fail': !a11yInfoFor(el)!.contrast!.aa_normal }">
+                {{ a11yInfoFor(el)!.contrast!.aa_normal ? 'AA pass' : 'AA fail' }}
               </span>
             </span>
           </div>
-          <div class="fd-meta-row" v-if="a11yInfoBySelector.get(el.target)!.aria_attrs.length">
+          <div class="fd-meta-row" v-if="a11yInfoFor(el)!.aria_attrs.length">
             <span class="fd-meta-label">ARIA</span>
             <span class="fd-meta-value">
-              <code v-for="attr in a11yInfoBySelector.get(el.target)!.aria_attrs" :key="attr.name" class="fd-aria-chip">
+              <code v-for="attr in a11yInfoFor(el)!.aria_attrs" :key="attr.name" class="fd-aria-chip">
                 {{ attr.name }}="{{ attr.value }}"
               </code>
             </span>
@@ -95,24 +95,51 @@ defineEmits<{
   (e: 'create-task', violation: A11yViolation): void
 }>()
 
-const a11yInfoBySelector = ref(new Map<string, AccessibilityInfo>())
+// Keyed by selector for axe violations, and by eid for synthetic violations
+// (tab-order) where the element was already resolved by the overlay.
+const a11yInfoByKey = ref(new Map<string, AccessibilityInfo>())
+
+type Element = NonNullable<A11yViolation['elements']>[number]
+function keyFor(el: Element): string { return el.target || (el.eid ? 'eid:' + el.eid : '') }
+function a11yInfoFor(el: Element): AccessibilityInfo | undefined {
+  const k = keyFor(el)
+  return k ? a11yInfoByKey.value.get(k) : undefined
+}
 
 async function loadA11yInfo() {
-  a11yInfoBySelector.value = new Map()
-  const selectors = (props.violation.elements || []).map(e => e.target).filter(Boolean) as string[]
-  if (selectors.length === 0) return
-  const resolved = await props.iframe.resolveBySelectors(selectors)
-  const eids = resolved.map(r => r.eid).filter((e): e is string => !!e)
-  if (eids.length === 0) return
-  const infos = await props.iframe.computeAccessibilityInfo(eids)
+  a11yInfoByKey.value = new Map()
+  const elements = props.violation.elements || []
   const next = new Map<string, AccessibilityInfo>()
-  let infoIdx = 0
-  for (const r of resolved) {
-    if (!r.eid) continue
-    const info = infos[infoIdx++]
-    if (info) next.set(r.selector, info)
+
+  // Selector-based elements: resolve selector → eid, then fetch info.
+  const selectorEls = elements.filter(e => !!e.target && !e.eid)
+  if (selectorEls.length) {
+    const selectors = selectorEls.map(e => e.target)
+    const resolved = await props.iframe.resolveBySelectors(selectors)
+    const eids = resolved.map(r => r.eid).filter((e): e is string => !!e)
+    if (eids.length) {
+      const infos = await props.iframe.computeAccessibilityInfo(eids)
+      let infoIdx = 0
+      for (const r of resolved) {
+        if (!r.eid) continue
+        const info = infos[infoIdx++]
+        if (info) next.set(r.selector, info)
+      }
+    }
   }
-  a11yInfoBySelector.value = next
+
+  // Eid-based elements (tab-order): skip the selector resolve step.
+  const eidEls = elements.filter(e => !!e.eid)
+  if (eidEls.length) {
+    const eids = eidEls.map(e => e.eid!) as string[]
+    const infos = await props.iframe.computeAccessibilityInfo(eids)
+    for (let i = 0; i < eids.length; i++) {
+      const info = infos[i]
+      if (info) next.set('eid:' + eids[i], info)
+    }
+  }
+
+  a11yInfoByKey.value = next
 }
 
 onMounted(loadA11yInfo)

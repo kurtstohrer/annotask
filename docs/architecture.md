@@ -2,7 +2,7 @@
 
 ## Overview
 
-Annotask is a dev-only system made of five major pieces:
+Annotask is a dev-only system made of five cooperating layers:
 
 ```text
 app dev server
@@ -13,169 +13,214 @@ app dev server
   -> CLI / agent clients talking to the same server
 ```
 
-The shell loads the user app in an iframe, but interaction is mediated through a bridge so same-origin access is not required.
+The shell loads the user app in an iframe, but almost all interaction goes through a `postMessage` bridge rather than direct DOM access.
 
-## Main Modules
+## Runtime Pieces
 
-### Plugin layer
+### Plugin Layer
 
-`src/plugin/` instruments supported frameworks during development.
+`src/plugin/` handles Vite integration.
 
 Responsibilities:
 
-- inject source-mapping attributes into rendered markup
-- inject the bridge client and toggle button into the app
-- expose enough runtime metadata for selection, inspection, and highlighting
-- start the Annotask server surface when running under Vite
+- inject `data-annotask-*` source anchors into supported source files during dev
+- inject the bridge client into HTML responses
+- expose runtime handles for framework-specific component rendering helpers
+- start the embedded Annotask server when running under Vite
+- write `.annotask/server.json` for CLI and agent discovery
 
 Key files:
 
-| File | Responsibility |
-|------|---------------|
-| `src/plugin/index.ts` | Vite plugin entry |
-| `src/plugin/transform.ts` | Source-mapping attribute injection |
-| `src/plugin/bridge-client.ts` | In-app bridge client |
-| `src/plugin/toggle-button.ts` | Floating toggle launcher |
+- `src/plugin/index.ts`
+- `src/plugin/transform.ts`
+- `src/plugin/bridge-client.ts`
+- `src/plugin/toggle-button.ts`
 
-### Server layer
+### Webpack Layer
 
-`src/server/` hosts the product back end.
+`src/webpack/` provides Webpack support.
 
 Responsibilities:
 
-- task persistence and atomic writes
-- screenshot storage
+- pre-loader transform for supported source files
+- standalone Annotask server bootstrap
+- auto-proxy `/__annotask` routes back into the standalone server
+
+Key files:
+
+- `src/webpack/plugin.ts`
+- `src/webpack/loader.ts`
+
+### Server Layer
+
+`src/server/` hosts the backend surface.
+
+Responsibilities:
+
+- task persistence under `.annotask/tasks.json`
+- design-spec loading and normalization
+- screenshot storage and cleanup
+- performance snapshot persistence
 - HTTP API routes
 - WebSocket broadcast
-- design-spec loading
-- component scanning
-- data-source scanning and binding analysis
-- API schema scanning and endpoint resolution
-- source-context helpers
+- workspace discovery
+- component scanning and usage scanning
+- data-source scanning, binding analysis, and detail lookup
+- API schema discovery and endpoint resolution
+- code-context helpers
 
 Representative files:
 
-| File | Responsibility |
-|------|---------------|
-| `src/server/api.ts` | HTTP routes under `/__annotask/api` |
-| `src/server/ws-server.ts` | WebSocket transport |
-| `src/server/state.ts` | Task and design-spec state |
-| `src/server/component-scanner.ts` | Component-library catalog |
-| `src/server/component-examples.ts` | In-repo component examples |
-| `src/server/data-context.ts` | Task/file data-context resolution |
-| `src/server/data-source-scanner.ts` | Project data-source catalog |
-| `src/server/data-source-details.ts` | Definition-level data-source detail |
-| `src/server/api-schema-scanner.ts` | OpenAPI, GraphQL, tRPC, JSON Schema discovery |
-| `src/server/api-schema-resolver.ts` | Concrete endpoint matching |
-| `src/server/code-context.ts` | Source excerpt and drift hash |
+- `src/server/api.ts`
+- `src/server/state.ts`
+- `src/server/ws-server.ts`
+- `src/server/workspace.ts`
+- `src/server/workspace-catalog.ts`
+- `src/server/component-scanner.ts`
+- `src/server/component-usage.ts`
+- `src/server/component-examples.ts`
+- `src/server/data-context.ts`
+- `src/server/data-source-scanner.ts`
+- `src/server/data-source-details.ts`
+- `src/server/api-schema-scanner.ts`
+- `src/server/api-schema-resolver.ts`
+- `src/server/code-context.ts`
+- `src/server/validation.ts`
+- `src/server/schemas.ts`
 
-### MCP layer
+The server pre-warms component caches in the background on startup so the first Components page open and the first component-related MCP call do not pay the full scan cost.
+
+### MCP Layer
 
 `src/mcp/server.ts` exposes the agent-facing tool surface at `POST /__annotask/mcp`.
 
-The MCP server is intentionally close to the HTTP API but not identical. It:
+Compared with raw HTTP, MCP:
 
-- returns task summaries by default to reduce token usage
-- strips shell-only fields such as `visual`
-- trims old `agent_feedback` exchanges
-- adds tool-focused argument validation
+- returns task summaries by default
+- strips the shell-only `visual` field
+- trims older `agent_feedback` on single-task reads
+- validates tool args with shared zod schemas
 
-### Shell layer
+### Shell Layer
 
 `src/shell/` is a Vue 3 SPA served at `/__annotask/`.
 
-Current top-level surfaces:
+User-facing top-level surfaces:
 
-- **Editor**: annotations, screenshots, viewport preview, pending-task creation
-- **Design**: tokens, inspector, components
-- **Develop**: a11y, data, libraries, performance, errors
+- **Annotate**
+- **Design**
+- **Audit**
 
-Important constraints:
+Internally the Audit tab still uses the `develop` id in `useShellNavigation` to preserve localStorage compatibility.
 
-- `App.vue` is the orchestrator, not a business-logic dumping ground
-- new shell features should usually land in a composable under `src/shell/composables/`
+Current sub-sections:
+
+- Annotate: tasks and annotation workflows
+- Design: Tokens, Inspector, Components
+- Audit: Accessibility, Data, Libraries, Performance, Errors
+
+Important constraint:
+
+- `App.vue` remains an orchestrator and is not supposed to absorb new business logic
 
 Key composables:
 
-| Composable | Purpose |
-|------------|---------|
-| `useTaskWorkflows` | Annotation-to-task creation flows |
-| `useSelectionModel` | Selected element state and source info |
-| `useStyleEditor` | Live style/class edits and change recording |
-| `useShellNavigation` | Editor / Design / Develop routing |
-| `useScreenshots` | Snipping workflow and uploads |
-| `useA11yScanner` | Accessibility scan and fix-task creation |
-| `useProjectComponents` | Components page and on-page highlighting |
-| `useDataSources` | Data view, schema catalog, and `api_update` task creation |
-| `usePerfMonitor` | Web Vitals, scans, recordings, findings |
-| `useErrorMonitor` | Error and warning capture |
-| `useShellTheme` | 18 built-in themes plus custom theme CRUD |
-| `useAnnotationRects` | Keeps overlays aligned during scroll/resize |
-| `useAutoScan` | Debounced perf auto-scan on view or route changes |
+- `useTaskWorkflows` - annotation and task creation flows
+- `useSelectionModel` - selected element state, source info, and rect tracking
+- `useStyleEditor` - live style/class editing and change recording
+- `useShellNavigation` - Annotate / Design / Audit routing
+- `useShellTheme` - built-in themes and custom theme CRUD
+- `useDesignSpec` - design-spec loading and theme activation helpers
+- `useProjectComponents` - Components page data, filters, and usage lookups
+- `useDataSources` - Audit data and library views, API schema links, `api_update` creation
+- `usePerfMonitor` - performance scans, findings, recordings
+- `useErrorMonitor` - console error and warning capture
+- `useA11yScanner` - WCAG scanning and fix-task creation
+- `useWorkspace` - shell-side workspace and MFE filter state
+- `useAnnotationRects` - overlay tracking during scroll and resize
 
-### Shared schema
+## Workspace-Aware Scanning
 
-`src/schema.ts` is the main contract definition.
+Annotask is no longer single-package only.
 
-It defines:
+`src/server/workspace.ts` walks upward from `projectRoot` and detects workspace definitions from:
 
-- report and change types
-- task types and statuses
-- design spec structure
-- element, component, and data context shapes
-- performance and screenshot metadata
-- API schema and data-source helper types
+- `pnpm-workspace.yaml`
+- `package.json` `workspaces`
+- `lerna.json`
+
+Scanners use that package list to aggregate:
+
+- component-library dependencies across sibling packages
+- project data sources across MFEs and shared packages
+- in-repo API schemas
+- workspace package metadata and configured MFE ids
+
+The shell consumes `/api/workspace` via `useWorkspace` and exposes MFE filters in the Components page and Audit data views.
+
+## Theme And Design Spec Model
+
+The design spec in `.annotask/design-spec.json` is variant-aware.
+
+Important fields:
+
+- `themes[]`
+- `defaultTheme`
+- token arrays with `values: Record<themeId, string>`
+- `cssVar`, `sourceFile`, and `sourceLine` for editable tokens
+
+`ThemePage.vue` creates one `theme_update` task per commit, bundling every token edit in `context.edits[]`. Agents apply those edits to source files and then patch the design spec so the Tokens page hot-reloads consistently.
 
 ## Bridge Model
 
-Annotask uses a `postMessage` bridge rather than direct DOM calls from the shell.
-
-Why:
-
-- works for cross-origin iframe setups
-- supports multi-server MFE development
-- keeps DOM interaction logic close to the app runtime
+Annotask relies on a `postMessage` bridge so it can support local cross-origin iframes and MFE setups.
 
 Bridge responsibilities include:
 
-- point-to-element resolution
+- element hit-testing and selection
 - hover and click events
 - style and class application
-- layout scans
 - rendered-file discovery
-- project-component listing
+- layout overlay scans
 - accessibility and focus-order helpers
+- route and render-change notifications
+
+Key client code lives in:
+
+- `src/plugin/bridge-client.ts`
+- `src/plugin/bridge/*`
+- `src/shell/services/iframeBridge.ts`
 
 ## Data Flow
 
-### Annotation or design edit
+### Annotation Or Edit
 
 ```text
 user action in shell
-  -> bridge resolves target element
-  -> shell captures source info and optional context
-  -> task is written to .annotask/tasks.json
-  -> API / WebSocket / MCP consumers see the new task
+  -> bridge resolves element and source location
+  -> shell packages task context
+  -> task is written under .annotask/
+  -> API, WebSocket, CLI, and MCP consumers can read it
 ```
 
-### Agent workflow
+### Agent Loop
 
 ```text
 agent fetches task summaries
   -> locks task with in_progress
-  -> optionally fetches screenshot / code context / component examples / data context / API schema
+  -> optionally fetches screenshot / code context / components / data context / API schemas
   -> edits source code
-  -> marks task review with a resolution note
-  -> user accepts, denies, answers questions, or reviews blocked reason
+  -> marks task review-ready with a resolution note
+  -> reviewer accepts, denies, answers questions, or sees blocked reason
 ```
 
-### Audit workflow
+### Audit Findings
 
 ```text
 shell scan or monitor detects issue
-  -> shell packages finding context
+  -> shell packages contextual details
   -> creates a11y_fix / error_fix / perf_fix / api_update task
-  -> same task pipeline takes over
+  -> normal task pipeline takes over
 ```
 
 ## Persistence
@@ -187,28 +232,19 @@ Common files:
 - `tasks.json`
 - `design-spec.json`
 - `server.json`
+- `performance.json`
 - `screenshots/`
 
-Writes are atomic so task updates do not corrupt the store on concurrent activity.
-
-## Webpack Support
-
-`src/webpack/` provides Webpack 5 support with a standalone Annotask server.
-
-Key pieces:
-
-- `AnnotaskWebpackPlugin`
-- transform loader
-- standalone server bootstrap
-
-The goal is feature parity with the Vite path wherever possible.
+Writes are atomic. Task mutations serialize through a lock in `state.ts`, and screenshot cleanup happens only after a successful task write.
 
 ## Build Outputs
 
 `pnpm build` produces:
 
 - prebuilt shell assets in `dist/shell/`
-- plugin and server bundles
-- webpack integration bundles
-- CLI bundle
-- vendored browser dependencies such as `axe-core` and `html2canvas`
+- plugin, server, standalone-server, and webpack bundles in `dist/`
+- CLI bundle in `dist/cli.js`
+- webpack loader bundle in `dist/webpack-loader.js`
+- vendored browser dependencies in `dist/vendor/`
+
+The shell build runs first because the server serves `dist/shell/` as static assets.

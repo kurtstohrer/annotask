@@ -6,6 +6,7 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import TaskAgentFeedback from './TaskAgentFeedback.vue'
 import TaskInteractionHistory from './TaskInteractionHistory.vue'
 import TaskJsonView from './TaskJsonView.vue'
+import Icon from './Icon.vue'
 
 const props = defineProps<{
   task: Task
@@ -141,12 +142,6 @@ const styleChanges = computed(() => {
 // ── Selected text (text_edit tasks) ──
 const selectedText = computed(() => (props.task.context as any)?.selected_text as string | undefined)
 
-const ancestorList = computed(() => {
-  const ec = props.task.element_context as any
-  if (!ec?.ancestors) return []
-  return ec.ancestors
-})
-
 const screenshots = computed(() => {
   const list: string[] = []
   if (props.task.screenshot) list.push('/__annotask/screenshots/' + props.task.screenshot)
@@ -190,28 +185,28 @@ function onKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="td-overlay" @keydown="onKeydown" tabindex="-1">
+  <div class="td-overlay" data-testid="task-detail-modal" @keydown="onKeydown" tabindex="-1">
     <div class="td-backdrop" @click="emit('close')" />
     <aside class="td-drawer">
       <!-- Header -->
       <header class="td-header">
         <div class="td-header-left">
-          <span class="td-status" :class="task.status">{{ statusLabel[task.status] || task.status }}</span>
-          <span class="td-type">{{ task.type }}</span>
+          <span class="td-status" data-testid="task-detail-status" :class="task.status">{{ statusLabel[task.status] || task.status }}</span>
+          <span class="td-type" data-testid="task-detail-type">{{ task.type }}</span>
           <span v-if="task.status === 'in_progress'" class="td-locked-badge">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <Icon name="lock" :size="10" :stroke-width="2.5" />
             Locked
           </span>
         </div>
         <div class="td-header-right">
-          <button class="td-delete-header-btn" @click="showDeleteConfirm = true" title="Delete task">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          <button data-testid="btn-modal-delete" class="td-delete-header-btn" @click="showDeleteConfirm = true" title="Delete task">
+            <Icon name="trash" />
           </button>
           <button :class="['td-json-btn', { active: showJson }]" @click="showJson = !showJson" title="View JSON">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            <Icon name="code" />
           </button>
           <button class="td-close-btn" @click="emit('close')" title="Close (Esc)">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <Icon name="x" :size="16" />
           </button>
         </div>
       </header>
@@ -226,6 +221,7 @@ function onKeydown(e: KeyboardEvent) {
           <div v-if="editing" class="td-editor">
             <textarea
               ref="textareaRef"
+              data-testid="input-modal-edit"
               v-model="editText"
               class="td-edit-textarea"
               rows="8"
@@ -236,12 +232,12 @@ function onKeydown(e: KeyboardEvent) {
             <div class="td-editor-footer">
               <span class="td-edit-hint">Markdown supported. Ctrl+Enter to save.</span>
               <div class="td-edit-actions">
-                <button class="td-save-btn" :disabled="!editText.trim()" @click="saveEdit">Save</button>
+                <button data-testid="btn-modal-save" class="td-save-btn" :disabled="!editText.trim()" @click="saveEdit">Save</button>
                 <button class="td-cancel-btn" @click="cancelEdit">Cancel</button>
               </div>
             </div>
           </div>
-          <div v-else class="td-markdown" :class="{ 'td-clickable': isEditable }" v-html="descriptionHtml" @click="isEditable ? startEditing() : undefined" />
+          <div v-else class="td-markdown" data-testid="task-detail-description" :class="{ 'td-clickable': isEditable }" v-html="descriptionHtml" @click="isEditable ? startEditing() : undefined" />
         </section>
 
         <!-- Selected Elements -->
@@ -370,18 +366,6 @@ function onKeydown(e: KeyboardEvent) {
           </div>
         </section>
 
-        <!-- Element Context (ancestors) -->
-        <section v-if="ancestorList.length" class="td-section">
-          <h4 class="td-label">Layout Ancestors</h4>
-          <div v-for="(a, i) in ancestorList" :key="i" class="td-ancestor">
-            <code class="td-ancestor-tag">&lt;{{ a.tag }}&gt;</code>
-            <span class="td-ancestor-display">{{ a.display }}</span>
-            <span v-if="a.flexDirection" class="td-ancestor-prop">flex: {{ a.flexDirection }}</span>
-            <span v-if="a.gap" class="td-ancestor-prop">gap: {{ a.gap }}</span>
-            <span v-if="a.component" class="td-ancestor-comp">{{ a.component }}</span>
-          </div>
-        </section>
-
         <!-- Interaction History (action log) -->
         <TaskInteractionHistory :interaction-history="task.interaction_history" />
 
@@ -406,12 +390,12 @@ function onKeydown(e: KeyboardEvent) {
            (The needs_info reply action lives inside TaskAgentFeedback — it renders its
            own "Submit answers" button once every question has a non-empty draft.) -->
       <div v-if="task.status === 'blocked'" class="td-footer">
-        <button class="td-deny-btn" @click="emit('deny', task.id)">Push Back</button>
-        <button class="td-dismiss-btn" @click="showDeleteConfirm = true">Dismiss</button>
+        <button data-testid="btn-modal-pushback" class="td-deny-btn" @click="emit('deny', task.id)">Push Back</button>
+        <button data-testid="btn-modal-dismiss" class="td-dismiss-btn" @click="showDeleteConfirm = true">Dismiss</button>
       </div>
       <div v-else-if="task.status === 'review'" class="td-footer">
-        <button class="td-accept" @click="emit('accept', task.id)">Accept</button>
-        <button class="td-deny-btn" @click="emit('deny', task.id)">Deny</button>
+        <button data-testid="btn-modal-accept" class="td-accept" @click="emit('accept', task.id)">Accept</button>
+        <button data-testid="btn-modal-deny" class="td-deny-btn" @click="emit('deny', task.id)">Deny</button>
       </div>
     </aside>
 

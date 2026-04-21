@@ -51,15 +51,18 @@ export function useA11yHighlights(deps: {
         return
       }
 
-      // Build a flat list of (ruleId, impact, selector) requests. Cap at the
-      // shared overlay budget so a 1000-violation scan can't blow up the loop.
-      const items: Array<{ ruleId: string; impact: string; selector: string }> = []
+      // Build a flat list of (ruleId, impact, selector, eid) requests. Cap at
+      // the shared overlay budget so a 1000-violation scan can't blow up the
+      // loop. Elements with a pre-resolved `eid` (e.g. synthetic tab-order
+      // findings) skip the selector resolve entirely — we still call
+      // computeLayoutRects on them via a dedicated bridge below.
+      const items: Array<{ ruleId: string; impact: string; selector: string; eid?: string }> = []
       for (const v of violations.value) {
         if (!v.elements) continue
         for (const el of v.elements) {
-          if (!el.target) continue
+          if (!el.target && !el.eid) continue
           if (items.length >= RECT_CAP) break
-          items.push({ ruleId: v.id, impact: v.impact || 'minor', selector: el.target })
+          items.push({ ruleId: v.id, impact: v.impact || 'minor', selector: el.target, eid: el.eid })
         }
         if (items.length >= RECT_CAP) break
       }
@@ -69,18 +72,37 @@ export function useA11yHighlights(deps: {
         return
       }
 
-      const matches = await iframe.resolveBySelectors(items.map(i => i.selector))
-      const out: A11yHighlightRect[] = []
-      for (let i = 0; i < items.length; i++) {
+      // Resolve the selector-based items in one batch; eid-based items are
+      // returned as-is and their rects are filled by computeLayoutRects.
+      const selectorItems = items.filter(i => !i.eid && i.selector)
+      const matches = selectorItems.length
+        ? await iframe.resolveBySelectors(selectorItems.map(i => i.selector))
+        : []
+      const matchBySelector = new Map<string, { eid: string | null; rect: BridgeRect | null }>()
+      for (let i = 0; i < selectorItems.length; i++) {
         const m = matches[i]
-        if (!m || !m.eid || !m.rect) continue
-        out.push({
-          ruleId: items[i].ruleId,
-          impact: items[i].impact,
-          selector: items[i].selector,
-          eid: m.eid,
-          rect: m.rect,
-        })
+        if (!m) continue
+        matchBySelector.set(selectorItems[i].selector, { eid: m.eid, rect: m.rect })
+      }
+
+      const eidOnlyEids = items.filter(i => i.eid).map(i => i.eid!) as string[]
+      const eidRects = eidOnlyEids.length
+        ? await iframe.getElementRects(eidOnlyEids)
+        : []
+      const rectByEid = new Map<string, BridgeRect | null>()
+      for (let i = 0; i < eidOnlyEids.length; i++) rectByEid.set(eidOnlyEids[i], eidRects[i] ?? null)
+
+      const out: A11yHighlightRect[] = []
+      for (const item of items) {
+        if (item.eid) {
+          const rect = rectByEid.get(item.eid)
+          if (!rect) continue
+          out.push({ ruleId: item.ruleId, impact: item.impact, selector: '', eid: item.eid, rect })
+        } else {
+          const m = matchBySelector.get(item.selector)
+          if (!m || !m.eid || !m.rect) continue
+          out.push({ ruleId: item.ruleId, impact: item.impact, selector: item.selector, eid: m.eid, rect: m.rect })
+        }
       }
       rects.value = out
     } finally {
@@ -108,12 +130,20 @@ export function useA11yHighlights(deps: {
   }
 
   watch(active, (v, old) => {
-    if (v && !old) startLoop()
-    else if (!v && old) rects.value = []
+    if (v && !old) {
+      // Re-entering the A11y view — refresh rects now instead of waiting for
+      // the next rAF tick so the user sees outlines immediately without
+      // needing to scroll or rescan.
+      refreshRects()
+      startLoop()
+    } else if (!v && old) rects.value = []
   })
 
   watch(violations, () => {
-    if (active.value) startLoop()
+    if (active.value) {
+      refreshRects()
+      startLoop()
+    }
     if (violations.value.length === 0) rects.value = []
   }, { deep: false })
 

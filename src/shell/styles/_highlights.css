@@ -6,6 +6,22 @@
   border-radius: 2px;
 }
 
+/* Clipping layer for overlays that render many rects over iframe content
+ * (data-source highlights, a11y highlights). Children use position: absolute
+ * with canvas-area-relative coords so overflow:hidden clips them to the iframe
+ * area — fixes the bug where iframe-scrolled rects draw over the shell chrome. */
+.overlay-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 10000;
+}
+
+.overlay-layer .highlight {
+  position: absolute;
+}
+
 .highlight.hover {
   background: color-mix(in srgb, var(--highlight-color) 10%, transparent);
   border: 1.5px solid color-mix(in srgb, var(--highlight-color) 50%, transparent);

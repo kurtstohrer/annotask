@@ -6,8 +6,8 @@ import { buildTaskSummary, stripTaskVisual, trimAgentFeedback, compactJson } fro
 
 const args = process.argv.slice(2)
 const command = args[0] || 'watch'
-const port = args.find(a => a.startsWith('--port='))?.split('=')[1] || '5173'
-const host = args.find(a => a.startsWith('--host='))?.split('=')[1] || 'localhost'
+const portArg = args.find(a => a.startsWith('--port='))?.split('=')[1] || ''
+const hostArg = args.find(a => a.startsWith('--host='))?.split('=')[1] || ''
 const serverArg = args.find(a => a.startsWith('--server='))?.split('=')[1] || ''
 const mfeArg = args.find(a => a.startsWith('--mfe='))?.split('=')[1] || ''
 const prettyFlag = args.includes('--pretty')
@@ -35,24 +35,57 @@ function info(text: string): void {
   if (!mcpFlag) console.error(text)
 }
 
-// Discover server URL and MFE from .annotask/server.json or CLI flags
-let baseUrl = ''
+/**
+ * Discover the dev-server URL.
+ *
+ * Precedence: `--server=` flag → `.annotask/server.json` → `--port`/`--host`
+ * flags → hard fallback. `source` tells us which branch ran so error messages
+ * can tell the agent what to fix (cd into the MFE, start the dev server, etc.)
+ * instead of printing a misleading default URL.
+ */
+type BaseUrlSource = 'flag' | 'server-json' | 'port-flag' | 'fallback'
+
+function discoverBaseUrl(): { url: string; source: BaseUrlSource; mfe?: string } {
+  if (serverArg) return { url: serverArg, source: 'flag' }
+
+  try {
+    const raw = readFileSync('.annotask/server.json', 'utf-8')
+    const serverJson = JSON.parse(raw)
+    if (serverJson.url) {
+      return { url: serverJson.url, source: 'server-json', mfe: serverJson.mfe }
+    }
+  } catch {
+    // fall through to port-flag / fallback
+  }
+
+  if (portArg || hostArg) {
+    return { url: `http://${hostArg || 'localhost'}:${portArg || '5173'}`, source: 'port-flag' }
+  }
+
+  return { url: 'http://localhost:5173', source: 'fallback' }
+}
+
+const discovered = discoverBaseUrl()
+const baseUrl = discovered.url
+const baseUrlSource = discovered.source
 let mfeFilter = mfeArg
-
-try {
-  const serverJson = JSON.parse(readFileSync('.annotask/server.json', 'utf-8'))
-  baseUrl = serverArg || serverJson.url || ''
-  if (!mfeFilter && serverJson.mfe) mfeFilter = serverJson.mfe
-} catch {
-  // No server.json found
-}
-
-if (!baseUrl) {
-  baseUrl = serverArg || `http://${host}:${port}`
-}
+if (!mfeFilter && discovered.mfe) mfeFilter = discovered.mfe
 
 const wsUrl = baseUrl.replace(/^http/, 'ws') + '/__annotask/ws'
 const apiUrl = baseUrl + '/__annotask/api'
+
+/** Human-readable hint for the agent when a connection fails. */
+function serverHint(): string {
+  if (baseUrlSource === 'server-json' || baseUrlSource === 'flag') {
+    return `Server is configured at ${baseUrl} but isn't responding — is the dev server still running?`
+  }
+  const cwd = process.cwd()
+  return [
+    `No .annotask/server.json found in ${cwd}.`,
+    `Either cd into the MFE directory that owns the dev server, or start it first.`,
+    `(Falling back to ${baseUrl} — this is almost certainly wrong.)`,
+  ].join(' ')
+}
 
 // ── Skill targets ────────────────────────────────────
 
@@ -104,6 +137,10 @@ if (command === 'watch') {
   fetchComponentExamples()
 } else if (command === 'data-context') {
   fetchDataContext()
+} else if (command === 'interaction-history') {
+  fetchInteractionHistory()
+} else if (command === 'rendered-html') {
+  fetchRenderedHtml()
 } else if (command === 'data-sources') {
   fetchDataSources()
 } else if (command === 'data-source-examples') {
@@ -221,7 +258,7 @@ async function fetchReport() {
     if (mfeFilter) info(`${color('36', '[Annotask]')} Filtered by MFE: ${mfeFilter}`)
   } catch (err: any) {
     console.error(`${color('31', '[Annotask]')} Failed to fetch report: ${err.message}`)
-    if (!mcpFlag) console.error(`Make sure the Annotask server is running at ${baseUrl}`)
+    if (!mcpFlag) console.error(serverHint())
     process.exit(1)
   }
 }
@@ -233,18 +270,19 @@ async function checkStatus() {
     const res = await fetch(`${apiUrl}/status`)
     const data = await res.json() as Record<string, unknown>
     if (mcpFlag) {
-      console.log(fmt({ ...data, url: baseUrl, mfe: mfeFilter || undefined }))
+      console.log(fmt({ ...data, url: baseUrl, mfe: mfeFilter || undefined, source: baseUrlSource }))
       return
     }
-    console.log(`${color('32', '[Annotask]')} Server is running at ${baseUrl}`)
+    console.log(`${color('32', '[Annotask]')} Server is running at ${baseUrl} (${baseUrlSource})`)
     if (mfeFilter) console.log(`${color('36', '[Annotask]')} MFE filter: ${mfeFilter}`)
     console.log(JSON.stringify(data, null, 2))
   } catch {
     if (mcpFlag) {
-      console.log(fmt({ status: 'unreachable', url: baseUrl }))
+      console.log(fmt({ status: 'unreachable', url: baseUrl, source: baseUrlSource, hint: serverHint() }))
       process.exit(1)
     }
     console.log(`${color('31', '[Annotask]')} No Annotask server found at ${baseUrl}`)
+    console.log(serverHint())
     process.exit(1)
   }
 }
@@ -583,11 +621,23 @@ function initMcp() {
   }
 
   const editorArg = args.find(a => a.startsWith('--editor='))?.split('=')[1] || 'claude'
+  const transportArg = args.find(a => a.startsWith('--transport='))?.split('=')[1] || 'stdio'
   const force = args.includes('--force')
 
-  // Default URL keeps the server.json discovery we already do above for other
-  // commands. Falls back to the host/port flags, then to localhost:5173.
-  const url = baseUrl + '/__annotask/mcp'
+  if (transportArg !== 'stdio' && transportArg !== 'http') {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Unknown --transport=${transportArg}. Valid: stdio, http`)
+    process.exit(1)
+  }
+
+  /**
+   * Default transport is stdio: `npx annotask mcp` resolves the dev-server URL
+   * from `.annotask/server.json` per request, so port changes don't leave the
+   * MCP config stale. HTTP transport hardcodes the URL and is offered as an
+   * opt-in for users who prefer it (e.g. editors without stdio support).
+   */
+  const annotaskEntry = transportArg === 'http'
+    ? { type: 'http', url: baseUrl + '/__annotask/mcp' }
+    : { command: 'npx', args: ['annotask', 'mcp'] }
 
   const targetKeys = editorArg === 'all' ? Object.keys(MCP_EDITORS) : editorArg.split(',').map(s => s.trim())
   const unknown = targetKeys.filter(k => !MCP_EDITORS[k])
@@ -631,7 +681,7 @@ function initMcp() {
       continue
     }
 
-    wrapper.annotask = { type: 'http', url }
+    wrapper.annotask = annotaskEntry
     existing[target.key] = wrapper
 
     if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
@@ -643,7 +693,13 @@ function initMcp() {
 
   console.log()
   console.log(`\x1b[32m[Annotask]\x1b[0m MCP config: ${written} written, ${skipped} skipped`)
-  console.log(`  URL: \x1b[36m${url}\x1b[0m`)
+  if (transportArg === 'http') {
+    console.log(`  Transport: \x1b[36mhttp\x1b[0m → \x1b[36m${baseUrl}/__annotask/mcp\x1b[0m`)
+    console.log(`  Note: URL is static. Restart editor after changing dev-server port.`)
+  } else {
+    console.log(`  Transport: \x1b[36mstdio\x1b[0m (\x1b[36mnpx annotask mcp\x1b[0m)`)
+    console.log(`  Resolves the dev-server port from .annotask/server.json per request.`)
+  }
   console.log(`  Make sure the Annotask dev server is running before your editor connects.`)
 }
 
@@ -872,6 +928,52 @@ async function fetchDataContext() {
   }
 }
 
+// ── Interaction history: pre-task user trace for a task ────
+
+async function fetchInteractionHistory() {
+  const taskId = args[1]
+  if (!taskId) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask interaction-history <task-id>`)
+    process.exit(1)
+  }
+  try {
+    const res = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}/interaction-history`)
+    if (res.status === 404) {
+      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
+      process.exit(1)
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch interaction history: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Rendered HTML: outerHTML snapshot of the task's element ─
+
+async function fetchRenderedHtml() {
+  const taskId = args[1]
+  if (!taskId) {
+    console.error(`${color('31', '[Annotask]')} Usage: annotask rendered-html <task-id>`)
+    process.exit(1)
+  }
+  try {
+    const res = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}/rendered-html`)
+    if (res.status === 404) {
+      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
+      process.exit(1)
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch rendered HTML: ${err.message}`)
+    process.exit(1)
+  }
+}
+
 // ── Data sources: project-wide catalog ─────────────────
 
 async function fetchDataSources() {
@@ -1019,9 +1121,49 @@ async function resolveEndpointCmd() {
 // ── MCP: stdio transport (proxies to HTTP MCP endpoint) ──
 
 import { createInterface } from 'node:readline'
+import { statSync } from 'node:fs'
+
+/**
+ * Resolve the MCP endpoint URL per request.
+ *
+ * Editors launch this proxy once per session, but the dev server's port can
+ * change if the developer restarts it on a different port. We cache the parsed
+ * server.json and only re-read when the file's mtime changes — keeps the hot
+ * path a single `stat` call while still picking up port changes transparently.
+ */
+let cachedServerUrl: string | null = null
+let cachedMtimeMs = 0
+
+function resolveMcpUrl(): string | null {
+  if (serverArg) return serverArg + '/__annotask/mcp'
+  try {
+    const st = statSync('.annotask/server.json')
+    if (st.mtimeMs !== cachedMtimeMs || cachedServerUrl === null) {
+      const raw = readFileSync('.annotask/server.json', 'utf-8')
+      const parsed = JSON.parse(raw)
+      cachedServerUrl = typeof parsed.url === 'string' ? parsed.url : null
+      cachedMtimeMs = st.mtimeMs
+    }
+    return cachedServerUrl ? cachedServerUrl + '/__annotask/mcp' : null
+  } catch {
+    cachedServerUrl = null
+    return null
+  }
+}
 
 function runMcpStdio() {
-  const mcpUrl = baseUrl + '/__annotask/mcp'
+  // Fail fast if we can't locate the dev server at launch — otherwise the
+  // editor silently proxies every request to localhost:5173 and nothing works.
+  const initialUrl = resolveMcpUrl()
+  if (!initialUrl) {
+    process.stderr.write(
+      `[Annotask MCP] No .annotask/server.json found in ${process.cwd()}.\n` +
+      `Start the Annotask dev server (e.g. 'pnpm dev') then restart your editor's MCP client.\n`,
+    )
+    // Keep running anyway — each request returns a JSON-RPC error so the editor
+    // can retry once the server comes up without needing a hard restart.
+  }
+
   const pending = new Set<Promise<void>>()
   let stdinClosed = false
 
@@ -1031,6 +1173,22 @@ function runMcpStdio() {
     if (!line.trim()) return
 
     const p = (async () => {
+      const mcpUrl = resolveMcpUrl()
+      if (!mcpUrl) {
+        let id: string | number | null = null
+        try { id = JSON.parse(line).id ?? null } catch {}
+        if (id !== null && id !== undefined) {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32603,
+              message: `Annotask dev server not found — missing .annotask/server.json in ${process.cwd()}`,
+            },
+            id,
+          }) + '\n')
+        }
+        return
+      }
       try {
         const response = await fetch(mcpUrl, {
           method: 'POST',
@@ -1095,6 +1253,8 @@ function printHelp() {
   code-context    Resolve a task to grounded source context (excerpt, symbol, imports, hash)
   component-examples  Find in-repo usages of a component (snippet + import path)
   data-context    Resolve (or return stored) data_context for a task (hooks/stores/fetch refs)
+  interaction-history  Fetch the user's pre-task navigation + action trace for a task
+  rendered-html   Fetch the outerHTML snapshot captured for a task's selected element
   data-sources    List detected data libraries + project-specific hooks/stores/fetch wrappers
   data-source-examples  Find in-repo usages of a data source by name (symmetric with component-examples)
   data-source-details  Fetch the definition of a data source by name (signature, excerpt, siblings)
@@ -1107,8 +1267,11 @@ function printHelp() {
   help            Show this help
 
 \x1b[33mOptions:\x1b[0m
-  --port=N          Dev server port (default: 5173)
-  --host=H          Dev server host (default: localhost)
+  --port=N          Dev server port — last-resort fallback. The CLI normally
+                    auto-discovers the port from .annotask/server.json
+                    (written by the dev server at startup). Only needed if
+                    you're running annotask from outside the project root.
+  --host=H          Dev server host (default: localhost). Same caveat as --port.
   --server=URL      Annotask server URL (overrides .annotask/server.json)
   --mfe=NAME        Filter tasks by MFE identity (overrides server.json mfe)
   --mcp             Emit MCP-parity output: compact JSON, no ANSI, matches the
@@ -1140,6 +1303,10 @@ function printHelp() {
   --editor=NAME     Target editor for init-mcp (default: claude)
                     Valid: claude, cursor, vscode, windsurf, all
                     Multiple: --editor=claude,cursor
+  --transport=T     init-mcp transport: stdio (default) or http. stdio uses
+                    'npx annotask mcp' and auto-resolves the dev-server port
+                    per request — survives port changes without editing
+                    .mcp.json. http hardcodes the URL discovered at init time.
 
 \x1b[33mExamples:\x1b[0m
   annotask tasks --mcp                    # Agent-parity compact summaries

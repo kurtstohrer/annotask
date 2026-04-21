@@ -9,7 +9,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | Tool | Description |
 |------|-------------|
 | `annotask_get_tasks` | List task summaries — filter by `status`, `mfe`. Use `detail=true` for full objects |
-| `annotask_get_task` | Get full detail for a single task by ID (context, element_context, agent_feedback) |
+| `annotask_get_task` | Get full detail for a single task by ID (context, agent_feedback) |
 | `annotask_update_task` | Transition status, set resolution, ask questions, mark blocked |
 | `annotask_create_task` | Create a new pending task |
 | `annotask_delete_task` | Delete a task and its screenshot |
@@ -136,7 +136,7 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 - `src/schema.ts` — TypeScript types for change reports, tasks, design spec, viewport, interaction history, element context
 - `src/mcp/` — MCP server (Streamable HTTP transport, embedded in the Vite/Webpack server)
 - `src/cli/` — CLI tool for terminal interaction
-- `playgrounds/` — Test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
+- `playgrounds/simple/` — Single-framework test apps (vue-vite, vue-webpack, react-vite, svelte-vite, solid-vite, html-vite, astro, htmx-vite, mfe-vite)
 
 ## Shell Architecture
 

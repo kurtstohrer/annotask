@@ -1,45 +1,41 @@
 # API Reference
 
-All endpoints are served under `/__annotask/` by the dev server in development mode.
+Annotask serves its local API under `/__annotask/` in development.
 
-CORS is restricted to local origins such as `localhost`, `127.0.0.1`, and `::1`. Mutating requests from non-local origins are rejected.
+## Transport Rules
 
-## HTTP Endpoints
+- CORS is limited to local origins such as `localhost`, `127.0.0.1`, and `::1`
+- mutating requests from non-local origins are rejected
+- request bodies are capped at 4 MiB
+- screenshots are served from `/__annotask/screenshots/*` outside the `/api` namespace
 
-### GET /api/report
+## Error Shape
 
-Returns the current live change report.
+HTTP errors use:
 
-Supports `?mfe=NAME`.
+```json
+{
+  "error": {
+    "code": "validation_failed",
+    "message": "status: Invalid status. Must be one of: pending, in_progress, applied, review, accepted, denied, needs_info, blocked"
+  }
+}
+```
 
-### GET /api/tasks
+Current error codes:
 
-Returns all tasks.
+- `invalid_json`
+- `body_too_large`
+- `body_not_object`
+- `validation_failed`
+- `invalid_transition`
+- `forbidden_origin`
+- `not_found`
+- `missing_field`
 
-Supports `?mfe=NAME`.
+## Task Model
 
-### GET /api/tasks/:id
-
-Returns the full task object.
-
-Useful fields include:
-
-- `context`
-- `viewport`
-- `color_scheme`
-- `interaction_history`
-- `element_context`
-- `data_context`
-- `agent_feedback`
-- `blocked_reason`
-- `resolution`
-- `screenshot` and `screenshot_meta`
-
-### POST /api/tasks
-
-Create a new task.
-
-Accepted task types are defined by `TASK_TYPES` in `src/schema.ts`:
+Canonical task types:
 
 - `annotation`
 - `section_request`
@@ -50,34 +46,7 @@ Accepted task types are defined by `TASK_TYPES` in `src/schema.ts`:
 - `perf_fix`
 - `api_update`
 
-Server-controlled fields such as `id`, `status`, `createdAt`, and `updatedAt` are generated automatically.
-
-### PATCH /api/tasks/:id
-
-Update an existing task.
-
-Accepted fields currently include:
-
-- `status`
-- `description`
-- `notes`
-- `screenshot`
-- `feedback`
-- `intent`
-- `action`
-- `context`
-- `viewport`
-- `color_scheme`
-- `interaction_history`
-- `element_context`
-- `data_context`
-- `screenshot_meta`
-- `mfe`
-- `agent_feedback`
-- `blocked_reason`
-- `resolution`
-
-Valid statuses:
+Statuses:
 
 - `pending`
 - `in_progress`
@@ -92,223 +61,220 @@ Typical lifecycle:
 
 ```text
 pending -> in_progress -> review -> accepted | denied
-                           \-> needs_info
-                           \-> blocked
+                     \-> needs_info
+                     \-> blocked
 ```
+
+`applied` is also a valid intermediate status.
+
+## HTTP Endpoints
+
+### Core
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/status` | health check |
+| `GET` | `/__annotask/api/report` | current live change report |
+| `GET` | `/__annotask/api/config` | current design-spec-backed config payload |
+| `GET` | `/__annotask/api/design-spec` | current design spec |
+| `GET` | `/__annotask/api/performance` | latest stored performance snapshot |
+| `POST` | `/__annotask/api/performance` | store a performance snapshot |
 
 Notes:
 
-- `questions` are represented on the stored task as `agent_feedback`
-- `blocked_reason` records why a task could not be completed
-- `resolution` records a short completion note when an agent moves a task to `review`
-- transitions are validated server-side
+- `report` supports `?mfe=NAME`
+- `report` can include `performance` when a snapshot exists
 
-### DELETE /api/tasks/:id
+### Tasks
 
-Deletes a task and its screenshot, if present.
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/tasks` | list tasks |
+| `POST` | `/__annotask/api/tasks` | create a task |
+| `GET` | `/__annotask/api/tasks/:id` | fetch one task |
+| `PATCH` | `/__annotask/api/tasks/:id` | update a task |
+| `DELETE` | `/__annotask/api/tasks/:id` | delete a task |
 
-### GET /api/design-spec
+`GET /tasks` supports `?mfe=NAME`.
 
-Returns the current design spec from `.annotask/design-spec.json`.
+`POST /tasks` accepts these user-settable fields:
 
-### GET /api/components
+- `type`
+- `description`
+- `file`
+- `line`
+- `component`
+- `mfe`
+- `route`
+- `intent`
+- `action`
+- `context`
+- `viewport`
+- `color_scheme`
+- `interaction_history`
+- `data_context`
+- `screenshot`
+- `screenshot_meta`
+- `visual`
 
-Returns the detected component-library catalog including libraries, components, props, slots, events, tags, and descriptions.
+Server-controlled fields such as `id`, `status`, `createdAt`, and `updatedAt` are generated automatically.
 
-### GET /api/component-usage
+`PATCH /tasks/:id` currently accepts:
 
-Returns the project usage index for detected components.
+- `status`
+- `description`
+- `notes`
+- `screenshot`
+- `feedback`
+- `intent`
+- `action`
+- `context`
+- `viewport`
+- `color_scheme`
+- `interaction_history`
+- `data_context`
+- `screenshot_meta`
+- `mfe`
+- `agent_feedback`
+- `blocked_reason`
+- `resolution`
 
-### GET /api/component-examples/:name
+Transitions are validated server-side.
 
-Returns real in-repo usage examples for a component name.
+### Screenshots
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/__annotask/api/screenshots` | upload a base64 PNG |
+| `GET` | `/__annotask/screenshots/:filename` | fetch a stored screenshot |
+
+Screenshot uploads must be PNG data URLs and are limited to 4 MiB.
+
+### Components And Workspace
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/components` | detected component libraries |
+| `GET` | `/__annotask/api/component-usage` | project usage index for detected components |
+| `GET` | `/__annotask/api/component-examples/:name` | real in-repo usage examples |
+| `GET` | `/__annotask/api/workspace` | workspace packages and discovered MFE ids |
+
+`workspace` omits internal absolute paths and returns workspace-relative package dirs.
+
+### Code Context
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/code-context/:taskId` | source excerpt for a task |
+| `GET` | `/__annotask/api/source-excerpt` | direct file-and-line excerpt |
 
 Query params:
 
-- `limit` default `3`, max `10`
+- `context_lines` defaults to `15`, max `200`
+- `source-excerpt` also accepts `file` and `line`
 
-### GET /api/code-context/:taskId
+### Data And Bindings
 
-Resolves a task's current source excerpt, enclosing symbol, import block, and excerpt hash.
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/data-context/:taskId` | stored or freshly resolved task data context |
+| `GET` | `/__annotask/api/data-context/probe` | quick probe for whether data context is worth offering |
+| `GET` | `/__annotask/api/data-context/resolve` | resolve file-and-line data context |
+| `GET` | `/__annotask/api/data-context/element` | resolve element-focused data context |
+| `GET` | `/__annotask/api/data-sources` | project data-source catalog |
+| `GET` | `/__annotask/api/data-source-examples/:name` | in-repo usages for a data source |
+| `GET` | `/__annotask/api/data-source-details/:name` | definition-level detail for a data source |
+| `GET` | `/__annotask/api/data-source-bindings/:name` | binding graph used for page highlights |
 
-Query params:
-
-- `context_lines` default `15`, max `200`
-
-### GET /api/source-excerpt
-
-Direct file-and-line source excerpt helper used by the shell.
-
-Query params:
-
-- `file` required
-- `line` default `1`
-- `context_lines` default `15`, max `200`
-
-### GET /api/data-context/:taskId
-
-Returns stored `data_context` for a task or resolves it on demand.
-
-### GET /api/data-context/probe
-
-Lightweight capability probe used by the shell to decide whether data context is worth offering.
-
-Query params:
-
-- `file` required
-
-### GET /api/data-context/resolve
-
-Resolve file-and-line data context.
-
-Query params:
-
-- `file` required
-- `line` optional
-
-### GET /api/data-context/element
-
-Resolve element-focused data context for a file and line.
-
-Query params:
-
-- `file` required
-- `line` optional
-
-### GET /api/data-sources
-
-Returns the project data-source catalog plus detected libraries.
-
-Query params:
+Useful query params:
 
 - `kind`
 - `library`
 - `search`
 - `used_only=true|1`
-
-### GET /api/data-source-examples/:name
-
-Returns real in-repo usage examples for a data source.
-
-Query params:
-
-- `kind`
-- `limit` default `3`, max `10`
-
-### GET /api/data-source-details/:name
-
-Returns definition-level detail for a project data source.
-
-Query params:
-
-- `kind`
+- `limit`
 - `file`
-- `context_lines` default `15`, max `40`
+- `context_lines`
 
-### GET /api/data-source-bindings/:name
+### API Schemas
 
-Returns the binding graph used by the shell's page-highlighting overlays.
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/api-schemas` | discovered schema catalog |
+| `GET` | `/__annotask/api/api-operation` | one operation by path |
+| `GET` | `/__annotask/api/resolve-endpoint` | best-match operation for a concrete URL |
 
-### GET /api/api-schemas
+Schema sources can include:
 
-Returns the discovered API schema catalog.
+- OpenAPI
+- GraphQL
+- tRPC
+- JSON Schema
 
-Sources can include OpenAPI, GraphQL, tRPC, and JSON Schema.
-
-Query params:
+Useful query params:
 
 - `kind`
 - `detail=true|1`
-
-### GET /api/api-operation
-
-Returns one API operation by path, optionally narrowed by method and schema location.
-
-Query params:
-
-- `path` required
+- `path`
 - `method`
 - `schema_location`
-
-### GET /api/resolve-endpoint
-
-Matches a concrete URL to the discovered schema catalog.
-
-Query params:
-
-- `url` required
-- `method`
-
-### GET /api/performance
-
-Returns the latest performance snapshot stored by the shell.
-
-### POST /api/performance
-
-Stores a performance snapshot. Used by the shell.
-
-### POST /api/screenshots
-
-Upload a base64-encoded PNG screenshot.
-
-Current limit: 4 MB.
-
-### GET /screenshots/:filename
-
-Serves a stored screenshot.
-
-### GET /api/status
-
-Health check endpoint.
+- `url`
 
 ## WebSocket
 
-Connect to `/__annotask/ws`.
-
-### Server -> client events
-
-| Event | Payload |
-|-------|---------|
-| `report:updated` | Full `AnnotaskReport` |
-| `report:current` | Full `AnnotaskReport` |
-| `changes:cleared` | `null` |
-
-### Client -> server events
-
-| Event | Payload |
-|-------|---------|
-| `report:updated` | Full `AnnotaskReport` |
-| `changes:cleared` | `{}` |
-| `get:report` | `{}` |
+Connect to `ws://localhost:<port>/__annotask/ws`.
 
 Messages are JSON objects with `event`, `data`, and `timestamp`.
 
-## MCP Server
+Server-to-client events:
 
-`POST /__annotask/mcp` implements Streamable HTTP MCP with JSON-RPC 2.0.
+| Event | Payload |
+|-------|---------|
+| `report:updated` | full `AnnotaskReport` |
+| `report:current` | full `AnnotaskReport` |
+| `changes:cleared` | `null` |
+| `tasks:updated` | task list payload |
+| `designspec:updated` | `null` |
+
+Client-to-server events:
+
+| Event | Payload |
+|-------|---------|
+| `report:updated` | full `AnnotaskReport` |
+| `changes:cleared` | `{}` |
+| `get:report` | `{}` |
+
+## MCP
+
+`POST /__annotask/mcp` implements Streamable HTTP MCP over JSON-RPC 2.0.
 
 Current tool surface:
 
-| Tool | Purpose |
-|------|---------|
-| `annotask_get_tasks` | List task summaries or full tasks |
-| `annotask_get_task` | Fetch one full task |
-| `annotask_update_task` | Transition status, set resolution, ask questions, or mark blocked |
-| `annotask_create_task` | Create a pending task |
-| `annotask_delete_task` | Delete a task and screenshot |
-| `annotask_get_design_spec` | Design-spec summary or category slice |
-| `annotask_get_components` | Search detected component libraries |
-| `annotask_get_component` | Full detail for one component |
-| `annotask_get_component_examples` | Real in-repo component usages |
-| `annotask_get_screenshot` | Fetch a screenshot as base64 PNG |
-| `annotask_get_code_context` | Ground a task to current source |
-| `annotask_get_data_context` | Resolve task data context |
-| `annotask_get_data_sources` | Project data-source catalog |
-| `annotask_get_data_source_examples` | Real in-repo data-source usages |
-| `annotask_get_data_source_details` | Definition-level data-source detail |
-| `annotask_get_api_schemas` | Discovered schema catalog |
-| `annotask_get_api_operation` | One API operation by path |
-| `annotask_resolve_endpoint` | Resolve a concrete URL to a known operation |
+- `annotask_get_tasks`
+- `annotask_get_task`
+- `annotask_update_task`
+- `annotask_create_task`
+- `annotask_delete_task`
+- `annotask_get_design_spec`
+- `annotask_get_components`
+- `annotask_get_component`
+- `annotask_get_screenshot`
+- `annotask_get_code_context`
+- `annotask_get_component_examples`
+- `annotask_get_data_context`
+- `annotask_get_data_sources`
+- `annotask_get_api_schemas`
+- `annotask_get_api_operation`
+- `annotask_resolve_endpoint`
+- `annotask_get_data_source_examples`
+- `annotask_get_data_source_details`
+
+Behavior differences from raw HTTP:
+
+- task lists return summaries by default
+- the shell-only `visual` field is stripped
+- older `agent_feedback` entries are trimmed from single-task reads
+- arguments are validated at the tool boundary
 
 ## Change Types
 
@@ -324,4 +290,4 @@ The live report's `changes[]` union currently includes:
 - `annotation`
 - `section_request`
 
-See `src/schema.ts` for the canonical TypeScript definitions.
+The canonical definitions live in `src/schema.ts`.

@@ -1,0 +1,138 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Annotask Stress Lab — go-api",
+    "description": "Metrics backend for the Svelte streaming MFE. Hand-written alongside main.go to keep `go run .` subsecond (no code-gen step).",
+    "version": "0.0.1"
+  },
+  "servers": [
+    { "url": "http://localhost:4330" }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Service health",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/metrics": {
+      "get": {
+        "tags": ["metrics"],
+        "summary": "List metric series (optionally filtered by name)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/MetricSeries" }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Named series not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotFound" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/metrics/{name}": {
+      "get": {
+        "tags": ["metrics"],
+        "summary": "Get a single metric series by name",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MetricSeries" }
+              }
+            }
+          },
+          "404": {
+            "description": "Series not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/NotFound" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "required": ["status", "service", "port", "version"],
+        "properties": {
+          "status":  { "type": "string", "enum": ["ok", "degraded", "down"] },
+          "service": { "type": "string" },
+          "port":    { "type": "integer" },
+          "version": { "type": "string" }
+        }
+      },
+      "MetricPoint": {
+        "type": "object",
+        "required": ["t", "value"],
+        "properties": {
+          "t":     { "type": "string", "format": "date-time" },
+          "value": { "type": "number" }
+        }
+      },
+      "MetricSeries": {
+        "type": "object",
+        "required": ["name", "unit", "points"],
+        "properties": {
+          "name":   { "type": "string" },
+          "unit":   { "type": "string" },
+          "points": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/MetricPoint" }
+          }
+        }
+      },
+      "NotFound": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" },
+          "name":  { "type": "string" }
+        }
+      }
+    }
+  }
+}

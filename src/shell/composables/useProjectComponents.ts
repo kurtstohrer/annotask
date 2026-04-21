@@ -10,6 +10,7 @@
 import { ref, computed, watch } from 'vue'
 import { colorForSource, type DataHighlightSource, type DataHighlightSite } from './useDataHighlights'
 import type { useIframeManager } from './useIframeManager'
+import { useWorkspace } from './useWorkspace'
 
 /** All components from one library share this color on the iframe overlay. */
 export function colorForLibrary(libraryName: string): string {
@@ -69,6 +70,10 @@ export interface ComponentsHighlightsAdapter {
 const libraries = ref<LibraryCatalog[]>([])
 /** componentName → files[] referencing it, from /api/component-usage. */
 const usageByName = ref<Map<string, string[]>>(new Map())
+/** file → (name → module sources that imported `name` in `file`). Drives the
+ *  per-library attribution that prevents two libraries exposing the same
+ *  component name (Button, Card, etc.) from cross-highlighting each other. */
+const importsByFile = ref<Map<string, Map<string, string[]>>>(new Map())
 /** Files currently rendered in the iframe (distinct data-annotask-file). */
 const renderedFiles = ref<Set<string>>(new Set())
 const isLoading = ref(false)
@@ -116,7 +121,7 @@ async function load(iframe?: ReturnType<typeof useIframeManager>): Promise<void>
   try {
     const [catalog, usage] = await Promise.all([
       fetchJson<LibraryComponentsIndex>('components'),
-      fetchJson<{ usage: Record<string, string[]> }>('component-usage'),
+      fetchJson<{ usage: Record<string, string[]>; imports?: Record<string, Record<string, string[]>> }>('component-usage'),
     ])
     libraries.value = catalog?.libraries ?? []
     const map = new Map<string, string[]>()
@@ -124,6 +129,13 @@ async function load(iframe?: ReturnType<typeof useIframeManager>): Promise<void>
       map.set(name, files)
     }
     usageByName.value = map
+    const impMap = new Map<string, Map<string, string[]>>()
+    for (const [file, perFile] of Object.entries(usage?.imports ?? {})) {
+      const inner = new Map<string, string[]>()
+      for (const [name, froms] of Object.entries(perFile)) inner.set(name, froms)
+      impMap.set(file, inner)
+    }
+    importsByFile.value = impMap
     if (iframe) await refreshRenderedFiles(iframe)
     // With the list visible (no selection yet), pre-populate highlights for
     // every component rendered on the current route — drives both the
@@ -138,10 +150,62 @@ async function load(iframe?: ReturnType<typeof useIframeManager>): Promise<void>
 
 async function refreshRenderedFiles(iframe: ReturnType<typeof useIframeManager>): Promise<void> {
   const { files } = await iframe.listRenderedFiles()
-  renderedFiles.value = new Set(files)
+  // The bridge returns MFE-local paths. Convert each to its workspace-
+  // relative form by prefixing the package dir for that MFE, so comparisons
+  // against the catalog (whose paths are workspace-relative) line up.
+  const ws = useWorkspace()
+  const dirByMfe = new Map<string, string>()
+  for (const pkg of ws.info.value?.packages ?? []) {
+    if (pkg.mfe) dirByMfe.set(pkg.mfe, pkg.dir)
+  }
+  const out = new Set<string>()
+  for (const entry of files) {
+    const dir = entry.mfe ? dirByMfe.get(entry.mfe) : undefined
+    out.add(dir ? `${dir}/${entry.file}` : entry.file)
+  }
+  renderedFiles.value = out
 }
 
-/** Components referenced anywhere in `src/`. */
+/** Does an import specifier (`from '…'`) belong to this library? Matches the
+ *  package name exactly or as a subpath prefix so `@mantine/core` attributes
+ *  imports from `@mantine/core/Button`, `primevue` attributes
+ *  `primevue/button`, etc. */
+function fromMatchesLibrary(from: string, libName: string): boolean {
+  return from === libName || from.startsWith(libName + '/')
+}
+
+/** Files where `compName` is imported from a module that belongs to `libName`.
+ *  Used by every library-scoped predicate below so two libraries that export
+ *  the same component name don't bleed into each other's highlights. */
+function filesForLibComponent(libName: string, compName: string): string[] {
+  const all = usageByName.value.get(compName) ?? []
+  if (all.length === 0) return []
+  const out: string[] = []
+  for (const file of all) {
+    const froms = importsByFile.value.get(file)?.get(compName)
+    // No recorded import source for this (file, name) — can't attribute it
+    // to any library, so skip. Eliminates the cross-library ghosts.
+    if (!froms) continue
+    if (froms.some(f => fromMatchesLibrary(f, libName))) out.push(file)
+  }
+  return out
+}
+
+function isUsedInLib(libName: string, compName: string): boolean {
+  return filesForLibComponent(libName, compName).length > 0
+}
+
+function isOnPageInLib(libName: string, compName: string): boolean {
+  const rendered = renderedFiles.value
+  if (rendered.size === 0) return false
+  for (const f of filesForLibComponent(libName, compName)) {
+    if (rendered.has(f)) return true
+  }
+  return false
+}
+
+/** Components referenced anywhere in `src/` — bare-name count, used for the
+ *  header badge next to "Used". */
 const usedProjectSet = computed<Set<string>>(() => {
   const s = new Set<string>()
   for (const [name, files] of usageByName.value.entries()) {
@@ -150,7 +214,8 @@ const usedProjectSet = computed<Set<string>>(() => {
   return s
 })
 
-/** Components whose usage files intersect the currently-rendered file set. */
+/** Components whose usage files intersect the currently-rendered file set —
+ *  bare-name count, used for the header badge next to "On page". */
 const usedOnPageSet = computed<Set<string>>(() => {
   const out = new Set<string>()
   const rendered = renderedFiles.value
@@ -164,6 +229,8 @@ const usedOnPageSet = computed<Set<string>>(() => {
 const filteredLibraries = computed<LibraryCatalog[]>(() => {
   const q = filterText.value.trim().toLowerCase()
   const mode = filterMode.value
+  const ws = useWorkspace()
+  const selected = ws.selectedMfes.value
   return libraries.value
     .map(lib => {
       let comps = lib.components
@@ -175,11 +242,22 @@ const filteredLibraries = computed<LibraryCatalog[]>(() => {
         )
       }
       if (mode === 'used') {
-        const used = usedProjectSet.value
-        comps = comps.filter(c => used.has(c.name))
+        comps = comps.filter(c => isUsedInLib(lib.name, c.name))
       } else if (mode === 'onPage') {
-        const onPage = usedOnPageSet.value
-        comps = comps.filter(c => onPage.has(c.name))
+        comps = comps.filter(c => isOnPageInLib(lib.name, c.name))
+      }
+      if (selected.size > 0) {
+        // Keep components with at least one library-scoped usage file under
+        // any selected MFE. Drops unused components and cross-library ghosts.
+        comps = comps.filter(c => {
+          const files = filesForLibComponent(lib.name, c.name)
+          if (files.length === 0) return false
+          for (const f of files) {
+            const id = ws.mfeForFile(f)
+            if (id && selected.has(id)) return true
+          }
+          return false
+        })
       }
       return { ...lib, components: comps }
     })
@@ -194,7 +272,7 @@ function select(libraryName: string, componentName: string): void {
   selectedComponent.value = comp
   if (comp) {
     loadUsagesFor(comp)
-    highlightsAdapter?.setFocus(comp.name)
+    highlightsAdapter?.setFocus(sourceName(libraryName, comp.name))
   } else {
     usages.value = []
   }
@@ -223,18 +301,28 @@ function pushAllOnPageHighlights(): void {
     return
   }
   const sources: DataHighlightSource[] = []
-  const seen = new Set<string>()
+  // One source per (library, component) pair. No bare-name dedup, because
+  // that caused two libraries exposing the same name (Mantine Button vs
+  // Radix Button) to collapse into a single source whose file list mixed
+  // both — which then highlighted both lib's instances in the iframe.
   for (const lib of libraries.value) {
     for (const c of lib.components) {
-      if (seen.has(c.name)) continue
-      const files = usageByName.value.get(c.name) ?? []
-      const onPage = files.filter(f => rendered.has(f))
+      const libFiles = filesForLibComponent(lib.name, c.name)
+      const onPage = libFiles.filter(f => rendered.has(f))
       if (onPage.length === 0) continue
-      seen.add(c.name)
       sources.push({
-        name: c.name,
+        name: sourceName(lib.name, c.name),
         kind: 'composable',
-        sites: onPage.map(file => ({ file, line: 0, tag: c.name })),
+        sites: onPage.map(file => ({
+          file,
+          line: 0,
+          tag: c.name,
+          // Pass the library package name as a module filter. The bridge
+          // matches `data-annotask-source-module` exactly or as a subpath
+          // (so `@kobalte/core` picks up `@kobalte/core/button`), which
+          // keeps Radix/Mantine/Kobalte Buttons on the same page distinct.
+          module: lib.name,
+        })),
         defaultLabel: c.name,
         color: colorForLibrary(lib.name),
       })
@@ -244,17 +332,28 @@ function pushAllOnPageHighlights(): void {
   highlightsAdapter.setFocus(null)
 }
 
+/** Library-scoped source key. The shared highlight adapter uses `name` to
+ *  dedupe and to drive focused-source emphasis, so two libraries sharing a
+ *  component name need distinct keys. Display-facing UI still reads
+ *  `defaultLabel` / the component's real name. */
+export function sourceName(libName: string, compName: string): string {
+  return `${libName}\u0001${compName}`
+}
+
 /** Emphasize one component's rects (and by extension the matching list row
  *  when App.vue propagates the focus). `null` clears the emphasis. */
 function setFocus(name: string | null): void {
   highlightsAdapter?.setFocus(name)
 }
 
-// Re-emit the on-page set whenever the iframe's rendered file set changes
-// (SPA navigation, HMR) — but only while the list view is active. Detail
-// view keeps its narrower per-component sources.
+// Re-emit highlights whenever the iframe's rendered file set changes (SPA
+// navigation, HMR). List view repaints every on-page component; detail view
+// re-runs its precise (or wildcard-fallback) highlights for the selected
+// component so the overlay keeps tracking the current route.
 watch(renderedFiles, () => {
-  if (!selectedComponent.value) pushAllOnPageHighlights()
+  const comp = selectedComponent.value
+  if (!comp) pushAllOnPageHighlights()
+  else pushHighlightsFor(comp, usages.value)
 })
 
 let usagesFetchSeq = 0
@@ -262,9 +361,10 @@ async function loadUsagesFor(comp: LibraryComponent): Promise<void> {
   const seq = ++usagesFetchSeq
   isUsagesLoading.value = true
   usages.value = []
-  // Drop prior-component highlights immediately — avoids a stale overlay
-  // flashing while this fetch is in-flight.
-  highlightsAdapter?.setSources([])
+  // Paint the file-level wildcard highlights for this component *before* the
+  // examples fetch so the iframe never flashes empty during the roundtrip.
+  // Once examples arrive we narrow to precise (file, line) sites.
+  pushHighlightsFor(comp, [])
   try {
     const data = await fetchJson<{ examples?: UsageExample[] }>(
       `component-examples/${encodeURIComponent(comp.name)}?limit=10`,
@@ -281,6 +381,7 @@ async function loadUsagesFor(comp: LibraryComponent): Promise<void> {
 
 function pushHighlightsFor(comp: LibraryComponent, examples: UsageExample[]): void {
   if (!highlightsAdapter) return
+  const lib = selectedLibrary.value ?? ''
   const sites: DataHighlightSite[] = []
   const seen = new Set<string>()
   for (const ex of examples) {
@@ -290,11 +391,23 @@ function pushHighlightsFor(comp: LibraryComponent, examples: UsageExample[]): vo
     // `tag: comp.name` scopes the iframe match to elements whose source tag
     // equals this component's name — keeps a Card's 920×215 card div and
     // drops e.g. a Checkbox that happens to sit on the same source line.
-    sites.push({ file: ex.file, line: ex.line, tag: comp.name })
+    // `module: lib` adds the library disambiguator so the selector never
+    // cross-highlights a same-named component from another library.
+    sites.push({ file: ex.file, line: ex.line, tag: comp.name, module: lib })
   }
-  const lib = selectedLibrary.value ?? ''
+  // Fallback: the examples endpoint returned nothing (or hasn't responded
+  // yet). Use the library-scoped usage files intersected with the on-page
+  // set so the overlay still paints every matching element in each rendered
+  // file — matches the behaviour of the list view's on-page highlights.
+  if (sites.length === 0) {
+    const rendered = renderedFiles.value
+    for (const file of filesForLibComponent(lib, comp.name)) {
+      if (rendered.size > 0 && !rendered.has(file)) continue
+      sites.push({ file, line: 0, tag: comp.name, module: lib })
+    }
+  }
   const sources: DataHighlightSource[] = [{
-    name: comp.name,
+    name: sourceName(lib, comp.name),
     kind: 'composable' as const,
     sites,
     defaultLabel: comp.name,
@@ -303,7 +416,7 @@ function pushHighlightsFor(comp: LibraryComponent, examples: UsageExample[]): vo
     color: colorForLibrary(lib),
   }]
   highlightsAdapter.setSources(sources)
-  highlightsAdapter.setFocus(comp.name)
+  highlightsAdapter.setFocus(sourceName(lib, comp.name))
 }
 
 export function useComponentLibrary(iframe?: ReturnType<typeof useIframeManager>) {
@@ -327,5 +440,9 @@ export function useComponentLibrary(iframe?: ReturnType<typeof useIframeManager>
     select,
     clearSelection,
     setFocus,
+    sourceName,
+    isUsedInLib,
+    isOnPageInLib,
+    filesForLibComponent,
   }
 }

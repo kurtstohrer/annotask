@@ -1,0 +1,88 @@
+/* All selectors are scoped to .svelte-mfe so that when this MFE mounts
+ * inside the host (single-spa) its styles never bleed onto the host's
+ * <main class="content"> shell element. */
+
+.svelte-mfe {
+  min-height: 100%;
+  padding: 32px 40px;
+  background: var(--stress-bg);
+  color: var(--stress-text);
+  line-height: 1.55;
+}
+.svelte-mfe h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: -0.01em; }
+.svelte-mfe .sub { color: var(--stress-text-muted); margin: 0 0 20px; font-size: 13px; }
+.svelte-mfe .panel {
+  border: 1px solid var(--stress-border);
+  border-radius: var(--stress-radius);
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  background: var(--stress-surface);
+}
+.svelte-mfe .panel h2 { margin: 0 0 10px; font-size: 15px; color: var(--stress-text); }
+.svelte-mfe .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.svelte-mfe .kv { display: grid; grid-template-columns: 100px 1fr; gap: 6px 16px; margin: 8px 0 0; font-size: 13px; }
+.svelte-mfe .kv dt { color: var(--stress-text-muted); }
+.svelte-mfe .kv dd { margin: 0; font-family: var(--stress-font-mono); }
+.svelte-mfe .err { color: var(--stress-danger); }
+.svelte-mfe .btn {
+  padding: 6px 14px;
+  border-radius: var(--stress-radius-sm);
+  border: 1px solid var(--stress-border);
+  background: var(--stress-surface-2);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--stress-text);
+}
+.svelte-mfe .btn:hover { background: var(--stress-surface); border-color: var(--stress-accent); }
+.svelte-mfe .btn.active { background: var(--stress-accent); color: var(--stress-surface); border-color: var(--stress-accent); }
+.svelte-mfe .pill-group { display: flex; gap: 4px; flex-wrap: wrap; }
+.svelte-mfe .pill-group .btn { padding: 4px 10px; font-size: 12px; }
+.svelte-mfe .pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--stress-radius-pill);
+  background: var(--stress-surface-2);
+  color: var(--stress-text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.svelte-mfe .pill.ok { background: color-mix(in srgb, var(--stress-success) 20%, transparent); color: var(--stress-success); }
+.svelte-mfe .pill.warn { background: color-mix(in srgb, var(--stress-warning) 20%, transparent); color: var(--stress-warning); }
+.svelte-mfe .pill.err { background: color-mix(in srgb, var(--stress-danger) 20%, transparent); color: var(--stress-danger); }
+.svelte-mfe table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+.svelte-mfe th, .svelte-mfe td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--stress-border); }
+.svelte-mfe th { color: var(--stress-text-muted); font-weight: 500; }
+.svelte-mfe code {
+  font-family: var(--stress-font-mono);
+  font-size: 12px;
+  background: var(--stress-surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--stress-text);
+}
+
+/* Dialog overlay/content use fixed positioning so they're page-wide
+ * anyway — scope them so they only apply when the svelte MFE is
+ * mounted. */
+.svelte-mfe-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--stress-bg) 60%, rgba(0, 0, 0, 0.6));
+  z-index: 50;
+}
+.svelte-mfe-dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--stress-surface);
+  color: var(--stress-text);
+  padding: 24px;
+  border: 1px solid var(--stress-border);
+  border-radius: var(--stress-radius);
+  box-shadow: var(--stress-shadow-md);
+  min-width: 360px;
+  z-index: 51;
+}
+.svelte-mfe-dialog-content h3 { margin: 0 0 10px; font-size: 16px; }

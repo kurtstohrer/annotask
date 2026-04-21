@@ -1,0 +1,38 @@
+# Stress-test compose stack — services only. Frontends run locally via
+# `pnpm dev:stress-*` on their assigned ports (see README).
+
+services:
+  fastapi:
+    build: ./services/fastapi
+    ports:
+      - "4320:4320"
+    environment:
+      - PORT=4320
+
+  node-api:
+    build: ./services/node-api
+    ports:
+      - "4340:4340"
+    environment:
+      - PORT=4340
+
+  go-api:
+    build: ./services/go-api
+    ports:
+      - "4330:4330"
+    environment:
+      - PORT=4330
+
+  rust-api:
+    build: ./services/rust-api
+    ports:
+      - "4360:4360"
+    environment:
+      - PORT=4360
+
+  java-api:
+    build: ./services/java-api
+    ports:
+      - "4310:4310"
+    environment:
+      - PORT=4310

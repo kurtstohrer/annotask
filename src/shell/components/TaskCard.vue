@@ -1,10 +1,10 @@
 <template>
-  <div class="task-card" :class="task.status" @click="$emit('open-detail', task.id)">
+  <div class="task-card" :class="task.status" :data-testid="'task-card'" :data-task-id="task.id" :data-task-type="task.type" :data-task-status="task.status" @click="$emit('open-detail', task.id)">
     <div v-if="task.resolution" class="task-card-resolution">{{ task.resolution }}</div>
     <div class="task-card-header">
       <span class="task-status-dot" :class="task.status" />
       <span class="task-card-desc task-card-md" v-html="safeMd(task.description)"></span>
-      <button class="task-card-close" @click.stop="$emit('confirm-delete', task.id)" title="Delete task">×</button>
+      <button data-testid="btn-delete-task" class="task-card-close" @click.stop="$emit('confirm-delete', task.id)" title="Delete task">×</button>
     </div>
     <div class="task-card-meta">
       <code class="task-card-file">{{ task.file }}:{{ task.line }}</code>
@@ -22,12 +22,13 @@
     <!-- Review actions / Deny form -->
     <div v-if="task.status === 'review'" class="task-card-actions" @click.stop>
       <template v-if="!isDenying">
-        <button class="task-accept" @click="$emit('accept', task.id)" title="Accept this change and remove the task">Accept</button>
-        <button class="task-deny" @click="$emit('start-deny', task.id)" title="Reject and send feedback to the agent">Deny</button>
+        <button data-testid="btn-accept-task" class="task-accept" @click="$emit('accept', task.id)" title="Accept this change and remove the task">Accept</button>
+        <button data-testid="btn-deny-task" class="task-deny" @click="$emit('start-deny', task.id)" title="Reject and send feedback to the agent">Deny</button>
       </template>
       <template v-else>
         <div class="deny-form">
           <textarea
+            data-testid="input-deny-feedback"
             :value="denyFeedbackText"
             @input="$emit('update:denyFeedbackText', ($event.target as HTMLTextAreaElement).value)"
             class="deny-feedback-textarea"
@@ -39,11 +40,11 @@
           />
           <TaskOptionsToggles
             :include-history="includeHistory"
-            :include-element-context="includeElementContext"
+            :include-rendered-html="includeRenderedHtml"
             :include-data-context="includeDataContext"
             :data-context-probe="dataContextProbe"
             @update:includeHistory="$emit('update:includeHistory', $event)"
-            @update:includeElementContext="$emit('update:includeElementContext', $event)"
+            @update:includeRenderedHtml="$emit('update:includeRenderedHtml', $event)"
             @update:includeDataContext="$emit('update:includeDataContext', $event)"
           />
           <ScreenshotUploader
@@ -52,7 +53,7 @@
             @remove-screenshot="$emit('remove-screenshot')"
           />
           <div class="deny-form-actions">
-            <button class="task-send-feedback" :disabled="!denyFeedbackText.trim()" @click="$emit('submit-deny', task.id)">
+            <button data-testid="btn-submit-deny" class="task-send-feedback" :disabled="!denyFeedbackText.trim()" @click="$emit('submit-deny', task.id)">
               Send Feedback
             </button>
             <button class="cancel-btn" style="padding:4px 8px;font-size:10px" @click="$emit('cancel-deny')">Cancel</button>
@@ -76,7 +77,7 @@ interface Props {
   denyFeedbackText: string
   pendingScreenshot?: string | null
   includeHistory: boolean
-  includeElementContext: boolean
+  includeRenderedHtml: boolean
   includeDataContext: boolean
   dataContextProbe: DataContextProbeResult | null
 }
@@ -91,7 +92,7 @@ defineEmits<{
   (e: 'cancel-deny'): void
   (e: 'update:denyFeedbackText', text: string): void
   (e: 'update:includeHistory', value: boolean): void
-  (e: 'update:includeElementContext', value: boolean): void
+  (e: 'update:includeRenderedHtml', value: boolean): void
   (e: 'update:includeDataContext', value: boolean): void
   (e: 'start-snip'): void
   (e: 'remove-screenshot'): void

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { ErrorEntry } from '../composables/useErrorMonitor'
 import FindingDrawer from './FindingDrawer.vue'
+import Icon from './Icon.vue'
 
 const props = defineProps<{
   errors: ErrorEntry[]
@@ -80,18 +81,18 @@ function onCreateTask(entry: ErrorEntry) {
         </button>
       </div>
       <div class="errors-actions">
-        <button class="action-btn icon-only" @click="emit('toggle-pause')" :title="paused ? 'Resume capture' : 'Pause capture'">
-          <svg v-if="paused" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        <button data-testid="btn-errors-pause" class="action-btn icon-only" @click="emit('toggle-pause')" :title="paused ? 'Resume capture' : 'Pause capture'">
+          <Icon v-if="paused" name="play" :size="12" />
+          <Icon v-else name="pause" :size="12" />
         </button>
-        <button class="action-btn icon-only" @click="emit('clear')" :disabled="errors.length === 0" title="Clear all captured errors">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+        <button data-testid="btn-errors-clear" class="action-btn icon-only" @click="emit('clear')" :disabled="errors.length === 0" title="Clear all captured errors">
+          <Icon name="trash" :size="12" />
         </button>
       </div>
     </div>
 
     <div v-if="errors.length === 0 && !paused" class="errors-empty">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+      <Icon name="check" :size="16" />
       No errors captured
     </div>
     <div v-else-if="errors.length === 0 && paused" class="errors-empty paused-msg">
@@ -107,12 +108,12 @@ function onCreateTask(entry: ErrorEntry) {
       <span v-if="warnCount" class="summary-warns">{{ warnCount }} warning{{ warnCount === 1 ? '' : 's' }}</span>
     </div>
 
-    <div v-for="entry in filteredErrors" :key="entry.id" class="error-card" :class="entry.level" @click="detailEntry = entry">
+    <div v-for="entry in filteredErrors" :key="entry.id" data-testid="error-row" :data-error-id="entry.id" :data-error-level="entry.level" class="error-card" :class="entry.level" @click="detailEntry = entry">
       <span class="error-level" :class="entry.level">{{ entry.level === 'unhandled' ? 'uncaught' : entry.level }}</span>
       <span class="error-msg">{{ truncate(entry.message, 80) }}</span>
       <span class="error-count" v-if="entry.count > 1">{{ entry.count }}x</span>
       <span v-if="taskErrorIds.has(entry.id)" class="error-tasked-badge">tasked</span>
-      <svg class="error-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      <Icon class="error-chevron" name="chevron-right" :size="10" :stroke-width="2.5" />
     </div>
 
     <!-- Detail Drawer -->

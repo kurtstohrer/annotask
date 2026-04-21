@@ -17,6 +17,13 @@ import type {
 export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   const currentRoute = ref('/')
   const bridgeReady = ref(false)
+  /**
+   * Live color scheme of the iframe. Seeded on bridge ready via an on-demand
+   * request, then kept in sync by unsolicited 'color-scheme:changed' pushes
+   * from the plugin (MutationObserver on html/body + prefers-color-scheme).
+   * Drives the Theme page's auto-selected variant.
+   */
+  const colorScheme = ref<ColorSchemeResult | null>(null)
 
   /** Best-effort: derive the iframe's origin so the bridge doesn't have to post to '*'.
    *  For same-origin iframes (the common case) we can read contentWindow.location; if
@@ -44,11 +51,20 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
     bridge.onBridgeReady(() => {
       bridgeReady.value = true
+      // Seed the color scheme once the bridge is ready. Subsequent changes
+      // arrive via the 'color-scheme:changed' push handler below.
+      getColorScheme().then(result => { if (result) colorScheme.value = result })
     })
 
     // Route tracking via bridge events
     bridge.on('route:changed', (payload: { path: string }) => {
       currentRoute.value = payload.path
+    })
+
+    // Live color-scheme tracking — plugin pushes this whenever the iframe
+    // flips light/dark or swaps a named theme.
+    bridge.on('color-scheme:changed', (payload: ColorSchemeResult) => {
+      colorScheme.value = payload
     })
 
     // bridge:ready may already be queued from bridge-client script execution
@@ -167,10 +183,20 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
    * Ask the iframe for the distinct set of `data-annotask-file` values
    * currently rendered — the source files contributing to this route.
    */
-  async function listRenderedFiles(): Promise<{ files: string[] }> {
+  async function listRenderedFiles(): Promise<{ files: Array<{ file: string; mfe?: string }> }> {
     try {
-      const result = await bridge.request<{ files: string[] }>('list:rendered-files', {})
-      return { files: result.files || [] }
+      // Bridge now emits `[{ file, mfe? }]`. Older bridges may still return
+      // bare strings; normalize to the object shape either way.
+      const result = await bridge.request<{ files: Array<{ file: string; mfe?: string } | string> }>(
+        'list:rendered-files', {},
+      )
+      const list = Array.isArray(result.files) ? result.files : []
+      const norm: Array<{ file: string; mfe?: string }> = []
+      for (const item of list) {
+        if (typeof item === 'string') norm.push({ file: item })
+        else if (item && typeof item.file === 'string') norm.push({ file: item.file, ...(item.mfe ? { mfe: item.mfe } : {}) })
+      }
+      return { files: norm }
     } catch { return { files: [] } }
   }
 
@@ -198,12 +224,12 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
    * `(file, line)`; line=0 means "every element in this file" (file-level
    * fallback). Drives the Data view overlay once binding analysis lands.
    */
-  async function getLocationElementRects(locations: Array<{ file: string; line: number; ref?: string; tag?: string }>): Promise<{ matches: Array<{ ref?: string; file: string; line: number; eid: string; rect: BridgeRect }>; truncated: boolean }> {
+  async function getLocationElementRects(locations: Array<{ file: string; line: number; ref?: string; tag?: string; mfe?: string; module?: string }>): Promise<{ matches: Array<{ ref?: string; file: string; line: number; eid: string; rect: BridgeRect }>; truncated: boolean }> {
     if (locations.length === 0) return { matches: [], truncated: false }
     try {
       const result = await bridge.request<{ matches: Array<{ ref?: string; file: string; line: number; eid: string; rect: BridgeRect }>; truncated?: boolean }>(
         'resolve:by-locations',
-        { locations: locations.map(l => ({ file: l.file, line: l.line, ref: l.ref, tag: l.tag })) },
+        { locations: locations.map(l => ({ file: l.file, line: l.line, ref: l.ref, tag: l.tag, mfe: l.mfe, module: l.module })) },
       )
       const matches = (result.matches || []).map(m => ({
         ref: m.ref,
@@ -324,6 +350,53 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     } catch { return null }
   }
 
+  /**
+   * Drive the iframe into a specific theme variant by applying its selector
+   * (data-attribute or class) and clearing markers for sibling variants. Used
+   * by the Design Tokens page so clicking a variant tab actually switches the
+   * app to that theme instead of only pinning the edit target.
+   *
+   * Implementation: the iframe is same-origin in the normal dev-server setup,
+   * so we poke its DOM directly rather than routing through the bridge. This
+   * also lets the feature work against apps that haven't yet reloaded the
+   * plugin bridge. The plugin's own MutationObserver will emit a
+   * 'color-scheme:changed' push which seeds `colorScheme` — but we also set it
+   * optimistically so the UI updates without a round-trip.
+   */
+  type SelectorLike = {
+    kind: 'attribute' | 'class' | 'media' | 'default'
+    host?: 'html' | 'body'
+    name?: string
+    value?: string
+  }
+  async function activateColorScheme(
+    selector: SelectorLike | null | undefined,
+    all: SelectorLike[] = []
+  ): Promise<void> {
+    const iframe = iframeRef.value
+    const doc = iframe?.contentDocument
+    if (!doc) return
+    const hostEl = (h?: 'html' | 'body') => (h === 'body' ? doc.body : doc.documentElement)
+    for (const s of all) {
+      if (!s || s === selector) continue
+      const el = hostEl(s.host)
+      if (!el) continue
+      if (s.kind === 'attribute' && s.name) el.removeAttribute(s.name)
+      else if (s.kind === 'class' && s.name) el.classList.remove(s.name)
+    }
+    if (selector) {
+      const tel = hostEl(selector.host)
+      if (tel) {
+        if (selector.kind === 'attribute' && selector.name) tel.setAttribute(selector.name, selector.value ?? '')
+        else if (selector.kind === 'class' && selector.name) tel.classList.add(selector.name)
+      }
+    }
+    try {
+      const fresh = await bridge.request<ColorSchemeResult>('color-scheme:get')
+      if (fresh) colorScheme.value = fresh
+    } catch { /* fall back to MutationObserver push */ }
+  }
+
   async function insertPlaceholder(
     targetEid: string, position: string, tag: string,
     opts?: { classes?: string; textContent?: string; category?: string; library?: string; defaultProps?: Record<string, unknown> }
@@ -356,12 +429,6 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   /** @deprecated Use insertComponent */
   const insertVueComponent = insertComponent
-
-  async function getElementContext(eid: string): Promise<{ ancestors: any[]; subtree: any } | null> {
-    try {
-      return await bridge.request('resolve:element-context', { eid })
-    } catch { return null }
-  }
 
   async function getComponentChain(eid: string): Promise<ResolveComponentChainResult | null> {
     try {
@@ -481,7 +548,6 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     undoClass,
     // Classification
     classifyElement,
-    getElementContext,
     getComponentChain,
     captureScreenshot,
     scanA11y,
@@ -507,6 +573,8 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     getCurrentRoute,
     // Color scheme
     getColorScheme,
+    activateColorScheme,
+    colorScheme,
     // Insert/Move
     insertPlaceholder,
     removePlaceholder,

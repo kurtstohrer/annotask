@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "annotask": {
+      "command": "npx",
+      "args": [
+        "annotask",
+        "mcp"
+      ]
+    }
+  }
+}

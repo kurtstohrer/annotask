@@ -6,11 +6,12 @@
       </svg>
 
       <!-- Top-level view toggle (Annotate / Design / Audit) -->
-      <div class="view-toggle">
+      <div class="view-toggle" data-testid="shell-view-toggle">
         <button v-for="view in viewItems" :key="view.id"
+          :data-testid="view.testid"
           :class="['toggle-btn', { active: shellView === view.id }]"
           @click="$emit('update:shellView', view.id)" :title="view.title">
-          <span v-html="view.icon"></span>
+          <Icon :name="view.icon" :size="12" />
           {{ view.label }}
           <span v-if="view.badge && view.badgeCount" class="toggle-badge">{{ view.badgeCount }}</span>
         </button>
@@ -23,36 +24,27 @@
         <ArrowColorPicker v-if="interactionMode === 'highlight'" :modelValue="highlightColor" @update:modelValue="$emit('update:highlightColor', $event)" />
       </template>
 
-      <!-- Design view mode/layout toggles (tokens + inspector share these; components uses interact only) -->
-      <template v-else-if="shellView === 'design' && designSection !== 'components'">
+      <!-- Design view mode/layout toggles -->
+      <template v-else-if="shellView === 'design'">
         <div class="mode-toolbar">
           <button :class="['mode-btn mode-interact', { active: interactionMode === 'interact' }]"
             @click="$emit('update:interactionMode', 'interact')" title="Interact (I)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M4 4l7.07 17 2.51-7.39L21 11.07z" />
-            </svg>
+            <Icon name="mouse-pointer" :stroke-width="2.5" />
           </button>
           <button :class="['mode-btn mode-select', { active: interactionMode === 'select' }]"
-            @click="$emit('update:interactionMode', 'select')" title="Select (V)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M7 11V4a2 2 0 1 1 4 0v5" />
-              <path d="M11 9a2 2 0 1 1 4 0v2" />
-              <path d="M15 11a2 2 0 1 1 4 0v4a8 8 0 0 1-8 8 7 7 0 0 1-5-2l-3.3-3.3a2 2 0 0 1 2.8-2.8L7 16" />
-            </svg>
+            @click="onInspectClick" title="Inspect (V)">
+            <Icon name="search" />
           </button>
         </div>
-        <button :class="['tool-btn', { active: layoutOverlayActive }]" @click="$emit('toggle-layout-overlay')" title="Show Layout (L)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2" />
-            <line x1="3" y1="9" x2="21" y2="9" />
-            <line x1="9" y1="3" x2="9" y2="21" />
-          </svg>
+        <button v-if="designSection !== 'components'"
+          :class="['tool-btn', { active: layoutOverlayActive }]" @click="$emit('toggle-layout-overlay')" title="Show Layout (L)">
+          <Icon name="layout-dashboard" />
         </button>
       </template>
 
       <!-- Audit > A11y scan button -->
       <template v-else-if="shellView === 'develop' && developSection === 'a11y'">
-        <button class="scan-btn" :disabled="a11yLoading" @click="$emit('scan-a11y')"
+        <button data-testid="btn-scan-a11y" class="scan-btn" :disabled="a11yLoading" @click="$emit('scan-a11y')"
           title="Run axe-core WCAG accessibility scan on the page">
           {{ a11yLoading ? 'Scanning...' : 'Scan Page' }}
         </button>
@@ -60,13 +52,13 @@
 
       <!-- Audit > Performance record/scan -->
       <template v-else-if="shellView === 'develop' && developSection === 'perf'">
-        <button v-if="!perfRecording" class="rec-btn" @click="$emit('start-perf-recording')" title="Record a performance session">
+        <button v-if="!perfRecording" data-testid="btn-record-perf" class="rec-btn" @click="$emit('start-perf-recording')" title="Record a performance session">
           <span class="rec-dot"></span> Record
         </button>
-        <button v-else class="rec-btn recording" @click="$emit('stop-perf-recording')" title="Stop recording">
+        <button v-else data-testid="btn-stop-perf" class="rec-btn recording" @click="$emit('stop-perf-recording')" title="Stop recording">
           <span class="rec-dot active"></span> Stop
         </button>
-        <button class="scan-btn" :disabled="perfScanLoading || perfRecording" @click="$emit('run-perf-scan')"
+        <button data-testid="btn-scan-perf" class="scan-btn" :disabled="perfScanLoading || perfRecording" @click="$emit('run-perf-scan')"
           title="Scan page performance">
           {{ perfScanLoading ? 'Scanning...' : 'Scan' }}
         </button>
@@ -76,7 +68,7 @@
     <!-- Toolbar center (viewport + route input) -->
     <div class="toolbar-center">
       <ViewportSelector />
-      <input class="route-input" :value="currentRoute" title="Current route — edit to navigate"
+      <input data-testid="input-route" class="route-input" :value="currentRoute" title="Current route — edit to navigate"
         @keydown.enter="$emit('navigate-iframe', ($event.target as HTMLInputElement).value)"
         @blur="$emit('navigate-iframe', ($event.target as HTMLInputElement).value)" />
     </div>
@@ -86,12 +78,9 @@
       <!-- Editor panel toggles -->
       <template v-if="shellView === 'editor'">
         <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]"
+          <button data-testid="btn-tasks-panel" :class="['toggle-btn', { active: activePanel === 'tasks' }]"
             @click="$emit('toggle-tasks-panel')" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M9 11l3 3L22 4" />
-              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-            </svg>
+            <Icon name="clipboard-check" :size="12" />
             Tasks
             <span v-if="routeTasksCount" class="toggle-badge">{{ routeTasksCount }}</span>
           </button>
@@ -101,40 +90,24 @@
       <!-- Design sub-section: Tokens / Inspector / Components + Tasks -->
       <template v-else-if="shellView === 'design'">
         <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: designSection === 'tokens' && activePanel !== 'tasks' }]"
+          <button data-testid="design-tokens" :class="['toggle-btn', { active: designSection === 'tokens' && activePanel !== 'tasks' }]"
             @click="$emit('switch-design-section', 'tokens')" title="Edit design tokens">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" />
-              <line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" />
-              <line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" />
-              <line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" />
-              <line x1="17" y1="16" x2="23" y2="16" />
-            </svg>
+            <Icon name="sliders-horizontal" :size="12" />
             Tokens
           </button>
-          <button :class="['toggle-btn', { active: designSection === 'inspector' && activePanel !== 'tasks' }]"
+          <button data-testid="design-inspector" :class="['toggle-btn', { active: designSection === 'inspector' && activePanel !== 'tasks' }]"
             @click="$emit('switch-design-section', 'inspector')" title="Inspect element styles">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
+            <Icon name="search" :size="12" />
             Inspector
           </button>
-          <button :class="['toggle-btn', { active: designSection === 'components' && activePanel !== 'tasks' }]"
+          <button data-testid="design-components" :class="['toggle-btn', { active: designSection === 'components' && activePanel !== 'tasks' }]"
             @click="$emit('switch-design-section', 'components')" title="Browse project components">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="7" height="7" rx="1" />
-              <rect x="14" y="3" width="7" height="7" rx="1" />
-              <rect x="3" y="14" width="7" height="7" rx="1" />
-              <rect x="14" y="14" width="7" height="7" rx="1" />
-            </svg>
+            <Icon name="grid-2x2" :size="12" />
             Components
           </button>
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]"
+          <button data-testid="btn-tasks-panel" :class="['toggle-btn', { active: activePanel === 'tasks' }]"
             @click="$emit('toggle-tasks-panel')" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M9 11l3 3L22 4" />
-              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-            </svg>
+            <Icon name="clipboard-check" :size="12" />
             Tasks
             <span v-if="routeTasksCount" class="toggle-badge">{{ routeTasksCount }}</span>
           </button>
@@ -144,58 +117,37 @@
       <!-- Audit sub-section: Accessibility / Data / Libraries / Performance / Errors + Tasks -->
       <template v-else-if="shellView === 'develop'">
         <div class="panel-toggle">
-          <button :class="['toggle-btn', { active: developSection === 'a11y' && activePanel !== 'tasks' }]"
+          <button data-testid="audit-a11y" :class="['toggle-btn', { active: developSection === 'a11y' && activePanel !== 'tasks' }]"
             @click="$emit('switch-develop-section', 'a11y')" title="Run accessibility checks (axe-core WCAG)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <circle cx="12" cy="4.5" r="1.5" fill="currentColor" stroke="none" />
-              <path d="M7 9h10" />
-              <path d="M12 9v9" />
-              <path d="M9.5 18l2.5-4 2.5 4" />
-            </svg>
+            <Icon name="accessibility" :size="12" />
             Accessibility
             <span v-if="a11yViolationsCount" class="toggle-badge">{{ a11yViolationsCount }}</span>
           </button>
-          <button :class="['toggle-btn', { active: developSection === 'data' && activePanel !== 'tasks' }]"
+          <button data-testid="audit-data" :class="['toggle-btn', { active: developSection === 'data' && activePanel !== 'tasks' }]"
             @click="$emit('switch-develop-section', 'data')" title="Browse data sources and API schemas">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <ellipse cx="12" cy="5" rx="9" ry="3" />
-              <path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
-              <path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6" />
-            </svg>
+            <Icon name="database" :size="12" />
             Data
           </button>
-          <button :class="['toggle-btn', { active: developSection === 'libraries' && activePanel !== 'tasks' }]"
+          <button data-testid="audit-libraries" :class="['toggle-btn', { active: developSection === 'libraries' && activePanel !== 'tasks' }]"
             @click="$emit('switch-develop-section', 'libraries')" title="Browse detected data-fetching and state libraries">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-            </svg>
+            <Icon name="library" :size="12" />
             Libraries
           </button>
-          <button :class="['toggle-btn', { active: developSection === 'perf' && activePanel !== 'tasks' }]"
+          <button data-testid="audit-perf" :class="['toggle-btn', { active: developSection === 'perf' && activePanel !== 'tasks' }]"
             @click="$emit('switch-develop-section', 'perf')" title="Web Vitals and page performance">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-            </svg>
+            <Icon name="activity" :size="12" />
             Performance
             <span v-if="perfFindingsCount" class="toggle-badge">{{ perfFindingsCount }}</span>
           </button>
-          <button :class="['toggle-btn', { active: developSection === 'errors' && activePanel !== 'tasks' }]"
+          <button data-testid="audit-errors" :class="['toggle-btn', { active: developSection === 'errors' && activePanel !== 'tasks' }]"
             @click="$emit('switch-develop-section', 'errors')" title="Console errors and warnings">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-              <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
+            <Icon name="triangle-alert" :size="12" />
             Errors
             <span v-if="totalErrorsCount" class="toggle-badge error-badge">{{ totalErrorsCount }}</span>
           </button>
-          <button :class="['toggle-btn', { active: activePanel === 'tasks' }]"
+          <button data-testid="btn-tasks-panel" :class="['toggle-btn', { active: activePanel === 'tasks' }]"
             @click="$emit('toggle-tasks-panel')" title="View and manage design tasks for your AI agent (T)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M9 11l3 3L22 4" />
-              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-            </svg>
+            <Icon name="clipboard-check" :size="12" />
             Tasks
             <span v-if="routeTasksCount" class="toggle-badge">{{ routeTasksCount }}</span>
           </button>
@@ -219,6 +171,7 @@ import ModeToolbar from './ModeToolbar.vue'
 import ArrowColorPicker from './ArrowColorPicker.vue'
 import ViewportSelector from './ViewportSelector.vue'
 import ToolbarButtonGroup from './ToolbarButtonGroup.vue'
+import Icon, { type IconName } from './Icon.vue'
 import type { InteractionMode } from '../composables/useInteractionMode'
 import type { ShellView, DesignSection, DevelopSection } from '../composables/useShellNavigation'
 
@@ -245,7 +198,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
-defineEmits<{
+const emit = defineEmits<{
   (e: 'update:shellView', value: ShellView): void
   (e: 'update:interactionMode', value: InteractionMode): void
   (e: 'update:arrowColor', value: string): void
@@ -264,37 +217,48 @@ defineEmits<{
   (e: 'toggle-shortcuts'): void
 }>()
 
+function onInspectClick() {
+  emit('update:interactionMode', 'select')
+  if (props.shellView === 'design' && props.designSection !== 'inspector') {
+    emit('switch-design-section', 'inspector')
+  }
+}
+
 const totalErrorsCount = computed(() => props.errorCount + props.warnCount)
 
 const viewItems = computed<Array<{
   id: ShellView
   label: string
   title: string
-  icon: string
+  icon: IconName
   badge: boolean
   badgeCount?: number
+  testid: string
 }>>(() => [
   {
     id: 'editor',
     label: 'Annotate',
     title: 'Annotate and inspect your UI',
-    icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+    icon: 'pencil',
     badge: false,
+    testid: 'tab-annotate',
   },
   {
     id: 'design',
     label: 'Design',
     title: 'Design tokens, element inspector, and component library',
-    icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12a10 10 0 0 0 .832 4"/></svg>',
+    icon: 'palette',
     badge: false,
+    testid: 'tab-design',
   },
   {
     id: 'develop',
     label: 'Audit',
     title: 'Data, performance, errors, and accessibility',
-    icon: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+    icon: 'code',
     badge: true,
     badgeCount: props.perfFindingsCount + props.errorCount + props.warnCount + props.a11yViolationsCount,
+    testid: 'tab-audit',
   },
 ])
 </script>

@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "annotask": {
-      "type": "http",
-      "url": "http://localhost:5174/__annotask/mcp"
-    }
-  }
-}

@@ -14,13 +14,21 @@ A short checklist. Reviewers should skim this and block PRs that violate it with
 - [ ] **Pin what you vendor.** Anything copied into `dist/vendor/` has an exact-version pin in `package.json` and a guard in `scripts/copy-vendor.mjs`.
 - [ ] **Bump + changelog in the same commit** as the user-visible change. CI (or reviewer) verifies the top `CHANGELOG.md` heading matches the new `package.json` version.
 
-## Size budgets (soft caps)
+## Size Budgets (Soft Caps)
 
 Files over budget either ship with an extraction plan in the PR description or get split in the same PR.
 
+Current notable overages in the repo:
+
+- `src/shell/App.vue` is about 1037 lines
+- `src/shell/components/ThemePage.vue` is about 1066 lines
+- `src/shell/components/TaskDetailModal.vue` is about 778 lines
+
+Target budgets:
+
 | File / type | Budget |
 |---|---|
-| `src/shell/App.vue` | ≤ 800 lines (currently over — trending down) |
+| `src/shell/App.vue` | ≤ 800 lines |
 | Any Vue component | ≤ 500 lines |
 | Any composable | ≤ 200 lines |
 

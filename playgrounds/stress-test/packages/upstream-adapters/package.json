@@ -1,0 +1,13 @@
+{
+  "name": "@annotask/stress-upstream-adapters",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@annotask/stress-snapshots": "workspace:*"
+  }
+}

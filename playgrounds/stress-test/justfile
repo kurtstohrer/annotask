@@ -1,0 +1,209 @@
+# Annotask Stress Lab — local dev orchestration.
+#
+# Usage:
+#   cd playgrounds/stress-test && just <recipe>
+#   or: just -f playgrounds/stress-test/justfile <recipe>
+#
+# Run `just list` for the full recipe list.
+
+# Repo root, computed from this justfile's own location. Every recipe cd's
+# here before invoking pnpm so workspace-filter scripts resolve correctly.
+ROOT := justfile_directory() + "/../.."
+
+# Default recipe — show available commands.
+default:
+    @just --list --unsorted
+
+# Start native services + host + every MFE + Java (via docker compose).
+# Ctrl-C tears everything down. Skips Java silently when docker isn't on
+# the PATH — the rest of the stack still comes up.
+up:
+    #!/usr/bin/env bash
+    set -e
+    cd {{ROOT}}
+    COMPOSE_FILE=playgrounds/stress-test/docker-compose.yml
+    JAVA_UP=0
+    if command -v docker >/dev/null 2>&1; then
+        if docker info >/dev/null 2>&1; then
+            echo "[stress-lab] starting java-api via docker compose (detached)..."
+            docker compose -f "$COMPOSE_FILE" up -d --build java-api \
+                >/tmp/stress-java.log 2>&1 && JAVA_UP=1 \
+                || echo "[stress-lab] WARN: docker compose failed — see /tmp/stress-java.log"
+        else
+            echo "[stress-lab] docker present but daemon unreachable — skipping Java"
+        fi
+    else
+        echo "[stress-lab] docker not installed — skipping Java (install docker to enable :4310)"
+    fi
+    cleanup() {
+        jobs -p | xargs -r kill 2>/dev/null || true
+        if [ "$JAVA_UP" = "1" ]; then
+            echo "[stress-lab] stopping java-api..."
+            docker compose -f "$COMPOSE_FILE" stop java-api >/dev/null 2>&1 || true
+        fi
+    }
+    trap cleanup EXIT INT TERM
+    echo "[stress-lab] starting native services..."
+    pnpm dev:stress-fastapi   >/tmp/stress-fastapi.log   2>&1 &
+    pnpm dev:stress-node-api  >/tmp/stress-node-api.log  2>&1 &
+    pnpm dev:stress-go-api    >/tmp/stress-go-api.log    2>&1 &
+    pnpm dev:stress-rust-api  >/tmp/stress-rust-api.log  2>&1 &
+    sleep 1
+    echo "[stress-lab] starting frontends..."
+    pnpm dev:stress-host                 >/tmp/stress-host.log    2>&1 &
+    pnpm dev:stress-react-sidebar        >/tmp/stress-sidebar.log 2>&1 &
+    pnpm dev:stress-vue-data-lab         >/tmp/stress-vue.log     2>&1 &
+    pnpm dev:stress-react-workflows      >/tmp/stress-react.log   2>&1 &
+    pnpm dev:stress-svelte-streaming     >/tmp/stress-svelte.log  2>&1 &
+    pnpm dev:stress-solid-component-lab  >/tmp/stress-solid.log   2>&1 &
+    pnpm dev:stress-htmx-partials        >/tmp/stress-htmx.log    2>&1 &
+    sleep 3
+    JAVA_STATUS="http://localhost:4310"
+    [ "$JAVA_UP" = "0" ] && JAVA_STATUS="(docker unavailable)"
+    echo
+    echo "  Host        http://localhost:4200"
+    echo "  Sidebar     http://localhost:4250"
+    echo "  Vue         http://localhost:4220   FastAPI  http://localhost:4320"
+    echo "  React       http://localhost:4210   Java     $JAVA_STATUS"
+    echo "  Svelte      http://localhost:4230   Go       http://localhost:4330"
+    echo "  Solid       http://localhost:4240   Node     http://localhost:4340"
+    echo "  htmx        http://localhost:4260   Rust     http://localhost:4360"
+    echo
+    echo "  Logs: /tmp/stress-*.log (+ /tmp/stress-java.log)"
+    echo "  Stop: Ctrl-C (or just down)"
+    wait
+
+# Kill anything listening on stress-test ports. Also stops the Java docker
+# container started by `just up`.
+down:
+    #!/usr/bin/env bash
+    for p in 4200 4210 4220 4230 4240 4250 4260 4320 4330 4340 4360; do
+        pid=$(lsof -ti:$p 2>/dev/null || true)
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+            echo "[stress-lab] stopped port $p (pid $pid)"
+        fi
+    done
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        COMPOSE_FILE={{ROOT}}/playgrounds/stress-test/docker-compose.yml
+        if docker compose -f "$COMPOSE_FILE" ps --services --filter status=running 2>/dev/null | grep -q java-api; then
+            echo "[stress-lab] stopping java-api (docker)..."
+            docker compose -f "$COMPOSE_FILE" stop java-api >/dev/null 2>&1 || true
+        fi
+    fi
+
+# Tail all dev-server logs written by `just up`.
+logs:
+    tail -f /tmp/stress-*.log
+
+# ── Host ────────────────────────────────────────────────
+
+# Host shell (single-spa root) — http://localhost:4200
+host:
+    cd {{ROOT}} && pnpm dev:stress-host
+
+# ── MFEs ────────────────────────────────────────────────
+
+# React sidebar MFE — :4250 (persistent shell chrome for every route)
+sidebar:
+    cd {{ROOT}} && pnpm dev:stress-react-sidebar
+
+# Vue data-lab MFE — :4220 (backed by FastAPI :4320)
+vue:
+    cd {{ROOT}} && pnpm dev:stress-vue-data-lab
+
+# React workflows MFE — :4210 (backed by Java :4310)
+react:
+    cd {{ROOT}} && pnpm dev:stress-react-workflows
+
+# Svelte streaming MFE — :4230 (backed by Go :4330)
+svelte:
+    cd {{ROOT}} && pnpm dev:stress-svelte-streaming
+
+# Solid component-lab MFE — :4240 (backed by Node :4340)
+solid:
+    cd {{ROOT}} && pnpm dev:stress-solid-component-lab
+
+# htmx partials MFE — :4260 (backed by Rust :4360)
+htmx:
+    cd {{ROOT}} && pnpm dev:stress-htmx-partials
+
+# ── Services (native) ───────────────────────────────────
+
+# FastAPI — :4320
+fastapi:
+    cd {{ROOT}} && pnpm dev:stress-fastapi
+
+# Node — :4340
+node:
+    cd {{ROOT}} && pnpm dev:stress-node-api
+
+# Go — :4330
+go:
+    cd {{ROOT}} && pnpm dev:stress-go-api
+
+# Rust — :4360
+rust:
+    cd {{ROOT}} && pnpm dev:stress-rust-api
+
+# ── Services (docker-only) ──────────────────────────────
+
+# Java Spring Boot — :4310. First build ~3–5 min.
+java:
+    cd {{ROOT}} && docker compose -f playgrounds/stress-test/docker-compose.yml up --build java-api
+
+# ── Docker compose (full stack) ─────────────────────────
+
+# Build + start every compose-wired service (fastapi, node, go, rust, java).
+compose-up:
+    cd {{ROOT}} && pnpm stress-test:up
+
+# Stop the compose stack.
+compose-down:
+    cd {{ROOT}} && pnpm stress-test:down
+
+# ── annotask init ───────────────────────────────────────
+
+# Print the project roots where /annotask-init should be run in Claude Code (per-MFE design specs).
+init-list:
+    #!/usr/bin/env bash
+    HERE={{justfile_directory()}}
+    echo "Run /annotask-init in each of these stress-lab roots via Claude Code:"
+    echo
+    echo "  Host:"
+    echo "    cd $HERE/apps/host-single-spa"
+    echo
+    echo "  MFEs:"
+    for dir in "$HERE"/apps/mfe-*; do
+        echo "    cd $dir"
+    done
+    echo
+    echo "Services (Java, Go, Node, Rust, FastAPI) don't need init —"
+    echo "annotask-init targets JS framework projects only."
+    echo
+    echo "/annotask-init is a Claude Code slash command, not a CLI — each MFE"
+    echo "must have its dev server running first so the skill can read design"
+    echo "tokens, component catalogue, and OpenAPI schemas live."
+
+# Install .claude/skills/ + editor MCP config in host + every MFE (idempotent).
+init-skills:
+    #!/usr/bin/env bash
+    set -e
+    HERE={{justfile_directory()}}
+    CLI={{ROOT}}/dist/cli.js
+    for dir in "$HERE"/apps/host-single-spa "$HERE"/apps/mfe-*; do
+        echo "→ $dir"
+        (cd "$dir" && node "$CLI" init-skills && node "$CLI" init-mcp --editor=claude)
+    done
+
+# ── Tests ───────────────────────────────────────────────
+
+# Run the stress-lab Playwright suite (boots every dev server, runs specs, tears down).
+test:
+    cd {{ROOT}} && pnpm test:e2e:stress
+
+# ── Meta ────────────────────────────────────────────────
+
+# List recipes
+list:
+    @just --list --unsorted

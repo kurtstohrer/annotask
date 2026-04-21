@@ -2,10 +2,12 @@
 import ThemePage from './ThemePage.vue'
 import ElementStyleEditor from './ElementStyleEditor.vue'
 import AccessibilitySection from './AccessibilitySection.vue'
+import Icon from './Icon.vue'
 import type { SelectionData } from '../composables/useSelectionModel'
 import type { ElementRole } from '../composables/useElementClassification'
 import type { ChangeRecord } from '../composables/useStyleEditor'
 import type { ColorSchemeInfo } from '../../schema'
+import type { ColorSchemeResult } from '../../shared/bridge-types'
 import type { useIframeManager } from '../composables/useIframeManager'
 
 defineProps<{
@@ -13,6 +15,7 @@ defineProps<{
   iframeRef: HTMLIFrameElement | null
   iframe: ReturnType<typeof useIframeManager>
   getColorScheme: () => Promise<ColorSchemeInfo | null>
+  colorScheme: ColorSchemeResult | null
   primarySelection: SelectionData | null
   selectionSummary: string | null
   selectedElementRole: ElementRole | null
@@ -36,7 +39,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="design-panel">
-    <ThemePage v-if="section === 'tokens'" :iframeRef="iframeRef" :getColorScheme="getColorScheme" />
+    <ThemePage v-if="section === 'tokens'" :iframeRef="iframeRef" :getColorScheme="getColorScheme" :colorScheme="colorScheme" :activateColorScheme="iframe.activateColorScheme" />
     <template v-else-if="section === 'inspector' && primarySelection">
       <ElementStyleEditor
         :primarySelection="primarySelection"
@@ -58,7 +61,7 @@ const emit = defineEmits<{
       <AccessibilitySection :iframe="iframe" :eid="primarySelection.eid" />
     </template>
     <div v-else class="empty-element">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M4 4l7.07 17 2.51-7.39L21 11.07z"/></svg>
+      <Icon name="mouse-pointer" :size="32" :stroke-width="1.5" style="opacity: 0.3" />
       <p>Click an element to edit its styles</p>
     </div>
   </div>

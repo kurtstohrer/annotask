@@ -4,6 +4,7 @@ import type { PerfScanResult, PerfRecording, WebVitalMetric } from '../../shared
 import type { PerfFinding, TimelineAction, PackageGroup } from '../composables/usePerfMonitor'
 import PerfFindingDetail from './PerfFindingDetail.vue'
 import PerfResourceTables from './PerfResourceTables.vue'
+import Icon from './Icon.vue'
 
 const props = defineProps<{
   recording: boolean
@@ -113,11 +114,11 @@ function onCreateTaskFromDetail() {
 
     <div v-if="findings.length > 0 && !recording" class="findings-section">
       <span class="section-label">Findings ({{ findings.length }})</span>
-      <div v-for="f in findings" :key="f.findingId" class="finding-card" :class="'severity-' + f.severity" @click="detailFinding = f">
+      <div v-for="f in findings" :key="f.findingId" data-testid="perf-finding" :data-finding-id="f.findingId" :data-severity="f.severity" class="finding-card" :class="'severity-' + f.severity" @click="detailFinding = f">
         <span class="finding-severity" :class="'sev-' + f.severity">{{ f.severity === 'needs-improvement' ? 'warn' : f.severity }}</span>
         <span class="finding-title">{{ f.title }}</span>
         <span v-if="taskFindings.has(f.findingId)" class="finding-tasked-badge">tasked</span>
-        <svg class="finding-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        <Icon class="finding-chevron" name="chevron-right" :size="10" :stroke-width="2.5" />
       </div>
     </div>
 

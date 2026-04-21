@@ -26,8 +26,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <div class="confirm-dialog" @click.stop>
       <p class="confirm-message">{{ message }}</p>
       <div class="confirm-actions">
-        <button class="confirm-cancel" @click="emit('cancel')">{{ cancelLabel || 'Cancel' }}</button>
-        <button class="confirm-ok" @click="emit('confirm')">{{ confirmLabel || 'Delete' }}</button>
+        <button data-testid="confirm-cancel" class="confirm-cancel" @click="emit('cancel')">{{ cancelLabel || 'Cancel' }}</button>
+        <button data-testid="confirm-delete" class="confirm-ok" @click="emit('confirm')">{{ confirmLabel || 'Delete' }}</button>
       </div>
     </div>
   </div>

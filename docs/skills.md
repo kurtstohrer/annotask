@@ -1,57 +1,92 @@
 # Agent Skills
 
-Annotask ships two bundled skills that teach an agent how to scan the project and how to apply queued tasks.
+Annotask ships two bundled skills:
 
-## Overview
+- `/annotask-init`
+- `/annotask-apply`
 
-| Skill | Purpose | Output |
-|-------|---------|--------|
-| `/annotask-init` | Scan the project and build the design spec | `.annotask/design-spec.json` |
-| `/annotask-apply` | Triage actionable tasks and apply them to source code | Task status updates plus code changes |
-
-Install both with:
+Install them with:
 
 ```bash
 annotask init-skills
 ```
 
-Default targets are `.claude/skills/` and `.agents/skills/`. Built-in alternate target: `copilot`.
+The first target gets real files. Additional targets get symlinks back to that primary copy.
 
-## /annotask-init
+## Install Targets
 
-Scans the project to detect:
+Built-in targets:
 
-- framework and version
-- styling approaches
-- colors, typography, spacing, borders, and breakpoints
-- icon libraries
-- component libraries and used components
+- `claude` -> `.claude/skills/`
+- `agents` -> `.agents/skills/`
+- `copilot` -> `.copilot/skills/`
 
-The generated design spec is what powers the shell's Tokens page and gives agents grounded token metadata for `theme_update` tasks.
+Examples:
 
-The run is idempotent. Re-running overwrites the spec with a fresh scan.
+```bash
+annotask init-skills
+annotask init-skills --target=claude,agents,copilot
+annotask init-skills --force
+```
 
-## /annotask-apply
+## `/annotask-init`
 
-Processes the current task queue. The actionable set is:
+Purpose: scan the project and generate `.annotask/design-spec.json`.
+
+Current design-spec shape includes:
+
+- `framework`
+- `themes[]`
+- `defaultTheme`
+- `colors[]`
+- `typography.families[]`
+- `typography.scale[]`
+- `typography.weights[]`
+- `spacing[]`
+- `borders.radius[]`
+- `breakpoints`
+- `icons`
+- `components`
+
+Important current behavior:
+
+- token values are variant-aware through `values: Record<themeId, string>`
+- single-theme apps use a synthesized `default` theme id
+- multi-theme apps can express class-, attribute-, media-, or default-driven variants
+- the output powers Design > Tokens and gives agents grounded token metadata for `theme_update` tasks
+
+## `/annotask-apply`
+
+Purpose: process actionable Annotask tasks and apply them to source code.
+
+The skill prefers MCP when available and falls back to CLI commands with `--mcp` for parity.
+
+Actionable work usually includes:
 
 - `pending`
 - `denied` tasks with reviewer feedback
 - `needs_info` tasks whose questions have been answered
 
-The skill skips unresolved `needs_info` tasks and `blocked` tasks.
+The skill skips unresolved `needs_info` and `blocked` tasks.
 
-### What it does
+### Current Apply Flow
 
-1. Fetch task summaries.
-2. Group tasks by touched files and shared resources so unsafe parallel edits do not collide.
-3. Lock each task with `status: "in_progress"`.
-4. Pull deeper context only when needed: design spec, screenshots, code context, component examples, data context, API schemas, and so on.
-5. Apply the code change.
-6. Mark each completed task `review` with a short `resolution` note.
-7. Re-scan for newly created or denied tasks before finishing.
+1. fetch task summaries
+2. triage tasks by touched files and shared state
+3. lock a task with `status: "in_progress"`
+4. fetch deeper context only when needed
+5. apply the code change
+6. mark the task `review` with a short `resolution`
+7. re-check the queue before finishing
 
-### Task types it is expected to handle
+The current workflow is aware of:
+
+- batched `theme_update` tasks with `context.edits[]`
+- `api_update` tasks created from the Audit data view
+- code-context re-anchoring for retried or drifted tasks
+- component examples and data-source examples as grounding aids
+
+### Task Types The Skill Is Expected To Handle
 
 - `annotation`
 - `section_request`
@@ -62,38 +97,58 @@ The skill skips unresolved `needs_info` tasks and `blocked` tasks.
 - `perf_fix`
 - `api_update`
 
-### Agent surfaces it can use
+## MCP And CLI Parity
 
-The skill prefers MCP when available. The equivalent CLI surface exists for fallback.
+The skill is designed so MCP and CLI fallback return equivalent machine-readable shapes.
 
-Common MCP helpers used by the skill:
+Common MCP helpers:
 
-- `annotask_get_tasks`, `annotask_get_task`, `annotask_update_task`
+- `annotask_get_tasks`
+- `annotask_get_task`
+- `annotask_update_task`
 - `annotask_get_design_spec`
-- `annotask_get_screenshot`, `annotask_get_code_context`
-- `annotask_get_components`, `annotask_get_component_examples`
-- `annotask_get_data_context`, `annotask_get_data_sources`, `annotask_get_data_source_examples`, `annotask_get_data_source_details`
-- `annotask_get_api_schemas`, `annotask_get_api_operation`, `annotask_resolve_endpoint`
+- `annotask_get_screenshot`
+- `annotask_get_code_context`
+- `annotask_get_components`
+- `annotask_get_component_examples`
+- `annotask_get_data_context`
+- `annotask_get_data_sources`
+- `annotask_get_data_source_examples`
+- `annotask_get_data_source_details`
+- `annotask_get_api_schemas`
+- `annotask_get_api_operation`
+- `annotask_resolve_endpoint`
+
+Equivalent CLI commands exist under `annotask ... --mcp`.
 
 ## Lifecycle
 
+Statuses understood by the skills and supported by the server:
+
+- `pending`
+- `in_progress`
+- `applied`
+- `review`
+- `accepted`
+- `denied`
+- `needs_info`
+- `blocked`
+
+Typical reviewer-facing path:
+
 ```text
 pending -> in_progress -> review -> accepted | denied
-                           \-> needs_info
-                           \-> blocked
+                     \-> needs_info
+                     \-> blocked
 ```
 
-- `accepted` removes the task and cleans up its screenshot when present.
-- `denied` preserves reviewer feedback for the next retry.
-- `needs_info` stores an agent question thread on the task.
-- `blocked` records why the task could not be completed.
+`applied` is allowed as an intermediate automation state.
 
-## Skill Locations
+## Where The Skill Files Live
 
-Depending on target selection, `annotask init-skills` writes or links the bundled skill files into one or more of:
+Published skill files live in the package root under:
 
-- `.claude/skills/`
-- `.agents/skills/`
-- `.copilot/skills/`
+- `skills/annotask-init/SKILL.md`
+- `skills/annotask-apply/SKILL.md`
 
-The first target gets real files. Additional targets get symlinks back to that first copy so the skills stay in sync.
+They are copied or symlinked into the consumer project's chosen skill directories by `annotask init-skills`.

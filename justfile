@@ -40,7 +40,7 @@ ensure-api:
         echo "[API] Already running on port 8888"
     else
         echo "[API] Starting Planet Explorer API on port 8888..."
-        cd playgrounds/api && nohup uvicorn main:app --port 8888 > /tmp/annotask-api.log 2>&1 &
+        cd playgrounds/simple/api && nohup uvicorn main:app --port 8888 > /tmp/annotask-api.log 2>&1 &
         for i in {1..10}; do
             if curl -s http://localhost:8888/api/stats > /dev/null 2>&1; then
                 echo "[API] Ready"
@@ -52,7 +52,7 @@ ensure-api:
 
 # Start the shared Planet Explorer API (foreground, with reload)
 api:
-    cd playgrounds/api && uvicorn main:app --reload --port 8888
+    cd playgrounds/simple/api && uvicorn main:app --reload --port 8888
 
 # Start Vue + Vite playground
 vue: ensure-api

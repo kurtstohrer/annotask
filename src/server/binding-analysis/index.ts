@@ -14,6 +14,7 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
+import { resolveWorkspace } from '../workspace.js'
 import type { SourceBindingGraph, BindingSite, PropEdge } from '../../schema.js'
 import type { FrameworkBindingAnalyzer, SeedSymbol, AnalyzeResult } from './types.js'
 import { fallbackAnalyzer } from './fallback.js'
@@ -41,22 +42,39 @@ export function clearBindingCache(): void {
   cache.clear()
 }
 
-export async function resolveBindingGraph(projectRoot: string, sourceName: string): Promise<SourceBindingGraph> {
-  const key = `${projectRoot}::${sourceName}`
+export async function resolveBindingGraph(
+  projectRoot: string,
+  sourceName: string,
+  opts: { hintSymbols?: string[]; scopeFile?: string } = {},
+): Promise<SourceBindingGraph> {
+  const hintKey = opts.hintSymbols?.length ? opts.hintSymbols.slice().sort().join(',') : ''
+  const scopeKey = opts.scopeFile ?? ''
+  const key = `${projectRoot}::${sourceName}::${hintKey}::${scopeKey}`
   const now = Date.now()
   const cached = cache.get(key)
   if (cached && now - cached.at < CACHE_TTL_MS) return cached.graph
 
-  const graph = await buildGraph(projectRoot, sourceName)
+  const graph = await buildGraph(projectRoot, sourceName, opts.hintSymbols ?? [], opts.scopeFile)
   cache.set(key, { at: now, graph })
   return graph
 }
 
-async function buildGraph(projectRoot: string, sourceName: string): Promise<SourceBindingGraph> {
+async function buildGraph(
+  projectRoot: string,
+  sourceName: string,
+  hintSymbols: string[] = [],
+  scopeFile?: string,
+): Promise<SourceBindingGraph> {
+  // Walk every workspace package so the host's binding graph covers hooks /
+  // APIs that only sibling MFEs call. Paths are emitted workspace-relative
+  // so they line up with the rest of the catalog.
+  const ws = await resolveWorkspace(projectRoot)
   const files: string[] = []
-  const srcDir = nodePath.join(projectRoot, 'src')
-  const scanRoot = fs.existsSync(srcDir) ? srcDir : projectRoot
-  await walk(scanRoot, files)
+  for (const pkgDir of ws.packages) {
+    const srcDir = nodePath.join(pkgDir, 'src')
+    const scanRoot = fs.existsSync(srcDir) ? srcDir : pkgDir
+    await walk(scanRoot, files)
+  }
 
   const fileContents = new Map<string, string>()
   for (const fp of files) {
@@ -68,15 +86,22 @@ async function buildGraph(projectRoot: string, sourceName: string): Promise<Sour
   const diagnostics: SourceBindingGraph['diagnostics'] = []
   let partial = false
 
-  const rel = (abs: string) => nodePath.relative(projectRoot, abs).replace(/\\/g, '/')
+  const rel = (abs: string) => nodePath.relative(ws.root, abs).replace(/\\/g, '/')
 
-  // ── Pass 1: direct-use files. Every file that mentions the source name
-  //    gets an analyzer pass seeded with just the source name.
+  // ── Pass 1: direct-use files. When `scopeFile` is set we restrict to
+  //    that file only — inline-fetch entries' hints are short generic names
+  //    (`health`, `workflows`) that would otherwise match unrelated state
+  //    variables in sibling MFEs. Named composables (no scopeFile) still
+  //    walk the whole workspace for the analyzer.
+  const seedSymbols: SeedSymbol[] = hintSymbols.map(n => ({ name: n, source_name: sourceName }))
   const passOneRan = new Set<string>()
   for (const [absPath, content] of fileContents) {
-    if (!content.includes(sourceName)) continue
     const relFile = rel(absPath)
-    const result = await runAnalyzer(relFile, content, sourceName, [], diagnostics)
+    if (scopeFile && relFile !== scopeFile) continue
+    const mentionsSource = content.includes(sourceName)
+    const mentionsHint = hintSymbols.some(h => content.includes(h))
+    if (!mentionsSource && !mentionsHint) continue
+    const result = await runAnalyzer(relFile, content, sourceName, seedSymbols, diagnostics)
     if (!result) continue
     passOneRan.add(relFile)
     integrate(result, sites, edges, diagnostics, relFile)
