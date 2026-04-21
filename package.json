@@ -126,7 +126,7 @@
     "js-yaml": "^4.1.1",
     "jsdom": "^29.0.1",
     "lucide-vue-next": "^1.0.0",
-    "marked": "^17.0.5",
+    "marked": "^18.0.2",
     "prismjs": "^1.30.0",
     "svelte": "^5.0.0",
     "tsup": "^8.0.0",
