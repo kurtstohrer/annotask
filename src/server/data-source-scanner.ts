@@ -506,9 +506,20 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
       baseUrls.set(bm[1], bm[2].replace(/\/+$/, ''))
     }
 
+    // Also collect URL/path string constants so `fetch(LIST_URL, …)` — where
+    // LIST_URL is declared earlier as `const LIST_URL = '/api/items?…'` —
+    // still produces a catalog entry. Without this, any fetch whose URL is
+    // bound to a named constant is silently dropped (issue #29).
+    const urlConstants = new Map<string, string>()
+    const urlConstRe = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?=\s*['"`]((?:https?:\/\/|\/)[^'"`]+)['"`]/g
+    let uc: RegExpExecArray | null
+    while ((uc = urlConstRe.exec(content)) !== null) {
+      urlConstants.set(uc[1], uc[2])
+    }
+
     const seenEndpoints = new Set<string>()
     const pushEndpoint = (args: string, index: number) => {
-      const endpoint = extractEndpointFromArgs(args, baseUrls)
+      const endpoint = extractEndpointFromArgs(args, baseUrls, urlConstants)
       if (!endpoint) return
       if (seenEndpoints.has(endpoint)) return
       seenEndpoints.add(endpoint)
@@ -650,12 +661,14 @@ function collectHintSymbols(content: string, afterIndex: number): string[] {
  *   • full URLs:           fetch('http://host/api/health')
  *   • template literals:   fetch(`${API_BASE}/api/health`)  ← resolves
  *                          when API_BASE is a known file-local const
+ *   • bare identifiers:    fetch(LIST_URL, …)               ← resolves
+ *                          when LIST_URL is a known file-local const
  *
  * Returns the most specific endpoint we can reconstruct (absolute URL when
  * possible, otherwise path). Absolute URLs preserve the host/port so the
  * shell can disambiguate two backends that expose the same path.
  */
-function extractEndpointFromArgs(args: string, baseUrls: Map<string, string>): string | null {
+function extractEndpointFromArgs(args: string, baseUrls: Map<string, string>, urlConstants?: Map<string, string>): string | null {
   // 1. Plain string literal containing a full URL.
   const fullUrlMatch = args.match(/['"](https?:\/\/[^\s'"]+)['"]/)
   if (fullUrlMatch) return fullUrlMatch[1]
@@ -672,7 +685,19 @@ function extractEndpointFromArgs(args: string, baseUrls: Map<string, string>): s
     if (/^\/(?:api|graphql|rpc|v\d)\//.test(suffix)) return suffix
   }
 
-  // 3. Legacy fallback — any string literal with an /api-ish path inside.
+  // 3. Bare identifier as the first positional arg: `fetch(LIST_URL, …)`.
+  //    Resolve against the file-local string-constant table built by the
+  //    caller. Only accepts declarations whose value is a URL or a `/…`
+  //    path so we don't misinterpret unrelated string consts.
+  if (urlConstants && urlConstants.size > 0) {
+    const idMatch = args.match(/^\s*([A-Za-z_$][\w$]*)\s*(?:[,)]|$)/)
+    if (idMatch) {
+      const resolved = urlConstants.get(idMatch[1])
+      if (resolved) return resolved
+    }
+  }
+
+  // 4. Legacy fallback — any string literal with an /api-ish path inside.
   const pathMatch = args.match(/['"`][^'"`]*?(\/(?:api|graphql|rpc|v\d)\/[\w\-/.{}:?=&]*)/)
   if (pathMatch) return pathMatch[1]
   return null

@@ -87,6 +87,35 @@ describe('scanDataSources — proxy-aware resolved_endpoint', () => {
     }
   })
 
+  it('resolves fetch() calls that pass a URL constant instead of a string literal', async () => {
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'annotask-scan-'))
+    try {
+      await fsp.writeFile(path.join(tmp, 'package.json'), JSON.stringify({
+        name: 'root', dependencies: { 'vue-router': '4.0.0' },
+      }))
+      await fsp.mkdir(path.join(tmp, 'src', 'components'), { recursive: true })
+      await fsp.writeFile(path.join(tmp, 'src', 'components', 'ItemList.tsx'), `
+        const LIST_URL = '/api/items?include_relations=true&limit=1000';
+        const DETAIL_URL = 'http://localhost:4320/api/items/42';
+        export function ItemList() {
+          const controller = new AbortController();
+          fetch(LIST_URL, { signal: controller.signal });
+          fetch(DETAIL_URL);
+        }
+      `)
+      clearDataSourceCache()
+      const cat = await scanDataSources(tmp)
+      const listEntry = cat.project_entries.find(e => e.endpoint === '/api/items?include_relations=true&limit=1000')
+      const detailEntry = cat.project_entries.find(e => e.endpoint === 'http://localhost:4320/api/items/42')
+      expect(listEntry).toBeDefined()
+      expect(listEntry!.kind).toBe('fetch')
+      expect(detailEntry).toBeDefined()
+      expect(detailEntry!.kind).toBe('fetch')
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   it('leaves resolved_endpoint undefined when no vite.config is reachable', async () => {
     const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'annotask-scan-'))
     try {
