@@ -6,9 +6,11 @@
  *
  * Detection strategy — regex-driven, same bar as the data-source scanner:
  *   - `<Foo` / `<Foo ` / `<Foo/>` / `<Foo>` in `.vue` / `.tsx` / `.jsx` /
- *     `.svelte` / `.astro` / `.html` files.
- *   - Named imports: `import { Foo } from '...'` — treats `Foo` as used in
- *     that file even if JSX scanning miscategorizes.
+ *     `.svelte` / `.astro` / `.html` files. PascalCase-only so HTML tags
+ *     (`<div>`, `<span>`) aren't counted as component usage.
+ *   - Named imports: `import { foo } from '...'` — records every binding
+ *     regardless of case so libraries that expose lowercase components
+ *     (e.g. Lucide's `box`, `icon`) still get attributed.
  */
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -84,15 +86,17 @@ async function scanUncached(projectRoot: string): Promise<ComponentUsageMap> {
   const TAG_RE = /<([A-Z][A-Za-z0-9_$]*)(?:\.[A-Z][A-Za-z0-9_$]*)?(?=[\s/>])/g
   // ESM named import: `import { Foo, Bar as Baz } from 'x'` — collects Foo
   // and Baz plus the source module, which lets the shell map a tag to the
-  // specific library it came from.
+  // specific library it came from. Lowercase bindings are kept too so
+  // libraries that expose non-PascalCase components (e.g. `import { box,
+  // icon } from 'lucide'`) still show up in the usage map.
   const IMPORT_RE = /import\s*\{([^}]+)\}\s*from\s*(['"`])([^'"`]+)\2/g
   // Default import: `import Foo from 'x'` — common in Vue + PrimeVue style
   // ("import Button from 'primevue/button'"). Without this, default-only
   // catalogs (PrimeVue, Naive-UI's `import N... from 'naive-ui/...'`) lose
   // their import-source attribution and get dropped by the library-scoped
   // filter. Skips side-effect imports (`import 'x'`) and namespace/type
-  // imports by requiring a PascalCase binding.
-  const DEFAULT_IMPORT_RE = /import\s+([A-Z][A-Za-z0-9_$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*(['"`])([^'"`]+)\2/g
+  // imports by requiring an identifier binding.
+  const DEFAULT_IMPORT_RE = /import\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*(['"`])([^'"`]+)\2/g
 
   for (const abs of files) {
     let content: string
@@ -109,11 +113,14 @@ async function scanUncached(projectRoot: string): Promise<ComponentUsageMap> {
     while ((m = IMPORT_RE.exec(content)) !== null) {
       const specifiers = m[1]
       const from = m[3]
-      for (const part of specifiers.split(',').map(s => s.trim()).filter(Boolean)) {
+      for (const rawPart of specifiers.split(',').map(s => s.trim()).filter(Boolean)) {
+        // Strip `type` prefix from inline type imports (`import { type Foo }`)
+        const part = rawPart.replace(/^type\s+/, '')
         // `Foo` or `Foo as Bar` — both `Foo` and `Bar` count as imported
         const pair = part.split(/\s+as\s+/).map(s => s.trim())
         for (const id of pair) {
-          if (!/^[A-Z]/.test(id)) continue
+          if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(id)) continue
+          if (id === 'default') continue
           push(id, rel)
           pushImport(rel, id, from)
         }

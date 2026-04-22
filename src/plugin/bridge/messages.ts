@@ -274,12 +274,15 @@ export function bridgeMessages(): string {
         var cname = selfComp || '';
         if (!cname) continue;
         if (!compBuckets[cname]) compBuckets[cname] = [];
-        compBuckets[cname].push({
+        var cmfe = cnel.getAttribute('data-annotask-mfe') || '';
+        var inst = {
           file: cnel.getAttribute('data-annotask-file') || '',
           line: cnel.getAttribute('data-annotask-line') || '',
           eid: getEid(cnel),
           rect: getRect(cnel),
-        });
+        };
+        if (cmfe) inst.mfe = cmfe;
+        compBuckets[cname].push(inst);
       }
       var compOut = [];
       for (var cn in compBuckets) {

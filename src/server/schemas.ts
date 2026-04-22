@@ -195,6 +195,10 @@ export const McpGetCodeContextArgs = z.object({
 export const McpGetComponentExamplesArgs = z.object({
   name: z.string().min(1, 'Missing required parameter: name'),
   limit: z.number().int().min(1).max(10).optional(),
+  /** Optional library filter (e.g. `@mantine/core`, `radix-vue`). Prevents
+   *  same-name components from different libraries from cross-contaminating
+   *  the returned examples. */
+  library: z.string().min(1).optional(),
 })
 
 export const McpGetDataContextArgs = z.object({
@@ -217,6 +221,8 @@ export const McpGetDataSourcesArgs = z.object({
   library: z.string().optional(),
   search: z.string().optional(),
   used_only: z.boolean().optional(),
+  /** When true (the default), orphan runtime-observed endpoints are promoted into project_entries with `discovered_by: 'runtime'`. Set false for a pure static-scan view. */
+  merge_runtime: z.boolean().optional(),
 })
 
 export const McpGetDataSourceExamplesArgs = z.object({
@@ -246,6 +252,19 @@ export const McpGetApiOperationArgs = z.object({
 export const McpResolveEndpointArgs = z.object({
   url: z.string().min(1, 'Missing required parameter: url'),
   method: z.string().optional(),
+})
+
+export const McpGetRuntimeEndpointsArgs = z.object({
+  /** Filter to endpoints that have been hit at least once on this route. */
+  route: z.string().optional(),
+  /** Filter by HTTP method (GET/POST/...). */
+  method: z.string().optional(),
+  /** Substring match on pattern or concrete path (case-insensitive). */
+  search: z.string().optional(),
+  /** Only include endpoints with no matching static source — the "gaps" the regex scanner missed. */
+  orphans_only: z.boolean().optional(),
+  /** Include static-source and OpenAPI cross-references on each endpoint. Default true. */
+  enrich: z.boolean().optional(),
 })
 
 // ── Runtime helpers ──────────────────────────────────────

@@ -51,10 +51,19 @@ async function walk(dir: string, acc: string[]): Promise<void> {
   }
 }
 
+/** True when a file's import specifier belongs to a given library. Matches
+ *  exact package name or as a subpath prefix — same rule the shell uses in
+ *  `fromMatchesLibrary()` for highlight attribution, so the examples pane
+ *  never disagrees with the overlay on which library a file belongs to. */
+function importPathMatchesLibrary(from: string, library: string): boolean {
+  return from === library || from.startsWith(library + '/')
+}
+
 export async function getComponentExamples(
   projectRoot: string,
   name: string,
   limit = 3,
+  library?: string,
 ): Promise<ComponentExamplesResult> {
   const esc = escapeRegex(name)
   // Matches <Name ...>, <Name/>, <Name>, <Name\n and <Name.Child ...> for
@@ -82,13 +91,38 @@ export async function getComponentExamples(
     try { content = await fsp.readFile(filePath, 'utf-8') } catch { continue }
 
     // Imports in this file — track so we can attribute to examples below.
+    // When `library` is set, we only keep examples from files that imported
+    // `name` from a matching module; otherwise same-name components from two
+    // libraries (Mantine Button vs Radix Button) bleed into each other.
     let fileImportPath: string | undefined
+    let fileMatchesLibrary = !library
     importRe.lastIndex = 0
     let imp: RegExpExecArray | null
     while ((imp = importRe.exec(content)) !== null) {
       const path = imp[1]
+      if (library && importPathMatchesLibrary(path, library)) {
+        fileMatchesLibrary = true
+        // Prefer a library-matching path as the representative import —
+        // falling through to first-seen would hide the library attribution
+        // when a file happens to import from an unrelated module earlier.
+        fileImportPath = path
+      } else if (!fileImportPath) {
+        fileImportPath = path
+      }
+    }
+
+    // Skip this file entirely when a library filter is active and no import
+    // came from that library — keeps `total_found` and `import_paths`
+    // honest so the count shown in the UI matches the library scope.
+    if (!fileMatchesLibrary) continue
+
+    // Only record the file's imports in the global histogram after the
+    // library gate, otherwise `import_paths` would leak other-library
+    // candidates into the ranking.
+    importRe.lastIndex = 0
+    while ((imp = importRe.exec(content)) !== null) {
+      const path = imp[1]
       importCounts.set(path, (importCounts.get(path) ?? 0) + 1)
-      if (!fileImportPath) fileImportPath = path
     }
 
     usageRe.lastIndex = 0

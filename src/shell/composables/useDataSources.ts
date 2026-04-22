@@ -4,6 +4,7 @@
  * in-repo data sources; external sources are exposed but non-editable.
  */
 import { ref, computed } from 'vue'
+import { on as wsOn } from '../services/wsClient'
 import type {
   ApiSchema,
   DataSource,
@@ -11,6 +12,7 @@ import type {
   DataSourceDetailsResult,
   DataSourceLibrary,
   ProjectDataEntry,
+  RuntimeEndpoint,
   SourceBindingGraph,
 } from '../../schema'
 import { buildPositionalPalette, colorForSource } from './useDataHighlights'
@@ -42,8 +44,14 @@ export type DataListItem =
       file: string
       line?: number
       endpoint?: string
+      method?: string
       used_count: number
       library?: string
+      /** 'runtime' for synthetic entries promoted from the runtime endpoint
+       *  catalog — these have `file === ''` because they were discovered by
+       *  network capture, not source scan. UI should render them with a badge
+       *  and skip behaviors that require a code location. */
+      discovered_by?: 'static' | 'runtime'
     }
   | {
       kind: 'api-schema'
@@ -77,6 +85,10 @@ const detailsError = ref<string | null>(null)
 const libraryUsages = ref<LibraryUsage[]>([])
 const isLibraryUsagesLoading = ref(false)
 
+/** Runtime-observed endpoint catalog from /api/runtime-endpoints. */
+const runtimeEndpoints = ref<RuntimeEndpoint[]>([])
+const runtimeUpdatedAt = ref<number>(0)
+
 const filterText = ref('')
 const filterMode = useLocalStorageEnum<DataFilterMode>(
   'annotask:dataFilterMode',
@@ -90,8 +102,8 @@ const bindingsByName = ref<Map<string, SourceBindingGraph>>(new Map())
 const consumerFilesByName = ref<Map<string, string[]>>(new Map())
 let highlightsAdapter: DataHighlightsAdapter | null = null
 
-/** Which tab the highlights currently represent — 'apis' | 'hooks' | null. */
-type HighlightTab = 'apis' | 'hooks' | 'libraries' | null
+/** Which tab the highlights currently represent — 'apis' | 'hooks' | 'network' | 'libraries' | null. */
+type HighlightTab = 'apis' | 'hooks' | 'libraries' | 'network' | null
 let activeHighlightTab: HighlightTab = null
 
 async function fetchJson<T>(path: string): Promise<T | null> {
@@ -108,12 +120,15 @@ async function loadAll(): Promise<void> {
   isLoading.value = true
   loadError.value = null
   try {
-    const [cat, schemaRes] = await Promise.all([
+    const [cat, schemaRes, runtimeRes] = await Promise.all([
       fetchJson<DataSourceCatalog>('data-sources'),
       fetchJson<{ schemas: ApiSchema[] }>('api-schemas?detail=true'),
+      fetchJson<{ endpoints: RuntimeEndpoint[]; updatedAt: number }>('runtime-endpoints?merge_static=true'),
     ])
     catalog.value = cat
     schemas.value = schemaRes?.schemas ?? []
+    runtimeEndpoints.value = runtimeRes?.endpoints ?? []
+    runtimeUpdatedAt.value = runtimeRes?.updatedAt ?? 0
     await rebuildHighlightSources()
     // Refresh highlights for whatever tab is currently active.
     if (activeHighlightTab) pushHighlightsForTab(activeHighlightTab)
@@ -122,6 +137,17 @@ async function loadAll(): Promise<void> {
   } finally {
     isLoading.value = false
   }
+}
+
+/** Refresh only the runtime catalog — cheap enough to call on every 'runtime-endpoints:updated' WS broadcast. */
+async function reloadRuntime(): Promise<void> {
+  const runtimeRes = await fetchJson<{ endpoints: RuntimeEndpoint[]; updatedAt: number }>('runtime-endpoints?merge_static=true')
+  if (!runtimeRes) return
+  runtimeEndpoints.value = runtimeRes.endpoints
+  runtimeUpdatedAt.value = runtimeRes.updatedAt
+  // Re-push highlight sources so new endpoints light up without the user
+  // having to leave and return to the Network tab.
+  if (activeHighlightTab === 'network') pushHighlightsForTab('network')
 }
 
 /**
@@ -142,6 +168,11 @@ async function rebuildHighlightSources(): Promise<void> {
 
   const results = await Promise.all(
     entries.map(async entry => {
+      // Runtime-only entries have no source file for the binding analyzer
+      // to anchor on — skip the fetch and return an empty graph.
+      if (entry.discovered_by === 'runtime' || !entry.file) {
+        return { entry, graph: null as SourceBindingGraph | null }
+      }
       // Pass `file` so the server picks this MFE's entry (same endpoint-
       // derived name exists in every MFE) and threads the right
       // `hint_symbols` — the fetch result variables — into the analyzer.
@@ -232,6 +263,99 @@ function colorForSchema(location: string): string {
 }
 
 /** Build the hooks tab's highlight source list from the cached binding graphs. */
+/** Stable highlight-source key for a runtime endpoint. Matches the same
+ *  name the overlay uses, so `highlightsAdapter.setFocus(key)` lines up. */
+function networkEndpointKey(ep: RuntimeEndpoint): string {
+  return `net:${ep.origin}|${ep.method}|${ep.pattern}`
+}
+
+/**
+ * Latency-bucket color for a runtime endpoint. Drives the Network tab's row
+ * swatch and the iframe overlay so a slow call paints red and a fast call
+ * paints green — much higher signal than the previous positional palette.
+ *
+ * Buckets (using `avgMs` over completed samples; `maxMs` is the worst-case
+ * tiebreaker for the slow side so a single jank spike still flags the row):
+ *   - no samples yet                             → muted gray
+ *   - avg < 200ms                                → success
+ *   - avg < 500ms                                → warning
+ *   - avg < 1000ms or max ≥ 1000ms               → annotation-orange
+ *   - avg ≥ 1000ms                               → danger
+ */
+export function colorForLatency(avgMs?: number, maxMs?: number): string {
+  if (typeof avgMs !== 'number') return 'var(--text-muted)'
+  if (avgMs < 200) return 'var(--success)'
+  if (avgMs < 500) return 'var(--warning)'
+  if (avgMs >= 1000) return 'var(--danger)'
+  if (typeof maxMs === 'number' && maxMs >= 1000) return 'var(--annotation-orange)'
+  return 'var(--annotation-orange)'
+}
+
+/** Bucket label for tooltips and row badges — paired with `colorForLatency`. */
+export function latencyBucketLabel(avgMs?: number): 'no data' | 'fast' | 'ok' | 'slow' | 'very slow' {
+  if (typeof avgMs !== 'number') return 'no data'
+  if (avgMs < 200) return 'fast'
+  if (avgMs < 500) return 'ok'
+  if (avgMs < 1000) return 'slow'
+  return 'very slow'
+}
+
+function colorForEndpoint(ep: RuntimeEndpoint): string {
+  return colorForLatency(ep.avgMs, ep.maxMs)
+}
+
+/**
+ * Build the Network tab's highlight source list. Each runtime endpoint that
+ * has at least one matching static `ProjectDataEntry` reuses *that* entry's
+ * binding graph — the network tab doesn't run its own binding analysis, it
+ * piggybacks on sites already resolved for the hooks tab. Orphan endpoints
+ * (no matching static source) yield no highlights; they still show up in the
+ * list but without a DOM overlay, which is accurate: the regex scanner never
+ * discovered the call site, so we don't know which element it powers.
+ */
+function buildNetworkHighlightSources(): DataHighlightSource[] {
+  const cat = catalog.value
+  if (!cat) return []
+  const out: DataHighlightSource[] = []
+  for (const ep of runtimeEndpoints.value) {
+    const matched = ep.matchedSources ?? []
+    if (matched.length === 0) continue
+    const sites: DataHighlightSite[] = []
+    const seen = new Set<string>()
+    const label = `${ep.method} ${ep.pattern}`
+    for (const name of matched) {
+      for (const entry of cat.project_entries) {
+        if (entry.name !== name) continue
+        const graph = bindingsByName.value.get(entryBindingKey(entry))
+        if (!graph) continue
+        for (const s of graph.sites) {
+          const file = normalizeFile(s.file)
+          const key = `${file}::${s.line}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          sites.push({ file, line: s.line, label })
+        }
+      }
+    }
+    if (sites.length === 0) continue
+    const color = colorForEndpoint(ep)
+    // Stamp the latency color on every site too — `useDataHighlights` reads
+    // site.color first, then source.color. Without the per-site override the
+    // overlay would still pick the source color, but being explicit here
+    // means future per-site latency variants (e.g. per-route) won't have to
+    // touch this path again.
+    for (const s of sites) s.color = color
+    out.push({
+      name: networkEndpointKey(ep),
+      kind: 'fetch',
+      sites,
+      defaultLabel: label,
+      color,
+    })
+  }
+  return out
+}
+
 function buildHookHighlightSources(): DataHighlightSource[] {
   const cat = catalog.value
   if (!cat) return []
@@ -242,9 +366,22 @@ function buildHookHighlightSources(): DataHighlightSource[] {
     const sites: DataHighlightSite[] = graph.sites.map(s => ({
       file: normalizeFile(s.file),
       line: s.line,
+      // `line === 0` is the file-level fallback contract emitted by
+      // `fallbackAnalyzer` when no framework-specific parser matched. Mark
+      // those sites as 'fallback' so the overlay can paint them dimmer/
+      // dotted — a wildcard match shouldn't look as authoritative as a
+      // precise AST binding.
+      confidence: s.line === 0 ? 'fallback' : 'precise',
       // Label the site with the hook name by default; the UI can show
-      // `planet.moons` later if we want to render tainted_symbols.
+      // `tainted_symbols` later if we want to render them.
     }))
+    // Source-level confidence: fallback when any file in the graph fell back
+    // to wildcard matching, else precise. `partialNote` surfaces the first
+    // diagnostic so the tooltip can explain why.
+    const sourceConfidence = graph.partial ? 'fallback' : 'precise'
+    const partialNote = graph.partial && graph.diagnostics?.[0]
+      ? `${graph.diagnostics[0].analyzer}: ${graph.diagnostics[0].note}`
+      : undefined
     out.push({
       // Per-entry unique name so two MFEs both calling `apiHealth` stay
       // distinct in the overlay adapter (same dedup logic that needed
@@ -254,6 +391,8 @@ function buildHookHighlightSources(): DataHighlightSource[] {
       sites,
       defaultLabel: entry.display_name ?? entry.name,
       color: colorForEntry(entryBindingKey(entry)),
+      confidence: sourceConfidence,
+      partialNote,
     })
   }
   return out
@@ -395,12 +534,20 @@ function pushHighlightsForTab(tab: HighlightTab): void {
     highlightsAdapter.setSources(buildHookHighlightSources())
   } else if (tab === 'apis') {
     highlightsAdapter.setSources(buildApiHighlightSources())
+  } else if (tab === 'network') {
+    highlightsAdapter.setSources(buildNetworkHighlightSources())
   } else {
     highlightsAdapter.setSources([])
   }
   // Reset focus when context changes — the previous focused name likely
   // doesn't exist in the new list.
   highlightsAdapter.setFocus(null)
+}
+
+/** Focus (or clear focus for) the network endpoint with this key. Drives the
+ *  same dim-others behavior Hooks / APIs use when a row is selected. */
+function focusNetworkEndpoint(key: string | null): void {
+  highlightsAdapter?.setFocus(key)
 }
 
 function setHighlightTab(tab: HighlightTab): void {
@@ -527,13 +674,23 @@ const listItems = computed<DataListItem[]>(() => {
     for (const entry of cat.project_entries) {
       out.push({
         kind: 'data-source',
-        id: `source:${entry.file}:${entry.name}`,
+        // Runtime-only entries have `file: ''`, which would collapse all of
+        // them into a single id. Use the method+endpoint as the stable
+        // identifier for those, matching how the Network tab keys rows.
+        // Static entries include `method` so GET + PATCH on the same
+        // (file, name) stay two rows — the binding graph keys them
+        // distinctly via `entryBindingKey`, so the UI has to agree.
+        id: entry.discovered_by === 'runtime'
+          ? `source:runtime:${entry.method ?? 'GET'}:${entry.endpoint ?? entry.name}`
+          : `source:${entry.file}:${entry.name}:${entry.method ?? ''}`,
         name: entry.name,
         dataKind: entry.kind,
         file: entry.file,
         line: entry.line,
         endpoint: entry.endpoint,
+        method: entry.method,
         used_count: entry.used_count,
+        discovered_by: entry.discovered_by,
       })
     }
     for (const lib of cat.libraries) {
@@ -688,7 +845,11 @@ const selectedSchemaLink = computed<
   if (!item || item.kind !== 'data-source') return null
   const cat = catalog.value
   if (!cat) return null
-  const entry = cat.project_entries.find(e => e.file === item.file && e.name === item.name)
+  const entry = cat.project_entries.find(e =>
+    e.file === item.file
+    && e.name === item.name
+    && (e.method ?? '') === (item.method ?? ''),
+  )
   if (!entry) return null
   const match = matchSchemaForEntry(entry, schemas.value)
   if (!match) return null
@@ -706,8 +867,10 @@ function select(id: string): void {
   loadDetails(item)
   // Focus mapping depends on which tab's highlight context is active.
   if (item.kind === 'data-source' && activeHighlightTab === 'hooks') {
-    // Composite key matches the source name buildHookHighlightSources uses.
-    highlightsAdapter?.setFocus(`${item.file}\u0001${item.name}`)
+    // Composite key matches the source name buildHookHighlightSources uses:
+    // `filenamemethod` — method included so GET + PATCH on
+    // the same (file, name) don't cross-focus.
+    highlightsAdapter?.setFocus(`${item.file}\u0001${item.name}\u0002${item.method ?? ''}`)
   } else if (item.kind === 'api-schema' && activeHighlightTab === 'apis') {
     highlightsAdapter?.setFocus(item.schema.location)
   } else {
@@ -785,6 +948,11 @@ export function useDataSources() {
   if (!initialized) {
     initialized = true
     loadAll()
+    // Aggregated runtime-endpoints catalog mutates whenever the iframe pushes
+    // a new batch. Reload the runtime slice so the Data view updates live
+    // without polling. Throttled on the server via its debounced persist, so
+    // this fires at most ~2 Hz even during bursty traffic.
+    wsOn('runtime-endpoints:updated', () => { void reloadRuntime() })
   }
   return {
     catalog,
@@ -796,6 +964,9 @@ export function useDataSources() {
     dataSourceItems,
     apiSchemaItems,
     libraries,
+    runtimeEndpoints,
+    runtimeUpdatedAt,
+    reloadRuntime,
     filteredDataSources,
     filteredApiSchemas,
     filteredLibraries,
@@ -812,11 +983,34 @@ export function useDataSources() {
     consumerFilesByName,
     operationsOnPage,
     setHighlightTab,
+    colorForEndpoint,
+    networkEndpointKey,
+    focusNetworkEndpoint,
     select,
     clearSelection,
     reload: loadAll,
     createApiUpdateTask,
     colorForEntry,
     colorForSchema,
+    bindingConfidenceFor,
+  }
+}
+
+/** Returns the binding-graph confidence for a data-source row, or `null` when
+ *  the graph hasn't resolved yet. Used by the row-level confidence badge and
+ *  tooltip so the shell can say "this match fell back to file-level" without
+ *  the caller having to inspect `SourceBindingGraph` directly. */
+function bindingConfidenceFor(item: { file: string; name: string; method?: string }): {
+  confidence: 'precise' | 'fallback'
+  note?: string
+} | null {
+  const key = `${item.file}${item.name}${item.method ?? ''}`
+  const graph = bindingsByName.value.get(key)
+  if (!graph) return null
+  if (!graph.partial) return { confidence: 'precise' }
+  const first = graph.diagnostics?.[0]
+  return {
+    confidence: 'fallback',
+    note: first ? `${first.analyzer}: ${first.note}` : undefined,
   }
 }

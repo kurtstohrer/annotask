@@ -18,6 +18,10 @@ export interface WorkspaceInfo {
   root: string
   isWorkspace: boolean
   packages: WorkspacePackage[]
+  /** Workspace-relative dir of the running package. Shell prefixes bridge-
+   *  reported files with this so they align with workspace-rooted scanners.
+   *  Empty string when the running package is the workspace root. */
+  currentDir?: string
 }
 
 const info = ref<WorkspaceInfo | null>(null)

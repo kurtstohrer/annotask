@@ -47,6 +47,9 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     readRenderedHtml: (id) => state.readRenderedHtml(id),
     getPerformance: () => state.getPerformanceSnapshot(),
     setPerformance: (data) => state.setPerformanceSnapshot(data),
+    ingestNetworkCalls: (calls) => state.ingestNetworkCalls(calls),
+    getRuntimeEndpointCatalog: () => state.getRuntimeEndpointCatalog(),
+    clearRuntimeEndpoints: () => state.clearRuntimeEndpoints(),
   })
 
   const mcpMiddleware = createMcpMiddleware({
@@ -58,6 +61,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     deleteTask: (id) => state.deleteTask(id),
     readInteractionHistory: (id) => state.readInteractionHistory(id),
     readRenderedHtml: (id) => state.readRenderedHtml(id),
+    getRuntimeEndpointCatalog: () => state.getRuntimeEndpointCatalog(),
   })
 
   const shellMiddleware = createShellMiddleware()

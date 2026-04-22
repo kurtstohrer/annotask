@@ -12,6 +12,7 @@ import { bridgeEvents } from './bridge/events.js'
 import { bridgeHelpers } from './bridge/helpers.js'
 import { bridgeMessages } from './bridge/messages.js'
 import { bridgePerfObservers } from './bridge/perf-observers.js'
+import { bridgeNetworkMonitor } from './bridge/network-monitor.js'
 
 export function bridgeClientScript(): string {
   return `
@@ -21,7 +22,7 @@ export function bridgeClientScript(): string {
   // Don't run if already initialized
   if (window.__ANNOTASK_BRIDGE__) return;
   window.__ANNOTASK_BRIDGE__ = true;
-${bridgeRegistry()}${bridgeEvents()}${bridgeHelpers()}${bridgeMessages()}${bridgePerfObservers()}
+${bridgeRegistry()}${bridgeEvents()}${bridgeHelpers()}${bridgeMessages()}${bridgePerfObservers()}${bridgeNetworkMonitor()}
 })();
 `.trim()
 }

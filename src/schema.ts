@@ -290,6 +290,18 @@ export interface ProjectDataEntry {
    *  that actually hold the fetch result (`health`, `workflows`, …) so the
    *  analyzer can trace those identifiers into template / JSX sites. */
   hint_symbols?: string[]
+  /**
+   * Where this entry came from. Omitted / 'static' for regex-scanned entries
+   * (the default). 'runtime' marks synthetic entries promoted from the
+   * runtime endpoint catalog — these have `file: ''` because they were
+   * discovered by observing network traffic, not by scanning source.
+   *
+   * Consumers that need a real code location (binding analysis, examples,
+   * details) must skip entries where `discovered_by === 'runtime'`. Agents
+   * should treat them as "this endpoint exists but we haven't pinned down
+   * the call site yet — try searching the codebase for its shape."
+   */
+  discovered_by?: 'static' | 'runtime'
 }
 
 /** Project-wide catalog of data sources — the data-library equivalent of ComponentCatalog. */
@@ -298,6 +310,106 @@ export interface DataSourceCatalog {
   /** Sorted by used_count desc. */
   project_entries: ProjectDataEntry[]
   scannedAt: number
+}
+
+/**
+ * A single network request captured by the in-iframe monitor. Mirrors what a
+ * browser Network panel records, but trimmed to the fields agents and the
+ * Data view care about. Bodies are intentionally NOT captured — runtime
+ * discovery is about "what endpoints does this app actually hit", not about
+ * reconstructing payloads.
+ */
+export interface NetworkCall {
+  /** Monotonic counter from the iframe; unique within one page load. */
+  id: string
+  /** 'fetch' | 'xhr' | 'beacon' — how the call was issued. */
+  initiator: 'fetch' | 'xhr' | 'beacon'
+  /** HTTP method (upper-case). */
+  method: string
+  /** Full URL as observed by the client (including query string). */
+  url: string
+  /** Origin part of the URL (e.g. `http://localhost:4320`), or '' for same-origin relative URLs. */
+  origin: string
+  /** Path + query as observed (e.g. `/api/users/42?x=1`). */
+  path: string
+  /** Path with query string stripped — convenient for grouping. */
+  pathNoQuery: string
+  /** HTTP status code when the response completed. Missing on aborted / network-failed requests. */
+  status?: number
+  /** Response content-type, when known. */
+  contentType?: string
+  /** Iframe route at the time the request was issued (window.location.pathname). */
+  route: string
+  /** Epoch ms at request start. */
+  startedAt: number
+  /** Duration in ms. Missing while still pending. */
+  durationMs?: number
+  /** Set when the request failed before completion (network error, abort). */
+  error?: string
+  /** Response size in bytes from content-length, when advertised. */
+  contentLength?: number
+}
+
+/**
+ * Aggregated, runtime-observed endpoint — one row per (origin, method, path)
+ * across all page loads since the dev server started. Persisted to
+ * `.annotask/runtime-endpoints.json` so the catalog survives iframe
+ * navigations and reloads, and agents can read it on demand.
+ *
+ * Complements the regex-driven static scanner: runtime hits confirm static
+ * discoveries and expose endpoints the scanner missed (dynamic endpoints,
+ * indirect libraries, generated clients).
+ */
+export interface RuntimeEndpoint {
+  /** Lower-case origin (e.g. `http://localhost:4320`), or '' for same-origin calls. */
+  origin: string
+  /** HTTP method (upper-case). */
+  method: string
+  /** Request path with query string stripped. */
+  path: string
+  /** Pattern-normalized path — numeric segments and UUIDs replaced with `{id}` so calls against different ids collapse into one row. */
+  pattern: string
+  /** Number of times this endpoint has been observed. */
+  count: number
+  /** Epoch ms when this endpoint was first seen. */
+  firstSeenAt: number
+  /** Epoch ms when this endpoint was most recently observed. */
+  lastSeenAt: number
+  /** Last observed status code — handy for flagging 4xx/5xx endpoints. */
+  lastStatus?: number
+  /** Rolling set of status codes observed (dedup across calls). */
+  statuses?: number[]
+  /** Every iframe route that has produced this call, with per-route counts. */
+  routes: Array<{ route: string; count: number; lastSeenAt: number }>
+  /** Sample of most recent concrete URLs (cap 5) — preserves real ids for debugging without exploding the file. */
+  sampleUrls: string[]
+  /** Matched static data source name(s) — populated by the server when a known `ProjectDataEntry` endpoint matches this pattern. */
+  matchedSources?: string[]
+  /** Matched OpenAPI operation id, when `resolveEndpoint` finds one. */
+  matchedOperationId?: string
+  /** Matched OpenAPI schema location, when `resolveEndpoint` finds one. */
+  matchedSchemaLocation?: string
+  /** Rolling mean of `NetworkCall.durationMs` across timed samples (calls
+   *  that completed and reported a duration). Drives the latency-coloured
+   *  Network overlays in the Data view — green/yellow/orange/red buckets so
+   *  a slow call stands out from a fast one. Missing when no completed
+   *  sample has been ingested yet. */
+  avgMs?: number
+  /** Slowest single `durationMs` observed for this endpoint. Used for row
+   *  tooltips and as the worst-case input when computing the latency
+   *  bucket. */
+  maxMs?: number
+  /** Number of timed samples folded into `avgMs` so streaming-mean updates
+   *  stay numerically stable across reloads (oldAvg * oldN + sample) / (oldN + 1). */
+  latencySamples?: number
+}
+
+/** On-disk shape for the runtime endpoint catalog. */
+export interface RuntimeEndpointCatalog {
+  version: '1.0'
+  /** Epoch ms of the last mutation. */
+  updatedAt: number
+  endpoints: RuntimeEndpoint[]
 }
 
 /**

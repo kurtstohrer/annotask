@@ -11,6 +11,8 @@ import {
   assertTransition,
 } from './schemas.js'
 import { enrichContextComponentRefs } from './component-context.js'
+import { mergeRuntimeOrphansIntoEntries, findMatchingStaticEntries } from './runtime-endpoints.js'
+import type { NetworkCall, RuntimeEndpoint, RuntimeEndpointCatalog } from '../schema.js'
 
 export interface APIOptions {
   projectRoot: string
@@ -31,6 +33,12 @@ export interface APIOptions {
   readRenderedHtml: (taskId: string) => Promise<string | null>
   getPerformance: () => unknown
   setPerformance: (data: unknown) => void
+  /** Ingest iframe-captured network calls into the runtime endpoint catalog. */
+  ingestNetworkCalls: (calls: NetworkCall[]) => void
+  /** Read the aggregated runtime endpoint catalog. */
+  getRuntimeEndpointCatalog: () => RuntimeEndpointCatalog
+  /** Drop the runtime endpoint catalog. */
+  clearRuntimeEndpoints: () => void
 }
 
 const MAX_BODY_SIZE = 4_194_304
@@ -432,7 +440,12 @@ export function createAPIMiddleware(options: APIOptions) {
       const catalog = await getWorkspaceCatalog(options.projectRoot)
       // absDir is an implementation detail — omit from the wire response.
       const packages = catalog.packages.map(({ absDir: _ignored, ...rest }) => rest)
-      res.end(JSON.stringify({ root: catalog.root, isWorkspace: catalog.isWorkspace, packages }, null, 2))
+      // Workspace-relative dir of the package running this dev server. The
+      // shell prefixes bridge-reported `data-annotask-file` values (which are
+      // emitted relative to vite's root — the package dir) so they line up
+      // with the workspace-rooted paths the component-usage scanner records.
+      const currentDir = nodePath.relative(catalog.root, options.projectRoot).replace(/\\/g, '/')
+      res.end(JSON.stringify({ root: catalog.root, isWorkspace: catalog.isWorkspace, packages, currentDir }, null, 2))
       return
     }
 
@@ -539,19 +552,94 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
+    // Runtime-observed endpoints — aggregated iframe network calls. POST to
+    // append, GET to read, DELETE to reset. The iframe's injected bridge
+    // client pushes batches to the shell, which relays to this endpoint.
+    if (path === 'runtime-endpoints' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const mergeStatic = urlObj.searchParams.get('merge_static') === 'true' || urlObj.searchParams.get('merge_static') === '1'
+      const route = urlObj.searchParams.get('route') || undefined
+      const catalog = options.getRuntimeEndpointCatalog()
+      let endpoints = catalog.endpoints
+      if (route) {
+        endpoints = endpoints.filter(ep => ep.routes.some(r => r.route === route))
+      }
+      if (mergeStatic) {
+        const staticCat = await scanDataSources(options.projectRoot)
+        const schemaCat = await scanApiSchemas(options.projectRoot, {
+          devServerUrl: deriveDevServerUrl(req),
+          apiSchemaUrls: options.apiSchemaUrls,
+          apiSchemaFiles: options.apiSchemaFiles,
+        })
+        endpoints = endpoints.map(ep => enrichEndpoint(ep, staticCat.project_entries, schemaCat))
+      }
+      res.end(JSON.stringify({ ...catalog, endpoints }, null, 2))
+      return
+    }
+
+    if (path === 'runtime-endpoints' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      const body = parsed.data as { calls?: unknown } | null
+      if (!body || typeof body !== 'object' || !Array.isArray((body as { calls?: unknown }).calls)) {
+        return sendError(res, 400, 'Expected { calls: NetworkCall[] } body', 'body_not_object')
+      }
+      const rawCalls = (body as { calls: unknown[] }).calls
+      const calls: NetworkCall[] = []
+      for (const c of rawCalls) {
+        if (!c || typeof c !== 'object') continue
+        const rec = c as Record<string, unknown>
+        if (typeof rec.method !== 'string' || typeof rec.pathNoQuery !== 'string') continue
+        calls.push(rec as unknown as NetworkCall)
+      }
+      options.ingestNetworkCalls(calls)
+      res.end(JSON.stringify({ ok: true, ingested: calls.length }))
+      return
+    }
+
+    if (path === 'runtime-endpoints' && req.method === 'DELETE') {
+      options.clearRuntimeEndpoints()
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
+
     if (path === 'data-sources' && req.method === 'GET') {
       const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
       const kind = urlObj.searchParams.get('kind') as DataSource['kind'] | null
       const library = urlObj.searchParams.get('library')
       const searchStr = (urlObj.searchParams.get('search') || '').toLowerCase()
       const usedOnly = urlObj.searchParams.get('used_only') === 'true' || urlObj.searchParams.get('used_only') === '1'
+      const includeRuntime = urlObj.searchParams.get('include_runtime') === 'true' || urlObj.searchParams.get('include_runtime') === '1'
+      // Orphan runtime endpoints get promoted into project_entries by default —
+      // the whole point of capturing them was to fill gaps the regex scanner
+      // misses. Callers that want static-only can pass ?merge_runtime=false.
+      const mergeRuntime = urlObj.searchParams.get('merge_runtime') !== 'false' && urlObj.searchParams.get('merge_runtime') !== '0'
       const catalog = await scanDataSources(options.projectRoot)
       const libraries = library ? catalog.libraries.filter(l => l.name === library) : catalog.libraries
       let entries = catalog.project_entries
+      if (mergeRuntime) {
+        const runtimeCat = options.getRuntimeEndpointCatalog()
+        entries = mergeRuntimeOrphansIntoEntries(entries, runtimeCat.endpoints)
+      }
       if (kind) entries = entries.filter(e => e.kind === kind)
       if (searchStr) entries = entries.filter(e => e.name.toLowerCase().includes(searchStr))
       if (usedOnly) entries = entries.filter(e => e.used_count > 0)
-      res.end(JSON.stringify({ libraries, project_entries: entries, scannedAt: catalog.scannedAt }, null, 2))
+      const body: Record<string, unknown> = { libraries, project_entries: entries, scannedAt: catalog.scannedAt }
+      if (includeRuntime) {
+        const runtimeCat = options.getRuntimeEndpointCatalog()
+        const schemaCat = await scanApiSchemas(options.projectRoot, {
+          devServerUrl: deriveDevServerUrl(req),
+          apiSchemaUrls: options.apiSchemaUrls,
+          apiSchemaFiles: options.apiSchemaFiles,
+        })
+        body.runtime_endpoints = runtimeCat.endpoints.map(ep =>
+          enrichEndpoint(ep, catalog.project_entries, schemaCat),
+        )
+        body.runtime_updated_at = runtimeCat.updatedAt
+      }
+      res.end(JSON.stringify(body, null, 2))
       return
     }
 
@@ -686,7 +774,13 @@ export function createAPIMiddleware(options: APIOptions) {
       const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
       const limitArg = Number(urlObj.searchParams.get('limit') || '3')
       const limit = Number.isFinite(limitArg) ? Math.max(1, Math.min(10, limitArg)) : 3
-      const result = await getComponentExamples(options.projectRoot, name, limit)
+      // Optional library filter — prevents same-name components from
+      // different libraries (Mantine Button vs Radix Button) from cross-
+      // contaminating the examples list. Shell threads this from the
+      // currently-selected library; CLI accepts `--library`; MCP has
+      // `library` on the tool input.
+      const library = urlObj.searchParams.get('library') || undefined
+      const result = await getComponentExamples(options.projectRoot, name, limit, library)
       res.end(JSON.stringify(result, null, 2))
       return
     }
@@ -696,3 +790,38 @@ export function createAPIMiddleware(options: APIOptions) {
     res.end(JSON.stringify(body))
   }
 }
+
+/**
+ * Annotate a runtime endpoint with the matching static sources and OpenAPI
+ * operation when one exists. Keeps the enrichment cheap (simple path/method
+ * equality + `resolveEndpoint`), since this runs on every GET.
+ */
+function enrichEndpoint(
+  ep: RuntimeEndpoint,
+  staticEntries: Array<{ name: string; method?: string; endpoint?: string; resolved_endpoint?: string }>,
+  schemaCatalog: Awaited<ReturnType<typeof scanApiSchemas>>,
+): RuntimeEndpoint {
+  const out: RuntimeEndpoint = { ...ep }
+  // Match static `ProjectDataEntry` rows whose declared endpoint lines up
+  // with this runtime call. Origin-aware (see `findMatchingStaticEntries`):
+  // a runtime call to `:4320/api/health` won't pick up `apiHealth_4310` from
+  // a sibling MFE just because they share a path. Without that gate, the
+  // Network tab's overlay used to union sites across every MFE that had a
+  // same-path entry.
+  const matched: string[] = []
+  for (const entry of findMatchingStaticEntries(ep, staticEntries)) {
+    if (!matched.includes(entry.name)) matched.push(entry.name)
+  }
+  if (matched.length > 0) out.matchedSources = matched
+
+  // Match against the discovered API schemas. Prefer the concrete URL (has
+  // real ids) so OpenAPI templated matching works; fall back to the pattern.
+  const sampleUrl = ep.sampleUrls[0] || ep.path
+  const match = resolveEndpoint(schemaCatalog, sampleUrl, ep.method)
+  if (match) {
+    out.matchedSchemaLocation = match.schema_location
+    if (match.operation.id) out.matchedOperationId = match.operation.id
+  }
+  return out
+}
+

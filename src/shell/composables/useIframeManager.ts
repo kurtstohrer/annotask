@@ -206,9 +206,9 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
    * each component's representative file/line plus per-instance eid/rect.
    * Drives the Components view.
    */
-  async function listProjectComponents(): Promise<{ components: Array<{ name: string; file: string; line: string; count: number; instances: Array<{ file: string; line: string; eid: string; rect: BridgeRect }> }> }> {
+  async function listProjectComponents(): Promise<{ components: Array<{ name: string; file: string; line: string; count: number; instances: Array<{ file: string; line: string; eid: string; rect: BridgeRect; mfe?: string }> }> }> {
     try {
-      const result = await bridge.request<{ components: Array<{ name: string; file: string; line: string; count: number; instances: Array<{ file: string; line: string; eid: string; rect: BridgeRect }> }> }>(
+      const result = await bridge.request<{ components: Array<{ name: string; file: string; line: string; count: number; instances: Array<{ file: string; line: string; eid: string; rect: BridgeRect; mfe?: string }> }> }>(
         'list:project-components',
         {},
       )

@@ -139,6 +139,11 @@ export interface ProjectComponentInstance {
   line: string
   eid: string
   rect: BridgeRect
+  /** MFE id the instance's root element belongs to, read from
+   *  `data-annotask-mfe`. Empty for non-MFE workspaces. The shell uses this
+   *  to translate `file` (MFE-local) back to a workspace-relative path when
+   *  comparing against the components catalog. */
+  mfe?: string
 }
 
 export interface ProjectComponentInfo {
@@ -636,4 +641,55 @@ export interface PerfScanResult {
   navigation?: PerfNavigationTiming
   resources: ResourceEntry[]
   error?: string
+}
+
+// ── Network Monitor ────────────────────────────────────
+
+/**
+ * One captured fetch / XMLHttpRequest call pushed from the iframe to the shell.
+ * Mirrors `NetworkCall` in schema.ts — defined here as a plain interface so the
+ * plain-JS bridge client doesn't have to import TypeScript-only modules.
+ *
+ * `initiator` distinguishes calls the monitor hooked: 'fetch' (window.fetch),
+ * 'xhr' (XMLHttpRequest.send), 'beacon' (navigator.sendBeacon — which can't
+ * carry a response, so these never get a status).
+ */
+export interface NetworkCallEvent {
+  id: string
+  initiator: 'fetch' | 'xhr' | 'beacon'
+  method: string
+  url: string
+  origin: string
+  path: string
+  pathNoQuery: string
+  status?: number
+  contentType?: string
+  route: string
+  startedAt: number
+  durationMs?: number
+  error?: string
+  contentLength?: number
+}
+
+/**
+ * Batched push from the iframe — emitted every ~1s while there are unreported
+ * calls in the buffer, and immediately when the user navigates (so the server
+ * aggregator always has a chance to bucket calls under the previous route
+ * before the route changes).
+ */
+export interface NetworkCallsBatch {
+  calls: NetworkCallEvent[]
+}
+
+/**
+ * Unsolicited push emitted just after `route:changed` so the aggregator knows
+ * to treat subsequent calls as belonging to a new page load for per-load
+ * accounting. Counts persist across loads — this is just a marker.
+ */
+export interface NetworkPageLoadEvent {
+  route: string
+  /** Epoch ms at load detection. */
+  at: number
+  /** Incrementing per-iframe load counter — helps the aggregator dedup the same iframe reloading. */
+  loadId: number
 }

@@ -9,12 +9,13 @@ import { getCodeContext } from '../server/code-context.js'
 import { getComponentExamples } from '../server/component-examples.js'
 import { resolveDataContext } from '../server/data-context.js'
 import { scanDataSources } from '../server/data-source-scanner.js'
+import { mergeRuntimeOrphansIntoEntries, findMatchingStaticEntries } from '../server/runtime-endpoints.js'
 import { getDataSourceExamples } from '../server/data-source-examples.js'
 import { resolveDataSourceDetails } from '../server/data-source-details.js'
 import { scanApiSchemas } from '../server/api-schema-scanner.js'
 import { resolveEndpoint } from '../server/api-schema-resolver.js'
 import { resolveWorkspace } from '../server/workspace.js'
-import { TASK_TYPES, type DataSource } from '../schema.js'
+import { TASK_TYPES, type DataSource, type RuntimeEndpoint, type RuntimeEndpointCatalog } from '../schema.js'
 
 /** Monorepo root for containment checks, or `undefined` when the project is
  *  not inside a workspace. Cached via `resolveWorkspace`. */
@@ -47,6 +48,7 @@ import {
   McpGetApiSchemasArgs,
   McpGetApiOperationArgs,
   McpResolveEndpointArgs,
+  McpGetRuntimeEndpointsArgs,
   parseWith,
   assertTransition,
   AgentFeedbackSchema,
@@ -83,6 +85,8 @@ export interface McpDeps {
   deleteTask: (id: string) => unknown | Promise<unknown>
   readInteractionHistory: (taskId: string) => Promise<unknown | null>
   readRenderedHtml: (taskId: string) => Promise<string | null>
+  /** Aggregated runtime-observed endpoint catalog. Optional — when missing, the MCP tool returns an empty catalog. */
+  getRuntimeEndpointCatalog?: () => RuntimeEndpointCatalog
 }
 
 // ── Constants ────────────────────────────────────────
@@ -319,12 +323,14 @@ const TOOLS: ToolDef[] = [
     name: 'annotask_get_component_examples',
     description:
       'Find real in-repo usages of a component by name. Returns up to `limit` call sites (default 3) with a short surrounding source snippet, the line number, and the most common import path for the component. ' +
-      'Use this when you are about to reuse or place a component and want to match the repo\'s own conventions (prop combinations, wrapper patterns, slot usage) rather than invent new ones.',
+      'Use this when you are about to reuse or place a component and want to match the repo\'s own conventions (prop combinations, wrapper patterns, slot usage) rather than invent new ones. ' +
+      'Pass `library` (e.g. `@mantine/core`, `radix-vue`) to keep same-name components from different libraries out of the result.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Component name to search for (case-sensitive)' },
         limit: { type: 'number', description: 'Max examples to return. Default 3, max 10.' },
+        library: { type: 'string', description: 'Optional library/package name (e.g. @mantine/core). Only examples whose import specifier belongs to this library are returned.' },
       },
       required: ['name'],
     },
@@ -376,7 +382,8 @@ const TOOLS: ToolDef[] = [
     name: 'annotask_get_data_sources',
     description:
       'List the project-wide data source catalog: detected data-fetching libraries from package.json (React Query, SWR, Pinia, Zustand, Apollo, tRPC, …) and project-specific entries found in `src/` (user hooks, stores, fetch wrappers, GraphQL operations). ' +
-      '`project_entries` come sorted by `used_count` descending — the most load-bearing entries first. Use this when deciding which existing data source to reuse before writing new code.',
+      '`project_entries` come sorted by `used_count` descending — the most load-bearing entries first. Use this when deciding which existing data source to reuse before writing new code. ' +
+      'By default, orphan endpoints observed at runtime (fetch/XHR traffic the regex scanner missed) are promoted into `project_entries` with `discovered_by: "runtime"` and `file: ""` — these represent real APIs the frontend hits but that the static pass couldn\'t pin to a source location. Pass `merge_runtime: false` for a pure static-scan view; use `annotask_get_runtime_endpoints` for the full runtime catalog.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -384,6 +391,7 @@ const TOOLS: ToolDef[] = [
         library: { type: 'string', description: 'Only return this library from the libraries list.' },
         search: { type: 'string', description: 'Substring match on project entry name (case-insensitive).' },
         used_only: { type: 'boolean', description: 'Restrict project entries to `used_count > 0` — analogous to `annotask_get_components` used_only filter.' },
+        merge_runtime: { type: 'boolean', description: 'Include orphan runtime-observed endpoints as synthetic `project_entries` (default true). These carry `discovered_by: "runtime"` and have `file: ""` because they were found by live network capture, not source scan. Set false for static-only.' },
       },
     },
   },
@@ -444,6 +452,25 @@ const TOOLS: ToolDef[] = [
         limit: { type: 'number', description: 'Max examples to return. Default 3, max 10.' },
       },
       required: ['name'],
+    },
+  },
+  {
+    name: 'annotask_get_runtime_endpoints',
+    description:
+      'List endpoints the frontend has *actually hit at runtime* — captured by the iframe-side network monitor (fetch + XHR + sendBeacon) and aggregated per (origin, method, path pattern). ' +
+      'This is the runtime counterpart to `annotask_get_data_sources`, whose regex-driven static scan can miss endpoints built from computed strings, generated clients, or dynamic libraries. ' +
+      'Each row carries `count`, `routes[]` (per iframe route with per-route counts), `statuses[]`, and a rotating `sampleUrls[]` for debugging. ' +
+      'When `enrich` is true (default), rows also include `matchedSources` (static `ProjectDataEntry` names whose endpoint aligns with this call) and `matchedSchemaLocation` / `matchedOperationId` for the best OpenAPI / GraphQL / tRPC operation match. ' +
+      'Use `orphans_only: true` to surface endpoints the static scanner missed — those are the highest-value gaps to look at.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        route: { type: 'string', description: 'Filter to endpoints hit on this iframe route (e.g. "/dashboard"). Matches against the per-call route recorded at capture time.' },
+        method: { type: 'string', description: 'Filter by HTTP method (GET/POST/PUT/PATCH/DELETE). Case-insensitive.' },
+        search: { type: 'string', description: 'Substring match (case-insensitive) on the endpoint path or one of its sample URLs.' },
+        orphans_only: { type: 'boolean', description: 'Only return endpoints with no matching static data source — gaps the regex scanner missed.' },
+        enrich: { type: 'boolean', description: 'Cross-reference each endpoint against the static data-source catalog and discovered API schemas. Default true.' },
+      },
     },
   },
   {
@@ -686,8 +713,8 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
     case 'annotask_get_component_examples': {
       const parsed = parseWith(McpGetComponentExamplesArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
-      const { name, limit } = parsed.data
-      const result = await getComponentExamples(deps.projectRoot, name, limit ?? 3)
+      const { name, limit, library } = parsed.data
+      const result = await getComponentExamples(deps.projectRoot, name, limit ?? 3, library)
       return { content: [{ type: 'text', text: compact(result) }] }
     }
 
@@ -755,6 +782,15 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
       const catalog = await scanDataSources(deps.projectRoot)
       const libraries = args.library ? catalog.libraries.filter(l => l.name === args.library) : catalog.libraries
       let entries = catalog.project_entries
+      // Promote orphan runtime endpoints into project_entries by default — the
+      // regex scanner is lossy and runtime capture is the backstop. Each
+      // promoted row carries `discovered_by: 'runtime'` so agents can tell
+      // them apart from regex-scanned ones.
+      const mergeRuntime = args.merge_runtime !== false
+      if (mergeRuntime && deps.getRuntimeEndpointCatalog) {
+        const runtimeCat = deps.getRuntimeEndpointCatalog()
+        entries = mergeRuntimeOrphansIntoEntries(entries, runtimeCat.endpoints)
+      }
       if (args.kind) entries = entries.filter(e => e.kind === args.kind)
       if (args.search) {
         const q = args.search.toLowerCase()
@@ -802,6 +838,41 @@ async function callTool(name: string, rawArgs: Record<string, unknown>, deps: Mc
       const catalog = await scanApiSchemas(deps.projectRoot)
       const match = resolveEndpoint(catalog, url, method)
       return { content: [{ type: 'text', text: compact({ match }) }] }
+    }
+
+    case 'annotask_get_runtime_endpoints': {
+      const parsed = parseWith(McpGetRuntimeEndpointsArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const args = parsed.data
+      const enrich = args.enrich !== false
+      const catalog = deps.getRuntimeEndpointCatalog
+        ? deps.getRuntimeEndpointCatalog()
+        : { version: '1.0' as const, updatedAt: 0, endpoints: [] as RuntimeEndpoint[] }
+      let endpoints = catalog.endpoints
+      if (args.route) endpoints = endpoints.filter(ep => ep.routes.some(r => r.route === args.route))
+      if (args.method) {
+        const m = args.method.toUpperCase()
+        endpoints = endpoints.filter(ep => ep.method === m)
+      }
+      if (args.search) {
+        const q = args.search.toLowerCase()
+        endpoints = endpoints.filter(ep =>
+          ep.path.toLowerCase().includes(q)
+          || ep.pattern.toLowerCase().includes(q)
+          || ep.sampleUrls.some(u => u.toLowerCase().includes(q)),
+        )
+      }
+      if (enrich) {
+        const [staticCat, schemaCat] = await Promise.all([
+          scanDataSources(deps.projectRoot),
+          scanApiSchemas(deps.projectRoot),
+        ])
+        endpoints = endpoints.map(ep => enrichRuntimeEndpoint(ep, staticCat.project_entries, schemaCat))
+      }
+      if (args.orphans_only) {
+        endpoints = endpoints.filter(ep => !ep.matchedSources || ep.matchedSources.length === 0)
+      }
+      return { content: [{ type: 'text', text: compact({ version: catalog.version, updatedAt: catalog.updatedAt, endpoints }) }] }
     }
 
     case 'annotask_get_data_source_examples': {
@@ -904,6 +975,33 @@ async function handleJsonRpc(req: JsonRpcRequest, deps: McpDeps): Promise<JsonRp
         id: req.id,
       }
   }
+}
+
+/**
+ * Annotate a runtime endpoint with the matching static sources and OpenAPI
+ * operation. Mirrors the HTTP-side helper in `server/api.ts` — kept local so
+ * the MCP layer doesn't have to import back into api.ts.
+ */
+function enrichRuntimeEndpoint(
+  ep: RuntimeEndpoint,
+  staticEntries: Array<{ name: string; method?: string; endpoint?: string; resolved_endpoint?: string }>,
+  schemaCatalog: Awaited<ReturnType<typeof scanApiSchemas>>,
+): RuntimeEndpoint {
+  const out: RuntimeEndpoint = { ...ep }
+  // Origin-aware static matching — see api.ts:enrichEndpoint and
+  // runtime-endpoints.ts:findMatchingStaticEntries for the rationale.
+  const matched: string[] = []
+  for (const entry of findMatchingStaticEntries(ep, staticEntries)) {
+    if (!matched.includes(entry.name)) matched.push(entry.name)
+  }
+  if (matched.length > 0) out.matchedSources = matched
+  const sampleUrl = ep.sampleUrls[0] || ep.path
+  const match = resolveEndpoint(schemaCatalog, sampleUrl, ep.method)
+  if (match) {
+    out.matchedSchemaLocation = match.schema_location
+    if (match.operation.id) out.matchedOperationId = match.operation.id
+  }
+  return out
 }
 
 // ── HTTP middleware (Streamable HTTP transport) ───────

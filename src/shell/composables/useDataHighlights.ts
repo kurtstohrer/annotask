@@ -16,6 +16,8 @@ import type { DataSource } from '../../schema'
 import type { useIframeManager } from './useIframeManager'
 import { useWorkspace } from './useWorkspace'
 
+export type HighlightConfidence = 'precise' | 'fallback' | 'runtime-only'
+
 export interface DataHighlightSite {
   file: string
   line: number
@@ -34,6 +36,11 @@ export interface DataHighlightSite {
    *  start with `<module>/`) — disambiguates two libraries that both expose
    *  the same component name. */
   module?: string
+  /** Per-site match confidence. A binding graph can be mostly precise with
+   *  one file falling back to line:0 wildcard, so granularity lives here
+   *  rather than only on the parent source. Defaults to `'precise'` when
+   *  unset. */
+  confidence?: HighlightConfidence
 }
 
 export interface DataHighlightSource {
@@ -46,6 +53,14 @@ export interface DataHighlightSource {
    *  default `colorForSource(name)` hash so multiple sources can share one
    *  color (e.g. every component from the same library). */
   color?: string
+  /** Source-level confidence — `'fallback'` when the binding graph contains
+   *  at least one file-level wildcard, `'runtime-only'` for network sources
+   *  with no static binding, else `'precise'`. UI shows a badge when this is
+   *  not precise. Defaults to `'precise'`. */
+  confidence?: HighlightConfidence
+  /** Short diagnostic string shown in row tooltips — "Astro analyzer
+   *  missing", etc. Only surfaced when `confidence !== 'precise'`. */
+  partialNote?: string
 }
 
 export interface DataHighlightRect {
@@ -65,6 +80,19 @@ export interface DataHighlightRect {
    *  `data-annotask-source-module` via prefix so `@kobalte/core` also
    *  covers `@kobalte/core/button`. */
   module?: string
+  /** Per-rect confidence derived from the originating site (or the parent
+   *  source when the site didn't set one). Drives fallback/precise overlay
+   *  styling in `_highlights.css`. Defaults to `'precise'`. */
+  confidence?: HighlightConfidence
+  /** Every source that resolved to this DOM element. `sourceName` is the
+   *  primary (first) owner for back-compat with existing callers; multi-
+   *  source elements list every contributor here so the overlay can show a
+   *  count badge and a multi-line hover label. Length ≥ 1. */
+  ownerSources: string[]
+  /** Per-owner labels, aligned with `ownerSources` by index. Lets the hover
+   *  tooltip render "useFoo\nuseBar" without re-joining names through the
+   *  source list. */
+  ownerLabels: string[]
 }
 
 /**
@@ -190,12 +218,15 @@ export function useDataHighlights(deps: {
         return
       }
 
-      // Build the location list (one entry per (source, site)). First-source
-      // wins on collision — if two sources share a file:line, only the first
-      // one's location is sent, so the match is attributed to it.
-      const seen = new Set<string>()
+      // Build the location list (one entry per unique (file, line, tag)).
+      // When two sources share a location we accumulate both owners in
+      // `siteOwners` rather than dropping the second — the overlay then
+      // renders a count badge and a multi-owner tooltip. refToken is now the
+      // location key itself so the bridge's match deduplicates across owners
+      // before we even round-trip.
       const locations: Array<{ ref: string; file: string; line: number; tag?: string; mfe?: string; module?: string }> = []
-      const siteMeta = new Map<string, { sourceName: string; color: string; label: string; tag?: string; module?: string }>()
+      interface OwnerMeta { sourceName: string; color: string; label: string; tag?: string; module?: string; confidence: HighlightConfidence }
+      const siteOwners = new Map<string, OwnerMeta[]>()
 
       // Workspace-aware path translation: catalogs store workspace-relative
       // paths, but the iframe DOM carries MFE-local `data-annotask-file`
@@ -228,14 +259,28 @@ export function useDataHighlights(deps: {
           // Include tag in the dedup key so two sites at the same file:line
           // but different tags (e.g. Card outer + Checkbox inner) stay distinct.
           const key = `${site.file}::${site.line}::${site.tag ?? ''}`
-          if (seen.has(key)) continue
-          seen.add(key)
-          const refToken = `${src.name}\u0001${key}`
           const label = site.label ?? src.defaultLabel ?? src.name
           const color = site.color ?? sourceColor
-          siteMeta.set(refToken, { sourceName: src.name, color, label, tag: site.tag, module: site.module })
+          // Per-site confidence falls back to the parent source's, then to
+          // `'precise'`. File-level wildcard sites (line === 0) default to
+          // `'fallback'` when neither the site nor the source sets one —
+          // useDataSources emits that pattern for partial binding graphs.
+          const confidence: HighlightConfidence =
+            site.confidence
+            ?? src.confidence
+            ?? (site.line === 0 ? 'fallback' : 'precise')
+          const entry: OwnerMeta = { sourceName: src.name, color, label, tag: site.tag, module: site.module, confidence }
+          const existing = siteOwners.get(key)
+          if (existing) {
+            // Same (file, line, tag) already has an owner — stack this source
+            // instead of silently dropping it. The bridge still only gets one
+            // `locations` entry for this key, so we don't inflate the query.
+            existing.push(entry)
+            continue
+          }
+          siteOwners.set(key, [entry])
           const bridgeLoc = toBridgeLoc(site.file)
-          locations.push({ ref: refToken, file: bridgeLoc.file, line: site.line, tag: site.tag, mfe: bridgeLoc.mfe, module: site.module })
+          locations.push({ ref: key, file: bridgeLoc.file, line: site.line, tag: site.tag, mfe: bridgeLoc.mfe, module: site.module })
         }
       }
 
@@ -247,24 +292,57 @@ export function useDataHighlights(deps: {
 
       const { matches, truncated: wasTruncated } = await iframe.getLocationElementRects(locations)
 
-      const out: DataHighlightRect[] = []
+      // Two layers of merging: (1) the bridge returns one match per (ref,
+      // eid) so the same refToken with different DOM matches produces
+      // multiple rects, fine; (2) two different refTokens can resolve to
+      // the same eid when separate sources both point at one element —
+      // merge those into a single rect with an `ownerSources` list so the
+      // UI can show both owners instead of drawing two stacked overlays.
+      const byEid = new Map<string, DataHighlightRect>()
+      const confidenceRank: Record<HighlightConfidence, number> = {
+        precise: 2,
+        fallback: 1,
+        'runtime-only': 0,
+      }
       for (const m of matches) {
-        if (out.length >= RECT_CAP) break
-        const meta = m.ref ? siteMeta.get(m.ref) : undefined
-        if (!meta) continue
-        out.push({
-          sourceName: meta.sourceName,
+        const owners = m.ref ? siteOwners.get(m.ref) : undefined
+        if (!owners || owners.length === 0) continue
+        const primary = owners[0]
+        const existing = byEid.get(m.eid)
+        if (existing) {
+          // Another ref already mapped to this element — merge owner lists
+          // and promote confidence to the strongest match so the overlay
+          // doesn't misrepresent a precise+fallback combo as fallback.
+          for (const o of owners) {
+            if (existing.ownerSources.includes(o.sourceName)) continue
+            existing.ownerSources.push(o.sourceName)
+            existing.ownerLabels.push(o.label)
+          }
+          const currentRank = confidenceRank[existing.confidence ?? 'precise']
+          for (const o of owners) {
+            if (confidenceRank[o.confidence] > currentRank) {
+              existing.confidence = o.confidence
+            }
+          }
+          continue
+        }
+        if (byEid.size >= RECT_CAP) continue
+        byEid.set(m.eid, {
+          sourceName: primary.sourceName,
           file: m.file,
           line: m.line,
           eid: m.eid,
           rect: m.rect,
-          color: meta.color,
-          label: meta.label,
-          tag: meta.tag,
-          module: meta.module,
+          color: primary.color,
+          label: primary.label,
+          tag: primary.tag,
+          module: primary.module,
+          confidence: primary.confidence,
+          ownerSources: owners.map(o => o.sourceName),
+          ownerLabels: owners.map(o => o.label),
         })
       }
-      rects.value = out
+      rects.value = [...byEid.values()]
       truncated.value = wasTruncated || matches.length > RECT_CAP
     } finally {
       refreshInFlight = false

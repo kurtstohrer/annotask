@@ -25,6 +25,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_data_sources` | List detected data libraries and project data sources |
 | `annotask_get_data_source_examples` | Get real in-repo usage examples for a data source |
 | `annotask_get_data_source_details` | Get definition-level detail for a data source |
+| `annotask_get_runtime_endpoints` | List endpoints the iframe has actually hit at runtime — aggregated per (origin, method, pattern). `orphans_only: true` surfaces gaps the static scanner missed |
 | `annotask_get_api_schemas` | List discovered OpenAPI, GraphQL, tRPC, and JSON Schema sources |
 | `annotask_get_api_operation` | Fetch one API operation by path |
 | `annotask_resolve_endpoint` | Match a concrete URL to a known API operation |
@@ -74,6 +75,7 @@ annotask data-context <id>   # Resolve task data context
 annotask interaction-history <id>  # Pre-task user trace (always captured, embed toggle decides payload inclusion)
 annotask rendered-html <id>  # outerHTML snapshot of the task's selected element
 annotask data-sources        # List data libraries + project data sources
+annotask runtime-endpoints   # List endpoints the iframe hit at runtime (--orphans-only for gaps)
 annotask data-source-examples useUserQuery # Real in-repo data-source usages
 annotask data-source-details useUserQuery  # Definition-level data-source detail
 annotask api-schemas         # Discovered API schemas
@@ -111,7 +113,8 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET /__annotask/api/source-excerpt` — Direct source excerpt by file/line
 - `GET /__annotask/api/data-context/:taskId` — Stored or resolved task data context
 - `GET /__annotask/api/data-context/probe|resolve|element` — Shell data-context helpers
-- `GET /__annotask/api/data-sources` — Project data-source catalog
+- `GET /__annotask/api/data-sources` — Project data-source catalog (add `?include_runtime=true` to append the runtime-observed endpoint catalog)
+- `GET|POST|DELETE /__annotask/api/runtime-endpoints` — Runtime-observed endpoint catalog. Iframe fetch/XHR/beacon calls land here automatically. `GET ?merge_static=true` enriches rows with matching static sources + OpenAPI operations; `GET ?route=PATH` filters to one iframe route
 - `GET /__annotask/api/data-source-examples/:name` — In-repo data-source usage examples
 - `GET /__annotask/api/data-source-details/:name` — Definition-level data-source detail
 - `GET /__annotask/api/data-source-bindings/:name` — Binding graph for highlights

@@ -1,30 +1,35 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useDataSources } from '../composables/useDataSources'
+import { latencyBucketLabel } from '../composables/useDataSources'
 import { useLocalStorageEnum } from '../composables/useLocalStorageRef'
 import { useWorkspace } from '../composables/useWorkspace'
 import DataSourceDetailPane from './DataSourceDetailPane.vue'
 import MfeFilterDropdown from './MfeFilterDropdown.vue'
 import Icon from './Icon.vue'
-import type { DataSource } from '../../schema'
+import type { DataSource, RuntimeEndpoint } from '../../schema'
 
 const props = withDefaults(defineProps<{
-  highlightRects: Array<{ sourceName: string; label: string; color: string }>
+  highlightRects: Array<{ sourceName: string; label: string; color: string; ownerSources?: string[] }>
   /** 'data' shows APIs + Hooks tabs; 'libraries' renders the libraries list
    *  exclusively (used by the standalone Develop > Libraries sub-section). */
   variant?: 'data' | 'libraries'
-}>(), { variant: 'data' })
+  /** The iframe's current route — threaded in from App.vue's useIframeManager.
+   *  Used by the Network tab's "This route" filter so we scope by the app's
+   *  pathname, NOT the shell's (which is always `/__annotask/`). */
+  currentRoute?: string
+}>(), { variant: 'data', currentRoute: '/' })
 
 const ds = useDataSources()
 const ws = useWorkspace()
 onMounted(() => { ws.load() })
 
-type DataTab = 'apis' | 'hooks'
-const storedTab = useLocalStorageEnum<DataTab>('annotask:dataTab', ['apis', 'hooks'], 'apis')
+type DataTab = 'apis' | 'hooks' | 'network'
+const storedTab = useLocalStorageEnum<DataTab>('annotask:dataTab', ['apis', 'hooks', 'network'], 'apis')
 
 // Effective active tab — forced to 'libraries' when the caller asked for the
 // libraries variant, otherwise whatever the user last viewed.
-const activeTab = computed<'apis' | 'hooks' | 'libraries'>(() =>
+const activeTab = computed<'apis' | 'hooks' | 'libraries' | 'network'>(() =>
   props.variant === 'libraries' ? 'libraries' : storedTab.value)
 
 // Drive highlight context from the active tab: APIs tab highlights schemas,
@@ -48,21 +53,109 @@ onMounted(() => {
 const filterPlaceholder = computed(() => {
   if (activeTab.value === 'hooks') return 'Filter hooks by name, file, endpoint…'
   if (activeTab.value === 'apis') return 'Filter APIs by location, title, kind…'
+  if (activeTab.value === 'network') return 'Filter observed endpoints by path or method…'
   return 'Filter libraries by name or pattern…'
 })
 
+// Network tab filters — local to the page. Always scoped to the current
+// iframe route (the "All routes" view was removed because per-route is the
+// only view that answers the question users actually have: "what did THIS
+// page hit, and how slow?"). Orphans toggle and search filter still apply
+// on top of the route scope.
+const networkFilterText = ref('')
+const networkOrphansOnly = ref(false)
+
+// The iframe route comes from the parent — reading window.location here would
+// give `/__annotask/` (the shell's own pathname), not the route the user's
+// app is actually displaying.
+const currentIframeRoute = computed(() => props.currentRoute || '/')
+
+const visibleRuntimeEndpoints = computed(() => {
+  const route = currentIframeRoute.value
+  let list = ds.runtimeEndpoints.value.filter(ep => ep.routes.some(r => r.route === route))
+  if (networkOrphansOnly.value) {
+    list = list.filter(ep => !ep.matchedSources || ep.matchedSources.length === 0)
+  }
+  const q = networkFilterText.value.trim().toLowerCase()
+  if (q) {
+    list = list.filter(ep =>
+      ep.pattern.toLowerCase().includes(q)
+      || ep.path.toLowerCase().includes(q)
+      || ep.method.toLowerCase().includes(q)
+      || (ep.sampleUrls?.some(u => u.toLowerCase().includes(q)) ?? false),
+    )
+  }
+  return list
+})
+
+/** Tooltip for the latency-colored swatch — shows bucket and the underlying
+ *  numbers so a user can see why a row reads "slow". */
+function latencySwatchTooltip(ep: RuntimeEndpoint): string {
+  const bucket = latencyBucketLabel(ep.avgMs)
+  if (typeof ep.avgMs !== 'number') {
+    return 'No timed samples yet — interact with the app and reload this row.'
+  }
+  const lines = [`Latency: ${bucket}`, `avg: ${Math.round(ep.avgMs)}ms`]
+  if (typeof ep.maxMs === 'number') lines.push(`max: ${Math.round(ep.maxMs)}ms`)
+  if (typeof ep.latencySamples === 'number') lines.push(`(${ep.latencySamples} timed sample${ep.latencySamples === 1 ? '' : 's'})`)
+  return lines.join('\n')
+}
+
+function statusTone(status: number | undefined): 'ok' | 'warn' | 'err' | 'muted' {
+  if (typeof status !== 'number') return 'muted'
+  if (status >= 500) return 'err'
+  if (status >= 400) return 'warn'
+  if (status >= 200 && status < 400) return 'ok'
+  return 'muted'
+}
+
+async function clearRuntimeEndpoints() {
+  try {
+    await fetch('/__annotask/api/runtime-endpoints', { method: 'DELETE' })
+    await ds.reloadRuntime()
+  } catch { /* best-effort */ }
+}
+
+/** Currently-focused runtime endpoint key. Mirrors the select/clear pattern
+ *  on Hooks/APIs rows — click a row to pin its highlights (dims others),
+ *  click again to release. Hover sets the same focus transiently so the
+ *  matched elements flash in the iframe while the user scans the list. */
+const selectedNetKey = ref<string | null>(null)
+
+function onNetworkRowEnter(key: string) {
+  // Don't override a pinned selection.
+  if (selectedNetKey.value) return
+  ds.focusNetworkEndpoint(key)
+}
+function onNetworkRowLeave() {
+  if (selectedNetKey.value) return
+  ds.focusNetworkEndpoint(null)
+}
+function onNetworkRowClick(key: string) {
+  selectedNetKey.value = selectedNetKey.value === key ? null : key
+  ds.focusNetworkEndpoint(selectedNetKey.value)
+}
+
 function matchCount(name: string): number {
   let n = 0
-  for (const h of props.highlightRects) if (h.sourceName === name) n++
+  for (const h of props.highlightRects) {
+    // A multi-owner rect counts for every source that contributed to it —
+    // previously the overlay silently dropped secondary owners, which left
+    // their rows claiming zero matches even when the element WAS on page.
+    if (h.sourceName === name || h.ownerSources?.includes(name)) n++
+  }
   return n
 }
 
 /** Distinct source names present in the current overlay rects. Drives the
  *  "On page" filter and its pill count — a source is on-page iff it has at
- *  least one rendered highlight rect right now. */
+ *  least one rendered highlight rect right now (as primary or multi-owner). */
 const onPageSet = computed<Set<string>>(() => {
   const s = new Set<string>()
-  for (const h of props.highlightRects) s.add(h.sourceName)
+  for (const h of props.highlightRects) {
+    s.add(h.sourceName)
+    if (h.ownerSources) for (const o of h.ownerSources) s.add(o)
+  }
   return s
 })
 
@@ -104,23 +197,43 @@ const onPageCount = computed(() => {
   return 0
 })
 
-/** Source name used by useDataSources for a hook row — file-qualified so
- *  same-named entries in sibling MFEs (`apiHealth` in every stress-test
- *  MFE) stay addressable distinctly for per-row highlight counts. */
-function hookSourceName(item: { file: string; name: string }): string {
-  return `${item.file}\u0001${item.name}`
+/** Source name used by useDataSources for a hook row — file + method
+ *  qualified so same-named entries in sibling MFEs (`apiHealth` in every
+ *  stress-test MFE) and same-endpoint entries that differ only by HTTP
+ *  method (GET vs PATCH on `/foo`) stay addressable distinctly. Must
+ *  match `entryBindingKey` on the composable side. */
+function hookSourceName(item: { file: string; name: string; method?: string }): string {
+  return `${item.file}\u0001${item.name}\u0002${item.method ?? ''}`
+}
+
+/** Binding-graph confidence for a hook row — proxies to useDataSources so
+ *  the template can show a compact "fallback" badge without each template
+ *  having to reach into the graph map. `null` means the graph hasn't
+ *  resolved yet (row renders with no badge). */
+function hookConfidence(item: { file: string; name: string; method?: string }) {
+  return ds.bindingConfidenceFor(item)
 }
 
 /** Multi-line tooltip summary for a data-source row. */
-function hookTooltip(item: { name: string; dataKind: DataSource['kind']; file: string; line?: number; endpoint?: string; used_count: number }): string {
+function hookTooltip(item: { name: string; dataKind: DataSource['kind']; file: string; line?: number; endpoint?: string; method?: string; used_count: number; discovered_by?: 'static' | 'runtime' }): string {
+  const isRuntime = item.discovered_by === 'runtime'
   const lines: string[] = [
-    `${item.name} — ${kindLabel(item.dataKind)}`,
-    `${item.file}${item.line ? ':' + item.line : ''}`,
+    `${item.name} — ${kindLabel(item.dataKind)}${isRuntime ? ' (runtime-discovered)' : ''}`,
+    isRuntime ? '(no source location — found by network capture)' : `${item.file}${item.line ? ':' + item.line : ''}`,
   ]
   if (item.endpoint) lines.push(`Endpoint: ${item.endpoint}`)
-  if (item.used_count > 0) lines.push(`${item.used_count} reference${item.used_count === 1 ? '' : 's'} in src/`)
+  if (item.used_count > 0) {
+    lines.push(isRuntime
+      ? `${item.used_count} runtime call${item.used_count === 1 ? '' : 's'} captured`
+      : `${item.used_count} reference${item.used_count === 1 ? '' : 's'} in src/`)
+  }
   const matches = matchCount(hookSourceName(item))
   if (matches > 0) lines.push(`${matches} element${matches === 1 ? '' : 's'} highlighted on this route`)
+  const conf = hookConfidence(item)
+  if (conf && conf.confidence === 'fallback') {
+    lines.push('Match confidence: fallback (file-level wildcard)')
+    if (conf.note) lines.push(conf.note)
+  }
   return lines.join('\n')
 }
 
@@ -227,6 +340,10 @@ function cancelCreate() {
           Hooks
           <span v-if="ds.dataSourceItems.value.length" class="data-tab-badge">{{ ds.dataSourceItems.value.length }}</span>
         </button>
+        <button :class="['data-tab', { active: activeTab === 'network' }]" @click="storedTab = 'network'" title="Network calls the iframe has actually made. Fills gaps the regex scanner misses.">
+          Network
+          <span v-if="ds.runtimeEndpoints.value.length" class="data-tab-badge">{{ ds.runtimeEndpoints.value.length }}</span>
+        </button>
       </div>
       <div v-if="activeTab === 'libraries'" class="data-search">
         <input
@@ -234,6 +351,13 @@ function cancelCreate() {
           :placeholder="filterPlaceholder"
           :value="ds.filterText.value"
           @input="ds.filterText.value = ($event.target as HTMLInputElement).value"
+        />
+      </div>
+      <div v-else-if="activeTab === 'network'" class="data-search">
+        <input
+          type="search"
+          :placeholder="filterPlaceholder"
+          v-model="networkFilterText"
         />
       </div>
       <div v-else class="filter-group" role="tablist" aria-label="Visibility filter">
@@ -299,11 +423,21 @@ function cancelCreate() {
                 <span class="item-kind" :data-kind="item.dataKind">{{ kindLabel(item.dataKind) }}</span>
                 <span class="item-name">{{ item.name }}</span>
                 <span v-if="item.endpoint" class="item-endpoint">{{ item.endpoint }}</span>
+                <span
+                  v-if="item.discovered_by === 'runtime'"
+                  class="item-badge warn"
+                  title="Discovered by runtime network capture — the regex scanner didn't pin it to a source location. Use annotask_get_runtime_endpoints for call stats, or grep the codebase to locate the call site."
+                >runtime</span>
+                <span
+                  v-if="hookConfidence(item)?.confidence === 'fallback'"
+                  class="item-badge warn"
+                  :title="`Match confidence: fallback — the binding analyzer couldn't precisely locate this source and fell back to file-level wildcard matching. Highlights may include unrelated elements.${hookConfidence(item)?.note ? '\\n' + hookConfidence(item)?.note : ''}`"
+                >fallback</span>
                 <span v-if="matchCount(hookSourceName(item)) > 0" class="item-match">
                   {{ matchCount(hookSourceName(item)) }} el
                 </span>
-                <span v-if="item.used_count > 0" class="item-used">{{ item.used_count }} ref{{ item.used_count === 1 ? '' : 's' }}</span>
-                <span class="item-file">{{ item.file }}</span>
+                <span v-if="item.used_count > 0" class="item-used">{{ item.used_count }} {{ item.discovered_by === 'runtime' ? (item.used_count === 1 ? 'call' : 'calls') : (item.used_count === 1 ? 'ref' : 'refs') }}</span>
+                <span class="item-file">{{ item.file || '—' }}</span>
               </div>
             </button>
           </div>
@@ -339,6 +473,82 @@ function cancelCreate() {
                 </span>
                 <span class="item-used">{{ item.schema.operation_count }} op{{ item.schema.operation_count === 1 ? '' : 's' }}</span>
                 <span class="item-file">{{ item.schema.location }}</span>
+              </div>
+            </button>
+          </div>
+        </template>
+
+        <!-- NETWORK (runtime-observed endpoints, scoped to current route) -->
+        <template v-else-if="activeTab === 'network'">
+          <div class="network-controls">
+            <span class="network-route-tag" :title="`Showing endpoints captured on ${currentIframeRoute}`">
+              <code>{{ currentIframeRoute }}</code>
+            </span>
+            <label class="network-toggle">
+              <input type="checkbox" v-model="networkOrphansOnly" />
+              <span title="Endpoints the static scanner didn't discover — candidates for wider regex coverage or a real API contract.">Orphans only</span>
+            </label>
+            <button
+              class="data-btn icon"
+              title="Clear captured endpoints"
+              aria-label="Clear captured endpoints"
+              @click="clearRuntimeEndpoints"
+            >
+              <Icon name="trash" :size="13" :stroke-width="2" />
+            </button>
+          </div>
+          <div v-if="visibleRuntimeEndpoints.length === 0" class="data-empty">
+            <p v-if="networkOrphansOnly">No orphan endpoints on <code>{{ currentIframeRoute }}</code> — every runtime call maps to a static data source.</p>
+            <p v-else-if="networkFilterText">No matches for "{{ networkFilterText }}" on <code>{{ currentIframeRoute }}</code>.</p>
+            <p v-else>No endpoints captured on <code>{{ currentIframeRoute }}</code> yet.</p>
+            <p class="data-empty-hint">The iframe's bridge client monkey-patches <code>fetch</code>, <code>XMLHttpRequest</code>, and <code>navigator.sendBeacon</code>. Interact with the app and calls will appear here. Aggregation is keyed by (origin, method, pattern).</p>
+          </div>
+          <div v-else class="data-list-groups">
+            <button
+              v-for="ep in visibleRuntimeEndpoints"
+              :key="ds.networkEndpointKey(ep)"
+              class="data-list-item"
+              :class="{ selected: selectedNetKey === ds.networkEndpointKey(ep) }"
+              :title="ep.sampleUrls.join('\n')"
+              @mouseenter="onNetworkRowEnter(ds.networkEndpointKey(ep))"
+              @mouseleave="onNetworkRowLeave()"
+              @click="onNetworkRowClick(ds.networkEndpointKey(ep))"
+            >
+              <div class="item-row">
+                <span
+                  class="item-swatch"
+                  :style="{ background: ds.colorForEndpoint(ep) }"
+                  :title="latencySwatchTooltip(ep)"
+                />
+                <span class="item-kind net-method" :data-method="ep.method">{{ ep.method }}</span>
+                <code class="net-pattern">{{ ep.pattern }}</code>
+                <span
+                  v-if="ep.lastStatus != null"
+                  class="net-status"
+                  :data-tone="statusTone(ep.lastStatus)"
+                >{{ ep.lastStatus }}</span>
+                <span
+                  v-if="typeof ep.avgMs === 'number'"
+                  class="net-latency"
+                  :style="{ color: ds.colorForEndpoint(ep) }"
+                  :title="latencySwatchTooltip(ep)"
+                >{{ Math.round(ep.avgMs) }}ms</span>
+                <span v-if="matchCount(ds.networkEndpointKey(ep)) > 0" class="item-match">
+                  {{ matchCount(ds.networkEndpointKey(ep)) }} el
+                </span>
+                <span v-if="ep.matchedSources?.length" class="item-badge" :title="`Matches static: ${ep.matchedSources.join(', ')}`">static</span>
+                <span v-else class="item-badge warn" title="Not found by the regex scanner — only discovered at runtime.">orphan</span>
+                <span v-if="ep.matchedSchemaLocation" class="item-badge" :title="`OpenAPI: ${ep.matchedSchemaLocation}${ep.matchedOperationId ? ' · ' + ep.matchedOperationId : ''}`">schema</span>
+                <span class="item-used">{{ ep.count }} call{{ ep.count === 1 ? '' : 's' }}</span>
+              </div>
+              <div class="item-row net-meta">
+                <span v-if="ep.origin" class="net-origin">{{ ep.origin }}</span>
+                <span class="net-routes">
+                  <span v-for="r in ep.routes.slice(0, 4)" :key="r.route" class="net-route-chip" :title="`${r.count} call${r.count === 1 ? '' : 's'} on ${r.route}`">
+                    {{ r.route }}
+                  </span>
+                  <span v-if="ep.routes.length > 4" class="net-route-more">+{{ ep.routes.length - 4 }}</span>
+                </span>
               </div>
             </button>
           </div>
@@ -1053,6 +1263,119 @@ function cancelCreate() {
   font-style: italic;
   font-size: 11px;
   padding: 4px 6px;
+}
+
+.network-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.network-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.network-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+.net-method {
+  font-weight: 700;
+}
+.net-method[data-method="GET"]     { color: var(--info); }
+.net-method[data-method="POST"]    { color: var(--success); }
+.net-method[data-method="PUT"]     { color: var(--warning); }
+.net-method[data-method="PATCH"]   { color: var(--warning); }
+.net-method[data-method="DELETE"]  { color: var(--danger); }
+.net-pattern {
+  font-family: var(--font-mono, monospace);
+  color: var(--text);
+  font-weight: 500;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.net-status {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.net-status[data-tone="ok"]   { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.net-status[data-tone="warn"] { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
+.net-status[data-tone="err"]  { background: color-mix(in srgb, var(--danger)  20%, transparent); color: var(--danger); }
+
+/* Latency chip — color is set inline from `colorForLatency` so it tracks
+ * the same bucket as the swatch and the iframe overlay. */
+.net-latency {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+/* Route tag in the network controls — replaces the All/This-route toggle. */
+.network-route-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.network-route-tag code {
+  font-family: var(--font-mono, monospace);
+  color: var(--text);
+}
+.net-meta {
+  margin-top: 3px;
+  gap: 6px;
+}
+.net-origin {
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+.net-routes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+  justify-content: flex-end;
+}
+.net-route-chip {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.net-route-more {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 1px 3px;
 }
 
 .data-empty {

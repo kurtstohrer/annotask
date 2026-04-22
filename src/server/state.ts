@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { isSafeScreenshot } from './validation.js'
+import { createRuntimeEndpointStore, type RuntimeEndpointStore } from './runtime-endpoints.js'
+import type { NetworkCall, RuntimeEndpointCatalog } from '../schema.js'
 
 const DEFAULT_DESIGN_SPEC = {
   initialized: false,
@@ -81,6 +83,12 @@ export interface ProjectState {
   readRenderedHtml: (taskId: string) => Promise<string | null>
   getPerformanceSnapshot: () => unknown
   setPerformanceSnapshot: (data: unknown) => void
+  /** Ingest a batch of iframe-captured network calls into the runtime endpoint catalog. */
+  ingestNetworkCalls: (calls: NetworkCall[]) => void
+  /** Read the aggregated runtime endpoint catalog. */
+  getRuntimeEndpointCatalog: () => RuntimeEndpointCatalog
+  /** Drop the runtime endpoint catalog (in-memory + on-disk). */
+  clearRuntimeEndpoints: () => void
   /** Wait for any pending writes to complete. Use before process shutdown. */
   flush: () => Promise<void>
   dispose: () => void
@@ -339,8 +347,27 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     perfLock = run.catch(() => {})
   }
 
+  // ── Runtime endpoint catalog ──
+  const runtimeEndpoints: RuntimeEndpointStore = createRuntimeEndpointStore(projectRoot)
+
+  function ingestNetworkCalls(calls: NetworkCall[]): void {
+    runtimeEndpoints.ingest(calls)
+    // Notify any live WebSocket listeners so the Data view can update without
+    // polling. Event name mirrors the existing 'tasks:updated' broadcast.
+    broadcast('runtime-endpoints:updated', runtimeEndpoints.getCatalog())
+  }
+
+  function getRuntimeEndpointCatalog(): RuntimeEndpointCatalog {
+    return runtimeEndpoints.getCatalog()
+  }
+
+  function clearRuntimeEndpoints(): void {
+    runtimeEndpoints.clear()
+    broadcast('runtime-endpoints:updated', runtimeEndpoints.getCatalog())
+  }
+
   async function flush() {
-    await Promise.allSettled([taskLock, taskFlushChain, perfLock])
+    await Promise.allSettled([taskLock, taskFlushChain, perfLock, runtimeEndpoints.flush()])
   }
 
   function dispose() {
@@ -360,6 +387,9 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     readRenderedHtml,
     getPerformanceSnapshot,
     setPerformanceSnapshot,
+    ingestNetworkCalls,
+    getRuntimeEndpointCatalog,
+    clearRuntimeEndpoints,
     flush,
     dispose,
   }

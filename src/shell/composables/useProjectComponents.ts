@@ -150,17 +150,20 @@ async function load(iframe?: ReturnType<typeof useIframeManager>): Promise<void>
 
 async function refreshRenderedFiles(iframe: ReturnType<typeof useIframeManager>): Promise<void> {
   const { files } = await iframe.listRenderedFiles()
-  // The bridge returns MFE-local paths. Convert each to its workspace-
-  // relative form by prefixing the package dir for that MFE, so comparisons
-  // against the catalog (whose paths are workspace-relative) line up.
+  // The bridge returns package-local paths (relative to vite's root = the
+  // running package). Convert each to its workspace-relative form so the
+  // shell can intersect them against the workspace-rooted component-usage
+  // catalog. MFE elements carry their tag and use the catalog's MFE dir;
+  // un-tagged elements fall back to the running package's own dir.
   const ws = useWorkspace()
   const dirByMfe = new Map<string, string>()
   for (const pkg of ws.info.value?.packages ?? []) {
     if (pkg.mfe) dirByMfe.set(pkg.mfe, pkg.dir)
   }
+  const currentDir = ws.info.value?.currentDir ?? ''
   const out = new Set<string>()
   for (const entry of files) {
-    const dir = entry.mfe ? dirByMfe.get(entry.mfe) : undefined
+    const dir = entry.mfe ? dirByMfe.get(entry.mfe) : currentDir
     out.add(dir ? `${dir}/${entry.file}` : entry.file)
   }
   renderedFiles.value = out
@@ -366,8 +369,14 @@ async function loadUsagesFor(comp: LibraryComponent): Promise<void> {
   // Once examples arrive we narrow to precise (file, line) sites.
   pushHighlightsFor(comp, [])
   try {
+    // Thread the selected library through so the returned examples can't
+    // cross-contaminate with a same-name component from another library —
+    // e.g. Mantine `Button` vs Radix `Button`. The server applies the same
+    // `fromMatchesLibrary` rule the shell uses for highlight attribution.
+    const lib = selectedLibrary.value
+    const libQs = lib ? `&library=${encodeURIComponent(lib)}` : ''
     const data = await fetchJson<{ examples?: UsageExample[] }>(
-      `component-examples/${encodeURIComponent(comp.name)}?limit=10`,
+      `component-examples/${encodeURIComponent(comp.name)}?limit=10${libQs}`,
     )
     // If another select() raced ahead of us, drop this response.
     if (seq !== usagesFetchSeq) return

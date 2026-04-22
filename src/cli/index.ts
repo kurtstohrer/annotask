@@ -153,6 +153,8 @@ if (command === 'watch') {
   fetchApiOperation()
 } else if (command === 'resolve-endpoint') {
   resolveEndpointCmd()
+} else if (command === 'runtime-endpoints') {
+  fetchRuntimeEndpoints()
 } else if (command === 'mcp') {
   runMcpStdio()
 } else if (command === 'help' || command === '--help') {
@@ -871,11 +873,15 @@ async function fetchCodeContext() {
 async function fetchComponentExamples() {
   const name = args[1]
   if (!name) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask component-examples <ComponentName> [--limit=N]`)
+    console.error(`${color('31', '[Annotask]')} Usage: annotask component-examples <ComponentName> [--limit=N] [--library=NAME]`)
     process.exit(1)
   }
   const limitArg = args.find(a => a.startsWith('--limit='))?.split('=')[1]
-  const qs = limitArg ? `?limit=${encodeURIComponent(limitArg)}` : ''
+  const libraryArg = args.find(a => a.startsWith('--library='))?.split('=')[1]
+  const params = new URLSearchParams()
+  if (limitArg) params.set('limit', limitArg)
+  if (libraryArg) params.set('library', libraryArg)
+  const qs = params.toString() ? `?${params.toString()}` : ''
   try {
     const res = await fetch(`${apiUrl}/component-examples/${encodeURIComponent(name)}${qs}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -994,6 +1000,46 @@ async function fetchDataSources() {
     console.log(fmt(data))
   } catch (err: any) {
     console.error(`${color('31', '[Annotask]')} Failed to fetch data sources: ${err.message}`)
+    process.exit(1)
+  }
+}
+
+// ── Runtime endpoints: what the iframe has actually hit ─
+
+async function fetchRuntimeEndpoints() {
+  const route = args.find(a => a.startsWith('--route='))?.split('=')[1]
+  const method = args.find(a => a.startsWith('--method='))?.split('=')[1]
+  const search = args.find(a => a.startsWith('--search='))?.split('=')[1]
+  const orphansOnly = args.includes('--orphans-only')
+  const enrich = args.includes('--no-enrich') ? 'false' : 'true'
+  const params = new URLSearchParams()
+  params.set('merge_static', enrich)
+  if (route) params.set('route', route)
+  try {
+    const res = await fetch(`${apiUrl}/runtime-endpoints?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json() as { endpoints?: Array<Record<string, unknown>> }
+    let endpoints = data.endpoints ?? []
+    if (method) {
+      const m = method.toUpperCase()
+      endpoints = endpoints.filter(ep => (ep.method as string) === m)
+    }
+    if (search) {
+      const q = search.toLowerCase()
+      endpoints = endpoints.filter(ep =>
+        String(ep.path || '').toLowerCase().includes(q)
+        || String(ep.pattern || '').toLowerCase().includes(q),
+      )
+    }
+    if (orphansOnly) {
+      endpoints = endpoints.filter(ep => {
+        const matched = ep.matchedSources as string[] | undefined
+        return !matched || matched.length === 0
+      })
+    }
+    console.log(fmt({ ...data, endpoints }))
+  } catch (err: any) {
+    console.error(`${color('31', '[Annotask]')} Failed to fetch runtime endpoints: ${err.message}`)
     process.exit(1)
   }
 }
@@ -1261,6 +1307,9 @@ function printHelp() {
   api-schemas     List discovered OpenAPI / GraphQL / tRPC schemas (add --detail for full operations)
   api-operation   Fetch one operation by path (+ optional --method / --schema-location)
   resolve-endpoint  Match a concrete URL against discovered schemas; returns best-match operation
+  runtime-endpoints List endpoints the iframe has actually hit at runtime (fetch/XHR/beacon).
+                    Aggregated per (origin, method, path pattern). Supplements the regex
+                    scanner by capturing dynamic endpoints the static pass misses.
   init-skills     Install AI agent skills to your project
   init-mcp        Write editor MCP config (Claude Code / Cursor / VS Code / Windsurf)
   mcp             Start MCP server (stdio transport, proxies to dev server)
@@ -1295,7 +1344,11 @@ function printHelp() {
                     api-schemas: filter by openapi|graphql|trpc|jsonschema
   --method=M        api-operation / resolve-endpoint: HTTP method (GET/POST/...) or GraphQL "query"/"mutation"
   --schema-location=L api-operation: disambiguate when multiple schemas contain the same path
-  --search=Q        data-sources: substring match on project entry name
+  --search=Q        data-sources / runtime-endpoints: substring match on path/pattern
+  --route=PATH      runtime-endpoints: only endpoints hit on this iframe route
+  --orphans-only    runtime-endpoints: only endpoints with no matching static source
+                    (gaps the regex scanner missed)
+  --no-enrich       runtime-endpoints: skip static-source + OpenAPI cross-references
   --force           Overwrite existing skills / MCP entries (for init-skills, init-mcp)
   --target=NAME     Comma-separated targets (default: claude,agents)
                     Built-in: claude, agents, copilot

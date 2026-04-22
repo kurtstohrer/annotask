@@ -12,6 +12,7 @@ import { useKeyboardShortcuts } from './composables/useKeyboardShortcuts'
 import { useA11yScanner } from './composables/useA11yScanner'
 import { usePerfMonitor } from './composables/usePerfMonitor'
 import { useErrorMonitor } from './composables/useErrorMonitor'
+import { useNetworkMonitor } from './composables/useNetworkMonitor'
 import type { A11yViolation } from './composables/useA11yScanner'
 // Annotation overlays (still used inline in canvas area)
 import PinOverlay from './components/PinOverlay.vue'
@@ -343,6 +344,8 @@ function onCreateA11yTask(v: A11yViolation) {
 const errorMonitor = useErrorMonitor(iframe, taskSystem, currentRoute)
 const { errorCount, warnCount, paused: errorsPaused, clearErrors, createErrorTask } = errorMonitor
 
+const networkMonitor = useNetworkMonitor(iframe)
+
 const perfMonitor = usePerfMonitor(iframe, taskSystem, currentRoute)
 const { recording: perfRecording, scanLoading: perfScanLoading, perfFindings,
         startRecording, stopRecording: stopPerfRecording, scanPerf: runPerfScan, createPerfTask } = perfMonitor
@@ -365,15 +368,20 @@ const dataHighlightActive = computed(() =>
   (shellView.value === 'design' && designSection.value === 'components'))
 const dataHighlights = useDataHighlights({ iframe, active: dataHighlightActive })
 
-function rectClass(h: { eid: string; sourceName: string }) {
+function rectClass(h: { eid: string; sourceName: string; ownerSources?: string[]; confidence?: 'precise' | 'fallback' | 'runtime-only' }) {
   const fEid = dataHighlights.focusedEid.value
   const fName = dataHighlights.focusedName.value
-  const isFocused = fEid ? fEid === h.eid : fName === h.sourceName
+  const owners = h.ownerSources ?? [h.sourceName]
+  const isFocused = fEid
+    ? fEid === h.eid
+    : !!fName && owners.includes(fName)
   const hasFocus = !!(fEid || fName)
   return {
     focused: isFocused,
     dimmed: hasFocus && !isFocused,
     'hover-only': shellView.value === 'design' && designSection.value === 'components',
+    fallback: h.confidence === 'fallback',
+    multi: owners.length > 1,
   }
 }
 const sharedAdapter = {
@@ -518,7 +526,7 @@ const { selectionChanges, doUndo, doClearChanges, commitChangesAsTask } = useCha
 
 // ── Bridge event handlers (needs doUndo from useChangeHistory) ──
 const { setup: setupBridgeEvents } = useBridgeEventHandlers({
-  iframe, iframeRef, annotations, interactionHistory, errorMonitor,
+  iframe, iframeRef, annotations, interactionHistory, errorMonitor, networkMonitor,
   interactionMode, shellView, highlightColor,
   primarySelection, selectedEids, templateGroupEids, applyToGroup,
   editingClasses, hoverRect, hoverInfo,
@@ -664,6 +672,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
             <div v-for="h in dataHighlights.rects.value" :key="'dh-' + h.eid"
               class="highlight data-source"
               :class="rectClass(h)"
+              :data-multi-count="h.ownerSources.length > 1 ? h.ownerSources.length : undefined"
+              :title="h.ownerSources.length > 1 ? h.ownerLabels.join('\n') : undefined"
               :style="overlayStyle(h.rect, { '--hl-color': h.color })" />
           </template>
 
@@ -815,6 +825,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         key="data-sources-data"
         variant="data"
         :highlightRects="dataHighlights.rects.value"
+        :currentRoute="currentRoute"
       />
 
       <!-- Audit > Libraries: data-fetching and state libraries detected in package.json -->
@@ -822,6 +833,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         key="data-sources-libraries"
         variant="libraries"
         :highlightRects="dataHighlights.rects.value"
+        :currentRoute="currentRoute"
       />
 
       <!-- Design > Components: library components catalog -->

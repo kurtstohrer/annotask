@@ -68,6 +68,41 @@
 .highlight.data-source.hover-only.dimmed { opacity: 0; }
 .highlight.data-source.hover-only.focused { opacity: 1; }
 
+/* Fallback confidence — dotted + dimmer. A wildcard file-level match
+ * shouldn't read as authoritative as a precise AST binding. Focused/
+ * dimmed variants compose with the base `.data-source` rules. */
+.highlight.data-source.fallback {
+  border-style: dotted;
+  opacity: 0.4;
+}
+.highlight.data-source.fallback.focused { opacity: 0.9; }
+
+/* Multi-owner overlay — same element is powered by more than one source.
+ * Count badge pinned to the top-right; `data-multi-count` is the raw
+ * count string set inline by App.vue. */
+.highlight.data-source.multi::after {
+  content: attr(data-multi-count);
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: monospace;
+  color: var(--text-on-accent, white);
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
 /* Audit > Accessibility — per-violation highlights driven by useA11yHighlights.
  * Outline color follows the violation's impact via --severity-* tokens, so
  * critical/serious violations stay visually distinct from moderate/minor. */

@@ -4,6 +4,7 @@ import type { useIframeManager } from './useIframeManager'
 import type { useAnnotations } from './useAnnotations'
 import type { useInteractionHistory } from './useInteractionHistory'
 import type { useErrorMonitor } from './useErrorMonitor'
+import type { useNetworkMonitor } from './useNetworkMonitor'
 import type { InteractionMode } from './useInteractionMode'
 import type { ShellView } from './useShellNavigation'
 import type { SelectionData } from './useSelectionModel'
@@ -37,6 +38,7 @@ export interface BridgeEventHandlerDeps {
   annotations: ReturnType<typeof useAnnotations>
   interactionHistory: ReturnType<typeof useInteractionHistory>
   errorMonitor: ReturnType<typeof useErrorMonitor>
+  networkMonitor: ReturnType<typeof useNetworkMonitor>
 
   // Mode + view state
   interactionMode: Ref<InteractionMode>
@@ -78,7 +80,7 @@ export interface BridgeEventHandlerDeps {
  */
 export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
   const {
-    iframe, iframeRef, annotations, interactionHistory, errorMonitor,
+    iframe, iframeRef, annotations, interactionHistory, errorMonitor, networkMonitor,
     interactionMode, shellView, highlightColor,
     primarySelection, selectedEids, templateGroupEids, applyToGroup,
     editingClasses, hoverRect, hoverInfo,
@@ -275,6 +277,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
     iframe.onBridgeEvent('route:changed', onRouteChanged)
     iframe.onBridgeEvent('user:action', onUserAction)
     errorMonitor.init()
+    networkMonitor.init()
   }
 
   return { setup }

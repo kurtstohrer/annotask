@@ -71,6 +71,9 @@ describe('API endpoints', () => {
     readRenderedHtml: async (_id: string) => null,
     getPerformance: () => perfSnapshot,
     setPerformance: (data: unknown) => { perfSnapshot = data },
+    ingestNetworkCalls: (_calls: unknown[]) => { /* no-op for tests */ },
+    getRuntimeEndpointCatalog: () => ({ version: '1.0' as const, updatedAt: 0, endpoints: [] }),
+    clearRuntimeEndpoints: () => { /* no-op for tests */ },
   }
 
   beforeAll(async () => {
