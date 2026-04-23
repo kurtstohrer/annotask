@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
+## [0.2.5] - 2026-04-22
+
+### Fixed
+- Highlight tool selections land on the actual text (not 40px above) when the shell runs cross-origin from the app — the standalone webpack URL on a separate port, for example. The shell now pushes its iframe `getBoundingClientRect()` to the bridge via `frame:offset` on bridge ready, window resize, scroll, and layout changes, so the plugin has a real offset to apply when `window.frameElement` is inaccessible.
+
 ## [0.2.4] - 2026-04-22
 
 ### Changed
