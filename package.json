@@ -117,7 +117,7 @@
     "@types/node": "^25.5.0",
     "@types/prismjs": "^1.26.6",
     "@types/ws": "^8.18.1",
-    "@vitejs/plugin-vue": "^5.0.0",
+    "@vitejs/plugin-vue": "^6.0.6",
     "@vue/compiler-dom": "^3.0.0",
     "@vue/compiler-sfc": "^3.0.0",
     "axe-core": "4.11.1",
