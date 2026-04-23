@@ -47,11 +47,18 @@ export function parseImports(code: string): Map<string, string> {
   TRANSFORM_IMPORT_RE.lastIndex = 0
   while ((m = TRANSFORM_IMPORT_RE.exec(code)) !== null) {
     const from = m[3]
-    for (const part of m[1].split(',').map(s => s.trim()).filter(Boolean)) {
+    for (const rawPart of m[1].split(',').map(s => s.trim()).filter(Boolean)) {
+      // Strip inline `type` modifier so `import { type Foo }` doesn't record.
+      if (/^type\s/.test(rawPart)) continue
       // `Foo` → key Foo; `Foo as Bar` → key Bar (the local binding JSX uses).
-      const pair = part.split(/\s+as\s+/).map(s => s.trim())
+      const pair = rawPart.split(/\s+as\s+/).map(s => s.trim())
       const local = pair[pair.length - 1]
-      if (!/^[A-Z][A-Za-z0-9_$]*$/.test(local)) continue
+      // Accept any valid JS identifier. Libraries like antenna-component-library
+      // export camelCase names (`dataTable`, `icon`, `pill`); filtering by
+      // PascalCase would drop them, and the bridge's module-scoped filter at
+      // messages.ts:397 would then reject every matching element (no
+      // `data-annotask-source-module` emitted → nothing survives).
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(local)) continue
       if (!out.has(local)) out.set(local, from)
     }
   }
@@ -333,6 +340,17 @@ function relativePath(filePath: string, projectRoot: string): string {
     : filePath
 }
 
+/** Extract the identifier bound to `:is="..."` / `v-bind:is="..."` on a Vue
+ *  `<component>` tag. Returns null for string literals (`is="MyComp"`), dotted
+ *  expressions (`foo.bar`), or anything that isn't a bare identifier — those
+ *  don't cleanly resolve to an ESM import and don't need the module rewrite.
+ *  Only called for parsed `<component>` opening tags, so the regex cost is
+ *  bounded to one pass per dynamic component. */
+function extractIsBinding(tagSource: string): string | null {
+  const m = tagSource.match(/\s(?::is|v-bind:is)\s*=\s*(['"])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\1/)
+  return m ? m[2] : null
+}
+
 interface InjectOptions {
   /** Enable JSX mode: track {} brace depth, skip TS generics */
   jsxMode?: boolean
@@ -433,11 +451,23 @@ export function injectAttributes(
       // Calculate file-relative line number
       const lineInFile = templateStartLine + template.slice(0, tagStart).split('\n').length - 1
 
-      // Look up the import source for `tagName`. Only PascalCase identifiers
-      // end up in the map, so the attribute is skipped for DOM elements and
-      // for tags that aren't backed by an ESM import in this file.
-      const srcModule = imports?.get(tagName)
-      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}" data-annotask-source-tag="${tagName}"${srcModule ? ` data-annotask-source-module="${srcModule}"` : ''}${mfe ? ` data-annotask-mfe="${mfe}"` : ''}`
+      // Vue <component :is="x" /> — the literal tag is `component`, but the
+      // REAL identity is the `:is` binding (e.g. `dataTable`). Without this
+      // unwrap, the shell's module-scoped DOM matcher at messages.ts:394
+      // would see `source-tag="component"` with no module and reject every
+      // dynamic-component instance, so libraries that ship lowercase exports
+      // (commonly consumed via `<component :is="icon" />`) never highlight.
+      let effectiveTagName = tagName
+      if (!jsxMode && tagName === 'component') {
+        const isBinding = extractIsBinding(tagSource)
+        if (isBinding) effectiveTagName = isBinding
+      }
+
+      // Look up the import source for `effectiveTagName`. Only tags whose
+      // name matches an ESM binding imported in this file end up marked —
+      // plain DOM tags like `<div>` aren't imported, so they stay unmarked.
+      const srcModule = imports?.get(effectiveTagName)
+      const injection = ` data-annotask-file="${file}" data-annotask-line="${lineInFile}" data-annotask-component="${componentName}" data-annotask-source-tag="${effectiveTagName}"${srcModule ? ` data-annotask-source-module="${srcModule}"` : ''}${mfe ? ` data-annotask-mfe="${mfe}"` : ''}`
 
       // Find the insertion point: right before '>' or '/>'
       let insertAt = tagEndIndex - 1 // the '>'

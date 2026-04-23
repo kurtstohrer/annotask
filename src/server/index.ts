@@ -5,8 +5,7 @@ import { createWSServer, type AnnotaskWSServer } from './ws-server.js'
 import { createShellMiddleware } from './serve-shell.js'
 import { createProjectState, type ProjectState } from './state.js'
 import { createMcpMiddleware } from '../mcp/server.js'
-import { scanComponentLibraries } from './component-scanner.js'
-import { scanComponentUsage } from './component-usage.js'
+import { onCatalogRefreshed, scanComponentLibraries } from './component-scanner.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -66,20 +65,21 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
 
   const shellMiddleware = createShellMiddleware()
 
-  // Warm the component caches in the background so the first Components-tab
-  // open and first MCP call hit populated data. Scanners coalesce concurrent
-  // calls, so a request arriving mid-scan will piggyback on this one.
-  //
-  // Deferred via `setImmediate` so the heavy synchronous prefix of each scan
-  // (workspace discovery does readFileSync + yaml.load; package resolution
-  // does bursts of existsSync/readFileSync) yields to Vite's own boot work
-  // and doesn't starve the event loop for requests arriving in the same tick.
+  // Bridge background component refreshes to the shell: when the scan worker
+  // lands with a new catalog, tell open shells to re-fetch /api/components so
+  // the Components tab updates seamlessly without a user-driven reload.
+  const offCatalog = onCatalogRefreshed((catalog) => {
+    wsServer.broadcast('components:updated', { scannedAt: catalog.scannedAt })
+  })
+
+  // Warm the catalog in the background so the first Components-tab open is
+  // instant. When the disk cache is fresh this short-circuits before any
+  // worker spawns; when it's missing or stale it kicks off a scan in the
+  // worker thread, which can't block the main event loop. Deferred one tick
+  // so Vite's own boot work runs first.
   setImmediate(() => {
-    void scanComponentLibraries(options.projectRoot).catch(err => {
-      console.warn('[Annotask] Component library pre-scan failed:', err)
-    })
-    void scanComponentUsage(options.projectRoot).catch(err => {
-      console.warn('[Annotask] Component usage pre-scan failed:', err)
+    scanComponentLibraries(options.projectRoot).catch(err => {
+      console.warn('[Annotask] Component catalog warm-up failed:', err)
     })
   })
 
@@ -100,7 +100,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     broadcast: (event, data) => wsServer.broadcast(event, data),
     getReport: () => wsServer.getReport(),
     flush: () => state.flush(),
-    dispose: () => { state.dispose(); wsServer.dispose() },
+    dispose: () => { offCatalog(); state.dispose(); wsServer.dispose() },
   }
 }
 

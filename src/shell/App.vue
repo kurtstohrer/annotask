@@ -594,6 +594,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       :layout-overlay-active="layoutOverlay.showOverlay.value"
       :a11y-loading="a11yLoading"
       :a11y-violations-count="a11yViolations.length"
+      :tab-order-enabled="tabOrder.enabled.value"
+      :tab-order-loading="tabOrder.loading.value"
       :perf-recording="perfRecording"
       :perf-scan-loading="perfScanLoading"
       :perf-findings-count="perfFindings.length"
@@ -612,6 +614,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       @switch-develop-section="developSection = $event; activePanel = 'inspector'"
       @toggle-layout-overlay="layoutOverlay.toggle()"
       @scan-a11y="activePanel = 'inspector'; scanA11y('page')"
+      @toggle-tab-order="tabOrder.toggle()"
       @start-perf-recording="startPerfRecording"
       @stop-perf-recording="stopPerfRecording"
       @run-perf-scan="runPerfScan"
@@ -851,11 +854,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :a11y-scanned="a11yScanned"
         :a11y-task-rules="a11yTaskRules"
         :focused-rule="a11yFocusedRule"
-        :tab-order-enabled="tabOrder.enabled.value"
-        :tab-order-loading="tabOrder.loading.value"
         @select-violation="onSelectA11yViolation"
         @focus-rule="a11yFocusedRule = $event"
-        @toggle-tab-order="tabOrder.toggle()"
       />
 
       <!-- Audit Panel (Develop > Performance or Errors) -->

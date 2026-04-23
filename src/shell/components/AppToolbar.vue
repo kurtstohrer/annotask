@@ -44,9 +44,19 @@
 
       <!-- Audit > A11y scan button -->
       <template v-else-if="shellView === 'develop' && developSection === 'a11y'">
-        <button data-testid="btn-scan-a11y" class="scan-btn" :disabled="a11yLoading" @click="$emit('scan-a11y')"
+        <button data-testid="btn-scan-a11y" class="tool-btn" :disabled="a11yLoading" @click="$emit('scan-a11y')"
           title="Run axe-core WCAG accessibility scan on the page">
-          {{ a11yLoading ? 'Scanning...' : 'Scan Page' }}
+          {{ a11yLoading ? 'Scanning...' : '⟳ Scan page' }}
+        </button>
+        <button
+          data-testid="btn-tab-order"
+          class="tool-btn"
+          :class="{ active: tabOrderEnabled }"
+          :disabled="tabOrderLoading"
+          @click="$emit('toggle-tab-order')"
+          :title="tabOrderEnabled ? 'Hide tab order' : 'Show numbered tab order on page'"
+        >
+          {{ tabOrderEnabled ? '✕ Tab order' : '⌨ Tab order' }}
         </button>
       </template>
 
@@ -187,6 +197,8 @@ interface Props {
   layoutOverlayActive: boolean
   a11yLoading: boolean
   a11yViolationsCount: number
+  tabOrderEnabled: boolean
+  tabOrderLoading: boolean
   perfRecording: boolean
   perfScanLoading: boolean
   perfFindingsCount: number
@@ -209,6 +221,7 @@ const emit = defineEmits<{
   (e: 'switch-develop-section', value: DevelopSection): void
   (e: 'toggle-layout-overlay'): void
   (e: 'scan-a11y'): void
+  (e: 'toggle-tab-order'): void
   (e: 'start-perf-recording'): void
   (e: 'stop-perf-recording'): void
   (e: 'run-perf-scan'): void

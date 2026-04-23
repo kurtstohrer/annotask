@@ -11,7 +11,7 @@ import type { DataSource, RuntimeEndpoint } from '../../schema'
 
 const props = withDefaults(defineProps<{
   highlightRects: Array<{ sourceName: string; label: string; color: string; ownerSources?: string[] }>
-  /** 'data' shows APIs + Hooks tabs; 'libraries' renders the libraries list
+  /** 'data' shows Network + Hooks tabs; 'libraries' renders the libraries list
    *  exclusively (used by the standalone Develop > Libraries sub-section). */
   variant?: 'data' | 'libraries'
   /** The iframe's current route — threaded in from App.vue's useIframeManager.
@@ -24,12 +24,12 @@ const ds = useDataSources()
 const ws = useWorkspace()
 onMounted(() => { ws.load() })
 
-type DataTab = 'apis' | 'hooks' | 'network'
-const storedTab = useLocalStorageEnum<DataTab>('annotask:dataTab', ['apis', 'hooks', 'network'], 'apis')
+type DataTab = 'hooks' | 'network' | 'apis'
+const storedTab = useLocalStorageEnum<DataTab>('annotask:dataTab', ['hooks', 'network', 'apis'], 'network')
 
 // Effective active tab — forced to 'libraries' when the caller asked for the
 // libraries variant, otherwise whatever the user last viewed.
-const activeTab = computed<'apis' | 'hooks' | 'libraries' | 'network'>(() =>
+const activeTab = computed<'hooks' | 'libraries' | 'network' | 'apis'>(() =>
   props.variant === 'libraries' ? 'libraries' : storedTab.value)
 
 // Drive highlight context from the active tab: APIs tab highlights schemas,
@@ -52,8 +52,8 @@ onMounted(() => {
 
 const filterPlaceholder = computed(() => {
   if (activeTab.value === 'hooks') return 'Filter hooks by name, file, endpoint…'
-  if (activeTab.value === 'apis') return 'Filter APIs by location, title, kind…'
   if (activeTab.value === 'network') return 'Filter observed endpoints by path or method…'
+  if (activeTab.value === 'apis') return 'Filter APIs by title, location, or kind…'
   return 'Filter libraries by name or pattern…'
 })
 
@@ -169,6 +169,10 @@ const visibleDataSources = computed(() => {
   return base.filter(item => on.has(hookSourceName(item)))
 })
 
+/** APIs list after the On-page pill is applied on top of the composable's
+ *  schema filter. Schemas register under `schema.location` as their highlight
+ *  sourceName (see `buildApiHighlightSources` in useDataSources), so the same
+ *  `onPageSet` membership test works. */
 const visibleApiSchemas = computed(() => {
   const base = ds.filteredApiSchemas.value
   if (ds.filterMode.value !== 'onPage') return base
@@ -237,17 +241,15 @@ function hookTooltip(item: { name: string; dataKind: DataSource['kind']; file: s
   return lines.join('\n')
 }
 
-/** Multi-line tooltip summary for an API schema row. */
-function apiTooltip(item: { schema: { kind: string; title?: string; version?: string; location: string; in_repo: boolean; operation_count: number; source: string } }): string {
-  const s = item.schema
+/** Multi-line tooltip summary for an API-schema row. */
+function apiTooltip(item: { schema: { kind: string; title?: string; location: string; in_repo: boolean; operation_count: number } }): string {
   const lines: string[] = [
-    `${s.title || s.location} — ${s.kind}`,
-    `${s.location}`,
-    `${s.operation_count} operation${s.operation_count === 1 ? '' : 's'}`,
-    `Source: ${s.source}  ·  ${s.in_repo ? 'in-repo (editable)' : 'external (read-only)'}`,
+    `${item.schema.title || item.schema.location} — ${item.schema.kind}`,
+    item.schema.location,
+    `${item.schema.operation_count} operation${item.schema.operation_count === 1 ? '' : 's'}`,
+    item.schema.in_repo ? 'in-repo' : 'external',
   ]
-  if (s.version) lines.push(`Version: ${s.version}`)
-  const matches = matchCount(s.location)
+  const matches = matchCount(item.schema.location)
   if (matches > 0) lines.push(`${matches} element${matches === 1 ? '' : 's'} highlighted on this route`)
   return lines.join('\n')
 }
@@ -332,17 +334,17 @@ function cancelCreate() {
   <div class="data-page">
     <div class="data-header">
       <div v-if="variant === 'data'" class="data-tabs">
-        <button :class="['data-tab', { active: activeTab === 'apis' }]" @click="storedTab = 'apis'">
+        <button :class="['data-tab', { active: activeTab === 'network' }]" @click="storedTab = 'network'" title="Network calls the iframe has actually made. Fills gaps the regex scanner misses.">
+          Network
+          <span v-if="ds.runtimeEndpoints.value.length" class="data-tab-badge">{{ ds.runtimeEndpoints.value.length }}</span>
+        </button>
+        <button :class="['data-tab', { active: activeTab === 'apis' }]" @click="storedTab = 'apis'" title="API contracts discovered in the repo (OpenAPI, GraphQL, tRPC, JSON Schema).">
           APIs
           <span v-if="ds.apiSchemaItems.value.length" class="data-tab-badge">{{ ds.apiSchemaItems.value.length }}</span>
         </button>
         <button :class="['data-tab', { active: activeTab === 'hooks' }]" @click="storedTab = 'hooks'">
           Hooks
           <span v-if="ds.dataSourceItems.value.length" class="data-tab-badge">{{ ds.dataSourceItems.value.length }}</span>
-        </button>
-        <button :class="['data-tab', { active: activeTab === 'network' }]" @click="storedTab = 'network'" title="Network calls the iframe has actually made. Fills gaps the regex scanner misses.">
-          Network
-          <span v-if="ds.runtimeEndpoints.value.length" class="data-tab-badge">{{ ds.runtimeEndpoints.value.length }}</span>
         </button>
       </div>
       <div v-if="activeTab === 'libraries'" class="data-search">
@@ -364,12 +366,12 @@ function cancelCreate() {
         <button
           :class="['filter-btn', { active: ds.filterMode.value === 'all' }]"
           @click="ds.filterMode.value = 'all'"
-          :title="activeTab === 'apis' ? 'Show every detected API schema' : 'Show every detected project hook, store, or fetch wrapper'"
+          title="Show every detected project hook, store, or fetch wrapper"
         >All</button>
         <button
           :class="['filter-btn', { active: ds.filterMode.value === 'onPage' }]"
           @click="ds.filterMode.value = 'onPage'"
-          :title="activeTab === 'apis' ? 'Show only schemas with highlights on the current route' : 'Show only hooks with highlights on the current route'"
+          title="Show only hooks with highlights on the current route"
         >
           On page
           <span v-if="onPageCount" class="filter-count">{{ onPageCount }}</span>
@@ -377,7 +379,7 @@ function cancelCreate() {
       </div>
       <MfeFilterDropdown
         v-if="ws.hasAnyMfes.value && activeTab !== 'libraries'"
-        :label="activeTab === 'apis' ? 'APIs' : 'Hooks'"
+        label="Hooks"
       />
       <button
         class="data-btn icon"
@@ -588,7 +590,7 @@ function cancelCreate() {
            the header returns to the list. Tab switching auto-clears selection. -->
       <div v-else class="data-detail">
         <div class="detail-back-bar">
-          <button class="data-back-btn" @click="ds.clearSelection()" :title="`Back to ${activeTab === 'apis' ? 'APIs' : activeTab === 'hooks' ? 'Hooks' : 'Libraries'} list`">
+          <button class="data-back-btn" @click="ds.clearSelection()" :title="`Back to ${activeTab === 'hooks' ? 'Hooks' : activeTab === 'apis' ? 'APIs' : activeTab === 'network' ? 'Network' : 'Libraries'} list`">
             <Icon name="chevron-left" :size="12" :stroke-width="2.5" />
             <span>Back</span>
           </button>

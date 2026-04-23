@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
+import crypto from 'node:crypto'
+import { Worker } from 'node:worker_threads'
 import { resolveWorkspace } from './workspace.js'
 
 export interface ScannedProp {
@@ -52,12 +54,90 @@ export interface ComponentManifestEntry {
   module: string
 }
 
-const CACHE_TTL_MS = 5 * 60 * 1000 // 5 min — dev-loop friendly but picks up new deps eventually
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 min — how long a warm in-memory catalog is trusted before we recompute the deps hash to check for churn.
+const DISK_CACHE_FILE = 'component-catalog.json'
 let cachedCatalog: ComponentCatalog | null = null
 let cachedCatalogAt = 0
+let cachedCatalogKey: string | null = null
 let cachedManifest: ComponentManifestEntry[] | null = null
 let cachedManifestAt = 0
+// First-call coalescer: used when there is no cached catalog yet and multiple
+// consumers race to be the first reader. Only one worker scan runs.
 let inflightCatalog: Promise<ComponentCatalog> | null = null
+// Background refresh coalescer: used when we already have a cached catalog
+// (serving stale-while-revalidate) and need to refresh without blocking
+// callers. At most one background refresh is in flight at any time.
+let refreshing: Promise<ComponentCatalog> | null = null
+
+type CatalogListener = (catalog: ComponentCatalog) => void
+const refreshListeners = new Set<CatalogListener>()
+
+/**
+ * Subscribe to "a background refresh produced a new catalog". The main use
+ * case is bridging the scanner to the WebSocket broadcast so an open shell
+ * picks up fresh data when deps change, without the user reopening the tab.
+ * Returns an unsubscribe function.
+ */
+export function onCatalogRefreshed(fn: CatalogListener): () => void {
+  refreshListeners.add(fn)
+  return () => { refreshListeners.delete(fn) }
+}
+
+declare const __ANNOTASK_VERSION__: string | undefined
+const SCHEMA_VERSION = typeof __ANNOTASK_VERSION__ === 'string' ? `1:${__ANNOTASK_VERSION__}` : '1:dev'
+
+interface DiskCacheEnvelope {
+  version: string
+  key: string
+  scannedAt: number
+  catalog: ComponentCatalog
+}
+
+function diskCachePath(projectRoot: string): string {
+  return path.join(projectRoot, '.annotask', 'cache', DISK_CACHE_FILE)
+}
+
+/**
+ * Fingerprint of every workspace package.json plus its mtime. If any dep is
+ * added, removed, or bumped, the key changes and the disk cache is ignored.
+ * Cheap to compute (one stat + one read per package.json) relative to the
+ * 20s+ scan it replaces.
+ */
+async function computeCacheKey(projectRoot: string): Promise<string | null> {
+  try {
+    const ws = await resolveWorkspace(projectRoot)
+    const parts: string[] = []
+    for (const pkgDir of ws.packages) {
+      const p = path.join(pkgDir, 'package.json')
+      try {
+        const stat = await fsp.stat(p)
+        const content = await fsp.readFile(p, 'utf-8')
+        const pkg = JSON.parse(content)
+        const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+        parts.push(`${pkgDir}|${stat.mtimeMs}|${JSON.stringify(deps)}`)
+      } catch { /* missing package.json — skip */ }
+    }
+    return crypto.createHash('sha1').update(parts.join('\n')).digest('hex')
+  } catch { return null }
+}
+
+async function loadDiskEnvelope(projectRoot: string): Promise<DiskCacheEnvelope | null> {
+  try {
+    const raw = await fsp.readFile(diskCachePath(projectRoot), 'utf-8')
+    const env = JSON.parse(raw) as DiskCacheEnvelope
+    if (env.version !== SCHEMA_VERSION || !env.catalog) return null
+    return env
+  } catch { return null }
+}
+
+async function saveDiskCache(projectRoot: string, key: string, catalog: ComponentCatalog): Promise<void> {
+  try {
+    const file = diskCachePath(projectRoot)
+    await fsp.mkdir(path.dirname(file), { recursive: true })
+    const env: DiskCacheEnvelope = { version: SCHEMA_VERSION, key, scannedAt: Date.now(), catalog }
+    await fsp.writeFile(file, JSON.stringify(env), 'utf-8')
+  } catch { /* cache persistence is best-effort */ }
+}
 
 /**
  * Generate a flat manifest of all importable components — both library and local.
@@ -83,7 +163,7 @@ export async function generateComponentManifest(projectRoot: string): Promise<Co
   // 2. Local project components from src/
   const srcDir = path.join(projectRoot, 'src')
   try {
-    const localFiles = await findVueFilesRecursive(srcDir)
+    const localFiles = await findLocalComponentFilesRecursive(srcDir)
     for (const filePath of localFiles) {
       const name = extractComponentName(filePath)
       // Only PascalCase names (skip files like main.ts, router.ts, etc.)
@@ -104,9 +184,11 @@ export async function generateComponentManifest(projectRoot: string): Promise<Co
 export function clearComponentCache() {
   cachedCatalog = null
   cachedCatalogAt = 0
+  cachedCatalogKey = null
   cachedManifest = null
   cachedManifestAt = 0
   inflightCatalog = null
+  refreshing = null
 }
 
 /** Build a ScannedComponent with sensible empty defaults for optional enrichment fields. */
@@ -155,7 +237,15 @@ function categorizeComponent(name: string, module: string): string | null {
   return null
 }
 
-async function findVueFilesRecursive(dir: string): Promise<string[]> {
+// SFC-style extensions always imply a component when the filename is PascalCase.
+const LOCAL_SFC_EXTS = new Set(['.vue', '.tsx', '.jsx', '.svelte', '.astro'])
+// Script extensions need a content signal (defineComponent, component registration,
+// or a render-style export) before we count them — otherwise every PascalCase
+// utility class would get catalogued as a component.
+const LOCAL_SCRIPT_EXTS = new Set(['.ts', '.js', '.mjs', '.cjs'])
+const COMPONENT_SIGNAL_RE = /\bdefineComponent\s*\(|\.component\s*\(\s*['"`]|\bcreateComponent\s*\(|export\s+default\s+\{[^}]*\b(?:template|render|setup|components)\b/
+
+async function findLocalComponentFilesRecursive(dir: string): Promise<string[]> {
   const results: string[] = []
   let entries: fs.Dirent[]
   try { entries = await fsp.readdir(dir, { withFileTypes: true }) } catch { return results }
@@ -163,63 +253,148 @@ async function findVueFilesRecursive(dir: string): Promise<string[]> {
     const fullPath = path.join(dir, entry.name)
     if (entry.isDirectory()) {
       if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.annotask') continue
-      results.push(...await findVueFilesRecursive(fullPath))
-    } else if (entry.name.endsWith('.vue')) {
-      results.push(fullPath)
+      results.push(...await findLocalComponentFilesRecursive(fullPath))
+      continue
     }
+    const ext = path.extname(entry.name)
+    if (LOCAL_SFC_EXTS.has(ext)) { results.push(fullPath); continue }
+    if (!LOCAL_SCRIPT_EXTS.has(ext)) continue
+    // Script file — require a PascalCase basename before we even read it, so
+    // `router.ts`, `utils.js`, etc. are cheap to skip.
+    const base = entry.name.slice(0, entry.name.length - ext.length)
+    if (!base || base[0] !== base[0].toUpperCase() || base[0] === base[0].toLowerCase()) continue
+    try {
+      const contents = await fsp.readFile(fullPath, 'utf-8')
+      if (COMPONENT_SIGNAL_RE.test(contents)) results.push(fullPath)
+    } catch { /* unreadable file — skip */ }
   }
   return results
 }
 
 function extractComponentName(filePath: string): string {
   const fileName = path.basename(filePath)
-  return fileName.replace(/\.(vue|svelte|astro|html|[jt]sx?)$/, '')
+  return fileName.replace(/\.(vue|svelte|astro|html|[jt]sx?|mjs|cjs)$/, '')
 }
 
 export async function scanComponentLibraries(projectRoot: string): Promise<ComponentCatalog> {
-  if (cachedCatalog && (Date.now() - cachedCatalogAt) < CACHE_TTL_MS) return cachedCatalog
-  // Coalesce concurrent scans — node_modules walks are expensive and should run once at most.
+  // Fast path: warm in-memory catalog. Even when the TTL expired we still
+  // return the memory copy immediately; the staleness check happens in the
+  // background so the caller never waits.
+  if (cachedCatalog) {
+    if (Date.now() - cachedCatalogAt >= CACHE_TTL_MS) {
+      void revalidate(projectRoot)
+    }
+    return cachedCatalog
+  }
+  // No memory cache — coalesce so the first few callers after a restart
+  // share a single disk/worker round-trip.
   if (inflightCatalog) return inflightCatalog
-  inflightCatalog = scanComponentLibrariesUncached(projectRoot).finally(() => { inflightCatalog = null })
-  const result = await inflightCatalog
+  inflightCatalog = firstLoad(projectRoot).finally(() => { inflightCatalog = null })
+  return inflightCatalog
+}
+
+/**
+ * Hydrate the in-memory cache on the first call of the process. Prefers the
+ * on-disk envelope — returned immediately even when the deps hash no longer
+ * matches, because the Components tab should paint instantly. A background
+ * refresh closes the gap when the cache is stale.
+ */
+async function firstLoad(projectRoot: string): Promise<ComponentCatalog> {
+  const key = await computeCacheKey(projectRoot)
+  const disk = await loadDiskEnvelope(projectRoot)
+  if (disk) {
+    cachedCatalog = disk.catalog
+    cachedCatalogAt = Date.now()
+    cachedCatalogKey = disk.key
+    if (!key || disk.key !== key) void revalidate(projectRoot)
+    return disk.catalog
+  }
+  // No disk cache at all — first-ever scan on this project. The caller does
+  // wait here, but exactly once per project lifetime.
+  return await runRefresh(projectRoot, key)
+}
+
+/**
+ * Kick off a fresh scan in the background, update every cache, and notify
+ * subscribers (WS broadcast) when the new catalog lands. Deduplicated via
+ * {@link refreshing} so repeated calls during the same refresh window share
+ * one worker.
+ */
+export function revalidate(projectRoot: string): Promise<ComponentCatalog> {
+  if (refreshing) return refreshing
+  refreshing = (async () => {
+    try {
+      const key = await computeCacheKey(projectRoot)
+      return await runRefresh(projectRoot, key)
+    } finally { refreshing = null }
+  })()
+  refreshing.catch(err => {
+    console.warn('[Annotask] Background component refresh failed:', err)
+  })
+  return refreshing
+}
+
+async function runRefresh(projectRoot: string, key: string | null): Promise<ComponentCatalog> {
+  const result = await runScanOffThread(projectRoot)
   cachedCatalog = result
   cachedCatalogAt = Date.now()
+  if (key) {
+    cachedCatalogKey = key
+    void saveDiskCache(projectRoot, key, result)
+  }
+  for (const fn of refreshListeners) {
+    try { fn(result) } catch { /* isolate listener errors — one bad subscriber must not kill the refresh */ }
+  }
   return result
 }
 
 /**
- * Non-blocking variant for request paths that only use the catalog for
- * best-effort enrichment (e.g. POST /api/tasks). Returns the cached catalog
- * if it's warm; otherwise kicks off a background scan and returns `null` so
- * the caller can skip enrichment and respond immediately. The next call (or
- * any awaited consumer like GET /components) will find the scan already
- * coalesced via `inflightCatalog`.
- *
- * The kickoff is wrapped in `setImmediate` so the scan's synchronous prefix
- * — `existsSync` + `readFileSync` + `yaml.load` inside `resolveWorkspace`,
- * plus package-resolution `readFileSync` bursts — doesn't starve the event
- * loop before the current request handler flushes its response.
+ * Run the scan in a worker thread so its synchronous I/O bursts and CPU-heavy
+ * regex/AST work can't block request handling on the main thread. Falls back
+ * to running in-process when the worker file isn't present (e.g. vitest
+ * running source without a build) or when the worker fails to spawn.
  */
-export function getCachedComponentCatalog(projectRoot: string): ComponentCatalog | null {
-  if (cachedCatalog && (Date.now() - cachedCatalogAt) < CACHE_TTL_MS) return cachedCatalog
-  if (!inflightCatalog) {
-    inflightCatalog = new Promise<ComponentCatalog>((resolve, reject) => {
-      setImmediate(() => {
-        scanComponentLibrariesUncached(projectRoot).then(resolve, reject)
-      })
-    })
-      .then(result => {
-        cachedCatalog = result
-        cachedCatalogAt = Date.now()
-        return result
-      })
-      .finally(() => { inflightCatalog = null })
-    inflightCatalog.catch(() => { /* caller already handled best-effort */ })
+function runScanOffThread(projectRoot: string): Promise<ComponentCatalog> {
+  let workerUrl: URL
+  try {
+    workerUrl = new URL('./component-scanner-worker.js', import.meta.url)
+  } catch {
+    return scanComponentLibrariesUncached(projectRoot)
   }
-  return null
+  if (!fs.existsSync(workerUrl)) return scanComponentLibrariesUncached(projectRoot)
+
+  return new Promise<ComponentCatalog>((resolve, reject) => {
+    let settled = false
+    const worker = new Worker(workerUrl, { workerData: { projectRoot } })
+    const done = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      worker.terminate().catch(() => {})
+      fn()
+    }
+    worker.once('message', (msg: { ok: boolean; result?: ComponentCatalog; error?: string }) => {
+      if (msg?.ok && msg.result) done(() => resolve(msg.result!))
+      else done(() => reject(new Error(msg?.error ?? 'Component scan worker failed')))
+    })
+    worker.once('error', (err) => done(() => reject(err)))
+    worker.once('exit', (code) => {
+      if (code !== 0) done(() => reject(new Error(`Component scan worker exited with code ${code}`)))
+    })
+  }).catch(err => {
+    // If worker setup fails for any reason, degrade to an in-process scan so
+    // the Components tab still works. The caller already coalesces concurrent
+    // requests, so this fallback runs at most once per cache window.
+    console.warn('[Annotask] Component scan worker failed, falling back to main thread:', err)
+    return scanComponentLibrariesUncached(projectRoot)
+  })
 }
 
-async function scanComponentLibrariesUncached(projectRoot: string): Promise<ComponentCatalog> {
+/**
+ * Uncached scan body. Exported for the worker-thread entry and for tests —
+ * production callers should use {@link scanComponentLibraries}, which caches
+ * results and dispatches to a worker thread.
+ */
+export async function scanComponentLibrariesUncached(projectRoot: string): Promise<ComponentCatalog> {
   const libraries: ScannedLibrary[] = []
 
   // Aggregate dependencies across every workspace package so the host's
@@ -238,11 +413,16 @@ async function scanComponentLibrariesUncached(projectRoot: string): Promise<Comp
   }
   if (Object.keys(deps).length === 0) return { libraries: [], scannedAt: Date.now() }
 
-  // Check each dependency for component library patterns
+  // Scan every dependency in parallel. Each `scanLibrary` is largely async
+  // file I/O — serializing them left the scanner idle between `await`s and
+  // made first-paint unbearable on large workspaces (~20s+ for a handful of
+  // UI kits). Running the worker thread in parallel with the main thread is
+  // safe; Node's libuv thread pool handles the fs concurrency internally.
+  const SKIP_DEPS = new Set(['vue', 'react', 'react-dom', 'react-router-dom', 'svelte', 'vite', 'typescript', 'annotask', 'vue-router', 'pinia'])
+  const scanTasks: Array<Promise<ScannedLibrary | null>> = []
   for (const [depName, { version: depVersion, from }] of Object.entries(deps)) {
-    // Skip obvious non-component packages
     if (depName.startsWith('@types/') || depName.startsWith('@vitejs/')) continue
-    if (['vue', 'react', 'react-dom', 'react-router-dom', 'svelte', 'vite', 'typescript', 'annotask', 'vue-router', 'pinia'].includes(depName)) continue
+    if (SKIP_DEPS.has(depName)) continue
 
     // Resolve from the package that declared the dep so MFE-local deps are
     // found even when the host doesn't hoist them.
@@ -257,20 +437,23 @@ async function scanComponentLibrariesUncached(projectRoot: string): Promise<Comp
       if (fs.existsSync(resolved)) sourceDir = resolved
     }
 
-    const library = await scanLibrary(depName, depDir, sourceDir)
-    if (library && library.components.length >= 3) {
-      // Require at least one component with props OR a framework peer dependency
-      // (bundled libraries won't have props but are still valid if they depend on vue/react/svelte)
+    scanTasks.push((async () => {
+      const library = await scanLibrary(depName, depDir, sourceDir)
+      if (!library || library.components.length < 3) return null
+      // Require at least one component with props OR a framework peer
+      // dependency — bundled libraries don't expose props but are still
+      // valid if they declare vue/react/svelte as a peer.
       const hasProps = library.components.some(c => c.props.length > 0)
-      const hasFrameworkPeer = isFrameworkLibrary(depDir)
-      if (hasProps || hasFrameworkPeer) {
-        libraries.push(library)
-      }
-    }
+      if (hasProps) return library
+      return isFrameworkLibrary(depDir) ? library : null
+    })())
   }
 
-  cachedCatalog = { libraries, scannedAt: Date.now() }
-  return cachedCatalog
+  const settled = await Promise.all(scanTasks)
+  for (const lib of settled) if (lib) libraries.push(lib)
+  libraries.sort((a, b) => a.name.localeCompare(b.name))
+
+  return { libraries, scannedAt: Date.now() }
 }
 
 

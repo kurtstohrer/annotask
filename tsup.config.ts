@@ -15,6 +15,7 @@ export default defineConfig([
       standalone: 'src/server/standalone.ts',
       webpack: 'src/webpack/index.ts',
       'webpack-loader': 'src/webpack/loader.ts',
+      'component-scanner-worker': 'src/server/component-scanner-worker.ts',
     },
     format: ['esm'],
     dts: true,

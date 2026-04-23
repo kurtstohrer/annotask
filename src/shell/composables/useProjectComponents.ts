@@ -11,6 +11,7 @@ import { ref, computed, watch } from 'vue'
 import { colorForSource, type DataHighlightSource, type DataHighlightSite } from './useDataHighlights'
 import type { useIframeManager } from './useIframeManager'
 import { useWorkspace } from './useWorkspace'
+import { on as wsOn } from '../services/wsClient'
 
 /** All components from one library share this color on the iframe overlay. */
 export function colorForLibrary(libraryName: string): string {
@@ -102,6 +103,13 @@ export function attachComponentsHighlights(adapter: ComponentsHighlightsAdapter)
   highlightsAdapter = adapter
 }
 
+// Last iframe handle passed to `useComponentLibrary`. Kept so the WS-driven
+// background refresh can pick up rendered-file changes without having to
+// thread the iframe through module-level subscriptions. Safe to share — the
+// shell only instantiates one iframe manager per session.
+let lastIframe: ReturnType<typeof useIframeManager> | undefined
+let wsSubscribed = false
+
 async function fetchJson<T>(path: string): Promise<T | null> {
   try {
     const res = await fetch(`/__annotask/api/${path}`)
@@ -177,21 +185,120 @@ function fromMatchesLibrary(from: string, libName: string): boolean {
   return from === libName || from.startsWith(libName + '/')
 }
 
+/** The scanner normalises catalog names to PascalCase (see
+ *  `component-scanner.ts:1030`), but some libraries actually export lowercase
+ *  (Antenna: `box`, `icon`, `pill`) or kebab-case. Usage + DOM tag attributes
+ *  mirror the real import name, so every lookup checks both the catalog name
+ *  and its camelCase variant. */
+function usageVariants(compName: string): string[] {
+  const out: string[] = []
+  if (usageByName.value.has(compName)) out.push(compName)
+  if (!compName) return out
+  const camel = compName[0].toLowerCase() + compName.slice(1)
+  if (camel !== compName && usageByName.value.has(camel)) out.push(camel)
+  return out
+}
+
+/** One-shot walk that resolves BOTH the files attributed to `libName` for
+ *  `compName` AND the usage-key variant those files were found under — which
+ *  is what the bridge needs in `data-annotask-source-tag` for exact DOM
+ *  matching. Keeping both answers in one walk avoids a subtle bug where the
+ *  `files` path chose one variant (e.g. camelCase `dataTable` in the
+ *  sole-claimant fallback) while the `tag` path returned another (PascalCase
+ *  `DataTable` because both keys appear in `usageByName`).
+ *
+ *  Checks catalog name AND camelCase variant separately — when one workspace
+ *  project uses PascalCase and another camelCase, each library picks up only
+ *  the variant whose imports attribute to it. */
+function resolveLibComponent(libName: string, compName: string): { files: string[]; tag: string } {
+  const keys = usageVariants(compName)
+  if (keys.length === 0) return { files: [], tag: compName }
+  // Track per-key so we can pick the tag whose files actually drove the match,
+  // in both the attributed and unattributed paths.
+  const attributedByKey = new Map<string, Set<string>>()
+  const unattributedByKey = new Map<string, Set<string>>()
+  for (const key of keys) {
+    const files = usageByName.value.get(key) ?? []
+    for (const file of files) {
+      const froms = importsByFile.value.get(file)?.get(key)
+      if (!froms || froms.length === 0) {
+        let bucket = unattributedByKey.get(key)
+        if (!bucket) { bucket = new Set(); unattributedByKey.set(key, bucket) }
+        bucket.add(file)
+        continue
+      }
+      if (froms.some(f => fromMatchesLibrary(f, libName))) {
+        let bucket = attributedByKey.get(key)
+        if (!bucket) { bucket = new Set(); attributedByKey.set(key, bucket) }
+        bucket.add(file)
+      }
+      // Else: imported from some other library → skip (not attributed here).
+    }
+  }
+
+  // Promote any attributed file out of its unattributed bucket — a single
+  // file can appear under both keys if the usage scanner recorded both, and
+  // attributed always wins.
+  for (const set of attributedByKey.values()) {
+    for (const file of set) {
+      for (const ubucket of unattributedByKey.values()) ubucket.delete(file)
+    }
+  }
+
+  if (attributedByKey.size > 0) {
+    const files = new Set<string>()
+    let tagKey = ''
+    let tagCount = 0
+    for (const [key, set] of attributedByKey) {
+      for (const f of set) files.add(f)
+      if (set.size > tagCount) { tagKey = key; tagCount = set.size }
+    }
+    return { files: [...files], tag: tagKey || compName }
+  }
+
+  // Fallback: no file imported `compName` from `libName`. Happens for
+  // (a) globally-registered Vue components (`app.use(MyUI)` / `app.component`)
+  // (b) locally-imported workspace libraries whose import path doesn't match
+  //     the catalog's library name, and
+  // (c) Vue <script setup> auto-imports.
+  // Only attribute the unattributed files — never files imported from another
+  // library — and only when this library is the sole catalog claimant of
+  // `compName`, preserving Mantine-vs-Radix style disambiguation.
+  if (unattributedByKey.size === 0) return { files: [], tag: compName }
+  let claimants = 0
+  let soleClaimant = ''
+  for (const lib of libraries.value) {
+    if (lib.components.some(c => c.name === compName)) {
+      claimants++
+      soleClaimant = lib.name
+      if (claimants > 1) return { files: [], tag: compName }
+    }
+  }
+  if (claimants !== 1 || soleClaimant !== libName) return { files: [], tag: compName }
+  const files = new Set<string>()
+  let tagKey = ''
+  let tagCount = 0
+  for (const [key, set] of unattributedByKey) {
+    for (const f of set) files.add(f)
+    if (set.size > tagCount) { tagKey = key; tagCount = set.size }
+  }
+  return { files: [...files], tag: tagKey || compName }
+}
+
 /** Files where `compName` is imported from a module that belongs to `libName`.
  *  Used by every library-scoped predicate below so two libraries that export
  *  the same component name don't bleed into each other's highlights. */
 function filesForLibComponent(libName: string, compName: string): string[] {
-  const all = usageByName.value.get(compName) ?? []
-  if (all.length === 0) return []
-  const out: string[] = []
-  for (const file of all) {
-    const froms = importsByFile.value.get(file)?.get(compName)
-    // No recorded import source for this (file, name) — can't attribute it
-    // to any library, so skip. Eliminates the cross-library ghosts.
-    if (!froms) continue
-    if (froms.some(f => fromMatchesLibrary(f, libName))) out.push(file)
-  }
-  return out
+  return resolveLibComponent(libName, compName).files
+}
+
+/** Which usage-variant of `compName` actually appears in files attributed to
+ *  `libName`? That's the string the bridge needs in `data-annotask-source-tag`
+ *  for precise DOM matching — Antenna's `<dataTable>` and PrimeVue's
+ *  `<DataTable>` both live under a catalog entry named `DataTable` but carry
+ *  different source-tag attributes. */
+function domTagForLibComponent(libName: string, compName: string): string {
+  return resolveLibComponent(libName, compName).tag
 }
 
 function isUsedInLib(libName: string, compName: string): boolean {
@@ -207,24 +314,30 @@ function isOnPageInLib(libName: string, compName: string): boolean {
   return false
 }
 
-/** Components referenced anywhere in `src/` — bare-name count, used for the
- *  header badge next to "Used". */
+/** Catalog components referenced anywhere in `src/`, used for the header
+ *  badge next to "Used". Keyed by (library, component) so two libraries that
+ *  both ship a `DataTable` count as two entries — matching the filtered list,
+ *  which shows one row per (library, component) pair. */
 const usedProjectSet = computed<Set<string>>(() => {
   const s = new Set<string>()
-  for (const [name, files] of usageByName.value.entries()) {
-    if (files.length > 0) s.add(name)
+  for (const lib of libraries.value) {
+    for (const c of lib.components) {
+      if (isUsedInLib(lib.name, c.name)) s.add(sourceName(lib.name, c.name))
+    }
   }
   return s
 })
 
-/** Components whose usage files intersect the currently-rendered file set —
- *  bare-name count, used for the header badge next to "On page". */
+/** Catalog components currently rendered on-page, used for the header badge
+ *  next to "On page". Same (library, component) keying as `usedProjectSet`. */
 const usedOnPageSet = computed<Set<string>>(() => {
   const out = new Set<string>()
   const rendered = renderedFiles.value
   if (rendered.size === 0) return out
-  for (const [name, files] of usageByName.value.entries()) {
-    if (files.some(f => rendered.has(f))) out.add(name)
+  for (const lib of libraries.value) {
+    for (const c of lib.components) {
+      if (isOnPageInLib(lib.name, c.name)) out.add(sourceName(lib.name, c.name))
+    }
   }
   return out
 })
@@ -313,13 +426,21 @@ function pushAllOnPageHighlights(): void {
       const libFiles = filesForLibComponent(lib.name, c.name)
       const onPage = libFiles.filter(f => rendered.has(f))
       if (onPage.length === 0) continue
+      // `data-annotask-source-tag` mirrors the actual template tag the
+      // template emitted. For catalog entries whose PascalCase name was
+      // synthesized from a lowercase export (Antenna's `Box` ← `box`), fall
+      // back to the variant attributed to THIS library so the bridge's
+      // exact-match filter at messages.ts:394 succeeds. The per-library
+      // lookup matters: two libraries may both claim `DataTable` but emit
+      // different source-tags (`DataTable` vs `dataTable`).
+      const domTag = domTagForLibComponent(lib.name, c.name)
       sources.push({
         name: sourceName(lib.name, c.name),
         kind: 'composable',
         sites: onPage.map(file => ({
           file,
           line: 0,
-          tag: c.name,
+          tag: domTag,
           // Pass the library package name as a module filter. The bridge
           // matches `data-annotask-source-module` exactly or as a subpath
           // (so `@kobalte/core` picks up `@kobalte/core/button`), which
@@ -393,16 +514,20 @@ function pushHighlightsFor(comp: LibraryComponent, examples: UsageExample[]): vo
   const lib = selectedLibrary.value ?? ''
   const sites: DataHighlightSite[] = []
   const seen = new Set<string>()
+  // Same PascalCase-catalog / camelCase-export reconciliation as
+  // pushAllOnPageHighlights — the bridge matches `data-annotask-source-tag`
+  // exactly, so we have to pass the tag as it appears in the DOM.
+  const domTag = domTagForLibComponent(lib, comp.name)
   for (const ex of examples) {
     const key = `${ex.file}::${ex.line}`
     if (seen.has(key)) continue
     seen.add(key)
-    // `tag: comp.name` scopes the iframe match to elements whose source tag
+    // `tag: domTag` scopes the iframe match to elements whose source tag
     // equals this component's name — keeps a Card's 920×215 card div and
     // drops e.g. a Checkbox that happens to sit on the same source line.
     // `module: lib` adds the library disambiguator so the selector never
     // cross-highlights a same-named component from another library.
-    sites.push({ file: ex.file, line: ex.line, tag: comp.name, module: lib })
+    sites.push({ file: ex.file, line: ex.line, tag: domTag, module: lib })
   }
   // Fallback: the examples endpoint returned nothing (or hasn't responded
   // yet). Use the library-scoped usage files intersected with the on-page
@@ -412,7 +537,7 @@ function pushHighlightsFor(comp: LibraryComponent, examples: UsageExample[]): vo
     const rendered = renderedFiles.value
     for (const file of filesForLibComponent(lib, comp.name)) {
       if (rendered.size > 0 && !rendered.has(file)) continue
-      sites.push({ file, line: 0, tag: comp.name, module: lib })
+      sites.push({ file, line: 0, tag: domTag, module: lib })
     }
   }
   const sources: DataHighlightSource[] = [{
@@ -429,6 +554,15 @@ function pushHighlightsFor(comp: LibraryComponent, examples: UsageExample[]): vo
 }
 
 export function useComponentLibrary(iframe?: ReturnType<typeof useIframeManager>) {
+  if (iframe) lastIframe = iframe
+  if (!wsSubscribed) {
+    wsSubscribed = true
+    // The server broadcasts `components:updated` when a background scan lands
+    // with a new catalog (deps churn, first-ever warm-up). Re-fetch so the
+    // Components tab swaps in fresh data without any user action. The fetch
+    // is harmless when the tab isn't open — it just refreshes module state.
+    wsOn('components:updated', () => { void load(lastIframe) })
+  }
   return {
     libraries,
     usedProjectSet,

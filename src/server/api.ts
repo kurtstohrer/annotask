@@ -10,7 +10,6 @@ import {
   parseWith,
   assertTransition,
 } from './schemas.js'
-import { enrichContextComponentRefs } from './component-context.js'
 import { mergeRuntimeOrphansIntoEntries, findMatchingStaticEntries } from './runtime-endpoints.js'
 import type { NetworkCall, RuntimeEndpoint, RuntimeEndpointCatalog } from '../schema.js'
 
@@ -86,7 +85,7 @@ function sendError(res: ServerResponse, status: number, message: string, code: A
 }
 
 import { isLocalOrigin } from './origin.js'
-import { scanComponentLibraries, getCachedComponentCatalog } from './component-scanner.js'
+import { scanComponentLibraries } from './component-scanner.js'
 import { filterTasksByMfe } from '../shared/task-summary.js'
 import { getCodeContext } from './code-context.js'
 import { getComponentExamples } from './component-examples.js'
@@ -252,19 +251,6 @@ export function createAPIMiddleware(options: APIOptions) {
       const result = parseWith(CreateTaskBody, parsed.data)
       if (!result.ok) return sendError(res, 400, result.error)
       const payload = result.data as Record<string, unknown>
-      // Enrich component refs nested in `context` (component / rendered.ancestors,
-      // plus the arrow variants) with library/category from the scanner cache.
-      // Use the non-blocking accessor: if the catalog isn't warm yet (first
-      // request after restart), kick off a background scan and skip enrichment
-      // for this one — library/category are strictly additive, so responding
-      // immediately is preferable to waiting on a multi-second workspace walk.
-      try {
-        const catalog = getCachedComponentCatalog(options.projectRoot)
-        if (catalog) {
-          const enrichedContext = enrichContextComponentRefs(payload.context as Record<string, unknown> | undefined, catalog)
-          if (enrichedContext) payload.context = enrichedContext
-        }
-      } catch { /* enrichment is best-effort */ }
       res.end(JSON.stringify(await options.addTask(payload), null, 2))
       return
     }

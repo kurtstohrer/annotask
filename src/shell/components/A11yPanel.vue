@@ -2,15 +2,6 @@
   <aside class="panel">
     <div class="panel-source">
       <span class="source-path" style="color:var(--text)">Accessibility</span>
-      <button
-        class="panel-tool-btn"
-        :class="{ active: tabOrderEnabled }"
-        :disabled="tabOrderLoading"
-        @click="$emit('toggle-tab-order')"
-        :title="tabOrderEnabled ? 'Hide tab order' : 'Show numbered tab order on page'"
-      >
-        {{ tabOrderEnabled ? '✕ Tab order' : '⌨ Tab order' }}
-      </button>
     </div>
     <div class="tab-content">
       <div v-if="a11yError" class="a11y-error">{{ a11yError }}</div>
@@ -61,15 +52,12 @@ interface Props {
   a11yScanned: boolean
   a11yTaskRules: Set<string>
   focusedRule: string | null
-  tabOrderEnabled: boolean
-  tabOrderLoading: boolean
 }
 
 defineProps<Props>()
 defineEmits<{
   (e: 'select-violation', violation: A11yViolation): void
   (e: 'focus-rule', ruleId: string | null): void
-  (e: 'toggle-tab-order'): void
 }>()
 </script>
 
@@ -86,21 +74,4 @@ defineEmits<{
   justify-content: space-between;
   gap: 8px;
 }
-.panel-tool-btn {
-  font-size: 11px;
-  padding: 3px 8px;
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-}
-.panel-tool-btn.active {
-  background: var(--accent);
-  color: var(--text-on-accent);
-  border-color: var(--accent);
-}
-.panel-tool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.panel-tool-btn:hover:not(:disabled) { background: var(--surface-3); }
-.panel-tool-btn.active:hover:not(:disabled) { background: var(--accent-hover); }
 </style>
