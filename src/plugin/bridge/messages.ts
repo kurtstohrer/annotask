@@ -130,6 +130,19 @@ export function bridgeMessages(): string {
       return;
     }
 
+    if (type === 'frame:offset') {
+      // Shell-pushed iframe rect in the shell viewport — fallback for
+      // cross-origin contexts where window.frameElement is null. See
+      // cachedFrameOffsetX/Y in bridge/events.ts.
+      if (payload && typeof payload.x === 'number' && typeof payload.y === 'number') {
+        cachedFrameOffsetX = payload.x;
+        cachedFrameOffsetY = payload.y;
+        haveCachedFrameOffset = true;
+      }
+      if (id) respond(id, { ok: true });
+      return;
+    }
+
     if (type === 'data:watch') {
       if (typeof window.__annotaskSetDataWatch === 'function') {
         window.__annotaskSetDataWatch(!!(payload && payload.enabled));

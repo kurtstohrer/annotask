@@ -32,6 +32,18 @@ export function bridgeEvents(): string {
     if (perfRecordEvents.length < 500) perfRecordEvents.push(evt);
   }
 
+  // ── Frame Offset Cache ────────────────────────────────
+  // The iframe's position in the shell viewport, pushed by the shell via
+  // 'frame:offset' messages. window.frameElement self-measurement works only
+  // for same-origin iframes — different ports between the shell (e.g.
+  // webpack plugin on 24678) and the app dev server count as cross-origin
+  // and return null. Without this fallback, text-selection rects land 40px
+  // too high (the shell toolbar's height is never added). Declared at IIFE
+  // scope so the 'frame:offset' handler in messages.ts can write to them.
+  var cachedFrameOffsetX = 0;
+  var cachedFrameOffsetY = 0;
+  var haveCachedFrameOffset = false;
+
   // ── Interaction Mode ──────────────────────────────────
   var insideIframe = false;
   try { insideIframe = window.self !== window.top; } catch(e) { insideIframe = true; }
@@ -197,13 +209,22 @@ export function bridgeEvents(): string {
     // fact — by the time the message arrives, panel shifts from task creation
     // may have moved the iframe, and the selection would land in the wrong spot.
     var frameOffX = 0, frameOffY = 0;
+    var haveFrameOff = false;
     try {
       var frame = window.frameElement;
       if (frame) {
         var fr = frame.getBoundingClientRect();
         frameOffX = fr.left; frameOffY = fr.top;
+        haveFrameOff = true;
       }
     } catch (_e) {}
+    // Cross-origin fallback: use the offset the shell pushed via 'frame:offset'.
+    // window.frameElement is null when the shell and app are served from
+    // different origins, so this is the only way to get a real value.
+    if (!haveFrameOff && haveCachedFrameOffset) {
+      frameOffX = cachedFrameOffsetX;
+      frameOffY = cachedFrameOffsetY;
+    }
 
     var selRect = null;
     var selRects = null;

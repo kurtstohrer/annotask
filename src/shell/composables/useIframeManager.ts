@@ -43,6 +43,58 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     return ''
   }
 
+  // Observers / listeners that keep the bridge's cached frame offset fresh.
+  // window.frameElement is null for cross-origin iframes (different ports
+  // count), so the plugin can't self-measure — we push on every layout event
+  // that might move the iframe inside the shell viewport.
+  let frameOffsetResizeObserver: ResizeObserver | null = null
+  let frameOffsetWindowHandler: (() => void) | null = null
+  let frameOffsetLastX = NaN
+  let frameOffsetLastY = NaN
+
+  function pushFrameOffset() {
+    const iframe = iframeRef.value
+    if (!iframe) return
+    const f = iframe.getBoundingClientRect()
+    if (f.left === frameOffsetLastX && f.top === frameOffsetLastY) return
+    frameOffsetLastX = f.left
+    frameOffsetLastY = f.top
+    bridge.send('frame:offset', { x: f.left, y: f.top })
+  }
+
+  function teardownFrameOffsetWatchers() {
+    if (frameOffsetResizeObserver) {
+      frameOffsetResizeObserver.disconnect()
+      frameOffsetResizeObserver = null
+    }
+    if (frameOffsetWindowHandler) {
+      window.removeEventListener('resize', frameOffsetWindowHandler)
+      window.removeEventListener('scroll', frameOffsetWindowHandler, true)
+      frameOffsetWindowHandler = null
+    }
+    frameOffsetLastX = NaN
+    frameOffsetLastY = NaN
+  }
+
+  function setupFrameOffsetWatchers() {
+    teardownFrameOffsetWatchers()
+    const iframe = iframeRef.value
+    if (!iframe) return
+    if (typeof ResizeObserver !== 'undefined') {
+      frameOffsetResizeObserver = new ResizeObserver(() => pushFrameOffset())
+      frameOffsetResizeObserver.observe(iframe)
+      // Also observe the body so panel open/close (which can shift the iframe
+      // without resizing it directly) still triggers a push.
+      if (document.body) frameOffsetResizeObserver.observe(document.body)
+    }
+    frameOffsetWindowHandler = () => pushFrameOffset()
+    window.addEventListener('resize', frameOffsetWindowHandler)
+    // Scroll in capture phase catches scrolling inside any shell container that
+    // holds the iframe — keeps the offset accurate if the iframe isn't at the
+    // top of the viewport.
+    window.addEventListener('scroll', frameOffsetWindowHandler, true)
+  }
+
   /** Initialize the bridge when the iframe loads */
   function initBridgeForIframe() {
     const win = iframeRef.value?.contentWindow
@@ -55,6 +107,11 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
       // Seed the color scheme once the bridge is ready. Subsequent changes
       // arrive via the 'color-scheme:changed' push handler below.
       getColorScheme().then(result => { if (result) colorScheme.value = result })
+      // Seed the bridge's frame-offset cache and start watching for layout
+      // changes so cross-origin setups (e.g. webpack direct URL) get the
+      // correct offset for text-selection rects.
+      pushFrameOffset()
+      setupFrameOffsetWatchers()
     })
 
     // Route tracking via bridge events
@@ -81,6 +138,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   /** Clean up the bridge (call on shell unmount) */
   function unmountBridge() {
+    teardownFrameOffsetWatchers()
     bridge.destroyBridge()
   }
 
