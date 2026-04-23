@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
+## [0.2.6] - 2026-04-23
+
+### Fixed
+- Draw Section tool no longer 400s when the rectangle misses a `data-annotask-file`-tagged element (common over third-party component-library elements). `CreateTaskBody` now preprocesses `file: ''` to `undefined` before `SafeSourceFile` validation, and accepts `placement` instead of silently stripping it. The shell section submit also sends `undefined` instead of empty fallbacks for missing optionals. Fixes #34.
+
 ## [0.2.5] - 2026-04-22
 
 ### Fixed
