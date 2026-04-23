@@ -14,7 +14,7 @@ Source maps under `dist/**/*.map` are excluded from the published tarball.
 Current package identity:
 
 - name: `annotask`
-- version: `0.1.1`
+- version: see `package.json` (the shell and MCP server inline it via `__ANNOTASK_VERSION__` at build time)
 - type: `module`
 - binary: `annotask`
 
@@ -27,6 +27,7 @@ Current package identity:
 - `standalone.js` and `standalone.d.ts` - standalone server entry
 - `webpack.js` and `webpack.d.ts` - Webpack integration
 - `webpack-loader.js` and `webpack-loader.d.ts` - Webpack loader
+- `component-scanner-worker.js` - worker-thread entry the server uses to run component scans off the main thread
 - `cli.js` - CLI binary with shebang
 - `shell/` - prebuilt shell assets
 - `vendor/` - pinned vendored browser dependencies
@@ -35,6 +36,8 @@ Published skill files:
 
 - `skills/annotask-init/SKILL.md`
 - `skills/annotask-apply/SKILL.md`
+- `skills/annotask-apply/A11Y_RULES.md`
+- `skills/annotask-apply/THEME_UPDATE.md`
 
 ## Build Pipeline
 

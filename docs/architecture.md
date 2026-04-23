@@ -77,6 +77,7 @@ Representative files:
 - `src/server/workspace.ts`
 - `src/server/workspace-catalog.ts`
 - `src/server/component-scanner.ts`
+- `src/server/component-scanner-worker.ts` — worker-thread entry for the component scan
 - `src/server/component-usage.ts`
 - `src/server/component-examples.ts`
 - `src/server/data-context.ts`
@@ -84,11 +85,14 @@ Representative files:
 - `src/server/data-source-details.ts`
 - `src/server/api-schema-scanner.ts`
 - `src/server/api-schema-resolver.ts`
+- `src/server/runtime-endpoints.ts` — runtime endpoint catalog + static-source join helpers
 - `src/server/code-context.ts`
 - `src/server/validation.ts`
 - `src/server/schemas.ts`
 
-The server pre-warms component caches in the background on startup so the first Components page open and the first component-related MCP call do not pay the full scan cost.
+The server pre-warms component caches in the background on startup so the first Components page open and the first component-related MCP call do not pay the full scan cost. The component scan runs on a dedicated worker thread (`component-scanner-worker.ts`) so large bursts of synchronous filesystem and regex work do not block the event loop while the API serves task and context requests.
+
+Runtime-observed endpoint data lives alongside the static catalog: the injected bridge client forwards iframe `fetch` / XHR / beacon calls to `POST /__annotask/api/runtime-endpoints`, and `runtime-endpoints.ts` aggregates them per `(origin, method, pattern)` and joins them against static sources and OpenAPI operations on read.
 
 ### MCP Layer
 
@@ -245,6 +249,7 @@ Writes are atomic. Task mutations serialize through a lock in `state.ts`, and sc
 - plugin, server, standalone-server, and webpack bundles in `dist/`
 - CLI bundle in `dist/cli.js`
 - webpack loader bundle in `dist/webpack-loader.js`
+- component scanner worker bundle in `dist/component-scanner-worker.js`
 - vendored browser dependencies in `dist/vendor/`
 
 The shell build runs first because the server serves `dist/shell/` as static assets.

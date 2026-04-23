@@ -90,8 +90,8 @@ npx annotask init-skills
 
 ## Agent Surfaces
 
-- **MCP**: `POST /__annotask/mcp` with 18 tools for tasks, design spec, components, screenshots, code context, data context, data sources, and API schemas.
-- **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `api-schemas`, `resolve-endpoint`, `init-mcp`, `init-skills`, `mcp`, and more.
+- **MCP**: `POST /__annotask/mcp` with 21 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, and rendered HTML.
+- **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `runtime-endpoints`, `interaction-history`, `rendered-html`, `api-schemas`, `resolve-endpoint`, `init-mcp`, `init-skills`, `mcp`, and more.
 - **HTTP + WebSocket**: local API under `/__annotask/api/*` and live updates on `/__annotask/ws`.
 
 ## Task Model
@@ -137,9 +137,12 @@ pending -> in_progress -> review -> accepted | denied
 - MFE filters in the shell's Components and Audit data views
 - Component examples from real in-repo usage
 - Data-source discovery, binding analysis, and endpoint-to-schema resolution
+- Runtime endpoint monitoring — the iframe's actual fetch/XHR/beacon calls
+  surface as a runtime catalog alongside the static scan
 - Local `axe-core` accessibility scanning
 - Performance snapshots, findings, and session recording
 - Console error and warning capture with one-click fix tasks
+- Always-captured interaction history and rendered-HTML sidecars per task
 - 18 built-in shell themes plus custom theme editing across 63 CSS variables
 
 ## Framework Support

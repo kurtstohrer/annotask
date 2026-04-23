@@ -20,9 +20,12 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_screenshot` | Task screenshot as base64 PNG |
 | `annotask_get_code_context` | Ground a task to current source context (excerpt, symbol, imports, hash) |
 | `annotask_get_data_context` | Resolve task data context |
+| `annotask_get_interaction_history` | Fetch a task's pre-task user trace (route path + ~20 recent actions) |
+| `annotask_get_rendered_html` | Fetch the `outerHTML` snapshot of the task's selected element |
 | `annotask_get_data_sources` | List detected data libraries and project data sources |
 | `annotask_get_data_source_examples` | Get real in-repo usage examples for a data source |
 | `annotask_get_data_source_details` | Get definition-level detail for a data source |
+| `annotask_get_runtime_endpoints` | List endpoints the iframe actually hit at runtime (aggregated per origin+method+pattern) |
 | `annotask_get_api_schemas` | List discovered OpenAPI, GraphQL, tRPC, and JSON Schema sources |
 | `annotask_get_api_operation` | Fetch one API operation by path |
 | `annotask_resolve_endpoint` | Match a concrete URL to a known API operation |
@@ -69,7 +72,10 @@ annotask component <Name>    # Show component props
 annotask code-context <id>   # Ground task to current source excerpt
 annotask component-examples Button # Real in-repo component usage examples
 annotask data-context <id>   # Resolve task data context
+annotask interaction-history <id>  # Pre-task user trace (always captured)
+annotask rendered-html <id>  # outerHTML snapshot of the task's selected element
 annotask data-sources        # List data libraries + project data sources
+annotask runtime-endpoints   # List endpoints the iframe hit at runtime (--orphans-only for gaps)
 annotask data-source-examples useUserQuery # Real in-repo data-source usages
 annotask data-source-details useUserQuery  # Definition-level data-source detail
 annotask api-schemas         # Discovered API schemas
@@ -107,13 +113,16 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET /__annotask/api/source-excerpt` — Direct source excerpt by file/line
 - `GET /__annotask/api/data-context/:taskId` — Stored or resolved task data context
 - `GET /__annotask/api/data-context/probe|resolve|element` — Shell data-context helpers
-- `GET /__annotask/api/data-sources` — Project data-source catalog
+- `GET /__annotask/api/data-sources` — Project data-source catalog (`?include_runtime=true` appends the runtime-observed endpoint catalog)
+- `GET|POST|DELETE /__annotask/api/runtime-endpoints` — Runtime-observed endpoint catalog. Iframe fetch/XHR/beacon calls land here automatically; `GET ?merge_static=true` enriches rows with matching static sources + OpenAPI operations
 - `GET /__annotask/api/data-source-examples/:name` — In-repo data-source usage examples
 - `GET /__annotask/api/data-source-details/:name` — Definition-level data-source detail
 - `GET /__annotask/api/data-source-bindings/:name` — Binding graph for highlights
 - `GET /__annotask/api/api-schemas` — API schema catalog
 - `GET /__annotask/api/api-operation` — One API operation by path
 - `GET /__annotask/api/resolve-endpoint` — Resolve a concrete URL to a known operation
+- `GET|POST /__annotask/api/tasks/:id/interaction-history` — Per-task user-trace sidecar (always written on task create; embed toggle only gates inclusion in the task payload)
+- `GET|POST /__annotask/api/tasks/:id/rendered-html` — Per-task `outerHTML` sidecar (always written when a selection exists; 200 KB cap)
 - `GET|POST /__annotask/api/performance` — Performance snapshots
 - `POST /__annotask/api/screenshots` — Upload a screenshot
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
@@ -240,8 +249,9 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 ## Key Shell Features
 
 - **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports
-- **Interaction history** — Tracks user navigation and clicks in the app (optional, off by default)
-- **Element context** — Ancestor layout chain + DOM subtree snapshot on tasks (optional, off by default)
+- **Interaction history** — Pre-task user trace (route + ~20 recent actions). Always captured and persisted per task to `.annotask/interaction-history/<id>.json`; the "Embed interaction history" toggle only decides whether it rides in the task payload
+- **Element context / rendered HTML** — Post-render `outerHTML` of the selected element. Always captured and persisted per task to `.annotask/rendered-html/<id>.json` (200 KB cap); the "Embed rendered HTML" toggle only decides payload inclusion
+- **Runtime endpoint monitor** — In-browser fetch/XHR/beacon calls aggregated per (origin, method, pattern) into a runtime catalog; surfaces API gaps the static scanner missed
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
 - **Error monitoring** — Console error/warn capture with deduplication, bounded memory, one-click fix tasks
 - **Performance monitoring** — Web Vitals, DOM/resource/bundle analysis, interaction recording, perf score, one-click fix tasks
@@ -271,7 +281,7 @@ Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth
 | `annotation` | Pins, arrows, notes, text highlights | User intent described in `description`, optional `action` and `context` |
 | `section_request` | Drawn sections | New content area with `description` and `placement` |
 | `style_update` | Inspector style/class edits | CSS changes in `context.changes` array with `property`, `before`, `after` |
-| `theme_update` | Theme page token edits | Design token changes with `category`, `role`, `before`, `after`, `cssVar` |
+| `theme_update` | Theme page commit | One task per commit. `context.edits[]` — each entry carries `category`, `role`, `cssVar`, `theme_variant`, `theme_selector`, `before`, `after`, `sourceFile`, `sourceLine`, `isNew`. `context.specFile` is the relative path to `.annotask/design-spec.json`; the agent patches it after applying CSS edits so the Theme page hot-reloads |
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
 | `error_fix` | Errors tab "Fix" action | Console error/warning with `level`, `occurrences`, `errorId` in `context` |
 | `perf_fix` | Perf tab "Fix" action | Performance finding with `metric`, `value`, `unit`, `severity`, `category`, `findingId` in `context` |

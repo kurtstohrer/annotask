@@ -16,7 +16,10 @@ Annotask assumes a **trusted local environment**: the developer's machine, runni
 
 - **Authentication:** API endpoints (`/__annotask/api/*`) and the WebSocket server (`/__annotask/ws`) have no authentication. This matches Vite's own HMR WebSocket, which is also unauthenticated. Non-browser clients (CLI, scripts) that omit the `Origin` header are trusted, since network-level binding to localhost is the primary access control.
 - **Network exposure:** The standalone server binds to `127.0.0.1` by default. When using the Vite plugin, the server inherits Vite's host configuration. API and WebSocket endpoints perform origin validation — browser requests from non-localhost origins are rejected.
-- **Input validation:** API endpoints validate payload structure, size (max 4MB), and field whitelists. POST and PATCH requests only accept known fields. Task status transitions are validated against a state machine. Screenshot filenames are validated with a strict regex.
+- **Input validation:** API endpoints validate payload structure, size (max 4 MB request body; rendered-HTML sidecars capped at 200 KB), and field whitelists. POST and PATCH requests only accept known fields. Task status transitions are validated against a state machine. Screenshot filenames are validated with a strict regex. HTTP bodies and MCP tool args parse through shared zod schemas at the boundary.
+- **WebSocket frames:** the WebSocket server enforces a per-frame size cap (`maxPayload`).
+- **Screenshot file names:** uploads use `crypto.randomBytes(8)` filenames (16 hex chars). The `annotask_get_screenshot` MCP tool also routes `task.screenshot` through `isSafeScreenshot` before touching the filesystem, closing a path-traversal hole for maliciously constructed task records.
+- **`server.json` permissions:** written with mode `0o600` so other users on shared machines cannot read the live PID and port.
 
 ## Recommendations
 

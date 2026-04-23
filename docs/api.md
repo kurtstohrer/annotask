@@ -181,7 +181,7 @@ Query params:
 | `GET` | `/__annotask/api/data-context/probe` | quick probe for whether data context is worth offering |
 | `GET` | `/__annotask/api/data-context/resolve` | resolve file-and-line data context |
 | `GET` | `/__annotask/api/data-context/element` | resolve element-focused data context |
-| `GET` | `/__annotask/api/data-sources` | project data-source catalog |
+| `GET` | `/__annotask/api/data-sources` | project data-source catalog (`?include_runtime=true` to append the runtime-observed catalog) |
 | `GET` | `/__annotask/api/data-source-examples/:name` | in-repo usages for a data source |
 | `GET` | `/__annotask/api/data-source-details/:name` | definition-level detail for a data source |
 | `GET` | `/__annotask/api/data-source-bindings/:name` | binding graph used for page highlights |
@@ -195,6 +195,32 @@ Useful query params:
 - `limit`
 - `file`
 - `context_lines`
+- `include_runtime=true|1` (`data-sources`)
+
+### Runtime Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/runtime-endpoints` | aggregated runtime-observed endpoints (iframe fetch/XHR/beacon calls) |
+| `POST` | `/__annotask/api/runtime-endpoints` | ingest iframe network-call observations |
+| `DELETE` | `/__annotask/api/runtime-endpoints` | clear the runtime catalog |
+
+Useful query params:
+
+- `merge_static=true|1` — enrich rows with matching static sources and OpenAPI operations
+- `route=PATH` — filter to endpoints observed on a specific iframe route
+- `orphans_only=true|1` — only rows with no matching static source (surfaces gaps the static scanner missed)
+
+### Task Sidecars
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/tasks/:id/interaction-history` | per-task pre-task user-trace sidecar (route + ~20 recent actions) |
+| `POST` | `/__annotask/api/tasks/:id/interaction-history` | write the sidecar for a task |
+| `GET` | `/__annotask/api/tasks/:id/rendered-html` | per-task `outerHTML` snapshot of the selected element (200 KB cap) |
+| `POST` | `/__annotask/api/tasks/:id/rendered-html` | write the sidecar for a task |
+
+Both sidecars are written server-side on task create whenever the shell has them. The in-shell "Embed" toggles only decide whether the payload rides inside the task JSON; when unembedded, agents retrieve from the sidecar endpoint. Rendered-HTML reads include a `source` field (`embedded` vs `sidecar`) and fall back to `{ rendered: null, not_captured: true }` when the task has no selection.
 
 ### API Schemas
 
@@ -262,7 +288,10 @@ Current tool surface:
 - `annotask_get_code_context`
 - `annotask_get_component_examples`
 - `annotask_get_data_context`
+- `annotask_get_interaction_history`
+- `annotask_get_rendered_html`
 - `annotask_get_data_sources`
+- `annotask_get_runtime_endpoints`
 - `annotask_get_api_schemas`
 - `annotask_get_api_operation`
 - `annotask_resolve_endpoint`

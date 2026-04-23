@@ -20,7 +20,7 @@ Files over budget either ship with an extraction plan in the PR description or g
 
 Current notable overages in the repo:
 
-- `src/shell/App.vue` is about 1037 lines
+- `src/shell/App.vue` is about 1051 lines
 - `src/shell/components/ThemePage.vue` is about 1066 lines
 - `src/shell/components/TaskDetailModal.vue` is about 778 lines
 

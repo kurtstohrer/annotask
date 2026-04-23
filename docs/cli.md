@@ -195,6 +195,24 @@ annotask data-context <task-id>
 annotask data-context <task-id> --refresh
 ```
 
+### `interaction-history`
+
+Fetch a task's pre-task user trace (route path + ~20 recent user actions). Always captured server-side — this works even when the shell's "Embed interaction history" toggle was off at task-create time.
+
+```bash
+annotask interaction-history <task-id>
+annotask interaction-history <task-id> --mcp
+```
+
+### `rendered-html`
+
+Fetch the `outerHTML` snapshot of the task's selected element (200 KB cap). Returns `source: "embedded"` or `"sidecar"` so callers know where the HTML came from.
+
+```bash
+annotask rendered-html <task-id>
+annotask rendered-html <task-id> --mcp
+```
+
 ### `data-sources`
 
 List detected data/state libraries and project data sources.
@@ -264,6 +282,16 @@ Match a concrete URL to the discovered schema catalog.
 
 ```bash
 annotask resolve-endpoint /api/users/42 --method=GET
+```
+
+### `runtime-endpoints`
+
+List endpoints the iframe has actually hit at runtime, aggregated per (origin, method, pattern). Pair with `--orphans-only` to surface gaps the static scanner missed.
+
+```bash
+annotask runtime-endpoints
+annotask runtime-endpoints --orphans-only
+annotask runtime-endpoints --route=/dashboard --mcp
 ```
 
 ### `init-mcp`
@@ -342,6 +370,8 @@ annotask help
 | `--method=M` | `api-operation`, `resolve-endpoint` |
 | `--schema-location=L` | `api-operation` |
 | `--search=Q` | `data-sources` |
+| `--orphans-only` | `runtime-endpoints` |
+| `--route=PATH` | `runtime-endpoints` |
 | `--force` | `init-mcp`, `init-skills` |
 
 ## Examples
