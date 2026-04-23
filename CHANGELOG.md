@@ -2,6 +2,53 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
+## [0.2.4] - 2026-04-22
+
+### Changed
+- Component library scan runs on a dedicated worker thread. Large bursts of synchronous filesystem and regex work no longer block the main event loop while the API is serving task and context requests. A fresh catalog triggers a `components:updated` WebSocket broadcast so the shell's Components tab refreshes without a manual reload.
+- `/annotask-apply` SKILL.md trimmed to the core apply loop. Per-type guidance for `a11y_fix` and `theme_update` moved into new `A11Y_RULES.md` and `THEME_UPDATE.md` companion playbooks, read on demand.
+- "Tab order" toggle moved from inside the A11y panel into the toolbar so the Audit header stays consistent with other scan/recording controls.
+- Data view tabs reordered to Network / Hooks / APIs, with Network selected by default.
+
+### Fixed
+- Transform now strips inline `type` modifiers and accepts camelCase identifiers in imports, so libraries that ship lowercase exports get `data-annotask-source-module` attributes and highlight correctly.
+- Vue `<component :is="x">` unwraps to the bound identifier so dynamic components get the right source-module attribute.
+
+### Removed
+- `src/server/component-context.ts` (and its test). The worker-backed catalog replaces the inline best-effort component enrichment on task create.
+
+## [0.2.3] - 2026-04-22
+
+### Added
+- Runtime endpoint monitoring. The injected bridge client forwards the iframe's `fetch` / XHR / beacon calls to `POST /__annotask/api/runtime-endpoints`, where they're aggregated per `(origin, method, pattern)` and joined against static sources and OpenAPI operations on read. Surfaced via `annotask_get_runtime_endpoints` (MCP), `annotask runtime-endpoints` (CLI, with `--orphans-only` and `--route`), and the Audit data view.
+
+## [0.2.2] - 2026-04-21
+
+### Fixed
+- Data-source scanner now dedups fetch entries by `(method, endpoint)` instead of endpoint alone, so distinct verbs on the same URL each get their own catalog row.
+- `ThemePage` corrected the prop type on `activateColorScheme`.
+
+## [0.2.1] - 2026-04-21
+
+### Fixed
+- Data-source scanner resolves `fetch()` URL constants, so calls built from a top-level `const API_URL = '...'` show up with the real endpoint in the catalog and in per-task `data_context`.
+
+## [0.2.0] - 2026-04-21
+
+### Added
+- Multi-MFE stress-test playground at `playgrounds/stress-test/` with real `single-spa` host loading, a FastAPI/Node/Go/Rust/Java/Laravel service tier, and Playwright coverage for the lab.
+- Per-MFE `/annotask-init` and `/annotask-apply` skill scaffolds, plus `just react`/`just svelte`/`just vue`/`just mfe` recipes for the simple playgrounds.
+- `docs/data-source-discovery.md` — how the data-source scanner works, including the binding-graph second layer.
+
+### Changed
+- Playgrounds relocated from `playgrounds/` to `playgrounds/simple/` to make room for the stress-test tier.
+- Solid JSX integration moved attribute injection from the transform into the load hook so framework-specific attribute handling stays in one place.
+- htmx single-spa fragment fetch and Blade fallback handle Laravel being down gracefully.
+
+## [0.1.0] - 2026-04-17
+
+Initial public release.
+
 ## [Unreleased]
 
 ### Added
