@@ -75,13 +75,18 @@ export const AgentFeedbackSchema = z.array(FeedbackEntry)
  * Create-task body. `.strip()` (zod default) drops unknown keys silently, matching
  * the previous `pickFields` behavior and letting older clients send extra keys
  * without breaking.
+ *
+ * `file` is `preprocess`ed so an empty string is treated as "not provided" — older
+ * shell tools sometimes resolved missing `data-annotask-file` markers to `''`,
+ * which would otherwise trip `SafeSourceFile.min(1)` and 400 the request.
  */
 export const CreateTaskBody = z.object({
   type: z.enum(typeValues, { message: typeError }),
   description: z.string().min(0, 'Missing required field: description (string)'),
-  file: SafeSourceFile.optional(),
+  file: z.preprocess(v => (v === '' ? undefined : v), SafeSourceFile.optional()),
   line: z.number().optional(),
   component: z.string().optional(),
+  placement: z.string().optional(),
   mfe: z.string().optional(),
   route: z.string().optional(),
   intent: z.unknown().optional(),

@@ -114,4 +114,22 @@ describe('CreateTaskBody.file with relaxed regex', () => {
     })
     expect(result.ok).toBe(false)
   })
+
+  it('treats empty file as missing (preprocess to undefined)', () => {
+    // Regression: shell tools used to send `file: ""` when the rectangle didn't
+    // overlap a `data-annotask-file`-tagged element (common over external
+    // library elements). `SafeSourceFile.min(1)` rejected those with
+    // "file must be non-empty", 400ing legitimate Draw Section requests.
+    const result = parseWith(CreateTaskBody, {
+      type: 'section_request',
+      description: 'add a hero',
+      file: '',
+      placement: 'above',
+    })
+    expect(result.ok, result.ok ? undefined : result.error).toBe(true)
+    if (result.ok) {
+      expect(result.data.file).toBeUndefined()
+      expect(result.data.placement).toBe('above')
+    }
+  })
 })

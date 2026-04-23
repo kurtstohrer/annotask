@@ -299,10 +299,10 @@ export function useTaskWorkflows(deps: {
       const task = await createRouteTask({
         type: 'section_request',
         description: section.prompt.trim(),
-        file: section.nearFile || '',
-        line: section.nearLine || 0,
-        component: section.nearComponent || '',
-        placement: section.placement || '',
+        file: section.nearFile || undefined,
+        line: section.nearLine || undefined,
+        component: section.nearComponent || undefined,
+        placement: section.placement || undefined,
         visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height), nearEid: section.nearEid },
       })
       if (task) sectionTaskMap.value = { ...sectionTaskMap.value, [id]: task.id }
