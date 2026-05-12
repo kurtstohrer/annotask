@@ -4,11 +4,31 @@
 
 <h1 align="center">Annotask</h1>
 
-Visual UI design and review tool for web apps. Annotate the UI in the browser, inspect and edit styles live, audit runtime issues, and let AI agents apply the resulting structured tasks back to source code.
+<p align="center">
+  <strong>Annotate the UI of your running web app. AI agents apply the changes back to source.</strong>
+</p>
+
+<p align="center">
+  <a href="https://kurtstohrer.github.io/annotask/"><strong>Landing &amp; demo &rarr;</strong></a> &middot;
+  <a href="docs/setup.md">Setup</a> &middot;
+  <a href="docs/cli.md">CLI</a> &middot;
+  <a href="docs/api.md">API</a> &middot;
+  <a href="docs/skills.md">Skills</a>
+</p>
+
+<p align="center">
+  <a href="https://kurtstohrer.github.io/annotask/"><img src="docs/media/hero.png" alt="Annotate the running app. Agent applies the change. Re-render passes." width="880" /></a>
+</p>
+
+<p align="center">
+  <strong>90-second demo:</strong> <a href="https://kurtstohrer.github.io/annotask/#demo">watch on the landing page</a> &middot; <a href="docs/media/demo.gif">inline GIF</a>
+</p>
+
+Annotask is a dev-only tool. You open `/__annotask/` next to your running app, mark up the UI, and the tool produces structured tasks. An AI coding agent reads those tasks over MCP, CLI, or HTTP, applies code changes to source, and ships them back for accept/deny in the browser.
 
 Supports Vue, React, Svelte, SolidJS, Astro, plain HTML, and htmx on Vite. Webpack support is available through `AnnotaskWebpackPlugin` for the non-Astro integration path.
 
-## Workflow
+## The loop
 
 ```text
 You in the browser                    Your coding agent
@@ -25,7 +45,7 @@ Review in the task drawer        <--> Answers questions / retries denied work
 Accept or deny changes
 ```
 
-## What It Does
+## What it does
 
 Annotask has three user-facing surfaces.
 
@@ -44,7 +64,7 @@ Tasks can carry grounded context when available:
 - element context
 - data context and API schema links
 
-## Quick Start
+## Quick start
 
 Install:
 
@@ -88,13 +108,13 @@ Or install the bundled skills:
 npx annotask init-skills
 ```
 
-## Agent Surfaces
+## Agent surfaces
 
 - **MCP**: `POST /__annotask/mcp` with 21 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, and rendered HTML.
 - **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `runtime-endpoints`, `interaction-history`, `rendered-html`, `api-schemas`, `resolve-endpoint`, `init-mcp`, `init-skills`, `mcp`, and more.
 - **HTTP + WebSocket**: local API under `/__annotask/api/*` and live updates on `/__annotask/ws`.
 
-## Task Model
+## Task model
 
 Canonical task types live in `src/schema.ts`:
 
@@ -128,7 +148,7 @@ pending -> in_progress -> review -> accepted | denied
 
 `applied` exists as an optional intermediate automation state and is accepted by the API, CLI, and MCP layers.
 
-## Current Highlights
+## Current highlights
 
 - Route-aware task filtering and editable route bar
 - Screenshot uploads and automatic cleanup on acceptance
@@ -145,7 +165,7 @@ pending -> in_progress -> review -> accepted | denied
 - Always-captured interaction history and rendered-HTML sidecars per task
 - 18 built-in shell themes plus custom theme editing across 63 CSS variables
 
-## Framework Support
+## Framework support
 
 | Framework | Vite | Webpack |
 |-----------|------|---------|
@@ -159,7 +179,7 @@ pending -> in_progress -> review -> accepted | denied
 
 Annotask is dev-only. It does not run in production builds.
 
-## Monorepos And MFEs
+## Monorepos and MFEs
 
 Annotask is workspace-aware. When the project lives inside a pnpm, npm, Yarn, Bun, or Lerna workspace, server-side scanners can walk sibling packages for:
 
@@ -198,7 +218,7 @@ Useful extras:
 - `pnpm test:e2e:stress` for the stress-test environment
 - `pnpm stress-test:up` / `pnpm stress-test:down` for Docker-based stress services
 
-## Project Structure
+## Project structure
 
 - `src/plugin/` - Vite integration and transform pipeline
 - `src/server/` - HTTP API, WebSocket server, persistence, scanners
