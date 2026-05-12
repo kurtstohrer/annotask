@@ -35,6 +35,10 @@ export interface StreamOptions {
   /** When true, mark the system prompt block as cacheable. Anthropic-only
    *  today; other providers should ignore. */
   cacheSystemPrompt?: boolean
+  /** When true, mark the tool catalog as cacheable too. Useful when the tool
+   *  catalog is large and stable across a multi-turn loop. Anthropic-only;
+   *  other providers should ignore. */
+  cacheTools?: boolean
   /** Provider-specific model id. Each provider picks a default when omitted. */
   model?: string
   /** Max tokens to generate. */

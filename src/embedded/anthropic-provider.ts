@@ -51,6 +51,7 @@ export interface AnthropicTool {
   name: string
   description: string
   input_schema: Record<string, unknown>
+  cache_control?: { type: 'ephemeral' }
 }
 
 /** Loose typing for the streaming protocol — SDK ships strict types but we
@@ -175,12 +176,20 @@ export function buildAnthropicRequest(
       }]
     : options.systemPrompt
 
+  const anthropicTools = tools.length > 0 ? tools.map(toAnthropicTool) : undefined
+  // Anthropic accepts up to 4 cache breakpoints. Marking the *last* tool in
+  // the catalog cascades the cache hit across every tool ahead of it, so we
+  // only need one marker for the whole catalog.
+  if (anthropicTools && options.cacheTools) {
+    anthropicTools[anthropicTools.length - 1].cache_control = { type: 'ephemeral' }
+  }
+
   return {
     model: options.model ?? defaults.defaultModel,
     max_tokens: options.maxTokens ?? defaults.defaultMaxTokens,
     system,
     messages: messages.map(toAnthropicMessage),
-    tools: tools.length > 0 ? tools.map(toAnthropicTool) : undefined,
+    tools: anthropicTools,
   }
 }
 
@@ -205,13 +214,18 @@ function toAnthropicBlock(block: ProviderContentBlock): AnthropicContentBlock {
       return { type: 'text', text: block.text }
     case 'tool_use':
       return { type: 'tool_use', id: block.id, name: block.name, input: block.input }
-    case 'tool_result':
-      return {
+    case 'tool_result': {
+      // Anthropic rejects requests that include `is_error: undefined` (the
+      // field is read structurally, not by presence), so omit it unless the
+      // caller actually flagged the tool result as an error.
+      const out: AnthropicContentBlock = {
         type: 'tool_result',
         tool_use_id: block.toolUseId,
         content: block.content,
-        is_error: block.isError,
       }
+      if (block.isError) out.is_error = true
+      return out
+    }
   }
 }
 
@@ -261,7 +275,12 @@ export async function* iterateAnthropicStream(
         }
         case 'content_block_delta': {
           if (event.delta.type === 'text_delta') {
-            yield { type: 'text', text: event.delta.text }
+            // Skip empty deltas — some tool-loop turns emit a zero-length
+            // text block right before the tool_use, which would otherwise
+            // surface as a phantom "" event in the UI.
+            if (event.delta.text.length > 0) {
+              yield { type: 'text', text: event.delta.text }
+            }
           } else if (event.delta.type === 'input_json_delta') {
             const tc = toolCalls.get(event.index)
             if (tc) tc.jsonBuffer += event.delta.partial_json

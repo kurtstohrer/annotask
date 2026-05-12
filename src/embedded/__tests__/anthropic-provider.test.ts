@@ -118,8 +118,46 @@ describe('buildAnthropicRequest', () => {
       { type: 'tool_use', id: 'tu_1', name: 'annotask_get_tasks', input: { status: 'pending' } },
     ])
     expect(params.messages[1].content).toEqual([
-      { type: 'tool_result', tool_use_id: 'tu_1', content: '{"tasks":[]}', is_error: undefined },
+      { type: 'tool_result', tool_use_id: 'tu_1', content: '{"tasks":[]}' },
     ])
+  })
+
+  it('omits is_error unless the caller flagged the tool result as an error', () => {
+    const params = buildAnthropicRequest(
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', toolUseId: 'tu_2', content: 'boom', isError: true },
+          ],
+        },
+      ],
+      [],
+      { systemPrompt: 'x' },
+      { defaultModel: 'claude-test', defaultMaxTokens: 1024 },
+    )
+    expect(params.messages[0].content).toEqual([
+      { type: 'tool_result', tool_use_id: 'tu_2', content: 'boom', is_error: true },
+    ])
+  })
+
+  it('marks the last tool with cache_control when cacheTools is set', () => {
+    const params = buildAnthropicRequest(
+      SAMPLE_MESSAGES,
+      [
+        ...SAMPLE_TOOLS,
+        {
+          name: 'annotask_apply',
+          description: 'Apply task',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+      { systemPrompt: 'x', cacheTools: true },
+      { defaultModel: 'claude-test', defaultMaxTokens: 1024 },
+    )
+    expect(params.tools).toBeDefined()
+    expect(params.tools![0].cache_control).toBeUndefined()
+    expect(params.tools![1].cache_control).toEqual({ type: 'ephemeral' })
   })
 
   it('omits the tools array when none are registered', () => {
@@ -240,6 +278,43 @@ describe('iterateAnthropicStream', () => {
     const texts = out.filter(e => e.type === 'text').map(e => (e as { text: string }).text)
     expect(texts).toEqual(['partial'])
     expect(out[out.length - 1]).toEqual({ type: 'done', stopReason: 'aborted' })
+  })
+
+  it('skips zero-length text_delta chunks that some tool-loop turns emit', async () => {
+    const events: AnthropicStreamEvent[] = [
+      { type: 'message_start', message: { usage: { input_tokens: 1 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'real' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+      { type: 'message_stop' },
+    ]
+    const events$ = (async function* () { for (const ev of events) yield ev })()
+    const out = await collect(iterateAnthropicStream(events$))
+    const texts = out.filter(e => e.type === 'text').map(e => (e as { text: string }).text)
+    expect(texts).toEqual(['real'])
+  })
+
+  it('emits one tool_call per tool when the model dispatches several in one turn', async () => {
+    const events: AnthropicStreamEvent[] = [
+      { type: 'message_start', message: { usage: { input_tokens: 5 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_a', name: 'a' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"x":1}' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tu_b', name: 'b' } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"y":2}' } },
+      { type: 'content_block_stop', index: 1 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 4 } },
+      { type: 'message_stop' },
+    ]
+    const events$ = (async function* () { for (const ev of events) yield ev })()
+    const out = await collect(iterateAnthropicStream(events$))
+    const calls = out.filter(e => e.type === 'tool_call')
+    expect(calls).toEqual([
+      { type: 'tool_call', id: 'tu_a', name: 'a', input: { x: 1 } },
+      { type: 'tool_call', id: 'tu_b', name: 'b', input: { y: 2 } },
+    ])
   })
 
   it('emits a single usage event even when message_delta carries no usage', async () => {
