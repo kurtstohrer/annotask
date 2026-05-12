@@ -1,0 +1,8 @@
+/*
+ * Agent-loop e2e: tracer stylesheet. Rewritten by the simulator during
+ * style_update tests, then restored in afterEach. Vite HMR picks up
+ * each edit and the test asserts the iframe's computed style flipped.
+ */
+[data-agent-loop-target='paragraph'] {
+  color: rgb(255, 0, 0);
+}

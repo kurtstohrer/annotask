@@ -1,0 +1,6 @@
+/*
+ * Agent-loop e2e: tracer stylesheet. See the React sibling's notes.
+ */
+[data-agent-loop-target='paragraph'] {
+  color: rgb(255, 0, 0);
+}

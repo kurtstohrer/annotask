@@ -61,6 +61,7 @@
     "stress-test:down": "docker compose -f playgrounds/stress-test/docker-compose.yml down",
     "test:e2e:stress": "playwright test --config playgrounds/stress-test/e2e/playwright.config.ts",
     "test:e2e:stress:annotask": "playwright test --config playgrounds/stress-test/e2e/playwright.config.ts annotask/ || true",
+    "test:e2e:stress:annotask:agent-loop": "playwright test --config playgrounds/stress-test/e2e/agent-loop.config.ts",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p src/shell/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
