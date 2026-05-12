@@ -131,15 +131,16 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  font-size: 9px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   background: var(--danger);
-  color: white;
-  border-radius: 7px;
-  margin-left: 3px;
+  color: #fff;
+  border-radius: 8px;
+  margin-left: 4px;
 }
 
 /* Tab content */
@@ -157,14 +158,17 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
-  font-family: monospace;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 12px;
   resize: vertical;
   outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.class-editor:focus {
+.class-editor:focus,
+.class-editor:focus-visible {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
 }
 
 .hint {
