@@ -9,5 +9,6 @@ import './styles/_highlights.css'
 import './styles/_tasks.css'
 import './styles/_a11y.css'
 import './styles/_overlays.css'
+import './styles/_ai-settings.css'
 
 createApp(App).mount('#app')
