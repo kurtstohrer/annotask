@@ -14,7 +14,7 @@
     "svelte": "^5.0.0"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "annotask": "workspace:*",
     "vite": "^6.4.2"
   }
