@@ -46,7 +46,9 @@
       <template v-else-if="shellView === 'develop' && developSection === 'a11y'">
         <button data-testid="btn-scan-a11y" class="tool-btn" :disabled="a11yLoading" @click="$emit('scan-a11y')"
           title="Run axe-core WCAG accessibility scan on the page">
-          {{ a11yLoading ? 'Scanning...' : '⟳ Scan page' }}
+          <Icon :name="a11yLoading ? 'rotate-cw' : 'refresh-cw'" :size="12"
+            :class="{ 'icon-spin': a11yLoading }" />
+          {{ a11yLoading ? 'Scanning…' : 'Scan page' }}
         </button>
         <button
           data-testid="btn-tab-order"
@@ -56,7 +58,8 @@
           @click="$emit('toggle-tab-order')"
           :title="tabOrderEnabled ? 'Hide tab order' : 'Show numbered tab order on page'"
         >
-          {{ tabOrderEnabled ? '✕ Tab order' : '⌨ Tab order' }}
+          <Icon :name="tabOrderEnabled ? 'x' : 'keyboard'" :size="12" />
+          Tab order
         </button>
       </template>
 

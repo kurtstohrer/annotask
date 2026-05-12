@@ -3,45 +3,60 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 40px;
+  height: 44px;
   padding: 0 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  gap: 8px;
 }
 
 .toolbar-left, .toolbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .logo {
-  height: 20px;
+  height: 18px;
   width: auto;
-  margin-right: 12px;
+  margin-right: 6px;
   color: var(--accent);
+  flex-shrink: 0;
 }
 
+/* Shared focus-visible ring for any focusable toolbar control */
+.toolbar :focus-visible,
+.toolbar-center :focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Standalone tool button — used for scan/tab-order/layout/etc. */
 .tool-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface-2);
   color: var(--text);
   font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-.tool-btn:hover {
-  background: var(--border);
+.tool-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
 }
 
 .tool-btn:disabled {
-  opacity: 0.4;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -55,7 +70,17 @@
   color: var(--danger);
 }
 
-/* Interact / Select toggle for Design view */
+/* Spinning loader for in-flight scans/records */
+.icon-spin {
+  animation: tool-spin 0.9s linear infinite;
+}
+
+@keyframes tool-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Compact icon-only mode toggle (Interact / Select) */
 .mode-toolbar {
   display: flex;
   gap: 2px;
@@ -63,22 +88,23 @@
 }
 
 .mode-btn {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--surface-2);
   color: var(--text-muted);
   cursor: pointer;
-  transition: all 0.1s;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-.mode-btn:hover {
-  background: var(--border);
+.mode-btn:hover:not(:disabled) {
+  background: var(--surface-3);
   color: var(--text);
+  border-color: var(--border-strong);
 }
 
 .mode-btn.active {
@@ -87,33 +113,39 @@
   color: var(--text-on-accent);
 }
 
-/* Panel toggle (Inspector/Tasks) */
+/* Segmented panel toggle (Tokens/Inspector/Components/Tasks etc.) */
 .panel-toggle {
-  display: flex;
+  display: inline-flex;
+  align-items: stretch;
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
+  background: var(--surface-2);
 }
 
 .toggle-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 3px 8px;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
   border: none;
-  background: var(--surface-2);
+  background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
   cursor: pointer;
-  transition: all 0.1s;
+  transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.toggle-btn:first-child {
-  border-right: 1px solid var(--border);
+/* Divider between every adjacent segmented control */
+.toggle-btn + .toggle-btn {
+  border-left: 1px solid var(--border);
 }
 
-.toggle-btn:hover {
-  background: var(--border);
+.toggle-btn:hover:not(:disabled) {
+  background: var(--surface-3);
   color: var(--text);
 }
 
@@ -126,35 +158,44 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  font-size: 8px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   background: var(--danger);
-  color: white;
-  border-radius: 7px;
+  color: #fff;
+  border-radius: 8px;
+  margin-left: 2px;
 }
 
-/* View toggle (Editor/Theme) */
+/* View toggle (Annotate / Design / Audit) */
 .view-toggle {
-  display: flex;
+  display: inline-flex;
+  align-items: stretch;
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
-  margin-right: 8px;
+  background: var(--surface-2);
+  margin-right: 4px;
 }
 
-/* Toolbar action buttons (scan, record) */
+/* Toolbar action buttons (scan, record) — match tool-btn height */
 .scan-btn {
-  padding: 3px 10px;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
   font-weight: 600;
   background: var(--accent);
   color: var(--text-on-accent);
-  border: none;
-  border-radius: 4px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
   cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
 }
 
 .scan-btn:disabled {
@@ -163,36 +204,40 @@
 }
 
 .scan-btn:hover:not(:disabled) {
-  opacity: 0.9;
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .rec-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  font-size: 10px;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
   font-weight: 600;
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-.rec-btn:hover {
-  background: var(--border);
+.rec-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
 }
 
 .rec-btn.recording {
-  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
   border-color: var(--danger);
   color: var(--danger);
 }
 
 .rec-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--danger);
   flex-shrink: 0;
@@ -212,22 +257,44 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
+  justify-content: center;
+  min-width: 0;
 }
 
 .route-input {
-  font-size: 11px;
+  height: 26px;
+  font-size: 12px;
   color: var(--text-muted);
   background: var(--surface-2);
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 0 10px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
   outline: none;
-  min-width: 80px;
-  max-width: 200px;
+  min-width: 100px;
+  max-width: 220px;
+  transition: border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.route-input:focus {
+.route-input:hover {
+  border-color: var(--border-strong);
+}
+
+.route-input:focus,
+.route-input:focus-visible {
   border-color: var(--accent);
   color: var(--text);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-spin,
+  .rec-dot.active {
+    animation: none;
+  }
+  .tool-btn, .mode-btn, .toggle-btn, .scan-btn, .rec-btn, .route-input {
+    transition: none;
+  }
 }
