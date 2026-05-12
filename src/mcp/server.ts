@@ -16,6 +16,7 @@ import { scanApiSchemas } from '../server/api-schema-scanner.js'
 import { resolveEndpoint } from '../server/api-schema-resolver.js'
 import { resolveWorkspace } from '../server/workspace.js'
 import { TASK_TYPES, type DataSource, type RuntimeEndpoint, type RuntimeEndpointCatalog } from '../schema.js'
+import { getSystemPrompt } from '../skills/index.js'
 
 /** Monorepo root for containment checks, or `undefined` when the project is
  *  not inside a workspace. Cached via `resolveWorkspace`. */
@@ -133,6 +134,22 @@ const PROTOCOL_VERSION = '2025-03-26'
 // Version is baked at build time from package.json so the MCP initialize response doesn't drift.
 declare const __ANNOTASK_VERSION__: string | undefined
 const SERVER_INFO = { name: 'annotask', version: typeof __ANNOTASK_VERSION__ === 'string' ? __ANNOTASK_VERSION__ : '0.0.0' }
+
+/** Cached `initialize.instructions` payload. The MCP server returns the
+ *  `annotask-apply` skill as instructions so external agents (Claude Code,
+ *  editors) get the same system prompt the embedded runner uses. Loaded
+ *  lazily and tolerant of missing bundled skills (we still return a usable
+ *  initialize response in that case). */
+let cachedInstructions: string | null = null
+function getMcpInstructions(): string {
+  if (cachedInstructions !== null) return cachedInstructions
+  try {
+    cachedInstructions = getSystemPrompt()
+  } catch {
+    cachedInstructions = ''
+  }
+  return cachedInstructions
+}
 
 // ── Tool definitions ─────────────────────────────────
 
@@ -934,16 +951,16 @@ async function handleJsonRpc(req: JsonRpcRequest, deps: McpDeps): Promise<JsonRp
   if (req.id === undefined) return null
 
   switch (req.method) {
-    case 'initialize':
-      return {
-        jsonrpc: '2.0',
-        result: {
-          protocolVersion: PROTOCOL_VERSION,
-          capabilities: { tools: {} },
-          serverInfo: SERVER_INFO,
-        },
-        id: req.id,
+    case 'initialize': {
+      const instructions = getMcpInstructions()
+      const result: Record<string, unknown> = {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+        serverInfo: SERVER_INFO,
       }
+      if (instructions) result.instructions = instructions
+      return { jsonrpc: '2.0', result, id: req.id }
+    }
 
     case 'ping':
       return { jsonrpc: '2.0', result: {}, id: req.id }

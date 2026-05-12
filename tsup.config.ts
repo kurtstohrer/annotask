@@ -21,7 +21,7 @@ export default defineConfig([
     dts: true,
     clean: false,
     sourcemap: true,
-    external: ['vite', 'webpack', 'html-webpack-plugin', 'typescript'],
+    external: ['vite', 'webpack', 'html-webpack-plugin', 'typescript', '@anthropic-ai/sdk'],
     define: sharedDefine,
   },
   {
