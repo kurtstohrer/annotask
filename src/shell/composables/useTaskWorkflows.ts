@@ -11,6 +11,8 @@ import type { SelectionData } from './useSelectionModel'
 import type { Task } from './useTasks'
 import { resolveForSelection, resolveForElement, type DataContextProbeResult } from '../services/dataContextClient'
 import { useComponentContextCapture } from './useComponentContextCapture'
+import { useProviderSettings } from './useProviderSettings'
+import { requestAutoRun } from './useAgentMode'
 
 export interface PendingTaskContext {
   kind: 'pin' | 'arrow' | 'highlight' | 'select'
@@ -273,6 +275,18 @@ export function useTaskWorkflows(deps: {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ html: frag.rendered }),
         }).catch(() => { /* best-effort */ })
+      }
+      // Agent-mode auto-run. Only `auto` mode hands tasks off automatically;
+      // `manual` waits for the user to click Run-with-agent, and `off`
+      // hides the in-shell chat entirely (terminal/MCP only). The send()
+      // fires inside ConversationTab.vue once it mounts — we just enqueue
+      // the id here so the watcher in App.vue opens the right modal.
+      const providerSettings = useProviderSettings()
+      if (
+        providerSettings.settings.value.agentMode === 'auto'
+        && providerSettings.ready.value
+      ) {
+        requestAutoRun(task.id)
       }
     }
     return task

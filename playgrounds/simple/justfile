@@ -63,6 +63,27 @@ mfe:
 start name:
     cd {{name}} && pnpm dev
 
+# Clear Annotask init artifacts for a playground (e.g. just clear-init vue-vite)
+clear-init name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="{{name}}"
+    if [ ! -d "$dir" ]; then
+        echo "[Annotask] Playground not found: $dir" >&2
+        exit 1
+    fi
+    if [ ! -d "$dir/.annotask" ]; then
+        echo "[Annotask] No init state to clear for $dir"
+        exit 0
+    fi
+    rm -f "$dir/.annotask/design-spec.json"
+    rm -f "$dir/.annotask/STYLE_GUIDE.md"
+    rm -f "$dir/.annotask/agents.json"
+    rm -f "$dir/.annotask/usage.jsonl"
+    rm -f "$dir/.annotask/runtime-endpoints.json"
+    rm -rf "$dir/.annotask/cache"
+    echo "[Annotask] Cleared init state for $dir"
+
 # Install dependencies for all playgrounds
 install:
     cd .. && pnpm install
@@ -92,6 +113,7 @@ list:
     @echo "  just htmx         — htmx + Vite          (port 5178)"
     @echo "  just mfe          — MFE + Vite           (port 5180, MFE mode)"
     @echo "  just start <dir>  — Any playground by directory name"
+    @echo "  just clear-init <dir> — Clear Annotask init state for a playground"
     @echo "  just stop-api     — Stop background API"
     @echo ""
     @echo "The API auto-starts in the background when you run a playground."

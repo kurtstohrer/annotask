@@ -21,7 +21,6 @@ const CONTEXT_FIELDS_BY_TYPE: Partial<Record<TaskType, readonly string[]>> = {
   error_fix:    ['level', 'occurrences', 'errorId'],
   theme_update: ['category', 'role', 'before', 'after', 'cssVar'],
   style_update: [],
-  api_update:   ['data_source_name', 'data_source_kind', 'schema_location', 'schema_kind', 'endpoint', 'desired_change'],
 }
 
 /**
@@ -132,19 +131,6 @@ export function buildTaskSummary(task: Record<string, unknown>): Record<string, 
     // For change-bundle tasks, surface a count instead of the full array
     if ((typeKey === 'style_update' || typeKey === 'class_update') && Array.isArray(ctxRecord.changes)) {
       summary.change_count = (ctxRecord.changes as unknown[]).length
-    }
-    // api_update tasks: lift the nested operation pointer so triage sees
-    // method + path without a detail fetch.
-    if (typeKey === 'api_update' && ctxRecord.operation && typeof ctxRecord.operation === 'object' && !Array.isArray(ctxRecord.operation)) {
-      const op = ctxRecord.operation as Record<string, unknown>
-      if (typeof op.method === 'string' && op.method) summary.operation_method = op.method
-      if (typeof op.path === 'string' && op.path) summary.operation_path = op.path
-    }
-    // Any task that recorded cross-boundary API edits (commonly annotations
-    // that the user approved into backend territory) — surface the count so
-    // triage sees that this task crossed the frontend/backend line.
-    if (Array.isArray(ctxRecord.api_edits) && ctxRecord.api_edits.length > 0) {
-      summary.api_edits_count = ctxRecord.api_edits.length
     }
   }
 

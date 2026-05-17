@@ -45,6 +45,23 @@
 .task-status-dot.in_progress {
   background: var(--accent);
 }
+/* Pulsing live-activity ring — applied while an embedded agent run is
+   actively touching this task (independent of task.status, which the
+   agent doesn't always update in chat-only flows). */
+.task-status-dot.active-run {
+  animation: task-status-dot-pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
+}
+@keyframes task-status-dot-pulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
 
 .task-status-dot.review {
   background: var(--warning);

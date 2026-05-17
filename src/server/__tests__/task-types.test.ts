@@ -13,7 +13,6 @@ describe('TASK_TYPES enforcement', () => {
       'a11y_fix',
       'error_fix',
       'perf_fix',
-      'api_update',
     ])
   })
 
@@ -51,24 +50,4 @@ describe('buildTaskSummary type coverage', () => {
     }
   })
 
-  it('lifts api_update context fields when present', () => {
-    const summary = buildTaskSummary({
-      id: 't',
-      type: 'api_update',
-      status: 'pending',
-      description: 'Add expires_at to Cat',
-      context: {
-        data_source_name: 'useCatsQuery',
-        data_source_kind: 'composable',
-        schema_location: 'openapi.yaml',
-        schema_kind: 'openapi',
-        endpoint: '/api/cats',
-        desired_change: 'Add expires_at field',
-      },
-    })
-    expect(summary.data_source_name).toBe('useCatsQuery')
-    expect(summary.schema_kind).toBe('openapi')
-    expect(summary.endpoint).toBe('/api/cats')
-    expect(summary.desired_change).toBe('Add expires_at field')
-  })
 })

@@ -43,6 +43,17 @@ export interface StreamOptions {
   model?: string
   /** Max tokens to generate. */
   maxTokens?: number
+  /**
+   * Reasoning-effort hint. `'auto'` (or omitted) means "don't bias the
+   * provider"; the named levels map to provider-specific knobs:
+   *   - Chat-Completions endpoints (OpenAI, OpenRouter, Copilot, Paperclip,
+   *     OpenAI-compatible): `reasoning_effort` in the body.
+   *   - Anthropic: extended-thinking budget.
+   *   - Codex CLI: `-c model_reasoning_effort=<level>`.
+   * Providers that don't grok the hint MUST ignore it silently rather than
+   * fail — the same `'high'` hint is sent to every provider that's active.
+   */
+  effort?: 'auto' | 'minimal' | 'low' | 'medium' | 'high'
   /** Caller's abort signal. Providers must terminate the stream when it fires. */
   signal?: AbortSignal
 }
@@ -53,6 +64,12 @@ export type ProviderEvent =
   /** A complete tool call ready to dispatch. Emitted once the model has
    *  finished assembling the tool's JSON input. */
   | { type: 'tool_call', id: string, name: string, input: unknown }
+  /** Output from a tool the agent invoked. Paired with a prior `tool_call`
+   *  by `toolUseId`. Local CLIs that run their own tool loop (claude/codex/
+   *  opencode --print) surface these so the work-stream view can render the
+   *  full call → response timeline. API providers that only call tools
+   *  client-side never emit this. */
+  | { type: 'tool_result', toolUseId: string, content: string, isError?: boolean }
   /** End-of-message usage counters. Cache-token fields are populated when the
    *  provider exposes them (Anthropic does). */
   | {

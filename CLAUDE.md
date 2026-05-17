@@ -123,6 +123,8 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET /__annotask/api/resolve-endpoint` — Resolve a concrete URL to a known operation
 - `GET|POST /__annotask/api/tasks/:id/interaction-history` — Per-task user-trace sidecar (always written on task create; embed toggle only gates inclusion in the task payload)
 - `GET|POST /__annotask/api/tasks/:id/rendered-html` — Per-task `outerHTML` sidecar (always written when a selection exists; 200 KB cap)
+- `GET /__annotask/api/agent-configs` — Per-persona project directions (`{ version, agents: { [personaId]: { projectDirections } } }`)
+- `PATCH /__annotask/api/agent-configs/:id` — Update one persona's `projectDirections`
 - `GET|POST /__annotask/api/performance` — Performance snapshots
 - `POST /__annotask/api/screenshots` — Upload a screenshot
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
@@ -155,7 +157,7 @@ The shell has **3 top-level tabs** (see `useShellNavigation.ts`):
 |-----|-------------|--------------|
 | **Annotate** | `editor` | — (pins, arrows, sections, highlights) |
 | **Design** | `design` | `tokens` / `inspector` / `components` |
-| **Audit** | `develop` | `a11y` / `data` / `libraries` / `perf` / `errors` |
+| **Audit** | `develop` | `a11y` / `data` / `perf` / `errors` |
 
 The "Audit" tab uses internal id `develop` (the label was renamed but the id was kept to avoid a breaking localStorage migration). Tab state lives in `useShellNavigation` (`shellView`, `designSection`, `developSection`, `activePanel`), persisted to localStorage and migrated from legacy ids (`theme`, `components`, `data`, `perf`, `a11y`) on first run.
 
@@ -264,7 +266,7 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 - **A11y checker** — axe-core WCAG scanning with one-click fix task creation (locally bundled, no CDN)
 - **Error monitoring** — Console error/warn capture with deduplication, bounded memory, one-click fix tasks
 - **Performance monitoring** — Web Vitals, DOM/resource/bundle analysis, interaction recording, perf score, one-click fix tasks
-- **Data view** — Discovered data sources, schema matching, page highlights, and `api_update` task creation
+- **Data view** — Discovered data sources, schema matching, page highlights
 - **Screenshots** — Snipping tool captures regions or full page, attached to tasks, served via API, auto-cleaned on accept (max 4MB)
 - **Task detail drawer** — Slide-out detail view with markdown rendering, inline editing, screenshot lightbox, element/file display, interaction log, JSON view, delete button
 - **Task lifecycle** — `pending → in_progress → review → accepted/denied` with `needs_info` (agent asks questions) and `blocked` (agent can't apply) statuses, resolution messages, live status updates
@@ -294,7 +296,6 @@ Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
 | `error_fix` | Errors tab "Fix" action | Console error/warning with `level`, `occurrences`, `errorId` in `context` |
 | `perf_fix` | Perf tab "Fix" action | Performance finding with `metric`, `value`, `unit`, `severity`, `category`, `findingId` in `context` |
-| `api_update` | Data view | Backend-contract edits for in-repo data sources; `context` carries `data_source_name`, `data_source_kind`, `schema_location`, `schema_kind`, `endpoint`, and desired change metadata |
 
 ## Task Lifecycle
 

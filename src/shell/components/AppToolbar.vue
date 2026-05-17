@@ -127,7 +127,7 @@
         </div>
       </template>
 
-      <!-- Audit sub-section: Accessibility / Data / Libraries / Performance / Errors + Tasks -->
+      <!-- Audit sub-section: Accessibility / Data / Performance / Errors + Tasks -->
       <template v-else-if="shellView === 'develop'">
         <div class="panel-toggle">
           <button data-testid="audit-a11y" :class="['toggle-btn', { active: developSection === 'a11y' && activePanel !== 'tasks' }]"
@@ -140,11 +140,6 @@
             @click="$emit('switch-develop-section', 'data')" title="Browse data sources and API schemas">
             <Icon name="database" :size="12" />
             Data
-          </button>
-          <button data-testid="audit-libraries" :class="['toggle-btn', { active: developSection === 'libraries' && activePanel !== 'tasks' }]"
-            @click="$emit('switch-develop-section', 'libraries')" title="Browse detected data-fetching and state libraries">
-            <Icon name="library" :size="12" />
-            Libraries
           </button>
           <button data-testid="audit-perf" :class="['toggle-btn', { active: developSection === 'perf' && activePanel !== 'tasks' }]"
             @click="$emit('switch-develop-section', 'perf')" title="Web Vitals and page performance">

@@ -26,23 +26,34 @@ function withActiveProvider(
 describe('ProviderSettingsSchema defaults', () => {
   it('produces a complete default settings blob', () => {
     const d = DEFAULT_PROVIDER_SETTINGS
-    expect(d.activeProvider).toBe('anthropic')
-    expect(d.perConversationCapUsd).toBe(0.5)
+    expect(d.activeProvider).toBe('claude-local')
+    // Auto is the default — hands-free, tasks fire on create.
+    expect(d.agentMode).toBe('auto')
+    expect(d.onboardingDismissed).toBe(false)
     expect(d.redactionEnabled).toBe(true)
     expect(d.eventLogEnabled).toBe(true)
     expect(d.providers.anthropic.apiKey).toBe('')
-    expect(d.providers.anthropic.model).toBe('claude-sonnet-4-5')
-    expect(d.providers.openai.model).toBe('gpt-5')
-    expect(d.providers.copilot.oauthToken).toBe('')
+    // Empty model means "auto" — the provider picks.
+    expect(d.providers.anthropic.model).toBe('')
+    expect(d.providers.openai.model).toBe('')
     expect(d.providers.paperclip.companyId).toBe('')
+    expect(d.providers.anthropic.effort).toBe('auto')
+    expect(d.providers['claude-local'].effort).toBe('auto')
   })
 
-  it('rejects a non-positive perConversationCapUsd', () => {
+  it('rejects unknown agentMode values', () => {
     const bad = ProviderSettingsSchema.safeParse({
       ...DEFAULT_PROVIDER_SETTINGS,
-      perConversationCapUsd: -1,
+      agentMode: 'on' as unknown as 'auto',
     })
     expect(bad.success).toBe(false)
+  })
+
+  it('accepts each of the three agent modes', () => {
+    for (const m of ['auto', 'manual', 'off'] as const) {
+      const r = ProviderSettingsSchema.safeParse({ ...DEFAULT_PROVIDER_SETTINGS, agentMode: m })
+      expect(r.success).toBe(true)
+    }
   })
 })
 
@@ -50,7 +61,7 @@ describe('parseProviderSettings', () => {
   it('parses a JSON string', () => {
     const blob = JSON.stringify(DEFAULT_PROVIDER_SETTINGS)
     const out = parseProviderSettings(blob)
-    expect(out.activeProvider).toBe('anthropic')
+    expect(out.activeProvider).toBe('claude-local')
   })
 
   it('falls back to defaults on invalid JSON', () => {
@@ -60,7 +71,7 @@ describe('parseProviderSettings', () => {
 
   it('falls back to defaults on unknown shape', () => {
     const out = parseProviderSettings({ foo: 'bar' })
-    expect(out.activeProvider).toBe('anthropic')
+    expect(out.activeProvider).toBe('claude-local')
   })
 
   it('returns defaults when input is null/undefined', () => {
@@ -79,6 +90,7 @@ describe('parseProviderSettings', () => {
           apiKey: 'sk-test',
           organization: 'org-abc',
           model: 'gpt-5',
+          effort: 'high',
         },
       },
     }
@@ -86,6 +98,7 @@ describe('parseProviderSettings', () => {
     expect(round.activeProvider).toBe('openai')
     expect(round.providers.openai.apiKey).toBe('sk-test')
     expect(round.providers.openai.organization).toBe('org-abc')
+    expect(round.providers.openai.effort).toBe('high')
   })
 })
 
@@ -95,6 +108,7 @@ describe('validateProviderConfig', () => {
       id: 'anthropic',
       apiKey: 'sk-ant-abc',
       model: 'claude-sonnet-4-5',
+      effort: 'auto',
     })
     expect(r.ok).toBe(true)
   })
@@ -105,6 +119,7 @@ describe('validateProviderConfig', () => {
       endpointUrl: 'http://localhost:4096/v1',
       apiKey: '',
       model: 'qwen2.5-coder',
+      effort: 'auto',
       label: 'opencode local',
     })
     expect(r.ok).toBe(true)
@@ -116,6 +131,7 @@ describe('validateProviderConfig', () => {
       endpointUrl: 'http://user:pass@localhost:4096/v1',
       apiKey: '',
       model: 'qwen2.5-coder',
+      effort: 'auto',
       label: '',
     })
     expect(r.ok).toBe(false)
@@ -130,6 +146,7 @@ describe('validateProviderConfig', () => {
       endpointUrl: 'ftp://example.com',
       apiKey: '',
       model: 'q',
+      effort: 'auto',
       label: '',
     })
     expect(r.ok).toBe(false)
@@ -141,6 +158,7 @@ describe('validateProviderConfig', () => {
       endpointUrl: 'localhost',
       apiKey: '',
       model: 'q',
+      effort: 'auto',
       label: '',
     })
     expect(r.ok).toBe(false)
@@ -152,6 +170,7 @@ describe('validateProviderConfig', () => {
       endpointUrl: '',
       apiKey: '',
       model: '',
+      effort: 'auto',
       label: '',
     })
     expect(r.ok).toBe(false)
@@ -171,19 +190,9 @@ describe('isActiveProviderReady', () => {
   it('true when Anthropic has a key', () => {
     const s = withActiveProvider(
       {
-        anthropic: { id: 'anthropic', apiKey: 'sk-ant-abc', model: 'claude-sonnet-4-5' },
+        anthropic: { id: 'anthropic', apiKey: 'sk-ant-abc', model: 'claude-sonnet-4-5', effort: 'auto' },
       },
       'anthropic',
-    )
-    expect(isActiveProviderReady(s)).toBe(true)
-  })
-
-  it('true when Copilot has an OAuth token', () => {
-    const s = withActiveProvider(
-      {
-        copilot: { id: 'copilot', oauthToken: 'gho_x', model: 'gpt-5' },
-      },
-      'copilot',
     )
     expect(isActiveProviderReady(s)).toBe(true)
   })
@@ -197,6 +206,7 @@ describe('isActiveProviderReady', () => {
           apiKey: 'pcli_x',
           apiBaseUrl: '',
           model: 'paperclip-default',
+          effort: 'auto',
         },
       },
       'paperclip',
@@ -212,6 +222,7 @@ describe('isActiveProviderReady', () => {
           endpointUrl: '',
           apiKey: '',
           model: 'q',
+          effort: 'auto',
           label: '',
         },
       },
@@ -228,12 +239,19 @@ describe('isActiveProviderReady', () => {
           endpointUrl: 'http://localhost:4096/v1',
           apiKey: '',
           model: 'q',
+          effort: 'auto',
           label: '',
         },
       },
       'openai-compatible',
     )
     expect(isActiveProviderReady(s)).toBe(true)
+  })
+
+  it('respects the local-CLI probe for claude-local', () => {
+    const s = withActiveProvider({}, 'claude-local')
+    expect(isActiveProviderReady(s)).toBe(false)
+    expect(isActiveProviderReady(s, { 'claude-local': true })).toBe(true)
   })
 })
 
@@ -243,20 +261,19 @@ describe('redactForLogging', () => {
       ...DEFAULT_PROVIDER_SETTINGS,
       providers: {
         ...DEFAULT_PROVIDER_SETTINGS.providers,
-        anthropic: { id: 'anthropic', apiKey: 'sk-ant-secret', model: 'm' },
-        copilot: { id: 'copilot', oauthToken: 'gho_secret', model: 'm' },
+        anthropic: { id: 'anthropic', apiKey: 'sk-ant-secret', model: 'm', effort: 'auto' },
         paperclip: {
           id: 'paperclip',
           companyId: 'c1',
           apiKey: 'pcli_secret',
           apiBaseUrl: '',
           model: 'm',
+          effort: 'auto',
         },
       },
     }
     const out = JSON.stringify(redactForLogging(populated))
     expect(out).not.toContain('sk-ant-secret')
-    expect(out).not.toContain('gho_secret')
     expect(out).not.toContain('pcli_secret')
     expect(out).toContain('<set>')
     // Non-secret company id stays.

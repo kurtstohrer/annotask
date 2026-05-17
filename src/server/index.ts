@@ -6,6 +6,11 @@ import { createShellMiddleware } from './serve-shell.js'
 import { createProjectState, type ProjectState } from './state.js'
 import { createMcpMiddleware } from '../mcp/server.js'
 import { onCatalogRefreshed, scanComponentLibraries } from './component-scanner.js'
+import { createTaskThreadStore } from './task-thread.js'
+import { createAgentSpawnHandler } from './agent-spawn.js'
+import { createAgentDetector } from './agent-detect.js'
+import { createInitRunner } from './init.js'
+import { createUsageLedger } from './usage-ledger.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -28,6 +33,48 @@ export interface AnnotaskServerOptions {
 export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskServer {
   const wsServer = createWSServer()
   const state = createProjectState(options.projectRoot, wsServer.broadcast)
+  // Embedded-chat moving parts: per-task message log, subprocess streamer,
+  // CLI-detection probe. All scoped to this server instance so a single
+  // dispose() tears them down cleanly.
+  // Project-wide token usage ledger. Used by:
+  //   - task-thread onAppend (every assistant turn that carries usage)
+  //   - init runner (token totals reported by the local CLI on finish)
+  // It's an append-only JSONL so external tooling can `tail -f` and so the
+  // shell, CLI, and MCP all read the same canonical record.
+  const usageLedger = createUsageLedger({ projectRoot: options.projectRoot })
+  const taskThread = createTaskThreadStore({
+    projectRoot: options.projectRoot,
+    onAppend: (taskId, msg) => {
+      // Only assistant turns carry usage; user/tool messages are no-ops here.
+      const u = msg.usage
+      if (!u) return
+      void state.addTaskUsage(taskId, {
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheReadTokens: u.cacheReadTokens ?? 0,
+        cacheCreationTokens: u.cacheCreationTokens ?? 0,
+      })
+      void usageLedger.append({
+        scope: 'task',
+        taskId,
+        ts: msg.ts,
+        providerId: msg.providerId,
+        model: msg.model,
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheReadTokens: u.cacheReadTokens,
+        cacheCreationTokens: u.cacheCreationTokens,
+      })
+    },
+  })
+  const agentSpawn = createAgentSpawnHandler()
+  const agentDetect = createAgentDetector()
+  const initRunner = createInitRunner({
+    projectRoot: options.projectRoot,
+    broadcast: wsServer.broadcast,
+    agentDetect,
+    usageLedger,
+  })
 
   const apiMiddleware = createAPIMiddleware({
     projectRoot: options.projectRoot,
@@ -49,6 +96,13 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     ingestNetworkCalls: (calls) => state.ingestNetworkCalls(calls),
     getRuntimeEndpointCatalog: () => state.getRuntimeEndpointCatalog(),
     clearRuntimeEndpoints: () => state.clearRuntimeEndpoints(),
+    taskThread,
+    agentSpawn,
+    agentDetect,
+    initRunner,
+    getAgentConfigs: () => state.getAgentConfigs(),
+    setAgentConfig: (id, entry) => state.setAgentConfig(id, entry),
+    usageLedger,
   })
 
   const mcpMiddleware = createMcpMiddleware({
@@ -61,6 +115,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     readInteractionHistory: (id) => state.readInteractionHistory(id),
     readRenderedHtml: (id) => state.readRenderedHtml(id),
     getRuntimeEndpointCatalog: () => state.getRuntimeEndpointCatalog(),
+    taskThread,
   })
 
   const shellMiddleware = createShellMiddleware()
@@ -100,7 +155,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     broadcast: (event, data) => wsServer.broadcast(event, data),
     getReport: () => wsServer.getReport(),
     flush: () => state.flush(),
-    dispose: () => { offCatalog(); state.dispose(); wsServer.dispose() },
+    dispose: () => { agentSpawn.registry.killAll(); offCatalog(); state.dispose(); wsServer.dispose() },
   }
 }
 

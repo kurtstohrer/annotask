@@ -593,6 +593,7 @@ function initSkills() {
   if (secondaries.length > 0) {
     console.log(`\n  Files in \x1b[36m${KNOWN_TARGETS[primary.name] || primary.name}\x1b[0m, symlinked from ${secondaries.map(t => `\x1b[36m${KNOWN_TARGETS[t.name] || t.name}\x1b[0m`).join(', ')}`)
   }
+  console.log(`\n  \x1b[2mAnnotask's built-in agent runs init and apply in the shell UI — these skills are for external editor agents.\x1b[0m`)
 }
 
 function isSymlink(p: string): boolean {
@@ -1310,8 +1311,13 @@ function printHelp() {
   runtime-endpoints List endpoints the iframe has actually hit at runtime (fetch/XHR/beacon).
                     Aggregated per (origin, method, path pattern). Supplements the regex
                     scanner by capturing dynamic endpoints the static pass misses.
-  init-skills     Install AI agent skills to your project
-  init-mcp        Write editor MCP config (Claude Code / Cursor / VS Code / Windsurf)
+  init-skills     Install AI agent skills for an external editor agent
+                  (Claude Code / Cursor / VS Code / Windsurf). Skip this when
+                  using Annotask's built-in agent — the shell handles init
+                  in the UI and runs apply through local-CLI providers.
+  init-mcp        Write editor MCP config (Claude Code / Cursor / VS Code / Windsurf).
+                  Same audience as init-skills — only needed when an editor
+                  agent should reach Annotask's tool surface.
   mcp             Start MCP server (stdio transport, proxies to dev server)
   help            Show this help
 

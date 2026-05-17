@@ -3,7 +3,9 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { isSafeScreenshot } from './validation.js'
 import { createRuntimeEndpointStore, type RuntimeEndpointStore } from './runtime-endpoints.js'
-import type { NetworkCall, RuntimeEndpointCatalog } from '../schema.js'
+import { createAgentConfigStore } from './agent-configs.js'
+import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
+import type { NetworkCall, RuntimeEndpointCatalog, TokenUsage } from '../schema.js'
 
 const DEFAULT_DESIGN_SPEC = {
   initialized: false,
@@ -73,6 +75,14 @@ export interface ProjectState {
   getTasks: () => { version: string; tasks: any[] }
   addTask: (task: Record<string, unknown>) => Promise<unknown>
   updateTask: (id: string, updates: Record<string, unknown>) => Promise<unknown>
+  /**
+   * Increment a task's `tokenUsage` rollup. Called from the task-thread store's
+   * onAppend hook when an assistant turn lands with usage. Silently no-ops on
+   * unknown task ids — the conversation log can outlive the task record
+   * (e.g. an accepted task is removed while a late-arriving usage event is
+   * still in flight).
+   */
+  addTaskUsage: (id: string, usage: Partial<TokenUsage>) => Promise<TokenUsage | null>
   deleteTask: (id: string) => Promise<unknown>
   /** Persist per-task interaction history alongside tasks.json so agents can
    *  fetch it on demand even when the user didn't embed it in the task payload. */
@@ -89,9 +99,18 @@ export interface ProjectState {
   getRuntimeEndpointCatalog: () => RuntimeEndpointCatalog
   /** Drop the runtime endpoint catalog (in-memory + on-disk). */
   clearRuntimeEndpoints: () => void
+  /** Read per-persona project directions from `.annotask/agents.json`. */
+  getAgentConfigs: () => Promise<AgentConfigs>
+  /** Write one persona's project directions and return the updated file. */
+  setAgentConfig: (personaId: string, entry: Partial<AgentConfigEntry>) => Promise<AgentConfigs>
   /** Wait for any pending writes to complete. Use before process shutdown. */
   flush: () => Promise<void>
   dispose: () => void
+}
+
+function clampNonNeg(n: number | undefined): number {
+  if (n == null || !Number.isFinite(n) || n < 0) return 0
+  return n
 }
 
 /** Atomic write: write to tmp file then rename into place */
@@ -247,7 +266,12 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     const specPath = path.join(projectRoot, '.annotask', 'design-spec.json')
     try {
       const parsed = JSON.parse(fs.readFileSync(specPath, 'utf-8'))
-      cachedDesignSpec = { initialized: true, ...normalizeDesignSpec(parsed) }
+      // Honor the file's own `initialized` field. The init wizard sets it
+      // to `true` only when the user explicitly commits — an agent-written
+      // spec that hasn't been accepted yet has no `initialized` key and
+      // should keep the wizard open (defaults to false, not true).
+      const normalized = normalizeDesignSpec(parsed)
+      cachedDesignSpec = { initialized: parsed.initialized === true, ...normalized }
     } catch {
       cachedDesignSpec = DEFAULT_DESIGN_SPEC
     }
@@ -315,6 +339,35 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     })
   }
 
+  async function addTaskUsage(id: string, usage: Partial<TokenUsage>): Promise<TokenUsage | null> {
+    return withTaskLock(async () => {
+      const data = getTasksSnapshot()
+      const task = data.tasks.find((t: any) => t.id === id)
+      if (!task) return null
+      const prev: TokenUsage = task.tokenUsage ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        turns: 0,
+        lastUpdated: 0,
+      }
+      const next: TokenUsage = {
+        inputTokens: prev.inputTokens + clampNonNeg(usage.inputTokens),
+        outputTokens: prev.outputTokens + clampNonNeg(usage.outputTokens),
+        cacheReadTokens: prev.cacheReadTokens + clampNonNeg(usage.cacheReadTokens),
+        cacheCreationTokens: prev.cacheCreationTokens + clampNonNeg(usage.cacheCreationTokens),
+        turns: prev.turns + 1,
+        lastUpdated: Date.now(),
+      }
+      task.tokenUsage = next
+      task.updatedAt = Date.now()
+      void queueFlushTasks(data)
+      broadcast('tasks:updated', data)
+      return next
+    })
+  }
+
   async function deleteTask(id: string) {
     return withTaskLock(async () => {
       const data = getTasksSnapshot()
@@ -346,6 +399,9 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     const run = perfLock.then(() => atomicWrite(perfPath, JSON.stringify(data, null, 2)))
     perfLock = run.catch(() => {})
   }
+
+  // ── Agent configs (.annotask/agents.json) ──
+  const agentConfigStore = createAgentConfigStore(projectRoot)
 
   // ── Runtime endpoint catalog ──
   const runtimeEndpoints: RuntimeEndpointStore = createRuntimeEndpointStore(projectRoot)
@@ -380,6 +436,7 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     getTasks: getTasksSnapshot,
     addTask,
     updateTask,
+    addTaskUsage,
     deleteTask,
     saveInteractionHistory,
     readInteractionHistory,
@@ -390,6 +447,8 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     ingestNetworkCalls,
     getRuntimeEndpointCatalog,
     clearRuntimeEndpoints,
+    getAgentConfigs: agentConfigStore.get,
+    setAgentConfig: agentConfigStore.set,
     flush,
     dispose,
   }

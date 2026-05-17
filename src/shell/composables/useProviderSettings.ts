@@ -3,28 +3,36 @@ import {
   DEFAULT_PROVIDER_SETTINGS,
   parseProviderSettings,
   isActiveProviderReady,
+  type AgentMode,
+  type EffortLevel,
+  type LocalCliReadiness,
   type ProviderId,
   type ProviderSettings,
   type ProviderConfig,
   PROVIDER_IDS,
 } from '../../embedded/provider-config.js'
 import {
-  BudgetCap,
-  pricerFromRateCard,
-  type BudgetPricer,
-  type BudgetSnapshot,
-} from '../../embedded/budget-cap.js'
+  combinePersonas,
+  resolvePersonaForTaskType,
+  type PersonaConfig,
+  type PersonaRuntimeOverride,
+} from '../../embedded/persona.js'
 import { EventLog, type PersistenceSink } from '../../embedded/event-log.js'
-import { ANTHROPIC_PRICING, DEFAULT_MODEL as DEFAULT_ANTHROPIC_MODEL } from '../services/embeddedAgent/pricing'
+import { useAgentConfigs } from './useAgentConfigs.js'
 
 /**
- * Multi-provider settings for the embedded chat. This is the M4 data layer
- * that the redesigned settings sheet binds to and that the runner reads
- * before each provider call. Singleton because the gear-icon sheet, the
- * composer cap chip, and the cost meter all read from the same source.
+ * Multi-provider settings for the embedded chat. Singleton because the
+ * settings sheet, the Conversation tab header, the first-run modal, and
+ * the task-creation auto-run hook all read from the same source.
  *
  * Storage posture: localStorage only, behind a single key. Keys never
- * leave the browser — same posture as `useAIConfig`.
+ * leave the browser.
+ *
+ * Per-task USD cost caps were removed: heterogeneous providers (local
+ * CLIs, OpenRouter, Paperclip, …) have no portable pricing surface, so a
+ * dollar-denominated cap can't be meaningful across the matrix. Token
+ * counts come back from each provider when they support it and the UI
+ * surfaces them informationally.
  */
 
 const STORAGE_KEY = 'annotask:ai:providerSettings'
@@ -60,7 +68,16 @@ function makeLocalStoragePersistenceSink(): PersistenceSink | undefined {
   return localStorage
 }
 
-function create(persistence: PersistenceShim = makeLocalStorageShim()) {
+/** Accessor for per-agent overrides sourced from `.annotask/agents.json`.
+ *  Returns a snapshot map keyed by persona id; called from the `personas`
+ *  computed so it must be reactive on each read (Vue's tracking handles this
+ *  as long as it touches a reactive ref). */
+type AgentOverridesAccessor = () => Record<string, PersonaRuntimeOverride>
+
+function create(
+  persistence: PersistenceShim = makeLocalStorageShim(),
+  agentOverrides: AgentOverridesAccessor = () => ({}),
+) {
   const initial = parseProviderSettings(persistence.load())
   const settings: Ref<ProviderSettings> = ref(initial)
 
@@ -72,14 +89,26 @@ function create(persistence: PersistenceShim = makeLocalStorageShim()) {
     { deep: true },
   )
 
+  /**
+   * Local-CLI probe. The settings panel writes to this with whatever
+   * `/__annotask/api/agent/detect` reports; the readiness computation
+   * reads it so local-CLI providers can be marked ready or not without
+   * baking the probe into provider-config itself.
+   */
+  const localCliProbe = ref<LocalCliReadiness>({})
+
   const activeProvider: ComputedRef<ProviderId> = computed(() => settings.value.activeProvider)
 
-  const ready = computed(() => isActiveProviderReady(settings.value))
+  const ready = computed(() => isActiveProviderReady(settings.value, localCliProbe.value))
 
   const eventLog = new EventLog({
     persistence: makeLocalStoragePersistenceSink(),
     persistenceKey: 'annotask:ai:eventLog',
   })
+
+  function setLocalCliProbe(probe: LocalCliReadiness) {
+    localCliProbe.value = probe
+  }
 
   function setActiveProvider(id: ProviderId) {
     settings.value = { ...settings.value, activeProvider: id }
@@ -92,9 +121,24 @@ function create(persistence: PersistenceShim = makeLocalStorageShim()) {
     }
   }
 
-  function setCap(usd: number) {
-    if (!Number.isFinite(usd) || usd <= 0) return
-    settings.value = { ...settings.value, perConversationCapUsd: usd }
+  /** Update the effort knob for the named provider in-place. */
+  function setEffort(id: ProviderId, effort: EffortLevel) {
+    const current = settings.value.providers[id]
+    setProviderConfig({ ...current, effort } as ProviderConfig)
+  }
+
+  /** Update the model id for the named provider in-place. Empty = auto. */
+  function setModel(id: ProviderId, model: string) {
+    const current = settings.value.providers[id]
+    setProviderConfig({ ...current, model } as ProviderConfig)
+  }
+
+  function setAgentMode(mode: AgentMode) {
+    settings.value = { ...settings.value, agentMode: mode }
+  }
+
+  function setOnboardingDismissed(dismissed = true) {
+    settings.value = { ...settings.value, onboardingDismissed: dismissed }
   }
 
   function setRedactionEnabled(on: boolean) {
@@ -105,54 +149,51 @@ function create(persistence: PersistenceShim = makeLocalStorageShim()) {
     settings.value = { ...settings.value, eventLogEnabled: on }
   }
 
-  /**
-   * Pricer for the *currently active* provider+model. Falls back to the
-   * Anthropic rate card for models we don't recognize so the cap still
-   * does something useful before per-provider rate cards land.
-   */
-  function pricerForActive(): BudgetPricer {
-    const active = settings.value.providers[settings.value.activeProvider]
-    const modelId = active.model || DEFAULT_ANTHROPIC_MODEL
-    const known = (ANTHROPIC_PRICING as Record<string, { inputPerMTok: number; outputPerMTok: number }>)[modelId]
-    if (known) {
-      return pricerFromRateCard({
-        inputPerMTok: known.inputPerMTok,
-        outputPerMTok: known.outputPerMTok,
-      })
+  // ── Personas ─────────────────────────────────────────
+  //
+  // Built-ins are merged in at read time so the UI never shows a stale
+  // snapshot when persona.ts is updated in a new annotask release.
+
+  const personas: ComputedRef<PersonaConfig[]> = computed(() =>
+    combinePersonas(settings.value.customPersonas ?? [], agentOverrides()),
+  )
+
+  function getPersonaForTaskType(taskType: string | undefined): PersonaConfig | null {
+    return resolvePersonaForTaskType(personas.value, taskType, settings.value.personaOverrides ?? {})
+  }
+
+  /** Insert or replace a custom persona by id. Built-ins are never written
+   *  to `customPersonas`; instead, editing a built-in clones it as
+   *  `custom:<built-in-id>` so the original stays available. */
+  function upsertPersona(persona: PersonaConfig) {
+    const existing = settings.value.customPersonas ?? []
+    const idx = existing.findIndex(p => p.id === persona.id)
+    const next = persona.isCustom ? persona : { ...persona, isCustom: true }
+    const updated = idx >= 0
+      ? existing.map((p, i) => i === idx ? next : p)
+      : [...existing, next]
+    settings.value = { ...settings.value, customPersonas: updated }
+  }
+
+  function deletePersona(id: string) {
+    const existing = settings.value.customPersonas ?? []
+    const updated = existing.filter(p => p.id !== id)
+    // Also drop any override pinning a task type to this persona.
+    const overrides = { ...(settings.value.personaOverrides ?? {}) }
+    for (const k of Object.keys(overrides)) {
+      if (overrides[k] === id) delete overrides[k]
     }
-    const fallback = ANTHROPIC_PRICING[DEFAULT_ANTHROPIC_MODEL]
-    return pricerFromRateCard({
-      inputPerMTok: fallback.inputPerMTok,
-      outputPerMTok: fallback.outputPerMTok,
-    })
+    settings.value = { ...settings.value, customPersonas: updated, personaOverrides: overrides }
   }
 
-  /**
-   * Construct a fresh BudgetCap for a new conversation. Each conversation
-   * should have its own instance so caps are per-conversation, not
-   * per-session.
-   */
-  function makeConversationBudget(): BudgetCap {
-    return new BudgetCap({
-      capUsd: settings.value.perConversationCapUsd,
-      pricer: pricerForActive(),
-    })
-  }
-
-  /**
-   * Helper for the composer's token meter. Sums all `turn` events for the
-   * given conversation id straight from the local event log.
-   */
-  function usageForConversation(conversationId: string): BudgetSnapshot {
-    const cap = makeConversationBudget()
-    const totals = eventLog.totalsByConversation(conversationId)
-    cap.accumulate({
-      input: totals.inputTokens,
-      output: totals.outputTokens,
-      cacheRead: totals.cacheReadTokens,
-      cacheWrite: totals.cacheCreationTokens,
-    })
-    return cap.snapshot()
+  function setPersonaOverride(taskType: string, personaId: string | null) {
+    const overrides = { ...(settings.value.personaOverrides ?? {}) }
+    if (personaId == null || personaId === '') {
+      delete overrides[taskType]
+    } else {
+      overrides[taskType] = personaId
+    }
+    settings.value = { ...settings.value, personaOverrides: overrides }
   }
 
   return {
@@ -160,14 +201,21 @@ function create(persistence: PersistenceShim = makeLocalStorageShim()) {
     activeProvider,
     ready,
     providerIds: PROVIDER_IDS,
+    localCliProbe,
+    setLocalCliProbe,
     setActiveProvider,
     setProviderConfig,
-    setCap,
+    setEffort,
+    setModel,
+    setAgentMode,
+    setOnboardingDismissed,
     setRedactionEnabled,
     setEventLogEnabled,
-    pricerForActive,
-    makeConversationBudget,
-    usageForConversation,
+    personas,
+    getPersonaForTaskType,
+    upsertPersona,
+    deletePersona,
+    setPersonaOverride,
     eventLog,
   }
 }
@@ -175,7 +223,23 @@ function create(persistence: PersistenceShim = makeLocalStorageShim()) {
 export type UseProviderSettings = ReturnType<typeof create>
 
 export function useProviderSettings(): UseProviderSettings {
-  if (!singleton) singleton = create()
+  if (!singleton) {
+    // Wire in per-agent overrides from `.annotask/agents.json` so the
+    // persona resolver picks up project-specific provider/model/effort
+    // without each consumer having to know about agent-configs.
+    singleton = create(makeLocalStorageShim(), () => {
+      const cfg = useAgentConfigs().configs.value
+      const out: Record<string, PersonaRuntimeOverride> = {}
+      for (const [id, entry] of Object.entries(cfg)) {
+        const o: PersonaRuntimeOverride = {}
+        if (entry.providerId) o.providerId = entry.providerId
+        if (typeof entry.model === 'string') o.model = entry.model
+        if (entry.effort) o.effort = entry.effort
+        if (Object.keys(o).length > 0) out[id] = o
+      }
+      return out
+    })
+  }
   return singleton
 }
 
@@ -204,8 +268,7 @@ export function createProviderSettingsForTests(initial: unknown = null) {
 
 // Re-exports so the panel can import everything from one place.
 export {
-  ANTHROPIC_PRICING,
   DEFAULT_PROVIDER_SETTINGS,
   PROVIDER_IDS,
 }
-export type { ProviderId, ProviderSettings, ProviderConfig }
+export type { AgentMode, EffortLevel, ProviderId, ProviderSettings, ProviderConfig }

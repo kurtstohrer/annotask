@@ -33,6 +33,13 @@ import DataSourcesPage from './components/DataSourcesPage.vue'
 import ComponentsPage from './components/ComponentsPage.vue'
 import HelpOverlay from './components/HelpOverlay.vue'
 import SettingsOverlay from './components/SettingsOverlay.vue'
+import InitWizard from './components/InitWizard.vue'
+import { useInitFlow } from './composables/useInitFlow'
+import { useProviderSettings } from './composables/useProviderSettings'
+import { useAgentModels } from './composables/useAgentModels'
+import { useAgentMode } from './composables/useAgentMode'
+import { startAutoRunDriver } from './composables/useAutoRunDriver'
+import { useAgentDetect, fetchAgentDetect } from './composables/useTaskThread'
 import A11yDetailDrawer from './components/A11yDetailDrawer.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import ReportViewer from './components/ReportViewer.vue'
@@ -130,11 +137,44 @@ const includeDataContext = ref(false)
 const screenshots = useScreenshots(iframe)
 const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
 const showThemeEditor = ref(false)
+const initFlow = useInitFlow()
 const helpSection = ref<'overview' | 'annotate' | 'design' | 'audit' | 'context' | 'tasks' | 'agent' | 'skills' | 'apply-skill' | 'init-skill' | 'settings'>('overview')
 const {
   showShortcuts, showSettings,
   toggleShortcuts, toggleSettings,
 } = useOverlayToggles()
+
+// Kick off the local-CLI probe at shell mount and mirror the result into
+// the provider-settings singleton. The probe used to live inside the
+// Settings panel, which meant `providerSettings.ready` was false for every
+// local-CLI provider until the user opened Settings — masking auto-run
+// and Run-with-agent. App.vue is always mounted, so the probe always fires.
+const providerSettings = useProviderSettings()
+const agentDetect = useAgentDetect()
+fetchAgentDetect()
+
+// Warm the model-catalog cache for the primary providers at shell load so
+// every dropdown (Settings → Providers, InitWizard, AgentDirectionsPanel)
+// shows the live list immediately when opened. The composable honors a
+// 5-min localStorage TTL, so refreshes are free when warm.
+void useAgentModels().preload(['claude-local', 'codex-local', 'opencode-local', 'copilot-local'])
+watch(
+  () => agentDetect.snapshot.value,
+  (snap) => {
+    if (!snap) return
+    providerSettings.setLocalCliProbe({
+      'claude-local': !!(snap['claude-local'].found && snap['claude-local'].loggedIn),
+      'codex-local': !!(snap['codex-local'].found && snap['codex-local'].loggedIn),
+      'opencode-local': !!(snap['opencode-local'].found && snap['opencode-local'].loggedIn),
+    })
+  },
+  { immediate: true },
+)
+
+// Agent-mode auto-run queue lives at module scope (singleton); the watcher
+// that routes a queued id into the detail modal is set up further down,
+// once `detailTaskId` is in scope.
+const agentMode = useAgentMode()
 
 
 
@@ -510,6 +550,35 @@ const {
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
 } = taskWorkflows
 
+// Auto-mode runs silently: no modal hijack, no forced switch to the
+// Conversation tab. The dedicated driver claims queued ids and runs the
+// embedded agent headlessly; the task card surfaces status (in_progress)
+// and a live-activity dot. Users open the modal only if they want to
+// watch the work-stream.
+startAutoRunDriver()
+
+// Batch-run handler — surfaced by the Tasks panel header when agentMode
+// is auto or manual AND a provider is ready AND there's at least one
+// pending task. Enqueues every pending task; the watcher above opens the
+// most-recent one and the Conversation tab drains the queue on mount.
+const pendingTasksCount = computed(
+  () => routeTasks.value.filter((t) => t.status === 'pending' || t.status === 'denied').length,
+)
+const canBatchRunAgent = computed(
+  () =>
+    providerSettings.ready.value
+    && providerSettings.settings.value.agentMode !== 'off'
+    && pendingTasksCount.value > 0,
+)
+function runPendingAgentBatch() {
+  if (!canBatchRunAgent.value) return
+  for (const t of routeTasks.value) {
+    if (t.status === 'pending' || t.status === 'denied') {
+      agentMode.requestAutoRun(t.id)
+    }
+  }
+}
+
 // ── Change history (undo / clear / commit-as-task) ──
 // Needs createRouteTask from taskWorkflows, so initialized after it.
 const { selectionChanges, doUndo, doClearChanges, commitChangesAsTask } = useChangeHistory({
@@ -804,6 +873,9 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :include-rendered-html="includeRenderedHtml"
         :include-data-context="includeDataContext"
         :data-context-probe="dataContextProbe"
+        :can-batch-run="canBatchRunAgent"
+        :pending-count="pendingTasksCount"
+        @run-pending="runPendingAgentBatch"
         @update:showReportPanel="showReportPanel = $event"
         @update:newTaskText="newTaskText = $event"
         @update:denyFeedbackText="denyFeedbackText = $event"
@@ -827,14 +899,6 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       <DataSourcesPage v-else-if="shellView === 'develop' && developSection === 'data'"
         key="data-sources-data"
         variant="data"
-        :highlightRects="dataHighlights.rects.value"
-        :currentRoute="currentRoute"
-      />
-
-      <!-- Audit > Libraries: data-fetching and state libraries detected in package.json -->
-      <DataSourcesPage v-else-if="shellView === 'develop' && developSection === 'libraries'"
-        key="data-sources-libraries"
-        variant="libraries"
         :highlightRects="dataHighlights.rects.value"
         :currentRoute="currentRoute"
       />
@@ -897,6 +961,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         @close="showSettings = false"
         @update:showThemeEditor="showThemeEditor = $event"
       />
+
+      <InitWizard v-if="initFlow.open.value" />
     </div>
 
     <!-- Context menu -->
@@ -918,12 +984,14 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
     <TaskDetailModal
       v-if="detailTask"
       :task="detailTask"
+      :initial-tab="'details'"
       @close="detailTaskId = null"
       @accept="(id) => { acceptTask(id); detailTaskId = null }"
       @deny="(id) => { denyingTaskId = id; denyFeedbackText = ''; detailTaskId = null }"
       @delete="(id) => { removeTaskAnnotations(id); restoredTaskIds.delete(id); taskSystem.deleteTask(id); detailTaskId = null }"
       @update="(id, fields) => { taskSystem.updateTaskStatus(id, detailTask!.status, undefined, fields) }"
       @reply="(id, answers) => { taskSystem.respondToAgent(id, answers) }"
+      @open-settings="() => { showSettings = true }"
     />
 
     <ConfirmDialog

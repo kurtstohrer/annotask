@@ -121,16 +121,13 @@
       <!-- Audit -->
       <div v-else-if="helpSection === 'audit'" class="help-page">
         <h2 class="help-page-title">Audit</h2>
-        <p class="help-intro">Monitor runtime health and code quality. The <strong>Audit</strong> tab has five sub-sections: <strong>A11y</strong>, <strong>Data</strong>, <strong>Libraries</strong>, <strong>Performance</strong>, and <strong>Errors</strong>. Each surfaces findings you can turn into fix tasks with one click.</p>
+        <p class="help-intro">Monitor runtime health and code quality. The <strong>Audit</strong> tab has four sub-sections: <strong>A11y</strong>, <strong>Data</strong>, <strong>Performance</strong>, and <strong>Errors</strong>. Each surfaces findings you can turn into fix tasks with one click.</p>
 
         <h3 id="audit-a11y" class="help-section-title">A11y</h3>
         <p class="help-text">Automated WCAG audits powered by <strong>axe-core</strong> (bundled locally — no CDN). Scan the full page or a specific element. Violations group by rule with impact levels (critical, serious, moderate, minor). Each violation shows affected elements, selectors, and a WCAG reference. Click the task button to create an <strong>a11y_fix</strong> task with everything the agent needs.</p>
 
         <h3 id="audit-data" class="help-section-title">Data</h3>
-        <p class="help-text">Discovers data sources in your app — composables, stores, <code>fetch</code>/<code>axios</code> calls, tRPC, GraphQL, route loaders. Hover a data source row to highlight elements that consume it. Matches endpoints against detected API schemas (OpenAPI, GraphQL, tRPC) so the agent knows what shape comes back. Backend-contract edits create <strong>api_update</strong> tasks with schema and data-source context.</p>
-
-        <h3 id="audit-libraries" class="help-section-title">Libraries</h3>
-        <p class="help-text">Shows data-fetching and state libraries detected in your project — TanStack Query, Pinia, Redux, Zustand, Apollo, SWR, and more — with the files that use them. Useful when your agent needs to know which patterns to follow.</p>
+        <p class="help-text">Discovers data sources in your app — composables, stores, <code>fetch</code>/<code>axios</code> calls, tRPC, GraphQL, route loaders. Hover a data source row to highlight elements that consume it. Matches endpoints against detected API schemas (OpenAPI, GraphQL, tRPC) so the agent knows what shape comes back.</p>
 
         <h3 id="audit-perf" class="help-section-title">Performance</h3>
         <p class="help-text">Web Vitals (LCP, FID, CLS, TTFB), navigation timing, resource/bundle breakdown. Click <strong>Scan</strong> for a snapshot, <strong>Record</strong> to capture a session of interactions. Findings surface slow vitals, large bundles, render-blocking resources, excessive DOM size. Each finding can become a <strong>perf_fix</strong> task.</p>
@@ -191,8 +188,7 @@
           <strong>theme_update</strong> (design token edits),
           <strong>a11y_fix</strong> (WCAG violation fix),
           <strong>error_fix</strong> (console error fix),
-          <strong>perf_fix</strong> (performance finding fix),
-          <strong>api_update</strong> (backend contract edits).
+          <strong>perf_fix</strong> (performance finding fix).
         </p>
 
         <h3 id="tasks-panel" class="help-section-title">Tasks Panel</h3>

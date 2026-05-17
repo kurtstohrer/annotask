@@ -19,24 +19,72 @@
       </nav>
 
       <div class="settings-content">
-        <!-- AI tab — Anthropic BYOK + model + cap (ANN-4 surface). -->
-        <section v-if="activeTab === 'ai'" class="settings-page" aria-label="AI settings">
-          <h2 class="settings-page-title">AI</h2>
-          <p class="settings-page-lead">
-            Anthropic BYOK for the embedded agent loop. Provider-specific keys
-            (OpenAI, Copilot, opencode, Paperclip) live under <strong>Providers</strong>.
-          </p>
-          <AISettingsPanel />
+        <!-- Agents tab — task-type-routed personas (provider/model/effort overrides). -->
+        <section v-if="activeTab === 'agents'" class="settings-page settings-page--wide" aria-label="Agent personas">
+          <h2 class="settings-page-title">Agents</h2>
+          <AgentsPanel />
         </section>
 
-        <!-- Providers tab — multi-provider config + cap + guardrails. -->
-        <section v-else-if="activeTab === 'providers'" class="settings-page" aria-label="Provider settings">
-          <h2 class="settings-page-title">Providers</h2>
+        <!-- Project tab — design-spec status + re-init. -->
+        <section v-else-if="activeTab === 'project'" class="settings-page" aria-label="Project setup">
+          <h2 class="settings-page-title">Project setup</h2>
           <p class="settings-page-lead">
-            Choose which model service the embedded chat calls. All credentials
-            stay in your browser.
+            View the current design-spec and run the init wizard again to
+            re-scan the project, refresh tokens, or update the style guide.
           </p>
-          <ProviderSettingsPanel />
+
+          <!-- Current spec summary -->
+          <div class="settings-section">
+            <label class="settings-label">Design spec status</label>
+            <div v-if="specInitialized" class="proj-spec-summary">
+              <div class="proj-spec-row">
+                <span class="proj-spec-key">Framework</span>
+                <span class="proj-spec-val">{{ specFramework }}</span>
+              </div>
+              <div class="proj-spec-row">
+                <span class="proj-spec-key">Themes</span>
+                <span class="proj-spec-val">{{ specThemes }}</span>
+              </div>
+              <div class="proj-spec-row">
+                <span class="proj-spec-key">Colors</span>
+                <span class="proj-spec-val">{{ specColorCount }} token{{ specColorCount === 1 ? '' : 's' }}</span>
+              </div>
+              <div class="proj-spec-row">
+                <span class="proj-spec-key">Typography</span>
+                <span class="proj-spec-val">{{ specTypoCount }} entries</span>
+              </div>
+              <div v-if="specComponents" class="proj-spec-row">
+                <span class="proj-spec-key">Components</span>
+                <span class="proj-spec-val">{{ specComponents }}</span>
+              </div>
+            </div>
+            <p v-else class="settings-desc" style="color: var(--warning)">
+              Project not initialized — open the init wizard to set up the design spec.
+            </p>
+          </div>
+
+          <!-- Actions -->
+          <div class="settings-section">
+            <label class="settings-label">Setup wizard</label>
+            <template v-if="specInitialized">
+              <p class="settings-desc">
+                Re-run the full setup wizard. Each scan is optional — pick what
+                you want to refresh, or skip straight to Review to edit the
+                current tokens, style guide, and agent directions in place.
+              </p>
+              <button class="proj-reinit-btn" @click="openReinit">
+                Re-init
+              </button>
+            </template>
+            <template v-else>
+              <p class="settings-desc">
+                Run the setup wizard to scan your project and configure Annotask.
+              </p>
+              <button class="proj-reinit-btn" @click="openReinit">
+                Open setup wizard
+              </button>
+            </template>
+          </div>
         </section>
 
         <!-- Appearance tab — preserved verbatim. -->
@@ -86,15 +134,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import FullscreenOverlayHeader from './FullscreenOverlayHeader.vue'
 import ShellThemeEditor from './ShellThemeEditor.vue'
-import AISettingsPanel from './AISettingsPanel.vue'
-import ProviderSettingsPanel from './ProviderSettingsPanel.vue'
+import AgentsPanel from './AgentsPanel.vue'
+import { useDesignSpec } from '../composables/useDesignSpec'
+import { useInitFlow } from '../composables/useInitFlow'
 import Icon, { type IconName } from './Icon.vue'
 import type { useShellTheme } from '../composables/useShellTheme'
 
-type TabId = 'ai' | 'providers' | 'appearance'
+type TabId = 'project' | 'agents' | 'appearance'
 
 interface Props {
   shellTheme: ReturnType<typeof useShellTheme>
@@ -102,18 +151,58 @@ interface Props {
 }
 
 const props = defineProps<Props>()
-defineEmits<{
+const emit = defineEmits<{
   (e: 'close'): void
   (e: 'update:showThemeEditor', value: boolean): void
 }>()
 
 const tabs: Array<{ id: TabId; label: string; icon: IconName }> = [
-  { id: 'ai', label: 'AI', icon: 'bot' },
-  { id: 'providers', label: 'Providers', icon: 'sliders-horizontal' },
+  { id: 'project',    label: 'Project',    icon: 'settings' },
+  { id: 'agents',     label: 'Agents',     icon: 'bot' },
   { id: 'appearance', label: 'Appearance', icon: 'palette' },
 ]
 
-const activeTab = ref<TabId>('ai')
+// ── Project tab ──────────────────────────────────────────
+const { designSpec, isInitialized: specInitialized } = useDesignSpec()
+const initFlow = useInitFlow()
+
+const specFramework = computed(() => {
+  const fw = designSpec.value?.framework
+  if (!fw) return '—'
+  return [fw.name, fw.version].filter(Boolean).join(' ') + (fw.styling?.length ? ` (${fw.styling.join(', ')})` : '')
+})
+
+const specThemes = computed(() => {
+  const themes = designSpec.value?.themes
+  if (!themes?.length) return '—'
+  return themes.map((t: any) => t.name || t.id).join(', ')
+})
+
+const specColorCount = computed(() => designSpec.value?.colors?.length ?? 0)
+
+const specTypoCount = computed(() => {
+  const t = designSpec.value?.typography
+  return (t?.families?.length ?? 0) + (t?.scale?.length ?? 0)
+})
+
+const specComponents = computed(() => {
+  const c = designSpec.value?.components
+  if (!c?.library) return null
+  return [c.library, c.version].filter(Boolean).join(' ')
+})
+
+function openReinit() {
+  emit('close')
+  // Re-init runs the full init flow (agent → scan → review → save). The
+  // `rescan: true` flag is what marks individual scans as opt-in/skippable.
+  if (specInitialized.value) {
+    initFlow.openWizard('agent', { rescan: true })
+  } else {
+    initFlow.openWizard('agent')
+  }
+}
+
+const activeTab = ref<TabId>('project')
 
 const themeGroups = [
   { key: 'default', label: 'Default' },
@@ -141,6 +230,56 @@ function onSystemToggle(useSystem: boolean) {
 </script>
 
 <style scoped>
+/* Agents tab needs more horizontal room for the persona table than the
+   default 560px settings-page width. */
+.settings-page.settings-page--wide {
+  max-width: 960px;
+}
+
+/* ── Project tab ── */
+.proj-spec-summary {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.proj-spec-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.proj-spec-row:last-child { border-bottom: none; }
+.proj-spec-key {
+  width: 90px;
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.proj-spec-val {
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11.5px;
+}
+
+.proj-reinit-btn {
+  margin-top: 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 9px 18px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border: none;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.proj-reinit-btn:hover { background: var(--accent-hover); }
+
 .settings-layout {
   flex: 1;
   display: flex;

@@ -64,7 +64,8 @@
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p src/shell/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:live-providers": "ANNOTASK_LIVE_CLI=1 vitest run src/embedded/__tests__/cli-providers-live.test.ts"
   },
   "pnpm": {
     "overrides": {
@@ -110,6 +111,14 @@
     }
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/search": "^6.7.0",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/view": "^6.43.0",
+    "@lezer/highlight": "^1.2.3",
+    "codemirror": "^6.0.2",
     "ws": "^8.20.0",
     "zod": "^4.3.6",
     "zod-to-json-schema": "^3.25.2"

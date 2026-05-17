@@ -151,6 +151,48 @@ describe('createProjectState — task store serialization', () => {
     state.dispose()
   })
 
+  it('addTaskUsage accumulates token usage on the task', async () => {
+    const state = createProjectState(root, noopBroadcast)
+    const t = await state.addTask({ type: 'annotation', description: 'usage test' }) as any
+
+    const first = await state.addTaskUsage(t.id, {
+      inputTokens: 100,
+      outputTokens: 40,
+      cacheReadTokens: 5,
+    })
+    expect(first).not.toBeNull()
+    expect(first!.inputTokens).toBe(100)
+    expect(first!.outputTokens).toBe(40)
+    expect(first!.cacheReadTokens).toBe(5)
+    expect(first!.turns).toBe(1)
+    expect(first!.lastUpdated).toBeGreaterThan(0)
+
+    const second = await state.addTaskUsage(t.id, {
+      inputTokens: 200,
+      outputTokens: 80,
+      cacheCreationTokens: 10,
+    })
+    expect(second!.inputTokens).toBe(300)
+    expect(second!.outputTokens).toBe(120)
+    expect(second!.cacheReadTokens).toBe(5)
+    expect(second!.cacheCreationTokens).toBe(10)
+    expect(second!.turns).toBe(2)
+
+    const snap = state.getTasks().tasks[0] as any
+    expect(snap.tokenUsage.turns).toBe(2)
+    expect(snap.tokenUsage.inputTokens).toBe(300)
+    await state.flush()
+    state.dispose()
+  })
+
+  it('addTaskUsage returns null for unknown task ids (silently no-ops)', async () => {
+    const state = createProjectState(root, noopBroadcast)
+    const result = await state.addTaskUsage('task-does-not-exist', { inputTokens: 1, outputTokens: 1 })
+    expect(result).toBeNull()
+    await state.flush()
+    state.dispose()
+  })
+
   it('loads an existing tasks.json on first read', async () => {
     const dir = path.join(root, '.annotask')
     fs.mkdirSync(dir, { recursive: true })

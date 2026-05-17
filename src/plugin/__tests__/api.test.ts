@@ -74,6 +74,60 @@ describe('API endpoints', () => {
     ingestNetworkCalls: (_calls: unknown[]) => { /* no-op for tests */ },
     getRuntimeEndpointCatalog: () => ({ version: '1.0' as const, updatedAt: 0, endpoints: [] }),
     clearRuntimeEndpoints: () => { /* no-op for tests */ },
+    // Embedded-chat stubs — these tests don't exercise the chat endpoints,
+    // but APIOptions requires them. Each stub returns a sensible empty value.
+    taskThread: {
+      read: async (_id: string) => [],
+      append: async (_id: string, input: { role: 'user' | 'assistant' | 'system' | 'tool'; content: string }) => ({
+        id: 'msg-test', ts: 0, role: input.role, content: input.content,
+      }),
+      subscribe: () => () => { /* no-op */ },
+      clear: async () => { /* no-op */ },
+    },
+    agentSpawn: {
+      registry: { abort: () => false, size: () => 0, killAll: () => { /* no-op */ } },
+      handleSpawn: async (_req: unknown, res: { statusCode: number; end: (s?: string) => void }) => {
+        res.statusCode = 501; res.end('not supported in this test')
+      },
+    },
+    agentDetect: {
+      detect: async () => ({
+        'claude-local': { found: false },
+        'codex-local': { found: false },
+        'opencode-local': { found: false },
+        'copilot-local': { found: false },
+        copilot: { found: false },
+        openrouter: { hasEnv: false },
+        ts: 0,
+      }),
+      invalidate: () => { /* no-op */ },
+    },
+    initRunner: {
+      start: () => ({ running: false, steps: [] }),
+      cancel: () => { /* no-op */ },
+      commit: async () => ({ running: false, steps: [], result: 'success' as const }),
+      skip: async () => ({ running: false, steps: [], result: 'success' as const }),
+      getState: () => ({ running: false, steps: [] }),
+    },
+    getAgentConfigs: async () => ({ version: 1 as const, agents: {} }),
+    setAgentConfig: async () => ({ version: 1 as const, agents: {} }),
+    usageLedger: {
+      append: async (e: { scope: 'task' | 'init' | 'apply' | 'chat' }) => ({ ts: 0, scope: e.scope, inputTokens: 0, outputTokens: 0 }),
+      readAll: async () => [],
+      summary: async () => ({
+        totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+        byScope: {
+          task: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+          init: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+          apply: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+          chat: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+        },
+        byProvider: {},
+        firstAt: null,
+        lastAt: null,
+      }),
+      recent: async () => [],
+    },
   }
 
   beforeAll(async () => {
@@ -190,7 +244,7 @@ describe('API endpoints', () => {
     it('accepts every canonical task type', async () => {
       const canonical = [
         'annotation', 'section_request', 'style_update', 'theme_update',
-        'a11y_fix', 'error_fix', 'perf_fix', 'api_update',
+        'a11y_fix', 'error_fix', 'perf_fix',
       ]
       for (const type of canonical) {
         const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {

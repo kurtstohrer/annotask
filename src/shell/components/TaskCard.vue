@@ -2,7 +2,7 @@
   <div class="task-card" :class="task.status" :data-testid="'task-card'" :data-task-id="task.id" :data-task-type="task.type" :data-task-status="task.status" @click="$emit('open-detail', task.id)">
     <div v-if="task.resolution" class="task-card-resolution">{{ task.resolution }}</div>
     <div class="task-card-header">
-      <span class="task-status-dot" :class="task.status" />
+      <span class="task-status-dot" :class="[task.status, { 'active-run': isActiveRun }]" />
       <span class="task-card-desc task-card-md" v-html="safeMd(task.description)"></span>
       <button data-testid="btn-delete-task" class="task-card-close" @click.stop="$emit('confirm-delete', task.id)" title="Delete task">×</button>
     </div>
@@ -65,11 +65,20 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import TaskOptionsToggles from './TaskOptionsToggles.vue'
 import ScreenshotUploader from './ScreenshotUploader.vue'
 import { safeMd } from '../utils/safeMd'
+import { useAgentMode } from '../composables/useAgentMode'
 import type { AnnotaskTask } from '../../schema'
 import type { DataContextProbeResult } from '../services/dataContextClient'
+
+// Live-activity indicator. The embedded agent records its in-flight task
+// ids in useAgentMode().activeRuns; we read that here to pulse the status
+// dot independently of the task's persisted `status` field. Chat-only
+// flows never flip `task.status` to in_progress, but the dot should still
+// signal "the agent is working."
+const { activeRuns } = useAgentMode()
 
 interface Props {
   task: AnnotaskTask
@@ -82,7 +91,8 @@ interface Props {
   dataContextProbe: DataContextProbeResult | null
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
+const isActiveRun = computed(() => activeRuns.value.has(props.task.id))
 defineEmits<{
   (e: 'open-detail', id: string): void
   (e: 'confirm-delete', id: string): void

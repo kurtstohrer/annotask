@@ -12,6 +12,14 @@ import {
 } from './schemas.js'
 import { mergeRuntimeOrphansIntoEntries, findMatchingStaticEntries } from './runtime-endpoints.js'
 import type { NetworkCall, RuntimeEndpoint, RuntimeEndpointCatalog } from '../schema.js'
+import type { TaskThreadStore, ThreadMessage, ThreadRole } from './task-thread.js'
+import type { WorkStreamBlock } from '../shared/work-stream.js'
+import type { AgentSpawnHandler } from './agent-spawn.js'
+import type { AgentDetector } from './agent-detect.js'
+import type { InitRunner, ScanOptions } from './init.js'
+import type { UsageLedger } from './usage-ledger.js'
+import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
+import { PROVIDER_IDS, EFFORT_LEVELS } from '../embedded/provider-config.js'
 
 export interface APIOptions {
   projectRoot: string
@@ -38,6 +46,20 @@ export interface APIOptions {
   getRuntimeEndpointCatalog: () => RuntimeEndpointCatalog
   /** Drop the runtime endpoint catalog. */
   clearRuntimeEndpoints: () => void
+  /** Per-task conversation transcript store (chat messages). */
+  taskThread: TaskThreadStore
+  /** Spawns local CLIs (claude/codex/opencode/gh) and streams their output. */
+  agentSpawn: AgentSpawnHandler
+  /** Probes for installed/logged-in local CLIs. */
+  agentDetect: AgentDetector
+  /** Drives the in-UI initialization pipeline. */
+  initRunner: InitRunner
+  /** Reads per-persona project directions from `.annotask/agents.json`. */
+  getAgentConfigs: () => Promise<AgentConfigs>
+  /** Writes one persona's project directions. */
+  setAgentConfig: (personaId: string, entry: Partial<AgentConfigEntry>) => Promise<AgentConfigs>
+  /** Append-only token-usage ledger across init / task / apply runs. */
+  usageLedger: UsageLedger
 }
 
 const MAX_BODY_SIZE = 4_194_304
@@ -73,6 +95,8 @@ export type ApiErrorCode =
   | 'forbidden_origin'
   | 'not_found'
   | 'missing_field'
+  | 'invalid_id'
+  | 'invalid_body'
 
 export interface ApiErrorBody {
   error: { code: ApiErrorCode; message: string }
@@ -99,7 +123,9 @@ import { scanApiSchemas } from './api-schema-scanner.js'
 import { getWorkspaceCatalog } from './workspace-catalog.js'
 import { resolveEndpoint } from './api-schema-resolver.js'
 import { resolveWorkspace } from './workspace.js'
-import type { DataSource } from '../schema.js'
+import { getSystemPrompt } from '../skills/index.js'
+import { TASK_TYPES, type DataSource } from '../schema.js'
+import { listAgentModels, type ProvideredId } from './agent-models.js'
 
 /**
  * Look up the monorepo root (pnpm-workspace.yaml / npm `workspaces` / lerna.json)
@@ -227,6 +253,205 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
+    // System prompt for the embedded agent. Composes the base `annotask-apply`
+    // skill body with the optional task-type companion (A11Y_RULES.md, etc.)
+    // so the in-shell runner gets the same prompt external editors see via
+    // MCP `initialize.instructions`, plus per-task-type guidance.
+    if (path === 'system-prompt' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const taskType = urlObj.searchParams.get('task_type') || undefined
+      if (taskType && !(TASK_TYPES as readonly string[]).includes(taskType)) {
+        return sendError(res, 400, `Unknown task type: ${taskType}`)
+      }
+      let prompt = ''
+      try {
+        prompt = getSystemPrompt({ taskType })
+      } catch {
+        // Bundled skills missing — return an empty prompt so the runner can
+        // fall back to its built-in placeholder rather than 500.
+        prompt = ''
+      }
+      res.end(JSON.stringify({ prompt, taskType: taskType ?? null }, null, 2))
+      return
+    }
+
+    // Project-wide token usage summary. GET /usage → aggregate totals,
+    // per-scope (task/init/apply/chat), and per-provider tallies. The Providers
+    // settings panel reads this to show cumulative spend, complementing the
+    // per-conversation budget cap.
+    if (path === 'usage' && req.method === 'GET') {
+      const summary = await options.usageLedger.summary()
+      res.end(JSON.stringify(summary, null, 2))
+      return
+    }
+    // GET /usage/recent?limit=N → most recent entries, newest first. Used by
+    // the activity log in Settings.
+    if (path === 'usage/recent' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const rawLimit = urlObj.searchParams.get('limit')
+      const parsedLimit = rawLimit ? Number(rawLimit) : 50
+      const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(500, Math.floor(parsedLimit))
+        : 50
+      const entries = await options.usageLedger.recent(limit)
+      res.end(JSON.stringify({ entries }, null, 2))
+      return
+    }
+
+    if (path === 'init/state' && req.method === 'GET') {
+      res.end(JSON.stringify(options.initRunner.getState(), null, 2))
+      return
+    }
+
+    // Per-scan-target metadata for the wizard's Re-scan UI. Only the two
+    // durable artifacts (design-spec.json — covers tokens/themes/framework
+    // produced from the components, data-source, and api-schema scans —
+    // and agents.json) are reported, so users can see when each was last
+    // written before picking which scanners to re-run.
+    if (path === 'init/scan-targets' && req.method === 'GET') {
+      const targets: Array<{ id: 'designSpec' | 'agentConfigs'; file: string }> = [
+        { id: 'designSpec',   file: 'design-spec.json' },
+        { id: 'agentConfigs', file: 'agents.json' },
+      ]
+      const out: Record<string, { exists: boolean; mtime: number | null }> = {}
+      for (const t of targets) {
+        const fp = nodePath.join(options.projectRoot, '.annotask', t.file)
+        try {
+          const stat = await fsp.stat(fp)
+          out[t.id] = { exists: true, mtime: stat.mtimeMs }
+        } catch {
+          out[t.id] = { exists: false, mtime: null }
+        }
+      }
+      res.end(JSON.stringify(out, null, 2))
+      return
+    }
+
+    if (path === 'init/start' && req.method === 'POST') {
+      let scanOptions: ScanOptions = {}
+      try {
+        const raw = await readBody(req)
+        if (raw.trim()) {
+          const parsed = parseJSON(raw)
+          if (parsed.ok && parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) {
+            const b = parsed.data as Record<string, unknown>
+            scanOptions = {
+              skipAgentScan: b.skipAgentScan === true,
+              skipAgentConfigs: b.skipAgentConfigs === true,
+              skipComponents: b.skipComponents === true,
+              skipDataSources: b.skipDataSources === true,
+              skipApiSchemas: b.skipApiSchemas === true,
+              requestedProviderId: typeof b.requestedProviderId === 'string' && (PROVIDER_IDS as readonly string[]).includes(b.requestedProviderId)
+                ? b.requestedProviderId as ScanOptions['requestedProviderId']
+                : undefined,
+              requestedModel: typeof b.requestedModel === 'string' ? b.requestedModel : undefined,
+              requestedEffort: typeof b.requestedEffort === 'string' && (EFFORT_LEVELS as readonly string[]).includes(b.requestedEffort)
+                ? b.requestedEffort as ScanOptions['requestedEffort']
+                : undefined,
+            }
+          }
+        }
+      } catch { /* no body is fine */ }
+      const state = options.initRunner.start(scanOptions)
+      res.end(JSON.stringify(state, null, 2))
+      return
+    }
+
+    if (path === 'init/cancel' && req.method === 'POST') {
+      options.initRunner.cancel()
+      res.end(JSON.stringify(options.initRunner.getState(), null, 2))
+      return
+    }
+
+    // Mark as initialized without committing token data — used when the user
+    // prefers to run the annotask-init skill in their editor agent instead.
+    if (path === 'init/skip' && req.method === 'POST') {
+      const state = await options.initRunner.skip()
+      res.end(JSON.stringify(state, null, 2))
+      return
+    }
+
+    if (path === 'init/commit' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      let body: Record<string, unknown> = {}
+      if (raw.trim().length > 0) {
+        const parsed = parseJSON(raw)
+        if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+        if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+          return sendError(res, 400, 'Request body must be a JSON object', 'body_not_object')
+        }
+        body = parsed.data as Record<string, unknown>
+      }
+      const commitBody = {
+        spec: typeof body.spec === 'object' && body.spec !== null && !Array.isArray(body.spec)
+          ? body.spec as Record<string, unknown>
+          : undefined,
+        styleGuide: typeof body.styleGuide === 'string' ? body.styleGuide : undefined,
+        overwriteStyleGuide: body.overwriteStyleGuide === true,
+      }
+      const state = await options.initRunner.commit(commitBody)
+      if (state.result === 'error') {
+        return sendError(res, 400, state.error ?? 'Commit failed')
+      }
+      res.end(JSON.stringify(state, null, 2))
+      return
+    }
+
+    // Per-persona project directions written by the init agent and editable in Settings.
+    if (path === 'agent-configs' && req.method === 'GET') {
+      const configs = await options.getAgentConfigs()
+      res.end(JSON.stringify(configs, null, 2))
+      return
+    }
+
+    {
+      const m = path.match(/^agent-configs\/([^/]+)$/)
+      if (m && req.method === 'PATCH') {
+        const personaId = decodeURIComponent(m[1])
+        if (!/^[a-z0-9-]+$/.test(personaId)) return sendError(res, 400, 'Invalid persona id', 'invalid_id')
+        let raw: string
+        try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+        const parsed = parseJSON(raw)
+        if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+        if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+          return sendError(res, 400, 'Request body must be a JSON object', 'body_not_object')
+        }
+        const b = parsed.data as Record<string, unknown>
+        const entry: Partial<AgentConfigEntry> = {}
+        if ('projectDirections' in b) {
+          if (typeof b.projectDirections !== 'string') {
+            return sendError(res, 400, 'Invalid projectDirections field', 'invalid_body')
+          }
+          entry.projectDirections = b.projectDirections
+        }
+        if ('providerId' in b) {
+          if (typeof b.providerId !== 'string' || !(PROVIDER_IDS as readonly string[]).includes(b.providerId)) {
+            return sendError(res, 400, 'Invalid providerId', 'invalid_body')
+          }
+          entry.providerId = b.providerId as AgentConfigEntry['providerId']
+        }
+        if ('model' in b) {
+          if (typeof b.model !== 'string') {
+            return sendError(res, 400, 'Invalid model field', 'invalid_body')
+          }
+          entry.model = b.model
+        }
+        if ('effort' in b) {
+          if (typeof b.effort !== 'string' || !(EFFORT_LEVELS as readonly string[]).includes(b.effort)) {
+            return sendError(res, 400, 'Invalid effort', 'invalid_body')
+          }
+          entry.effort = b.effort as AgentConfigEntry['effort']
+        }
+        if (Object.keys(entry).length === 0) {
+          return sendError(res, 400, 'Body must include at least one of projectDirections, providerId, model, effort', 'invalid_body')
+        }
+        const result = await options.setAgentConfig(personaId, entry)
+        res.end(JSON.stringify(result, null, 2))
+        return
+      }
+    }
+
     if (path === 'tasks' && req.method === 'GET') {
       const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
       const mfeFilter = urlObj.searchParams.get('mfe')
@@ -274,7 +499,11 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
-    if (path.startsWith('tasks/') && req.method === 'GET') {
+    // Bare task-by-id GET. Subpaths (`tasks/:id/messages`, `tasks/:id/interaction-history`, …)
+    // are handled by their own dedicated blocks farther down — this catchall
+    // would otherwise short-circuit them with a "task not found" 404 because
+    // it'd try to look up "task-XXX/messages" as a literal task id.
+    if (path.startsWith('tasks/') && !path.slice('tasks/'.length).includes('/') && req.method === 'GET') {
       const id = decodeURIComponent(path.replace('tasks/', ''))
       if (!id) return sendError(res, 400, 'Missing task id')
       const taskData = options.getTasks()
@@ -284,7 +513,7 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
-    if (path.startsWith('tasks/') && req.method === 'PATCH') {
+    if (path.startsWith('tasks/') && !path.slice('tasks/'.length).includes('/') && req.method === 'PATCH') {
       const id = decodeURIComponent(path.replace('tasks/', ''))
       if (!id) return sendError(res, 400, 'Missing task id')
       let raw: string
@@ -312,7 +541,7 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
-    if (path.startsWith('tasks/') && req.method === 'DELETE') {
+    if (path.startsWith('tasks/') && !path.slice('tasks/'.length).includes('/') && req.method === 'DELETE') {
       const id = decodeURIComponent(path.replace('tasks/', ''))
       const deleted = await options.deleteTask(id) as any
       if (deleted && typeof deleted === 'object' && deleted.error === 'Task not found') {
@@ -405,6 +634,83 @@ export function createAPIMiddleware(options: APIOptions) {
       }
     }
 
+    // Embedded chat: per-task conversation thread.
+    // GET    /tasks/:id/messages              → full snapshot (optional ?after=<id>)
+    // POST   /tasks/:id/messages              → append; broadcasts to subscribers
+    // GET    /tasks/:id/messages/stream       → SSE; honours Last-Event-ID for resume
+    {
+      const m = path.match(/^tasks\/([^/]+)\/messages(\/stream)?$/)
+      if (m) {
+        const id = decodeURIComponent(m[1])
+        const isStream = !!m[2]
+        if (isStream && req.method === 'GET') {
+          await handleThreadStream(req, res, options.taskThread, id)
+          return
+        }
+        if (req.method === 'GET') {
+          const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+          const afterId = urlObj.searchParams.get('after') || undefined
+          const msgs = await options.taskThread.read(id, { afterId })
+          res.end(JSON.stringify({ taskId: id, messages: msgs }, null, 2))
+          return
+        }
+        if (req.method === 'POST') {
+          let raw: string
+          try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+          const parsed = parseJSON(raw)
+          if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+          const validated = validateThreadAppend(parsed.data)
+          if (typeof validated === 'string') return sendError(res, 400, validated)
+          const msg = await options.taskThread.append(id, validated)
+          res.end(JSON.stringify(msg, null, 2))
+          return
+        }
+      }
+    }
+
+    // Embedded chat: spawn a local CLI provider as a subprocess.
+    if (path === 'agent/spawn' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      // handleSpawn writes its own SSE headers; we hand it the parsed body
+      // and let it drive the response from here on out.
+      await options.agentSpawn.handleSpawn(req, res, parsed.data, options.projectRoot)
+      return
+    }
+    {
+      const m = path.match(/^agent\/spawn\/([^/]+)$/)
+      if (m && req.method === 'DELETE') {
+        const runId = decodeURIComponent(m[1])
+        const ok = options.agentSpawn.registry.abort(runId)
+        if (!ok) return sendError(res, 404, 'Run not found', 'not_found')
+        res.end(JSON.stringify({ ok: true }))
+        return
+      }
+    }
+
+    // Embedded chat: detect installed/logged-in local CLIs.
+    if (path === 'agent/detect' && req.method === 'GET') {
+      const snapshot = await options.agentDetect.detect()
+      res.end(JSON.stringify(snapshot, null, 2))
+      return
+    }
+
+    // Per-provider model catalog. Best-effort live probe (opencode supports
+    // listing today); curated fallback for CLIs without a list command.
+    if (path === 'agent/models' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const cli = urlObj.searchParams.get('cli') as ProvideredId | null
+      if (!cli) return sendError(res, 400, 'Missing `cli` query parameter')
+      // `?refresh=1` forces a fresh probe — used by the shell's "Refresh"
+      // button on the model picker. Defaults to the 5-min in-process cache.
+      const refresh = urlObj.searchParams.get('refresh') === '1'
+      const catalog = await listAgentModels(cli, { refresh })
+      res.end(JSON.stringify(catalog, null, 2))
+      return
+    }
+
     if (path === 'components' && req.method === 'GET') {
       const catalog = await scanComponentLibraries(options.projectRoot)
       res.end(JSON.stringify(catalog, null, 2))
@@ -414,6 +720,37 @@ export function createAPIMiddleware(options: APIOptions) {
     if (path === 'component-usage' && req.method === 'GET') {
       const result = await scanComponentUsage(options.projectRoot)
       res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    // Read .annotask/STYLE_GUIDE.md — used by the init wizard's review step.
+    if (path === 'style-guide' && req.method === 'GET') {
+      const sgPath = nodePath.join(options.projectRoot, '.annotask', 'STYLE_GUIDE.md')
+      try {
+        const content = await fsp.readFile(sgPath, 'utf-8')
+        res.end(JSON.stringify({ content, exists: true }))
+      } catch {
+        res.end(JSON.stringify({ content: '', exists: false }))
+      }
+      return
+    }
+
+    // Read an arbitrary project file by relative path — used for the style-guide override input.
+    if (path === 'read-file' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const relPath = urlObj.searchParams.get('path') ?? ''
+      if (!relPath) return sendError(res, 400, 'Missing path parameter', 'missing_field')
+      // Prevent directory traversal
+      const resolved = nodePath.resolve(options.projectRoot, relPath)
+      if (!resolved.startsWith(options.projectRoot + nodePath.sep) && resolved !== options.projectRoot) {
+        return sendError(res, 403, 'Path must be within the project root', 'forbidden_origin')
+      }
+      try {
+        const content = await fsp.readFile(resolved, 'utf-8')
+        res.end(JSON.stringify({ content, path: relPath }))
+      } catch {
+        return sendError(res, 404, 'File not found', 'not_found')
+      }
       return
     }
 
@@ -811,3 +1148,155 @@ function enrichEndpoint(
   return out
 }
 
+/**
+ * Validate a `POST /tasks/:id/messages` body. Returns either the normalised
+ * append input or a human-readable error string.
+ */
+interface ThreadAppendBody {
+  role: ThreadRole
+  content: string
+  providerId?: string
+  model?: string
+  usage?: ThreadMessage['usage']
+  toolCalls?: ThreadMessage['toolCalls']
+  toolUseId?: string
+  blocks?: WorkStreamBlock[]
+}
+
+function validateThreadAppend(raw: unknown): ThreadAppendBody | string {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'body must be an object'
+  const body = raw as Record<string, unknown>
+  if (body.role !== 'user' && body.role !== 'assistant' && body.role !== 'system' && body.role !== 'tool') {
+    return '`role` must be one of: user, assistant, system, tool'
+  }
+  if (typeof body.content !== 'string') return '`content` must be a string'
+  const out: ThreadAppendBody = {
+    role: body.role,
+    content: body.content,
+  }
+  if (typeof body.providerId === 'string') out.providerId = body.providerId
+  if (typeof body.model === 'string') out.model = body.model
+  if (typeof body.toolUseId === 'string') out.toolUseId = body.toolUseId
+  if (body.usage && typeof body.usage === 'object') {
+    const u = body.usage as Record<string, unknown>
+    if (typeof u.inputTokens === 'number' && typeof u.outputTokens === 'number') {
+      out.usage = {
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheReadTokens: typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : undefined,
+        cacheCreationTokens: typeof u.cacheCreationTokens === 'number' ? u.cacheCreationTokens : undefined,
+      }
+    }
+  }
+  if (Array.isArray(body.toolCalls)) {
+    out.toolCalls = []
+    for (const tc of body.toolCalls) {
+      if (tc && typeof tc === 'object') {
+        const t = tc as Record<string, unknown>
+        if (typeof t.id === 'string' && typeof t.name === 'string') {
+          out.toolCalls.push({ id: t.id, name: t.name, input: t.input })
+        }
+      }
+    }
+  }
+  if (Array.isArray(body.blocks)) {
+    const validated = validateBlocks(body.blocks)
+    if (validated.length > 0) out.blocks = validated
+  }
+  return out
+}
+
+/**
+ * Loose validator for the `blocks` array. The wire shape is a discriminated
+ * union on `kind`; we accept the known kinds and silently drop unknown ones
+ * so a future block kind doesn't break older servers.
+ */
+function validateBlocks(raw: unknown[]): WorkStreamBlock[] {
+  const out: WorkStreamBlock[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const b = entry as Record<string, unknown>
+    if (b.kind === 'text' && typeof b.text === 'string') {
+      out.push({ kind: 'text', text: b.text })
+    } else if (
+      b.kind === 'tool_call'
+      && typeof b.id === 'string'
+      && typeof b.name === 'string'
+      && typeof b.summary === 'string'
+    ) {
+      out.push({ kind: 'tool_call', id: b.id, name: b.name, input: b.input ?? {}, summary: b.summary })
+    } else if (
+      b.kind === 'tool_result'
+      && typeof b.toolUseId === 'string'
+      && typeof b.summary === 'string'
+      && typeof b.raw === 'string'
+    ) {
+      out.push({
+        kind: 'tool_result',
+        toolUseId: b.toolUseId,
+        summary: b.summary,
+        raw: b.raw,
+        isError: b.isError === true ? true : undefined,
+      })
+    } else if (
+      b.kind === 'agent_question'
+      && typeof b.entryIndex === 'number'
+      && typeof b.label === 'string'
+    ) {
+      out.push({ kind: 'agent_question', entryIndex: b.entryIndex, label: b.label })
+    }
+  }
+  return out
+}
+
+/**
+ * SSE handler for `GET /tasks/:id/messages/stream`.
+ *
+ * Behaviour:
+ *   1. Honour `Last-Event-ID` (or `?after=`) — replay any messages added
+ *      since the client disconnected before going live.
+ *   2. Subscribe to the in-process listener set and forward new appends.
+ *   3. Heartbeat every 15s so reverse proxies don't drop idle connections.
+ *   4. On client disconnect, unsubscribe.
+ */
+async function handleThreadStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: TaskThreadStore,
+  taskId: string,
+): Promise<void> {
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-store')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+
+  function send(event: string, msg: ThreadMessage | string) {
+    const data = typeof msg === 'string' ? msg : JSON.stringify(msg)
+    const id = typeof msg === 'string' ? '' : `id: ${msg.id}\n`
+    res.write(`${id}event: ${event}\n`)
+    for (const line of data.split('\n')) res.write(`data: ${line}\n`)
+    res.write('\n')
+  }
+
+  // Replay anything the client missed.
+  const lastEventId = (req.headers['last-event-id'] as string | undefined) || undefined
+  const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+  const afterId = lastEventId ?? urlObj.searchParams.get('after') ?? undefined
+  const replay = await store.read(taskId, { afterId: afterId || undefined })
+  for (const m of replay) send('message', m)
+
+  // Heartbeat so reverse proxies don't drop the idle SSE connection.
+  const hb = setInterval(() => {
+    try { res.write(': heartbeat\n\n') } catch { /* socket closed */ }
+  }, 15_000)
+  hb.unref()
+
+  const unsubscribe = store.subscribe(taskId, (m) => send('message', m))
+  req.on('close', () => {
+    clearInterval(hb)
+    unsubscribe()
+    try { res.end() } catch { /* already ended */ }
+  })
+}

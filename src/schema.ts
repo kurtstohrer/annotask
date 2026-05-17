@@ -605,6 +605,23 @@ export interface ScreenshotMeta {
   section_bounds?: { x: number; y: number; w: number; h: number }
 }
 
+/**
+ * Per-task aggregate of provider token usage. Rolled up from each assistant
+ * turn's `ThreadMessage.usage` (input/output + Anthropic cache buckets), plus
+ * a `turns` counter and the timestamp of the last update so the UI can show
+ * "last activity X ago" without re-reading the JSONL log.
+ */
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  /** Number of provider turns folded into the totals above. */
+  turns: number
+  /** Epoch ms of the most recent contribution. */
+  lastUpdated: number
+}
+
 /** A single question the agent asks the user */
 export interface AgentFeedbackQuestion {
   id: string
@@ -623,40 +640,6 @@ export interface AgentFeedbackEntry {
 }
 
 /**
- * A backend-contract edit performed during a task. Two call sites:
- *   - `api_update` tasks: primary deliverable; context.api_edits[] is how the
- *     agent records every schema/route change needed.
- *   - Non-api_update tasks (usually `annotation`): when the user approves a
- *     cross-boundary edit via needs_info, the agent records the edit here so
- *     triage can see that this task crossed the frontend/backend line. Keeps
- *     lineage on the original task — no spawned child.
- */
-export interface ApiEdit {
-  schema_location: string
-  schema_kind: 'openapi' | 'graphql' | 'trpc' | 'jsonschema'
-  operation?: { method: string; path: string }
-  change_summary: string
-}
-
-/**
- * Structured context on an `api_update` task. Populated at creation time from
- * the Data view; the agent reads these fields (plus the task's description
- * and any linked data-source metadata) to know what the backend edit needs to
- * accomplish.
- */
-export interface ApiUpdateContext {
-  data_source_name: string
-  data_source_kind: DataSource['kind']
-  schema_location: string
-  schema_kind: 'openapi' | 'graphql' | 'trpc' | 'jsonschema'
-  endpoint?: string
-  operation?: { method: string; path: string; response_schema?: unknown; request_schema?: unknown }
-  desired_change: string
-  rationale?: string
-  api_edits?: ApiEdit[]
-}
-
-/**
  * Canonical list of task types recognized across HTTP, MCP, CLI, shell UI,
  * and task-summary lifting. Single source of truth — consumers must derive
  * from this tuple rather than hardcoding strings.
@@ -669,7 +652,6 @@ export const TASK_TYPES = [
   'a11y_fix',
   'error_fix',
   'perf_fix',
-  'api_update',
 ] as const
 
 export type TaskType = typeof TASK_TYPES[number]
@@ -699,6 +681,8 @@ export interface AnnotaskTask {
   blocked_reason?: string                // why agent cannot apply this task (markdown)
   resolution?: string                    // brief note on what the agent did
   visual?: Record<string, unknown>       // annotation visual state for restoration
+  /** Aggregate provider token usage across this task's conversation turns. */
+  tokenUsage?: TokenUsage
   createdAt: number
   updatedAt: number
 }

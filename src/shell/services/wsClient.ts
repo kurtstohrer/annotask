@@ -81,9 +81,12 @@ function ensureConnected() {
 
 // When the tab becomes visible again, verify the connection is alive.
 // Background tabs can miss the close event if the OS/browser killed the socket.
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') ensureConnected()
-})
+// Guard for non-browser environments (vitest) where `document` is undefined.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ensureConnected()
+  })
+}
 
 export function on(event: string, handler: Handler): () => void {
   if (!listeners.has(event)) listeners.set(event, new Set())

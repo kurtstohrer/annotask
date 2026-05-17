@@ -7,6 +7,15 @@
         @click="$emit('update:showReportPanel', !showReportPanel)" title="View all tasks as JSON">
         JSON
       </button>
+      <button
+        v-if="canBatchRun"
+        data-testid="btn-run-pending"
+        class="new-task-toggle"
+        title="Queue every pending task with the embedded agent"
+        @click="$emit('run-pending')"
+      >
+        Run pending ({{ pendingCount }})
+      </button>
       <button data-testid="btn-new-task" class="new-task-toggle" @click="$emit('toggle-new-task')" title="Create a general task (not tied to an element)">
         {{ showNewTaskForm ? '−' : '+' }} New
       </button>
@@ -93,6 +102,10 @@ interface Props {
   includeRenderedHtml: boolean
   includeDataContext: boolean
   dataContextProbe: DataContextProbeResult | null
+  /** True when the embedded agent is available AND there's at least one
+   *  pending task to hand off. App.vue computes this from agentMode + ready. */
+  canBatchRun?: boolean
+  pendingCount?: number
 }
 
 defineProps<Props>()
@@ -114,5 +127,6 @@ defineEmits<{
   (e: 'cancel-deny'): void
   (e: 'start-snip'): void
   (e: 'remove-screenshot'): void
+  (e: 'run-pending'): void
 }>()
 </script>

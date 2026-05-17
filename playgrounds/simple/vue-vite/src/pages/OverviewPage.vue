@@ -208,7 +208,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="overview">
     <header class="page-header">
-      <h1 class="title">The Solar System</h1>
+      <h1 class="title">Solar System</h1>
       <p class="lede">
         Eight planets, dozens of moons, one star. All facts served live from the Solar System API.
       </p>
@@ -241,7 +241,7 @@ onBeforeUnmount(() => {
 
 .page-header { display: flex; flex-direction: column; gap: 6px; }
 .title { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
-.lede { color: var(--text-muted); font-size: 14px; max-width: 640px; }
+.lede { color: var(--text-muted); font-size: 18px; max-width: 640px; }
 
 .orbit-stage {
   position: relative;

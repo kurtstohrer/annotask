@@ -2,6 +2,8 @@
 
 Apply pending Annotask design tasks to the source code.
 
+> **For editor agents (Claude Code, Cursor, Windsurf).** Annotask's built-in agent runs apply directly through the shell — the user runs a task from the Conversation tab and the local-CLI provider edits files in place. This skill exists when the user prefers to drive apply from their own editor agent instead.
+
 ## When to use
 
 Use this skill when the user says:
@@ -201,13 +203,6 @@ Read the task type and apply accordingly:
 - **`a11y_fix`**: Fix an accessibility violation. Read `A11Y_RULES.md` in this skill directory before applying the change. If you are working through multiple a11y tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: prefer pattern fixes over instance fixes, expect layout/head rules to live in root or layout files, and fetch the screenshot first when the issue is visual (contrast, focus ring, hidden text, similar).
 
 - **`theme_update`**: Apply batched design-token edits from the Theme page. Read `THEME_UPDATE.md` in this skill directory before applying the change. If you are working through multiple theme tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: one task may include many edits, update source files before `.annotask/design-spec.json`, and land `theme_update` before dependent `style_update` tasks.
-
-- **`api_update`**: Do **not** edit the API in this skill. Instead, inspect the task context and tell the user exactly what would need to change for the request to work. Open `context.schema_location`, inspect the referenced operation (`context.operation.method` + `context.operation.path`, or find it by `endpoint`), and identify:
-  - the schema change required
-  - the backend handler or router that would need updating
-  - any frontend data source or caller that would need follow-up changes if the contract changed
-
-  Then mark the task `blocked` with a concise explanation naming the schema location, operation, and required contract change. If the API is external, block it immediately and say Annotask cannot change APIs outside the repo.
 
 - **`annotation` with cross-boundary API edits**: Some frontend requests turn out to depend on backend work (for example, a field is not returned by the current response schema). Do **not** edit the backend and do **not** ask for permission to do so. If there is a meaningful frontend-only fallback, apply it and explain the missing backend support in the resolution note. Otherwise, mark the task `blocked` and tell the user which API/schema change would be required.
 

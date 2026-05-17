@@ -102,6 +102,8 @@ export interface SystemPromptOptions extends LoaderOptions {
 const TASK_TYPE_COMPANIONS: Record<string, string> = {
   a11y_fix: 'A11Y_RULES.md',
   theme_update: 'THEME_UPDATE.md',
+  error_fix: 'ERROR_FIX.md',
+  perf_fix: 'PERF_FIX.md',
 }
 
 /** Assemble the agent-facing system prompt: `annotask-apply` SKILL.md, plus
