@@ -50,6 +50,15 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:5180' },
       testMatch: '**/mfe-vite*.test.ts',
     },
+    {
+      name: 'screenshots',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://localhost:5181',
+        viewport: { width: 1440, height: 900 },
+      },
+      testMatch: '**/screenshots.test.ts',
+    },
   ],
   webServer: [
     {

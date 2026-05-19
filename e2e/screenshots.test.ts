@@ -5,7 +5,9 @@ import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUT = join(__dirname, '..', 'docs', 'media', 'screenshots')
+const MARKETING_OUT = join(__dirname, '..', 'playgrounds', 'simple', 'marketing', 'public', 'screenshots')
 mkdirSync(OUT, { recursive: true })
+mkdirSync(MARKETING_OUT, { recursive: true })
 
 /** Wait for the Annotask shell to be fully loaded */
 async function waitForShell(page: import('@playwright/test').Page) {
@@ -33,6 +35,13 @@ function shot(name: string) {
   return { path: join(OUT, name), fullPage: false }
 }
 
+/** Save to both docs/media and marketing public */
+async function saveShot(page: import('@playwright/test').Page, name: string) {
+  await page.screenshot({ path: join(OUT, name), fullPage: false })
+  const { copyFileSync } = await import('fs')
+  copyFileSync(join(OUT, name), join(MARKETING_OUT, name))
+}
+
 test.describe('Marketing screenshots', () => {
   test.describe.configure({ mode: 'serial' })
 
@@ -40,7 +49,7 @@ test.describe('Marketing screenshots', () => {
     await waitForShell(page)
     // Small delay for animations to settle
     await page.waitForTimeout(1000)
-    await page.screenshot(shot('shell-overview.png'))
+    await saveShot(page, 'shell-overview.png')
   })
 
   test('annotate-pins', async ({ page }) => {
@@ -62,7 +71,7 @@ test.describe('Marketing screenshots', () => {
       }
     }
     await page.waitForTimeout(500)
-    await page.screenshot(shot('annotate-pins.png'))
+    await saveShot(page, 'annotate-pins.png')
   })
 
   test('annotate-arrows', async ({ page }) => {
@@ -88,7 +97,7 @@ test.describe('Marketing screenshots', () => {
       }
     }
     await page.waitForTimeout(500)
-    await page.screenshot(shot('annotate-arrows.png'))
+    await saveShot(page, 'annotate-arrows.png')
   })
 
   test('annotate-sections', async ({ page }) => {
@@ -112,7 +121,7 @@ test.describe('Marketing screenshots', () => {
       await page.mouse.up()
     }
     await page.waitForTimeout(500)
-    await page.screenshot(shot('annotate-sections.png'))
+    await saveShot(page, 'annotate-sections.png')
   })
 
   test('annotate-highlights', async ({ page }) => {
@@ -136,7 +145,7 @@ test.describe('Marketing screenshots', () => {
       // Fallback — just show highlight mode active
     }
     await page.waitForTimeout(500)
-    await page.screenshot(shot('annotate-highlights.png'))
+    await saveShot(page, 'annotate-highlights.png')
   })
 
   test('design-tokens', async ({ page }) => {
@@ -144,7 +153,7 @@ test.describe('Marketing screenshots', () => {
     await page.locator('[data-testid="tab-design"]').click()
     await page.locator('[data-testid="design-tokens"]').click()
     await page.waitForTimeout(500)
-    await page.screenshot(shot('design-tokens.png'))
+    await saveShot(page, 'design-tokens.png')
   })
 
   test('design-inspector', async ({ page }) => {
@@ -164,7 +173,7 @@ test.describe('Marketing screenshots', () => {
       // Element selection may not work — just show the inspector tab
     }
     await page.waitForTimeout(500)
-    await page.screenshot(shot('design-inspector.png'))
+    await saveShot(page, 'design-inspector.png')
   })
 
   test('design-components', async ({ page }) => {
@@ -172,7 +181,7 @@ test.describe('Marketing screenshots', () => {
     await page.locator('[data-testid="tab-design"]').click()
     await page.locator('[data-testid="design-components"]').click()
     await page.waitForTimeout(500)
-    await page.screenshot(shot('design-components.png'))
+    await saveShot(page, 'design-components.png')
   })
 
   test('audit-a11y', async ({ page }) => {
@@ -189,7 +198,7 @@ test.describe('Marketing screenshots', () => {
       // Button may not exist or scan may not complete
       await page.waitForTimeout(1000)
     }
-    await page.screenshot(shot('audit-a11y.png'))
+    await saveShot(page, 'audit-a11y.png')
   })
 
   test('audit-perf', async ({ page }) => {
@@ -205,7 +214,7 @@ test.describe('Marketing screenshots', () => {
     } catch {
       await page.waitForTimeout(1000)
     }
-    await page.screenshot(shot('audit-perf.png'))
+    await saveShot(page, 'audit-perf.png')
   })
 
   test('audit-errors', async ({ page }) => {
@@ -213,7 +222,7 @@ test.describe('Marketing screenshots', () => {
     await page.locator('[data-testid="tab-audit"]').click()
     await page.locator('[data-testid="audit-errors"]').click()
     await page.waitForTimeout(1000)
-    await page.screenshot(shot('audit-errors.png'))
+    await saveShot(page, 'audit-errors.png')
   })
 
   test('task-detail', async ({ page }) => {
@@ -249,6 +258,6 @@ test.describe('Marketing screenshots', () => {
       // Show whatever state we ended up in
     }
     await page.waitForTimeout(500)
-    await page.screenshot(shot('task-detail.png'))
+    await saveShot(page, 'task-detail.png')
   })
 })
