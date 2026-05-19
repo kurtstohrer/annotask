@@ -46,6 +46,7 @@
     "dev:solid-vite": "pnpm --filter @annotask/playground-solid-vite dev",
     "dev:htmx-vite": "pnpm --filter @annotask/playground-htmx-vite dev",
     "dev:mfe-vite": "pnpm --filter @annotask/playground-mfe-vite dev",
+    "dev:marketing": "pnpm --filter @annotask/playground-marketing dev",
     "dev:stress-host": "pnpm --filter @annotask/stress-host dev",
     "dev:stress-vue-data-lab": "pnpm --filter @annotask/stress-mfe-vue-data-lab dev",
     "dev:stress-react-workflows": "pnpm --filter @annotask/stress-mfe-react-workflows dev",
@@ -65,6 +66,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "screenshots": "npx playwright test --project=screenshots",
+    "demo:reset": "bash scripts/demo-reset.sh",
+    "demo:restore": "bash scripts/demo-restore.sh",
     "test:live-providers": "ANNOTASK_LIVE_CLI=1 vitest run src/embedded/__tests__/cli-providers-live.test.ts"
   },
   "pnpm": {

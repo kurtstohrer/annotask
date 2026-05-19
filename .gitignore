@@ -16,6 +16,11 @@ plan/
 # Local-only (references external repos)
 playgrounds/simple/antenna-vite/
 
+# Demo recording artifacts (large binaries)
+demo/segments/
+demo/voiceover/
+demo/final/
+
 # Claude Code session state
 .claude/worktrees/
 .claude/scheduled_tasks.lock
