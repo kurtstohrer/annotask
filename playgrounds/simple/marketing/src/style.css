@@ -1,0 +1,134 @@
+/* ── Annotask Marketing Page ─────────────────────────────────────── */
+
+/* ── Design tokens (dark only) ───────────────────────────────────── */
+:root {
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface-2: #1e1e1e;
+  --surface-3: #262626;
+  --border: #2a2a2a;
+  --border-strong: #404040;
+  --fg: #e4e4e7;
+  --muted: #71717a;
+  --accent: #8b5cf6;
+  --accent-hover: #7c3aed;
+  --accent-muted: rgba(139, 92, 246, 0.15);
+  --danger: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --text-on-accent: #fff;
+  --text-link: #60a5fa;
+  --overlay: rgba(0, 0, 0, 0.5);
+  --shadow: rgba(0, 0, 0, 0.4);
+  --code-bg: #141414;
+  --code-property: #7dd3fc;
+  --code-string: #86efac;
+  --code-keyword: #c084fc;
+  --code-comment: #71717a;
+  --sans: "Inter", sans-serif;
+  --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+/* ── Reset & base ──────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.6; }
+a { color: var(--text-link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { max-width: 100%; height: auto; }
+
+/* ── Layout ────────────────────────────────────────────────────── */
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+/* ── Header ────────────────────────────────────────────────────── */
+header { padding: 24px 0; display: flex; align-items: center; justify-content: space-between; }
+header .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: 0.02em; color: var(--fg); }
+header .brand img { width: 28px; height: 28px; }
+header nav { display: flex; gap: 20px; }
+header nav a { color: var(--muted); font-size: 14px; font-weight: 500; }
+header nav a:hover { color: var(--fg); text-decoration: none; }
+
+/* ── Hero ──────────────────────────────────────────────────────── */
+.hero { padding: 72px 0 40px; text-align: center; }
+.hero h1 { font-size: 56px; line-height: 1.08; margin: 0 0 20px; letter-spacing: -0.025em; font-weight: 800; }
+.hero h1 .accent { color: var(--accent); }
+.hero .lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 680px; margin: 0 auto 32px; line-height: 1.55; }
+.cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+
+/* ── Buttons ───────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px; border: 1px solid var(--border); cursor: pointer; transition: all 0.15s; }
+.btn.primary { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); text-decoration: none; }
+.btn.ghost { background: transparent; color: var(--fg); }
+.btn.ghost:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+/* ── Hero screenshot ───────────────────────────────────────────── */
+.hero-shot { margin: 48px auto 0; max-width: 1040px; }
+.hero-shot img { width: 100%; border-radius: 14px; border: 1px solid var(--border); box-shadow: 0 30px 80px -20px var(--shadow); }
+
+/* ── Trusted by ───────────────────────────────────────────────── */
+.trusted-by { text-align: center; padding: 32px 0; border-top: 1px solid var(--border); }
+.trusted-by p { color: var(--muted); font-size: 14px; margin: 0 0 16px; text-transform: uppercase; letter-spacing: 0.05em; }
+.logo-bar { display: flex; justify-content: center; gap: 40px; }
+.logo-placeholder { color: var(--muted); font-size: 16px; font-weight: 600; opacity: 0.6; }
+
+/* ── Sections ──────────────────────────────────────────────────── */
+section { padding: 48px 0; border-top: 1px solid var(--border); }
+section h2 { font-size: clamp(26px, 3vw, 36px); margin: 0 0 10px; letter-spacing: -0.015em; font-weight: 700; }
+section h3 { font-size: clamp(26px, 3vw, 36px); margin: 0 0 10px; letter-spacing: -0.015em; font-weight: 700; }
+section .section-lede { color: #777; margin: 0 0 36px; max-width: 680px; font-size: 16px; line-height: 1.6; }
+
+/* ── How it works (3-step) ─────────────────────────────────────── */
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; counter-reset: step; }
+.step { position: relative; padding: 24px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
+.step::before { counter-increment: step; content: counter(step); display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--accent-muted); color: var(--accent); font-weight: 700; font-size: 14px; margin-bottom: 14px; }
+.step h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: 0; }
+.step p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+
+/* ── Feature grids ─────────────────────────────────────────────── */
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+
+/* ── Feature cards ─────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.card .card-img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; border-bottom: 1px solid var(--border); }
+.card .card-body { padding: 18px 20px; }
+.card h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+/* ── Pricing ──────────────────────────────────────────────────── */
+.price { font-size: 32px; font-weight: 700; margin: 12px 0; color: var(--fg); }
+section ul { color: var(--muted); font-size: 14px; padding-left: 20px; line-height: 1.8; }
+
+/* ── Agent integration ─────────────────────────────────────────── */
+.agent-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.agent-block h3 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+
+/* ── Code blocks ───────────────────────────────────────────────── */
+pre { background: #1a1a1a; border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; color: var(--fg); margin: 0; line-height: 1.6; }
+
+/* ── Lifecycle (plain text) ───────────────────────────────────── */
+.lifecycle-text { font-family: var(--mono); font-size: 14px; color: var(--muted); margin-top: 12px; }
+
+/* ── Newsletter ───────────────────────────────────────────────── */
+.newsletter-form { display: flex; gap: 12px; max-width: 420px; }
+.newsletter-form input { flex: 1; padding: 11px 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); font-size: 15px; font-family: var(--sans); outline: none; }
+.newsletter-form input:focus { border-color: var(--accent); }
+
+/* ── Framework pills ───────────────────────────────────────────── */
+.pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.pill { display: inline-block; padding: 7px 14px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-size: 13px; font-weight: 500; }
+.pill.accent { border-color: var(--accent); color: var(--accent); }
+
+/* ── Install section ───────────────────────────────────────────── */
+.install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.install-grid h3 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+
+/* ── Demo section ──────────────────────────────────────────────── */
+.video-frame { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.video-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.caption { color: var(--muted); margin-top: 14px; font-size: 14px; }
+
+/* ── Footer ────────────────────────────────────────────────────── */
+footer { padding: 40px 0; color: var(--muted); font-size: 14px; text-align: center; border-top: 1px solid var(--border); }
+footer a { color: var(--muted); }
+footer a:hover { color: var(--fg); }
