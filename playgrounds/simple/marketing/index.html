@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Annotask — annotate the UI, agent ships the code</title>
+  <title>Annotask — annotate the UI, agent applies the change</title>
   <meta name="description" content="Open-source dev-only browser overlay for your running web app. Annotate the UI, and an AI coding agent applies changes back to source. Vite + Webpack." />
-  <meta property="og:title" content="Annotask — annotate the UI, agent ships the code" />
+  <meta property="og:title" content="Annotask — annotate the UI, agent applies the change" />
   <meta property="og:description" content="Dev-only browser overlay turns UI annotations into AI-applied code changes. Vite + Webpack. MCP, CLI, HTTP." />
   <meta property="og:url" content="https://kurtstohrer.github.io/annotask/" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -21,41 +21,33 @@
       <span>Annotask</span>
     </div>
     <nav>
-      <a href="#">Link 1</a>
-      <a href="#">Link 2</a>
-      <a href="#">Link 3</a>
-      <a href="#">Link 4</a>
+      <a href="https://github.com/kurtstohrer/annotask">GitHub</a>
+      <a href="#features">Features</a>
+      <a href="#demo">Demo</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/kurtstohrer/annotask/blob/main/docs/api.md">Docs</a>
     </nav>
   </header>
 
+  <main>
+
   <!-- ── Hero ────────────────────────────────────────────────── -->
   <div class="hero">
-    <h1>Annotate the UI.<br /><span class="accent">Agent ships the code.</span></h1>
-    <p class="lede">Annotask revolutionizes your development workflow with seamless AI-powered integration. Our cutting-edge browser overlay enables revolutionary visual annotation that transforms how teams ship code through intelligent automation and real-time collaboration.</p>
+    <h1>Annotate the UI.<br /><span class="accent">Agent applies the change.</span></h1>
+    <p class="lede">Annotask is a dev-only browser overlay for your running web app. Mark up the UI with pins, arrows, sections, and highlights. A coding agent reads the structured tasks and applies changes back to source over MCP, CLI, or HTTP. Accept or deny in the browser.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/kurtstohrer/annotask">Star on GitHub</a>
+      <a class="btn primary" href="https://github.com/kurtstohrer/annotask">View on GitHub</a>
       <a class="btn ghost" href="#install">Install</a>
       <a class="btn ghost" href="#demo">Watch the demo</a>
     </div>
     <div class="hero-shot">
-      <img src="/screenshots/shell-overview.png" alt="" />
-    </div>
-  </div>
-
-  <!-- ── Trusted by ──────────────────────────────────────────── -->
-  <div class="trusted-by">
-    <p>Trusted by teams at</p>
-    <div class="logo-bar">
-      <span class="logo-placeholder">Acme Corp</span>
-      <span class="logo-placeholder">TechStart</span>
-      <span class="logo-placeholder">DevFlow</span>
-      <span class="logo-placeholder">CodeBase</span>
+      <img src="/screenshots/shell-overview.png" alt="Annotask shell showing the annotation toolbar, app iframe, and task sidebar" />
     </div>
   </div>
 
   <!-- ── How it works ────────────────────────────────────────── -->
   <section id="how-it-works">
-    <h3>How it works</h3>
+    <h2>How it works</h2>
     <p class="section-lede">One annotation becomes one structured task. One agent applies the diff. One click to accept.</p>
     <div class="steps">
       <div class="step">
@@ -64,7 +56,7 @@
       </div>
       <div class="step">
         <h3>Agent applies</h3>
-        <p>Your AI agent reads the task and seamlessly integrates the changes into your codebase using intelligent code generation and automated refactoring capabilities.</p>
+        <p>Your AI coding agent reads the structured task via MCP, CLI, or HTTP. It gets grounded context — source excerpt, design tokens, component props, interaction history — and applies the change to your source file.</p>
       </div>
       <div class="step">
         <h3>Accept or deny</h3>
@@ -75,14 +67,17 @@
 
   <!-- ── Demo ────────────────────────────────────────────────── -->
   <section id="demo">
-    <h3>See it in action</h3>
-    <p class="section-lede">Watch how Annotask streamlines your development workflow.</p>
-    <img src="/screenshots/shell-overview.png" alt="" style="width: 100%; border-radius: 4px; border: 1px solid var(--border);" />
+    <h2>The loop, in 90 seconds</h2>
+    <p class="section-lede">Annotate a low-contrast link, agent applies the a11y fix, task flips to review.</p>
+    <div class="video-frame">
+      <img src="/screenshots/shell-overview.png" alt="Annotask demo — annotate, agent applies, accept or deny" />
+    </div>
+    <p class="caption">Full 90-second walkthrough on a React + Vite playground.</p>
   </section>
 
   <!-- ── Annotate features ───────────────────────────────────── -->
   <section id="features">
-    <h3>Annotate</h3>
+    <h2>Annotate</h2>
     <p class="section-lede">Four annotation tools, each creating a structured task with grounded context. Every annotation captures the selected element, its source file and line, a screenshot, viewport, and route.</p>
     <div class="grid-2">
       <div class="card">
@@ -118,7 +113,7 @@
 
   <!-- ── Design features ─────────────────────────────────────── -->
   <section>
-    <h3>Design</h3>
+    <h2>Design</h2>
     <p class="section-lede">Inspect live tokens, edit styles in-browser, and browse detected component libraries — all grounded in your actual source code.</p>
     <div class="grid-3">
       <div class="card">
@@ -147,7 +142,7 @@
 
   <!-- ── Audit features ──────────────────────────────────────── -->
   <section>
-    <h3>Audit</h3>
+    <h2>Audit</h2>
     <p class="section-lede">Accessibility scanning, performance monitoring, and error capture — each finding becomes a one-click fix task with full context.</p>
     <div class="grid-3">
       <div class="card">
@@ -174,82 +169,36 @@
     </div>
   </section>
 
-  <!-- ── Pricing ─────────────────────────────────────────────── -->
-  <section id="pricing">
-    <h3>Pricing</h3>
-    <p class="section-lede">Choose the plan that's right for your team.</p>
-    <div class="grid-3">
-      <div class="card">
-        <div class="card-body">
-          <h3>Free</h3>
-          <p>For individual developers</p>
-          <p class="price">$0/mo</p>
-          <ul>
-            <li>5 annotations per day</li>
-            <li>1 project</li>
-            <li>Community support</li>
-          </ul>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-body">
-          <h3>Pro</h3>
-          <p>For professional teams</p>
-          <p class="price">$29/mo</p>
-          <ul>
-            <li>Unlimited annotations</li>
-            <li>10 projects</li>
-            <li>Priority support</li>
-            <li>Custom themes</li>
-          </ul>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-body">
-          <h3>Enterprise</h3>
-          <p>For large organizations</p>
-          <p class="price">Contact us</p>
-          <ul>
-            <li>Everything in Pro</li>
-            <li>SSO &amp; SAML</li>
-            <li>Dedicated support</li>
-            <li>SLA guarantee</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- ── Agent integration ───────────────────────────────────── -->
   <section id="agent">
-    <h3>Agent integration</h3>
+    <h2>Agent integration</h2>
     <p class="section-lede">Three ways to connect an AI coding agent. Tasks flow through a structured lifecycle with grounded context at every step.</p>
     <div class="agent-grid">
       <div class="agent-block">
         <h3>MCP (Model Context Protocol)</h3>
-<pre><code># One command to configure your editor
+<pre><code><span class="c"># One command to configure your editor</span>
 npx annotask init-mcp --editor=claude
 
-# Works with Claude, Cursor, Zed, VS Code, Windsurf</code></pre>
+<span class="c"># Works with Claude, Cursor, Zed, VS Code, Windsurf</span></code></pre>
       </div>
       <div class="agent-block">
         <h3>CLI</h3>
-<pre><code># List pending tasks
+<pre><code><span class="c"># List pending tasks</span>
 annotask tasks --status=pending
 
-# Get full task detail
+<span class="c"># Get full task detail</span>
 annotask task &lt;id&gt;
 
-# Update status after applying
+<span class="c"># Update status after applying</span>
 annotask update-task &lt;id&gt; --status=review</code></pre>
       </div>
       <div class="agent-block">
         <h3>HTTP API</h3>
-<pre><code># RESTful API at your dev server
-GET  /__annotask/api/tasks
-GET  /__annotask/api/tasks/:id
-PATCH /__annotask/api/tasks/:id
-POST /__annotask/api/screenshots</code></pre>
+<pre><code><span class="c"># RESTful API at your dev server</span>
+<span class="k">GET</span>  /__annotask/api/tasks
+<span class="k">GET</span>  /__annotask/api/tasks/:id
+<span class="k">PATCH</span> /__annotask/api/tasks/:id
+<span class="k">POST</span> /__annotask/api/screenshots</code></pre>
       </div>
       <div class="agent-block">
         <h3>MCP tools</h3>
@@ -259,17 +208,27 @@ annotask_update_task
 annotask_get_code_context
 annotask_get_design_spec
 annotask_get_screenshot
-… 18 tools total</code></pre>
+<span class="c">… 18 tools total</span></code></pre>
       </div>
     </div>
 
     <h3 style="margin-top: 32px;">Task lifecycle</h3>
-    <p class="lifecycle-text">pending &rarr; in_progress &rarr; review &rarr; accepted / denied</p>
+    <div class="lifecycle">
+      <span class="status pending">pending</span>
+      <span class="arrow">&rarr;</span>
+      <span class="status in-progress">in_progress</span>
+      <span class="arrow">&rarr;</span>
+      <span class="status review">review</span>
+      <span class="arrow">&rarr;</span>
+      <span class="status accepted">accepted</span>
+      <span class="arrow">/</span>
+      <span class="status denied">denied</span>
+    </div>
   </section>
 
   <!-- ── Framework support ───────────────────────────────────── -->
   <section>
-    <h3>Works with your stack</h3>
+    <h2>Works with your stack</h2>
     <p class="section-lede">Drop in a Vite or Webpack plugin. Annotask auto-detects your framework and injects source-location attributes at build time.</p>
     <div class="pill-row">
       <span class="pill">Vue 3</span>
@@ -288,55 +247,52 @@ annotask_get_screenshot
 
   <!-- ── Install ─────────────────────────────────────────────── -->
   <section id="install">
-    <h3>Install</h3>
+    <h2>Install</h2>
     <p class="section-lede">Add the plugin, start your dev server, open <code>/__annotask/</code>. The agent connects over MCP, CLI, or HTTP.</p>
     <div class="install-grid">
       <div>
         <h3>Vite</h3>
-<pre><code>import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import { annotask } from 'annotask'
+<pre><code><span class="k">import</span> { defineConfig } <span class="k">from</span> <span class="s">'vite'</span>
+<span class="k">import</span> vue <span class="k">from</span> <span class="s">'@vitejs/plugin-vue'</span>
+<span class="k">import</span> { annotask } <span class="k">from</span> <span class="s">'annotask'</span>
 
-export default defineConfig({
+<span class="k">export default</span> defineConfig({
   plugins: [vue(), annotask()],
 })</code></pre>
       </div>
       <div>
         <h3>Webpack</h3>
-<pre><code>import { AnnotaskWebpackPlugin } from 'annotask/webpack'
+<pre><code><span class="k">import</span> { AnnotaskWebpackPlugin } <span class="k">from</span> <span class="s">'annotask/webpack'</span>
 
-export default {
-  plugins: [new AnnotaskWebpackPlugin()],
+<span class="k">export default</span> {
+  plugins: [<span class="k">new</span> AnnotaskWebpackPlugin()],
 }</code></pre>
       </div>
     </div>
     <p style="margin-top: 24px; color: var(--muted);">Then wire an agent:</p>
-<pre><code># MCP (Claude, Cursor, Zed, VS Code, Windsurf)
+<pre><code><span class="c"># MCP (Claude, Cursor, Zed, VS Code, Windsurf)</span>
 npx annotask init-mcp --editor=claude
 
-# or install the bundled skills
+<span class="c"># or install the bundled skills</span>
 npx annotask init-skills</code></pre>
   </section>
 
-  <!-- ── Newsletter ──────────────────────────────────────────── -->
-  <section>
-    <h3>Stay updated</h3>
-    <p class="section-lede">Subscribe to our newsletter for the latest updates and announcements.</p>
-    <form class="newsletter-form">
-      <input type="email" placeholder="you@example.com" />
-      <button class="btn primary" type="submit">Subscribe</button>
-    </form>
-  </section>
+  <!-- ── Dogfood banner ──────────────────────────────────────── -->
+  <div class="dogfood">
+    <p>This page is running with Annotask enabled. Open <code>/__annotask/</code> to try it live.</p>
+  </div>
 
   <!-- ── Status ──────────────────────────────────────────────── -->
   <section>
-    <h3>Open source</h3>
+    <h2>Open source</h2>
     <p class="section-lede">Annotask is free, MIT-licensed, and dev-only — it never ships to production. Contributions welcome.</p>
     <div class="cta" style="justify-content: flex-start;">
       <a class="btn primary" href="https://github.com/kurtstohrer/annotask">View on GitHub</a>
       <a class="btn ghost" href="https://github.com/kurtstohrer/annotask/issues">Open an issue</a>
     </div>
   </section>
+
+  </main>
 
   <!-- ── Footer ──────────────────────────────────────────────── -->
   <footer>
