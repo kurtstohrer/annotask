@@ -24,10 +24,9 @@ async function waitForShell(page: import('@playwright/test').Page) {
     // No init wizard — continue
   }
 
-  // Wait for iframe content to render
+  // Wait for iframe app to render (SPA needs extra time)
   const frame = page.frameLocator('.app-iframe')
-  await frame.locator('body').waitFor({ state: 'visible', timeout: 15_000 })
-  await page.waitForTimeout(1500)
+  await page.waitForTimeout(4000)
   return frame
 }
 
@@ -46,9 +45,14 @@ test.describe('Marketing screenshots', () => {
   test.describe.configure({ mode: 'serial' })
 
   test('shell-overview', async ({ page }) => {
-    await waitForShell(page)
-    // Small delay for animations to settle
-    await page.waitForTimeout(1000)
+    const frame = await waitForShell(page)
+    // Navigate to planets page for a richer overview shot
+    try {
+      await frame.locator('a:has-text("Planets")').first().click({ timeout: 3000 })
+      await page.waitForTimeout(3000)
+    } catch {
+      await page.waitForTimeout(1000)
+    }
     await saveShot(page, 'shell-overview.png')
   })
 
@@ -61,7 +65,7 @@ test.describe('Marketing screenshots', () => {
     await page.locator('[data-testid="tool-pin"]').click()
 
     // Click several elements in the iframe to create pins
-    const targets = ['.brand-title', 'nav a:first-child', 'nav a:nth-child(2)', '.card:first-child']
+    const targets = ['h1', 'nav a:first-child', 'nav a:nth-child(2)', '.planet-card:first-child, .card:first-child']
     for (const selector of targets) {
       try {
         await frame.locator(selector).first().click({ timeout: 3000 })
@@ -83,7 +87,7 @@ test.describe('Marketing screenshots', () => {
 
     // Draw arrows by clicking source then target elements
     const pairs = [
-      ['.brand-title', 'nav a:first-child'],
+      ['h1', 'nav a:first-child'],
       ['nav a:first-child', 'nav a:nth-child(2)'],
     ]
     for (const [src, tgt] of pairs) {
@@ -133,7 +137,7 @@ test.describe('Marketing screenshots', () => {
 
     // Try to select text in the iframe
     try {
-      const textEl = frame.locator('h1, h2, .brand-title').first()
+      const textEl = frame.locator('h1, h2, .header-title').first()
       const textBox = await textEl.boundingBox()
       if (textBox) {
         await page.mouse.click(textBox.x + 5, textBox.y + textBox.height / 2)
@@ -167,7 +171,7 @@ test.describe('Marketing screenshots', () => {
       if (await selectBtn.isVisible({ timeout: 2000 })) {
         await selectBtn.click()
       }
-      await frame.locator('h1, header, .brand-title').first().click({ timeout: 3000 })
+      await frame.locator('h1, header, .header-title').first().click({ timeout: 3000 })
       await page.waitForTimeout(500)
     } catch {
       // Element selection may not work — just show the inspector tab
@@ -238,7 +242,7 @@ test.describe('Marketing screenshots', () => {
     }
 
     try {
-      await frame.locator('h1, header, .brand-title').first().click({ timeout: 3000 })
+      await frame.locator('h1, header, .header-title').first().click({ timeout: 3000 })
       await page.waitForTimeout(1000)
 
       // Try to submit the pending task
