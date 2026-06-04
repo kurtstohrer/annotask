@@ -11,6 +11,7 @@ import {
   type ProviderConfig,
   PROVIDER_IDS,
 } from '../../embedded/provider-config.js'
+import type { PermissionMode } from '../../schema.js'
 import {
   combinePersonas,
   resolvePersonaForTaskType,
@@ -137,6 +138,36 @@ function create(
     settings.value = { ...settings.value, agentMode: mode }
   }
 
+  /**
+   * Top-level embedded-agent toggle. Set to `true` to enable the in-shell
+   * Conversation tab / auto-run / provider setup; `false` puts the user in
+   * skill/MCP mode (classic UI, no spawned subprocess, MCP server still up).
+   * When switching from off→on for the first time we also ensure `agentMode`
+   * is non-`'off'` so the user actually sees the agent running.
+   */
+  function setEmbeddedAgentEnabled(value: boolean) {
+    const next: ProviderSettings = { ...settings.value, embeddedAgentEnabled: value }
+    if (value && next.agentMode === 'off') next.agentMode = 'auto'
+    settings.value = next
+  }
+
+  function setPermissionMode(mode: PermissionMode) {
+    settings.value = { ...settings.value, permissionMode: mode }
+  }
+
+  /**
+   * Per-provider permission-mode override. Passing `null` clears the override
+   * so the provider inherits the global setting. Only local-CLI providers
+   * carry the field — calling this with an HTTP provider id is a no-op.
+   */
+  function setProviderPermissionMode(id: ProviderId, mode: PermissionMode | null) {
+    const current = settings.value.providers[id]
+    if (!('permissionMode' in current) && mode === null) return
+    if (id !== 'claude-local' && id !== 'codex-local' && id !== 'opencode-local' && id !== 'copilot-local') return
+    const next = { ...current, permissionMode: mode ?? undefined } as ProviderConfig
+    setProviderConfig(next)
+  }
+
   function setOnboardingDismissed(dismissed = true) {
     settings.value = { ...settings.value, onboardingDismissed: dismissed }
   }
@@ -147,6 +178,15 @@ function create(
 
   function setEventLogEnabled(on: boolean) {
     settings.value = { ...settings.value, eventLogEnabled: on }
+  }
+
+  /** Run-safety watchdog knobs. Stored in ms; `0` disables that timer. */
+  function setIdleTimeoutMs(ms: number) {
+    settings.value = { ...settings.value, idleTimeoutMs: Math.max(0, Math.floor(ms)) }
+  }
+
+  function setMaxRunDurationMs(ms: number) {
+    settings.value = { ...settings.value, maxRunDurationMs: Math.max(0, Math.floor(ms)) }
   }
 
   // ── Personas ─────────────────────────────────────────
@@ -208,9 +248,14 @@ function create(
     setEffort,
     setModel,
     setAgentMode,
+    setEmbeddedAgentEnabled,
+    setPermissionMode,
+    setProviderPermissionMode,
     setOnboardingDismissed,
     setRedactionEnabled,
     setEventLogEnabled,
+    setIdleTimeoutMs,
+    setMaxRunDurationMs,
     personas,
     getPersonaForTaskType,
     upsertPersona,
@@ -272,3 +317,4 @@ export {
   PROVIDER_IDS,
 }
 export type { AgentMode, EffortLevel, ProviderId, ProviderSettings, ProviderConfig }
+export type { PermissionMode } from '../../schema.js'

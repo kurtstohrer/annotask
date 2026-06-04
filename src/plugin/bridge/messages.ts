@@ -239,6 +239,87 @@ export function bridgeMessages(): string {
       return;
     }
 
+    if (type === 'resolve:text-rects') {
+      // Re-measure a text selection's per-line rects by locating the selected
+      // substring inside the anchor element's text nodes and building a Range.
+      // Lets the shell refresh highlight overlays after text reflow (window
+      // resize, container size change) — translation alone misaligns when the
+      // line breaks shift.
+      var teEl = getEl(payload.eid);
+      if (!teEl || !teEl.isConnected) { respond(id, null); return; }
+      var needle = String(payload.text || '');
+      if (!needle) { respond(id, null); return; }
+      var nodes = [];
+      var concat = '';
+      try {
+        var walker = document.createTreeWalker(teEl, NodeFilter.SHOW_TEXT, null);
+        var tn;
+        while ((tn = walker.nextNode())) {
+          var tv = tn.nodeValue || '';
+          if (!tv) continue;
+          nodes.push({ node: tn, start: concat.length, end: concat.length + tv.length });
+          concat += tv;
+        }
+      } catch (_e) { respond(id, null); return; }
+      if (nodes.length === 0) { respond(id, null); return; }
+      var startIdx = concat.indexOf(needle);
+      if (startIdx < 0) {
+        // Whitespace-normalized fallback: collapsing runs of whitespace lets
+        // us match selections whose newlines/tabs the iframe normalized away.
+        var normNeedle = needle.replace(/\\s+/g, ' ').trim();
+        if (normNeedle) {
+          // Build a parallel index map: position in collapsed -> position in original.
+          var mapToOrig = [];
+          var collapsed = '';
+          var inWs = false;
+          for (var pi = 0; pi < concat.length; pi++) {
+            var ch = concat.charCodeAt(pi);
+            var isWs = ch === 32 || ch === 9 || ch === 10 || ch === 13;
+            if (isWs) {
+              if (!inWs) { mapToOrig.push(pi); collapsed += ' '; inWs = true; }
+            } else { mapToOrig.push(pi); collapsed += concat.charAt(pi); inWs = false; }
+          }
+          mapToOrig.push(concat.length);
+          var collIdx = collapsed.indexOf(normNeedle);
+          if (collIdx >= 0) {
+            startIdx = mapToOrig[collIdx] != null ? mapToOrig[collIdx] : -1;
+            if (startIdx >= 0) {
+              var collEnd = collIdx + normNeedle.length;
+              var origEnd = mapToOrig[collEnd] != null ? mapToOrig[collEnd] : concat.length;
+              needle = concat.substring(startIdx, origEnd);
+            }
+          }
+        }
+      }
+      if (startIdx < 0) { respond(id, null); return; }
+      var endIdx = startIdx + needle.length;
+      function pickNode(idx) {
+        for (var ni = 0; ni < nodes.length; ni++) {
+          if (idx >= nodes[ni].start && idx <= nodes[ni].end) {
+            return { node: nodes[ni].node, offset: idx - nodes[ni].start };
+          }
+        }
+        return null;
+      }
+      var startPos = pickNode(startIdx);
+      var endPos = pickNode(endIdx);
+      if (!startPos || !endPos) { respond(id, null); return; }
+      var range;
+      try {
+        range = document.createRange();
+        range.setStart(startPos.node, startPos.offset);
+        range.setEnd(endPos.node, endPos.offset);
+      } catch (_e) { respond(id, null); return; }
+      var crs = range.getClientRects();
+      var out = [];
+      for (var ki = 0; ki < crs.length; ki++) {
+        var cr = crs[ki];
+        if (cr.width > 0 && cr.height > 0) out.push({ x: cr.x, y: cr.y, width: cr.width, height: cr.height });
+      }
+      respond(id, { rects: out });
+      return;
+    }
+
     if (type === 'list:rendered-files') {
       // Distinct (file, mfe) pairs from the live iframe DOM. We used to emit
       // just file strings, but host-aggregated catalogs hold workspace-

@@ -25,6 +25,7 @@ import { promisify } from 'node:util'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { effectiveSpawnPath, hostUserSpawnOptions } from './agent-spawn.js'
 const execFileAsync = promisify(execFile)
 
 /**
@@ -224,9 +225,12 @@ async function probeOpenCode(): Promise<ModelOption[]> {
     try {
       // Hint NO_COLOR so newer opencode builds don't smuggle ANSI in; we
       // still strip defensively in case the env hint is ignored.
+      const hostUser = hostUserSpawnOptions()
       const { stdout } = await execFileAsync('opencode', ['models'], {
         timeout: PROBE_TIMEOUT_MS,
-        env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+        uid: hostUser.uid,
+        gid: hostUser.gid,
+        env: { ...process.env, PATH: effectiveSpawnPath(), ...(hostUser.env ?? {}), NO_COLOR: '1', FORCE_COLOR: '0' },
         maxBuffer: 8 * 1024 * 1024,
       })
       const parsed = parseOpenCodeModels(stdout)

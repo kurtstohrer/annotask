@@ -8,22 +8,27 @@
  *
  * Security posture:
  *   - The Annotask dev server is only ever bound to localhost. Mutating
- *     routes already reject non-local origins (see api.ts:isLocalOrigin).
+ *     routes reject non-local origins, and spawn routes additionally
+ *     enforce same-port origin matching (see api.ts:originMatchesPort).
  *   - `cli` must be in the allow-list — we never accept a free-form binary
  *     name or absolute path. Argv passes through unparsed but is spawned
  *     with `shell: false` so there's no shell-injection seam.
  *   - cwd is always the project root; callers can't escape it via args.
  *   - env is the dev server's env plus a small caller-supplied delta; we
  *     never accept overrides for PATH or HOME so credentials in the user's
- *     home directory stay where the CLI expects them.
+ *     home directory stay where the CLI expects them. PATH is augmented
+ *     server-side with `ANNOTASK_HOST_PATH` (if set) so dockerized installs
+ *     can locate host-mounted CLI binaries — same env var used by the
+ *     CLI-detection probe.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 
 /** Allow-listed CLI binary names. Free-form names are rejected. */
-const ALLOWED_CLIS = new Set(['claude', 'codex', 'opencode', 'copilot', 'gh'])
+const ALLOWED_CLIS = new Set(['claude', 'codex', 'opencode', 'copilot'])
 
 /** Env keys the caller may add. PATH/HOME/USER/SHELL/etc. are never overridable. */
 const SAFE_ENV_KEYS = new Set([
@@ -41,6 +46,63 @@ const MAX_STDERR_BUFFER_BYTES = 65_536
 const KILL_GRACE_MS = 2_000
 /** Idle keepalive interval so proxies don't drop the connection. */
 const KEEPALIVE_INTERVAL_MS = 15_000
+/**
+ * Absolute server-side ceiling on a single spawned CLI run. Last-resort
+ * backstop *beneath* the client-side stall watchdog (default 10 min) — set
+ * higher so the client aborts first in the normal case; this only catches a
+ * child that outlives a disconnected/dead client. Kills the child on expiry.
+ */
+const MAX_SPAWN_DURATION_MS = 15 * 60_000
+/**
+ * Max concurrent CLI child processes. The client auto-run driver serializes
+ * per tab, but multiple open tabs or a buggy/looping client are not otherwise
+ * bounded — without a cap they could fan out N agents editing the same files
+ * at once. Excess spawns are refused with a `too_many_agents` error.
+ */
+const MAX_CONCURRENT_SPAWNS = 4
+
+/**
+ * PATH passed to spawned CLIs. Appends `ANNOTASK_HOST_PATH` (if set) so
+ * dockerized installs that mount host-side binaries can find them — matches
+ * the lookup behavior of the CLI-detection probe in `agent-detect.ts`.
+ *
+ * Exported so init.ts and agent-models.ts (which also fork CLIs) can use
+ * the same logic without duplicating the env-var handling.
+ */
+export function effectiveSpawnPath(): string {
+  const base = process.env.PATH ?? ''
+  const host = process.env.ANNOTASK_HOST_PATH
+  if (!host) return base
+  const sep = process.platform === 'win32' ? ';' : ':'
+  return base ? `${base}${sep}${host}` : host
+}
+
+/**
+ * When the dev server runs as root inside a container with a host home
+ * directory mounted (typical Docker layout), drop the spawned CLI to the
+ * uid/gid that owns that directory. Several CLIs (notably Claude Code with
+ * `--dangerously-skip-permissions`) refuse to run as root for safety; the
+ * host user ultimately owns the auth files the CLI needs to read, so
+ * matching their uid is the right call.
+ *
+ * Returns an empty object outside Docker (non-root, or no host home set),
+ * so this is a no-op for normal local installs.
+ */
+export function hostUserSpawnOptions(): { uid?: number; gid?: number; env?: Record<string, string> } {
+  // getuid is only defined on POSIX platforms.
+  const getuid = (process as NodeJS.Process & { getuid?: () => number }).getuid
+  if (typeof getuid !== 'function' || getuid.call(process) !== 0) return {}
+  const hostHome = process.env.ANNOTASK_HOST_HOME
+  if (!hostHome) return {}
+  try {
+    const st = fs.statSync(hostHome)
+    // Set HOME for the child so the CLI reads auth files from the mounted
+    // host home rather than the container's /root.
+    return { uid: st.uid, gid: st.gid, env: { HOME: hostHome } }
+  } catch {
+    return {}
+  }
+}
 
 export interface SpawnRequestBody {
   cli: string
@@ -70,6 +132,61 @@ export interface AgentSpawnHandler {
    * the child, and writes SSE events to `res`. Returns when the child exits.
    */
   handleSpawn(req: IncomingMessage, res: ServerResponse, body: unknown, projectRoot: string): Promise<void>
+}
+
+/**
+ * Optional server-side ceiling on the permission level a spawn may request.
+ * Set `ANNOTASK_MAX_PERMISSION=plan|default` to refuse any spawn whose argv
+ * carries flags exceeding it — a floor a same-origin page cannot talk past,
+ * for shared / CI / locked-down setups. Unset (or `bypass`) imposes no cap.
+ *
+ * Permission semantics are assembled client-side (the browser builds argv),
+ * so this is the one place the server re-derives the *level* from the flags
+ * and enforces a policy of its own rather than trusting the caller.
+ */
+const PERMISSION_LEVEL = { plan: 0, default: 1, bypass: 2 } as const
+export type PermissionLevelName = keyof typeof PERMISSION_LEVEL
+
+export function maxPermissionCap(): PermissionLevelName {
+  const raw = (process.env.ANNOTASK_MAX_PERMISSION ?? '').trim().toLowerCase()
+  return raw === 'plan' || raw === 'default' ? raw : 'bypass'
+}
+
+/** Flags that, if present, mean the run removes sandboxes / auto-approves all. */
+const BYPASS_FLAGS = new Set([
+  '--dangerously-skip-permissions',
+  '--dangerously-bypass-approvals-and-sandbox',
+  '--allow-all',
+])
+/** Flags that imply a sandboxed/minimal "default" level (still writes, but scoped). */
+const DEFAULT_FLAGS = new Set(['--full-auto', '--allow-all-tools'])
+
+/**
+ * Re-derive the highest permission level the given argv implies. Bypass flags
+ * win over default-level flags; absence of any (e.g. opencode/claude plan) is
+ * the safest `plan` level.
+ */
+export function permissionLevelOfArgs(args: string[]): PermissionLevelName {
+  for (const a of args) if (BYPASS_FLAGS.has(a)) return 'bypass'
+  for (let i = 0; i < args.length; i++) {
+    if (DEFAULT_FLAGS.has(args[i])) return 'default'
+    if (args[i] === '--permission-mode' && args[i + 1] === 'default') return 'default'
+  }
+  return 'plan'
+}
+
+/**
+ * Return the (level, cap) pair when the given argv exceeds the configured
+ * `ANNOTASK_MAX_PERMISSION` ceiling, or `null` when it's within the cap. Shared
+ * by the per-task spawn handler and the init pipeline so both honor the same
+ * floor.
+ */
+export function exceedsPermissionCap(
+  args: string[],
+): { level: PermissionLevelName; cap: PermissionLevelName } | null {
+  const cap = maxPermissionCap()
+  const level = permissionLevelOfArgs(args)
+  return PERMISSION_LEVEL[level] > PERMISSION_LEVEL[cap] ? { level, cap } : null
 }
 
 /** Run a coarse validation on the body and return a SpawnRequestBody, or an error string. */
@@ -131,6 +248,36 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
       return
     }
 
+    // Server-side permission floor. The browser assembles the permission flags;
+    // here we re-derive the level from the argv and refuse anything above the
+    // configured cap so a same-origin page can't hand-craft a bypass run.
+    const exceeded = exceedsPermissionCap(parsed.args)
+    if (exceeded) {
+      res.statusCode = 403
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        error: {
+          code: 'permission_exceeds_cap',
+          message: `Spawn requested '${exceeded.level}' permission but ANNOTASK_MAX_PERMISSION caps at '${exceeded.cap}'.`,
+        },
+      }))
+      return
+    }
+
+    // Concurrency floor — bound the number of live child processes regardless
+    // of how many tabs/clients ask. (Checked before spawning, not registered.)
+    if (active.size >= MAX_CONCURRENT_SPAWNS) {
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({
+        error: {
+          code: 'too_many_agents',
+          message: `Too many agents running (${active.size}/${MAX_CONCURRENT_SPAWNS}). Wait for one to finish.`,
+        },
+      }))
+      return
+    }
+
     // SSE headers.
     res.statusCode = 200
     res.setHeader('Content-Type', 'text/event-stream')
@@ -143,10 +290,18 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
 
     let child: ChildProcessWithoutNullStreams
     try {
+      const hostUser = hostUserSpawnOptions()
       child = spawn(parsed.cli, parsed.args, {
         cwd: projectRoot,
         shell: false,
-        env: { ...process.env, ...(parsed.env ?? {}) },
+        uid: hostUser.uid,
+        gid: hostUser.gid,
+        // Force PWD to match cwd. The inherited PWD points at wherever the dev
+        // server was launched, which usually equals projectRoot — but when it
+        // doesn't (monorepo / Docker / nested launch), CLIs that read $PWD for
+        // project-root detection (e.g. opencode) would operate on the wrong
+        // tree instead of the spawn cwd. Setting it last keeps it authoritative.
+        env: { ...process.env, PATH: effectiveSpawnPath(), ...(hostUser.env ?? {}), ...(parsed.env ?? {}), PWD: projectRoot },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
     } catch (err) {
@@ -167,15 +322,21 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
     }
     active.set(runId, { child, kill: killChild })
 
-    // Pipe stdin if provided.
+    // Pipe stdin if provided. Attach the async error listener BEFORE writing:
+    // a child that closes its read end early emits an *asynchronous* EPIPE that
+    // the synchronous try/catch can't catch — left unhandled it throws and
+    // crashes the whole dev server, taking down every other in-flight run.
+    // Ending stdin in the write callback avoids ending mid-flush.
+    child.stdin.on('error', (err) => {
+      write(res, 'error', `stdin write failed: ${(err as Error).message}`)
+    })
     if (parsed.stdin) {
-      try {
-        child.stdin.write(parsed.stdin)
-      } catch (err) {
-        write(res, 'error', `stdin write failed: ${(err as Error).message}`)
-      }
+      child.stdin.write(parsed.stdin, () => {
+        try { child.stdin.end() } catch { /* ignore */ }
+      })
+    } else {
+      try { child.stdin.end() } catch { /* ignore */ }
     }
-    try { child.stdin.end() } catch { /* ignore */ }
 
     // Keepalive ping so reverse proxies don't 504 on idle CLI startup.
     const keepalive = setInterval(() => {
@@ -183,8 +344,18 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
     }, KEEPALIVE_INTERVAL_MS)
     keepalive.unref()
 
-    // Abort on client disconnect.
+    // Abort on client disconnect. Belt-and-suspenders: some proxies close
+    // the response socket rather than the request, so we listen on both.
     req.on('close', () => { killChild() })
+    res.on('close', () => { killChild() })
+
+    // Absolute duration backstop — kill a child that outlives the ceiling
+    // (e.g. its client died without closing the socket). Cleared on close.
+    const maxDuration = setTimeout(() => {
+      write(res, 'error', `Run exceeded the ${Math.round(MAX_SPAWN_DURATION_MS / 60_000)}-minute server limit; terminating.`)
+      killChild()
+    }, MAX_SPAWN_DURATION_MS)
+    maxDuration.unref()
 
     // Line-buffered stdout — one SSE event per line. Same for stderr but we
     // also accumulate the last MAX_STDERR_BUFFER_BYTES of stderr so we can
@@ -251,6 +422,7 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
     })
 
     clearInterval(keepalive)
+    clearTimeout(maxDuration)
     active.delete(runId)
     try { res.end() } catch { /* already ended */ }
   }

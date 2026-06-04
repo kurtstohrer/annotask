@@ -1,15 +1,17 @@
 /**
  * Drives the InitWizard overlay. Subscribes to the server's `init:progress`
- * WS topic and exposes a state machine for the 3-step UI:
+ * WS topic and exposes a state machine for the 4-step UI:
+ *   0. `mode`   — choose skill/MCP vs embedded-agent workflow (first run only).
  *   1. `agent`  — pick the provider the embedded agent will run through.
  *   2. `scan`   — server runs the scanners; emits step-by-step progress.
  *   3. `review` — user edits the assembled draft (themes, style guide),
  *                 then commits to disk.
  *
- * Visibility: the wizard auto-opens when the project has no design-spec
- * (`isInitialized === false` from useDesignSpec). The user can also re-open
- * it from Settings via `openInitFlow()`. The composable is a singleton so
- * the open/closed state stays consistent across the shell.
+ * Visibility: the wizard auto-opens when the user hasn't yet chosen a workflow
+ * (`embeddedAgentEnabled === null`) or has chosen embedded but the project
+ * has no design-spec (`isInitialized === false` from useDesignSpec). When
+ * `embeddedAgentEnabled === false` the wizard never auto-opens — the user is
+ * in skill/MCP mode and drives init from their editor agent.
  */
 
 import { ref, computed, watch } from 'vue'
@@ -59,7 +61,7 @@ export interface InitState {
   tokenUsage?: InitTokenUsage
 }
 
-export type WizardStep = 'agent' | 'scan' | 'review'
+export type WizardStep = 'mode' | 'agent' | 'scan' | 'review'
 
 export interface ScanOptions {
   /** Skip the LLM design-spec pass. Set in re-scan mode when the user only
@@ -78,7 +80,7 @@ export interface ScanOptions {
 const EMPTY_STATE: InitState = { running: false, steps: [] }
 
 const open = ref(false)
-const wizardStep = ref<WizardStep>('agent')
+const wizardStep = ref<WizardStep>('mode')
 const initState = ref<InitState>(EMPTY_STATE)
 
 // Editable copy of the server-provided draft. The user mutates these via the
@@ -215,8 +217,14 @@ async function commitDraft(): Promise<boolean> {
 // post-run progress from the previous run, etc.).
 const rescanMode = ref(false)
 
-function openWizard(step: WizardStep = 'agent', opts: { rescan?: boolean } = {}) {
+function openWizard(step?: WizardStep, opts: { rescan?: boolean } = {}) {
   rescanMode.value = !!opts.rescan
+  // Default entry: 'mode' iff the user has never chosen a workflow; otherwise
+  // 'agent'. Re-scans always land directly on 'agent'.
+  if (!step) {
+    const choice = providerSettingsRef?.settings.value.embeddedAgentEnabled
+    step = choice == null ? 'mode' : 'agent'
+  }
   wizardStep.value = step
   open.value = true
   // When jumping directly to review (e.g. already initialized), hydrate draft
@@ -242,7 +250,8 @@ function goToStep(step: WizardStep) {
 }
 
 function nextStep() {
-  if (wizardStep.value === 'agent') wizardStep.value = 'scan'
+  if (wizardStep.value === 'mode') wizardStep.value = 'agent'
+  else if (wizardStep.value === 'agent') wizardStep.value = 'scan'
   else if (wizardStep.value === 'scan') wizardStep.value = 'review'
   else if (wizardStep.value === 'review') {
     closeWizard()
@@ -333,26 +342,67 @@ export function useInitFlow() {
     wired = true
 
     // Server pushes a fresh state on every step change.
+    let lastWsPushAt = 0
     wsOn('init:progress', (data) => {
       if (data && typeof data === 'object') {
+        lastWsPushAt = Date.now()
         initState.value = data as InitState
         hydrateDraftIfReady()
       }
     })
 
     fetchInitState()
+
+    // Poll fallback. The WS push is the primary update channel, but if the
+    // dev server restarts mid-run (OOM, container recreate, …) the socket
+    // dies silently and the wizard's "Running…" spinner ticks forever
+    // because no fresh state ever arrives. While a run is in flight, poll
+    // every 3s; skip the poll if the WS pushed within the last 2s so we
+    // don't double-fetch during a healthy run.
+    setInterval(() => {
+      if (!initState.value.running) return
+      if (Date.now() - lastWsPushAt < 2_000) return
+      fetchInitState()
+    }, 3_000)
     getDesignSpecValue = () => designSpec.designSpec.value as Record<string, any> | null
 
-    // Auto-open once we know the project isn't initialized.
+    // Auto-open rules + deferred migration of pre-`embeddedAgentEnabled`
+    // settings:
+    //   - !initialized + null     → open Page 0 (workflow choice forced
+    //                                even if stale `agentMode` from an old
+    //                                install would otherwise have implied one)
+    //   - !initialized + true     → open at 'agent' (provider setup)
+    //   - !initialized + false    → no auto-open (skill mode)
+    //   - initialized  + null     → silently migrate from legacy `agentMode`
+    //                                (auto/manual → true, off → false) and
+    //                                do not re-prompt — these users were
+    //                                already using Annotask successfully.
+    //   - initialized  + anything → no auto-open.
     watch(
-      () => [designSpec.isLoading.value, designSpec.isInitialized.value] as const,
-      ([loading, initialized]) => {
+      () => [
+        designSpec.isLoading.value,
+        designSpec.isInitialized.value,
+        providerSettings.settings.value.embeddedAgentEnabled,
+      ] as const,
+      ([loading, initialized, embeddedChoice]) => {
         if (loading) return
-        if (initialized) {
-          if (open.value && wizardStep.value === 'scan' && initState.value.result === 'awaiting_review') {
-            wizardStep.value = 'review'
+        // Still advance scan→review for an in-flight wizard regardless of state.
+        if (open.value && wizardStep.value === 'scan' && initState.value.result === 'awaiting_review') {
+          wizardStep.value = 'review'
+        }
+        if (open.value) return
+        if (embeddedChoice == null) {
+          if (initialized) {
+            // Existing user upgrading — derive their preference from the
+            // pre-existing `agentMode` and skip Page 0.
+            const mode = providerSettings.settings.value.agentMode
+            providerSettings.setEmbeddedAgentEnabled(mode !== 'off')
+            return
           }
-        } else if (!open.value) {
+          openWizard('mode')
+          return
+        }
+        if (embeddedChoice === true && !initialized) {
           openWizard('agent')
         }
       },

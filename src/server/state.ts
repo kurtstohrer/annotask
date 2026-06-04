@@ -122,7 +122,22 @@ async function atomicWrite(filePath: string, data: string) {
   await fsp.rename(tmpPath, filePath)
 }
 
-export function createProjectState(projectRoot: string, broadcast: (event: string, data: unknown) => void): ProjectState {
+export interface ProjectStateOptions {
+  /**
+   * Fired when `design-spec.json` disappears from disk (the file is unlinked
+   * outside the normal init write flow). Used by the init runner to drop its
+   * in-memory step state — the wizard's "all green checkmarks from last run"
+   * survives a `rm -rf .annotask/*` until something tells it the world has
+   * changed.
+   */
+  onSpecCleared?: () => void
+}
+
+export function createProjectState(
+  projectRoot: string,
+  broadcast: (event: string, data: unknown) => void,
+  options: ProjectStateOptions = {},
+): ProjectState {
   let cachedDesignSpec: unknown = null
   let specWatcher: fs.FSWatcher | null = null
   const tasksPath = path.join(projectRoot, '.annotask', 'tasks.json')
@@ -283,6 +298,15 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
           if (filename === 'design-spec.json') {
             cachedDesignSpec = null
             broadcast('designspec:updated', null)
+            // If the file is gone entirely (user wiped .annotask/), tell the
+            // init runner to drop its remembered "all steps done" state so the
+            // wizard reopens cleanly without checkmarks from the last run.
+            // fs.watch fires before/around the write, so check synchronously.
+            try {
+              fs.statSync(specPath)
+            } catch {
+              options.onSpecCleared?.()
+            }
           }
           if (filename === 'tasks.json') {
             // Ignore events caused by our own atomic writes.

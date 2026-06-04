@@ -153,6 +153,26 @@ const providerSettings = useProviderSettings()
 const agentDetect = useAgentDetect()
 fetchAgentDetect()
 
+// Dev-side session reset. The playground justfile's `clear-init` target
+// writes `.annotask/.session-reset` on disk so the shell can self-clear
+// browser-side state (localStorage) the next time it loads — no DevTools
+// paste required. The server includes `sessionReset: true` in the status
+// payload until we DELETE the sentinel below.
+async function consumeSessionResetIfAny() {
+  try {
+    const r = await fetch('/__annotask/api/status')
+    if (!r.ok) return
+    const { sessionReset } = await r.json()
+    if (!sessionReset) return
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('annotask:')) localStorage.removeItem(k)
+    }
+    await fetch('/__annotask/api/session-reset', { method: 'DELETE' })
+    location.reload()
+  } catch { /* server offline — nothing to do */ }
+}
+void consumeSessionResetIfAny()
+
 // Warm the model-catalog cache for the primary providers at shell load so
 // every dropdown (Settings → Providers, InitWizard, AgentDirectionsPanel)
 // shows the live list immediately when opened. The composable honors a
@@ -166,6 +186,7 @@ watch(
       'claude-local': !!(snap['claude-local'].found && snap['claude-local'].loggedIn),
       'codex-local': !!(snap['codex-local'].found && snap['codex-local'].loggedIn),
       'opencode-local': !!(snap['opencode-local'].found && snap['opencode-local'].loggedIn),
+      'copilot-local': !!(snap['copilot-local']?.found && snap['copilot-local']?.loggedIn),
     })
   },
   { immediate: true },
@@ -566,7 +587,8 @@ const pendingTasksCount = computed(
 )
 const canBatchRunAgent = computed(
   () =>
-    providerSettings.ready.value
+    providerSettings.settings.value.embeddedAgentEnabled === true
+    && providerSettings.ready.value
     && providerSettings.settings.value.agentMode !== 'off'
     && pendingTasksCount.value > 0,
 )
@@ -990,7 +1012,20 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       @deny="(id) => { denyingTaskId = id; denyFeedbackText = ''; detailTaskId = null }"
       @delete="(id) => { removeTaskAnnotations(id); restoredTaskIds.delete(id); taskSystem.deleteTask(id); detailTaskId = null }"
       @update="(id, fields) => { taskSystem.updateTaskStatus(id, detailTask!.status, undefined, fields) }"
-      @reply="(id, answers) => { taskSystem.respondToAgent(id, answers) }"
+      @reply="async (id, answers) => {
+        await taskSystem.respondToAgent(id, answers)
+        // Same auto-retry as deny: hand the now-in_progress task back to
+        // the auto-run driver so the agent picks up the user's answer
+        // without anyone clicking Run. Driver short-circuits if embedded
+        // mode is off or no provider is ready.
+        if (
+          providerSettings.settings.value.embeddedAgentEnabled === true
+          && providerSettings.settings.value.agentMode === 'auto'
+          && providerSettings.ready.value
+        ) {
+          agentMode.requestAutoRun(id)
+        }
+      }"
       @open-settings="() => { showSettings = true }"
     />
 
@@ -1115,5 +1150,15 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--tt-color, var(--text));
+}
+
+/* Native <option> elements don't inherit Vue scoped styles. Browsers render
+   the dropdown list in OS chrome, which on dark themes ends up white-on-
+   white-ish (Chrome especially). Force theme-aware bg/text globally so any
+   <select> in the shell reads correctly without each component having to
+   repeat the rule. */
+option {
+  background: var(--surface);
+  color: var(--text);
 }
 </style>

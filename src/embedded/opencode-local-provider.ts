@@ -20,6 +20,7 @@ import {
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
+import { opencodePermissionFlags, defaultPermissionModeFor } from './permission-mode-flags.js'
 import type {
   ProviderEvent,
   ProviderMessage,
@@ -55,11 +56,18 @@ export class OpencodeLocalProvider extends CliLocalProvider {
     options: StreamOptions,
   ): SpawnRequest {
     const args = ['run', '--print-logs', '--format=json']
+    // Opencode only exposes a single `--dangerously-skip-permissions` toggle
+    // in headless `run`; non-bypass modes omit it. Plan and default collapse
+    // to the same behavior — the CLI doesn't surface finer granularity.
+    // See permission-mode-flags.ts for the rationale.
+    args.push(...opencodePermissionFlags(options.permissionMode ?? defaultPermissionModeFor('opencode')))
     if (this.model) args.push('--model', this.model)
     args.push(...this.extraArgs)
     // Prepend the annotask system prompt to the positional — opencode has
-    // no separate system-prompt flag in headless mode.
-    args.push(withSystemPrompt(lastUserMessageText(messages), options.systemPrompt))
+    // no separate system-prompt flag in headless mode. The `--` separator
+    // is required: skill bodies often start with `---` (YAML frontmatter),
+    // and without it the CLI parses the leading `--` as an unknown long flag.
+    args.push('--', withSystemPrompt(lastUserMessageText(messages), options.systemPrompt))
     return { cli: 'opencode', args }
   }
 

@@ -656,6 +656,27 @@ export const TASK_TYPES = [
 
 export type TaskType = typeof TASK_TYPES[number]
 
+/**
+ * Permission mode for agent actions. Three modes, two tiers (global + task):
+ *   - `default` — CLI asks for non-trivial tool use (its own default behavior)
+ *   - `plan`    — read-only. Enforced natively where possible (claude's
+ *                 `--permission-mode plan`, codex's read-only sandbox) and via
+ *                 a model-level system-prompt directive on CLIs that lack a
+ *                 native plan flag (opencode, copilot headless).
+ *   - `bypass`  — bypass all permission checks (historical default)
+ *
+ * Resolved per-task as `task ?? global`. The persona tier was dropped — it
+ * added a dropdown nobody used and the chip menu in the Conversation tab
+ * already covers the "per-task tighten/loosen" flow.
+ *
+ * acceptEdits was removed in the same cut: only claude-local could
+ * meaningfully distinguish it from `default`, so it was theater on the other
+ * three CLIs.
+ */
+export const PERMISSION_MODES = ['default', 'plan', 'bypass'] as const
+
+export type PermissionMode = typeof PERMISSION_MODES[number]
+
 /** Task in the review pipeline */
 export interface AnnotaskTask {
   id: string
@@ -683,6 +704,11 @@ export interface AnnotaskTask {
   visual?: Record<string, unknown>       // annotation visual state for restoration
   /** Aggregate provider token usage across this task's conversation turns. */
   tokenUsage?: TokenUsage
+  /**
+   * Per-task permission-mode override. Wins over the persona and global
+   * tiers when set. Absent = inherit (resolver falls back to persona, then global).
+   */
+  permissionMode?: PermissionMode
   createdAt: number
   updatedAt: number
 }

@@ -12,7 +12,7 @@ import {
 } from './schemas.js'
 import { mergeRuntimeOrphansIntoEntries, findMatchingStaticEntries } from './runtime-endpoints.js'
 import type { NetworkCall, RuntimeEndpoint, RuntimeEndpointCatalog } from '../schema.js'
-import type { TaskThreadStore, ThreadMessage, ThreadRole } from './task-thread.js'
+import type { TaskThreadStore, ThreadMessage, ThreadRole, UpdateInput } from './task-thread.js'
 import type { WorkStreamBlock } from '../shared/work-stream.js'
 import type { AgentSpawnHandler } from './agent-spawn.js'
 import type { AgentDetector } from './agent-detect.js'
@@ -48,7 +48,7 @@ export interface APIOptions {
   clearRuntimeEndpoints: () => void
   /** Per-task conversation transcript store (chat messages). */
   taskThread: TaskThreadStore
-  /** Spawns local CLIs (claude/codex/opencode/gh) and streams their output. */
+  /** Spawns local CLIs (claude/codex/opencode/copilot) and streams their output. */
   agentSpawn: AgentSpawnHandler
   /** Probes for installed/logged-in local CLIs. */
   agentDetect: AgentDetector
@@ -93,6 +93,7 @@ export type ApiErrorCode =
   | 'validation_failed'
   | 'invalid_transition'
   | 'forbidden_origin'
+  | 'origin_port_mismatch'
   | 'not_found'
   | 'missing_field'
   | 'invalid_id'
@@ -108,7 +109,7 @@ function sendError(res: ServerResponse, status: number, message: string, code: A
   res.end(JSON.stringify(body))
 }
 
-import { isLocalOrigin } from './origin.js'
+import { isLocalOrigin, originMatchesPort } from './origin.js'
 import { scanComponentLibraries } from './component-scanner.js'
 import { filterTasksByMfe } from '../shared/task-summary.js'
 import { getCodeContext } from './code-context.js'
@@ -161,6 +162,16 @@ function deriveDevServerUrl(req: IncomingMessage): string | undefined {
   if (!host) return undefined
   const proto = (req.headers['x-forwarded-proto'] as string | undefined) || 'http'
   return `${proto}://${host}`
+}
+
+/** Extract the port number from the Host header (e.g. "localhost:5173" → 5173). */
+function deriveServerPort(req: IncomingMessage): number | undefined {
+  const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+  if (!host) return undefined
+  const colonIdx = host.lastIndexOf(':')
+  if (colonIdx === -1) return undefined
+  const p = parseInt(host.slice(colonIdx + 1), 10)
+  return Number.isFinite(p) ? p : undefined
 }
 
 export function createAPIMiddleware(options: APIOptions) {
@@ -668,8 +679,36 @@ export function createAPIMiddleware(options: APIOptions) {
       }
     }
 
+    // PATCH /tasks/:id/messages/:msgId → update a message in place. Used by
+    // the embedded agent to stream a partial assistant turn (append once,
+    // then patch the same line as events arrive). Distinct matcher from the
+    // `messages(/stream)?` block above so the two never collide.
+    {
+      const m = path.match(/^tasks\/([^/]+)\/messages\/([^/]+)$/)
+      if (m && req.method === 'PATCH') {
+        const id = decodeURIComponent(m[1])
+        const msgId = decodeURIComponent(m[2])
+        let raw: string
+        try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+        const parsed = parseJSON(raw)
+        if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+        const validated = validateThreadPatch(parsed.data)
+        if (typeof validated === 'string') return sendError(res, 400, validated)
+        const msg = await options.taskThread.update(id, msgId, validated)
+        if (!msg) return sendError(res, 404, 'Message not found', 'not_found')
+        res.end(JSON.stringify(msg, null, 2))
+        return
+      }
+    }
+
     // Embedded chat: spawn a local CLI provider as a subprocess.
+    // Spawn routes get a stricter same-port origin check (the general mutating
+    // gate above only checks localhost hostname). This prevents a page on a
+    // different localhost port from spawning CLIs that have credential access.
     if (path === 'agent/spawn' && req.method === 'POST') {
+      if (!originMatchesPort(req.headers.origin as string | undefined, deriveServerPort(req))) {
+        return sendError(res, 403, 'Forbidden: origin port mismatch', 'origin_port_mismatch')
+      }
       let raw: string
       try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
@@ -682,6 +721,9 @@ export function createAPIMiddleware(options: APIOptions) {
     {
       const m = path.match(/^agent\/spawn\/([^/]+)$/)
       if (m && req.method === 'DELETE') {
+        if (!originMatchesPort(req.headers.origin as string | undefined, deriveServerPort(req))) {
+          return sendError(res, 403, 'Forbidden: origin port mismatch', 'origin_port_mismatch')
+        }
         const runId = decodeURIComponent(m[1])
         const ok = options.agentSpawn.registry.abort(runId)
         if (!ok) return sendError(res, 404, 'Run not found', 'not_found')
@@ -755,7 +797,28 @@ export function createAPIMiddleware(options: APIOptions) {
     }
 
     if (path === 'status' && req.method === 'GET') {
-      res.end(JSON.stringify({ status: 'ok', tool: 'annotask' }))
+      // Surface a session-reset flag when `.annotask/.session-reset` is
+      // present on disk. The justfile's `clear-init` target writes this
+      // sentinel so the shell can detect a developer-initiated reset and
+      // wipe browser-side state (localStorage) without the developer
+      // having to paste a snippet into DevTools.
+      const sentinel = nodePath.resolve(options.projectRoot, '.annotask', '.session-reset')
+      let sessionReset = false
+      try {
+        await fsp.access(sentinel)
+        sessionReset = true
+      } catch { /* not present — normal case */ }
+      res.end(JSON.stringify({ status: 'ok', tool: 'annotask', sessionReset }))
+      return
+    }
+
+    if (path === 'session-reset' && req.method === 'DELETE') {
+      // Acknowledged by the shell after it wipes localStorage. We delete
+      // the on-disk sentinel so subsequent status polls report `false`
+      // and we don't re-clear on every reload.
+      const sentinel = nodePath.resolve(options.projectRoot, '.annotask', '.session-reset')
+      try { await fsp.unlink(sentinel) } catch { /* already gone — fine */ }
+      res.end(JSON.stringify({ ok: true }))
       return
     }
 
@@ -1161,6 +1224,8 @@ interface ThreadAppendBody {
   toolCalls?: ThreadMessage['toolCalls']
   toolUseId?: string
   blocks?: WorkStreamBlock[]
+  isPartial?: boolean
+  lastEventAt?: number
 }
 
 function validateThreadAppend(raw: unknown): ThreadAppendBody | string {
@@ -1177,17 +1242,8 @@ function validateThreadAppend(raw: unknown): ThreadAppendBody | string {
   if (typeof body.providerId === 'string') out.providerId = body.providerId
   if (typeof body.model === 'string') out.model = body.model
   if (typeof body.toolUseId === 'string') out.toolUseId = body.toolUseId
-  if (body.usage && typeof body.usage === 'object') {
-    const u = body.usage as Record<string, unknown>
-    if (typeof u.inputTokens === 'number' && typeof u.outputTokens === 'number') {
-      out.usage = {
-        inputTokens: u.inputTokens,
-        outputTokens: u.outputTokens,
-        cacheReadTokens: typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : undefined,
-        cacheCreationTokens: typeof u.cacheCreationTokens === 'number' ? u.cacheCreationTokens : undefined,
-      }
-    }
-  }
+  const usage = parseUsage(body.usage)
+  if (usage) out.usage = usage
   if (Array.isArray(body.toolCalls)) {
     out.toolCalls = []
     for (const tc of body.toolCalls) {
@@ -1203,6 +1259,41 @@ function validateThreadAppend(raw: unknown): ThreadAppendBody | string {
     const validated = validateBlocks(body.blocks)
     if (validated.length > 0) out.blocks = validated
   }
+  if (typeof body.isPartial === 'boolean') out.isPartial = body.isPartial
+  if (typeof body.lastEventAt === 'number') out.lastEventAt = body.lastEventAt
+  return out
+}
+
+/** Parse a loose `usage` object into the typed shape, or `undefined`. */
+function parseUsage(raw: unknown): ThreadMessage['usage'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const u = raw as Record<string, unknown>
+  if (typeof u.inputTokens !== 'number' || typeof u.outputTokens !== 'number') return undefined
+  return {
+    inputTokens: u.inputTokens,
+    outputTokens: u.outputTokens,
+    cacheReadTokens: typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : undefined,
+    cacheCreationTokens: typeof u.cacheCreationTokens === 'number' ? u.cacheCreationTokens : undefined,
+  }
+}
+
+/**
+ * Validate a `PATCH /tasks/:id/messages/:msgId` body — the in-place update
+ * used to stream a partial assistant turn. All fields optional; only the
+ * mutable subset is accepted (role/id/ts are immutable).
+ */
+function validateThreadPatch(raw: unknown): UpdateInput | string {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'body must be an object'
+  const body = raw as Record<string, unknown>
+  const out: UpdateInput = {}
+  if (typeof body.content === 'string') out.content = body.content
+  if (typeof body.providerId === 'string') out.providerId = body.providerId
+  if (typeof body.model === 'string') out.model = body.model
+  if (typeof body.isPartial === 'boolean') out.isPartial = body.isPartial
+  if (typeof body.lastEventAt === 'number') out.lastEventAt = body.lastEventAt
+  const usage = parseUsage(body.usage)
+  if (usage) out.usage = usage
+  if (Array.isArray(body.blocks)) out.blocks = validateBlocks(body.blocks)
   return out
 }
 

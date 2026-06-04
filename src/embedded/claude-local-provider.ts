@@ -19,6 +19,7 @@ import {
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
+import { claudePermissionFlags, defaultPermissionModeFor } from './permission-mode-flags.js'
 import type {
   ProviderEvent,
   ProviderMessage,
@@ -55,12 +56,11 @@ export class ClaudeLocalProvider extends CliLocalProvider {
     options: StreamOptions,
   ): SpawnRequest {
     const args = ['--print', '--output-format', 'stream-json', '--verbose']
-    // Skip the interactive permission prompt — task work from the embedded
-    // agent is an explicit user action (clicking Run-with-agent or sending a
-    // chat turn) and the shell has no UI to forward the prompt to. Without
-    // this, edits silently fail with "Claude requested permissions to write
-    // to <file>". The init flow (`server/init.ts`) does the same thing.
-    args.push('--permission-mode', 'bypassPermissions')
+    // Permission mode is resolved + headless-normalized per-call (task ??
+    // persona ?? global, then normalizeHeadlessMode). The fail-safe fallback is
+    // claude's safe default (bypass — claude has no headless ask-mode), not a
+    // blanket bypass for every CLI.
+    args.push(...claudePermissionFlags(options.permissionMode ?? defaultPermissionModeFor('claude')))
     if (this.model) args.push('--model', this.model)
     args.push(...this.extraArgs)
     return {

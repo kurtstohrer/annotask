@@ -10,6 +10,17 @@
  * negatives are the failure mode we work hard to avoid (claude-local
  * provider only enables when this probe says yes).
  *
+ * Docker / sandboxed envs: when Annotask runs inside a container, host-side
+ * CLI binaries and auth files aren't visible by default. Two env vars let the
+ * probe scan host-mounted paths instead of (or in addition to) the container's
+ * own PATH and $HOME:
+ *   - ANNOTASK_HOST_PATH — colon-separated dirs appended to PATH for `whichBin`
+ *   - ANNOTASK_HOST_HOME — alt home dir checked alongside `os.homedir()` for
+ *     auth files (e.g. mount `/host-home` and set this to it)
+ * The version probe still spawns the discovered binary; if the host path isn't
+ * actually executable from inside the container, the spawn just times out and
+ * `version` comes back undefined — `found` and `loggedIn` remain accurate.
+ *
  * Cached for 30 seconds so the settings panel doesn't fork a dozen
  * subprocesses every render.
  */
@@ -111,9 +122,13 @@ export function createAgentDetector(): AgentDetector {
   async function probe(cfg: DetectorConfig): Promise<CliStatus> {
     const binPath = await whichBin(cfg.bin)
     if (!binPath) return { found: false }
+    const homeDirs = [os.homedir()]
+    const hostHome = process.env.ANNOTASK_HOST_HOME
+    if (hostHome && hostHome !== os.homedir()) homeDirs.push(hostHome)
+    const authPaths = cfg.authFiles.flatMap((rel) => homeDirs.map((h) => path.join(h, rel)))
     const [version, loggedIn] = await Promise.all([
       cfg.versionArgs ? readVersion(binPath, cfg.versionArgs) : Promise.resolve(undefined),
-      anyExists(cfg.authFiles.map((rel) => path.join(os.homedir(), rel))),
+      anyExists(authPaths),
     ])
     return { found: true, binPath, version, loggedIn }
   }
@@ -148,9 +163,11 @@ export function createAgentDetector(): AgentDetector {
 async function whichBin(name: string): Promise<string | undefined> {
   // Path separator differs on Windows; we don't claim Windows support but
   // detection should at least not throw there.
-  const PATH = process.env.PATH ?? ''
   const sep = process.platform === 'win32' ? ';' : ':'
   const exts = process.platform === 'win32' ? (process.env.PATHEXT?.split(';') ?? ['.EXE', '.CMD', '.BAT']) : ['']
+  // Append host-mounted dirs for dockerized installs (see file header).
+  const hostPath = process.env.ANNOTASK_HOST_PATH ?? ''
+  const PATH = hostPath ? `${process.env.PATH ?? ''}${sep}${hostPath}` : (process.env.PATH ?? '')
   for (const dir of PATH.split(sep)) {
     if (!dir) continue
     for (const ext of exts) {

@@ -26,6 +26,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
+import { effectiveSpawnPath, hostUserSpawnOptions, exceedsPermissionCap } from './agent-spawn.js'
 import { scanComponentLibraries } from './component-scanner.js'
 import { scanDataSources } from './data-source-scanner.js'
 import { scanApiSchemas } from './api-schema-scanner.js'
@@ -35,6 +36,7 @@ import { loadSkill } from '../skills/index.js'
 import { BUILT_IN_PERSONAS } from '../embedded/persona.js'
 import type { ProviderId, EffortLevel } from '../embedded/provider-config.js'
 import { EFFORTS_BY_PROVIDER, EFFORT_LEVELS } from '../embedded/provider-config.js'
+import { initPermissionFlagsFor, type InitCliBin } from '../embedded/permission-mode-flags.js'
 import type { AgentConfigEntry } from './agent-configs.js'
 
 /** Per-persona "what to investigate in the codebase" hint. The init CLI uses
@@ -131,6 +133,13 @@ export interface InitRunner {
    * spec so the wizard closes and the "not initialized" banner disappears.
    */
   skip: () => Promise<InitState>
+  /**
+   * Drop the in-memory step state and broadcast a fresh `init:progress`. Used
+   * when `design-spec.json` is wiped from disk so the wizard's last-run green
+   * checkmarks don't outlive the file. No-op while a scan is running — that
+   * path uses `cancel()` first.
+   */
+  reset: () => InitState
   getState: () => InitState
 }
 
@@ -187,10 +196,21 @@ function selectInitCli(
   requestedProviderId?: ProviderId,
 ): InitCliOption | null {
   if (isInitLocalProviderId(requestedProviderId)) {
-    if (!isFoundLocalCli(snap, requestedProviderId)) return null
+    if (!isReadyLocalCli(snap, requestedProviderId)) return null
     return INIT_CLI_OPTIONS.find(c => c.id === requestedProviderId) ?? null
   }
   return INIT_CLI_OPTIONS.find(c => isReadyLocalCli(snap, c.id)) ?? null
+}
+
+/** Targeted error message when a requested CLI is found but not logged in. */
+function initCliNotReadyReason(
+  snap: Awaited<ReturnType<AgentDetector['detect']>>,
+  requestedProviderId?: ProviderId,
+): string | null {
+  if (!isInitLocalProviderId(requestedProviderId)) return null
+  if (!isFoundLocalCli(snap, requestedProviderId)) return null
+  if (isReadyLocalCli(snap, requestedProviderId)) return null
+  return `${requestedProviderId} is installed but not logged in — run its login command first`
 }
 
 /**
@@ -336,7 +356,16 @@ function buildAgentConfigsPrompt(opts: {
   ].join('\n')
 }
 
-export const __test = { selectInitCli, enforceSelectedRuntime, buildAgentConfigsPrompt }
+export const __test = {
+  selectInitCli,
+  initCliNotReadyReason,
+  enforceSelectedRuntime,
+  buildAgentConfigsPrompt,
+  // Exposed for spawn-error tests; defined below after spawnCliWithSkill.
+  detectFatalStderrLine: (bin: string, line: string) => detectFatalStderrLine(bin, line),
+  extractTextFromLine: (bin: string, line: string) => extractTextFromLine(bin, line),
+  extractUsageFromLine: (bin: string, line: string) => extractUsageFromLine(bin, line),
+}
 
 export function createInitRunner(deps: Deps): InitRunner {
   let state: InitState = freshState()
@@ -490,12 +519,20 @@ export function createInitRunner(deps: Deps): InitRunner {
     }
     await runStep('agent-scan', async () => {
       const snap = await deps.agentDetect.detect()
-      const available = selectInitCli(snap, opts.requestedProviderId)
+      const detected = selectInitCli(snap, opts.requestedProviderId)
+      // Honor the ANNOTASK_MAX_PERMISSION floor here too: the init agent must
+      // write to `.annotask/`, which on claude/opencode requires bypass. If the
+      // cap forbids the flags this CLI needs, don't run the agent — degrade to
+      // the static scanner exactly as if no CLI were available.
+      const capBlock = detected ? exceedsPermissionCap(initPermissionFlagsFor(detected.bin)) : null
+      const available = capBlock ? null : detected
 
       if (!available) {
-        setStep('agent-scan', {
-          message: 'No local CLI logged in — running lightweight scanner (colors and layout only)',
-        })
+        const notReadyMsg = capBlock && detected
+          ? `${detected.label} would need '${capBlock.level}' permission but ANNOTASK_MAX_PERMISSION caps at '${capBlock.cap}' — running lightweight scanner instead.`
+          : (initCliNotReadyReason(snap, opts.requestedProviderId)
+            ?? 'No local CLI logged in — running lightweight scanner (colors and layout only)')
+        setStep('agent-scan', { message: notReadyMsg })
         await runFallbackScan(cssFiles, themeList)
         return
       }
@@ -586,7 +623,15 @@ export function createInitRunner(deps: Deps): InitRunner {
       // for every built-in runtime agent. The local CLI below is only the
       // writer used to fill projectDirections; it does not get to choose each
       // persona's runtime model.
-      const available = initCliUsed ?? selectInitCli(await deps.agentDetect.detect(), opts.requestedProviderId)
+      const detectedForConfigs = initCliUsed ?? selectInitCli(await deps.agentDetect.detect(), opts.requestedProviderId)
+      // Same ANNOTASK_MAX_PERMISSION floor as the agent-scan step: if the cap
+      // forbids the flags this CLI needs, don't run the directions agent — fall
+      // through to the seeded-defaults path below (the `!available` branch).
+      const configsCapBlock = detectedForConfigs ? exceedsPermissionCap(initPermissionFlagsFor(detectedForConfigs.bin)) : null
+      if (configsCapBlock && detectedForConfigs) {
+        appendAgentLine(`${detectedForConfigs.label} would need '${configsCapBlock.level}' permission but ANNOTASK_MAX_PERMISSION caps at '${configsCapBlock.cap}' — seeding default agent roles instead.`)
+      }
+      const available = configsCapBlock ? null : detectedForConfigs
       // Resolution priority for the per-built-in runtime: explicit request →
       // detected CLI → persona's own default. We deliberately never fall back
       // to whatever value is currently sitting in agents.json — re-init with a
@@ -862,7 +907,19 @@ export function createInitRunner(deps: Deps): InitRunner {
     broadcastProgress()
   }
 
-  return { start, cancel, commit, skip, getState }
+  function reset(): InitState {
+    // A running scan owns currentRunId, the abort controller, and the live
+    // CLI subprocess. Refuse to wipe state under its feet — callers (the spec
+    // watcher) should be no-op'ing in that case anyway, since an in-flight
+    // init is the one thing that writes the spec.
+    if (state.running) return getState()
+    state = freshState()
+    currentRunId = null
+    broadcastProgress()
+    return getState()
+  }
+
+  return { start, cancel, commit, skip, reset, getState }
 }
 
 // ─── CLI agent spawn ──────────────────────────────────────────────────────────
@@ -876,7 +933,7 @@ interface SpawnUsage {
 }
 
 interface SpawnCliOpts {
-  bin: string
+  bin: InitCliBin
   model?: string
   effort?: EffortLevel
   skillBody: string
@@ -895,54 +952,79 @@ interface SpawnCliOpts {
 
 const AGENT_TIMEOUT_MS = 5 * 60_000  // 5 minutes — annotask-init can take a while on large projects
 
-async function spawnCliWithSkill(opts: SpawnCliOpts): Promise<void> {
-  const { bin, model, effort, skillBody, userMessage, projectRoot, onLine, onUsage, signal } = opts
-  const isAborted = () => signal.aborted
-  const modelArg = model?.trim()
-
+/**
+ * Build the argv + stdin for an init CLI invocation. Pure (no spawning) so the
+ * per-CLI flags — including the easy-to-drop ones like codex's
+ * `--skip-git-repo-check` — can be unit-tested without a live CLI. Mirrors the
+ * per-task `*LocalProvider.buildSpawn` flag choices.
+ */
+export function buildInitCliInvocation(
+  opts: Pick<SpawnCliOpts, 'bin' | 'model' | 'effort' | 'skillBody' | 'userMessage'>,
+): { args: string[]; stdin?: string } {
+  const { bin, effort, skillBody, userMessage } = opts
+  const modelArg = opts.model?.trim()
   const args: string[] = []
   let stdin: string | undefined
 
+  // Each CLI gets the least-permissive headless mode that can still write
+  // inside `.annotask/` — see `initPermissionModeFor` in permission-mode-flags.ts
+  // for the per-CLI rationale (codex/copilot stay sandboxed; claude/opencode
+  // have no native less-permissive headless mode that allows writes).
+  const permissionFlags = initPermissionFlagsFor(bin)
+
   if (bin === 'claude') {
     // Claude Code CLI: --print reads from stdin, flattened System:/User: format.
-    // --permission-mode bypassPermissions: init is an explicit user action that only
-    // writes inside .annotask/ — safe to skip the interactive permission prompt.
-    args.push('--print', '--output-format', 'stream-json', '--verbose',
-      '--permission-mode', 'bypassPermissions')
+    args.push('--print', '--output-format', 'stream-json', '--verbose', ...permissionFlags)
     if (modelArg) args.push('--model', modelArg)
     stdin = `${skillBody}\n\nUser: ${userMessage}`
   } else if (bin === 'codex') {
-    // Codex: positional prompt with skill prepended
-    args.push('exec', '--json')
+    // Codex: positional prompt with skill prepended.
+    // `--skip-git-repo-check` matches the per-task CodexLocalProvider: without
+    // it codex refuses to start ("Not inside a trusted directory") in any
+    // project that isn't a git repo, producing zero output.
+    args.push('exec', '--json', ...permissionFlags, '--skip-git-repo-check')
     if (modelArg) args.push('--model', modelArg)
     if (effort && effort !== 'auto' && effort !== 'minimal') {
       args.push('-c', `model_reasoning_effort=${effort}`)
     }
-    args.push(`${skillBody}\n\n---\n\n${userMessage}`)
+    // `--` is required: the skill body starts with YAML frontmatter (`---`),
+    // and without the separator clap parses the leading `--` as an unknown flag.
+    args.push('--', `${skillBody}\n\n---\n\n${userMessage}`)
   } else if (bin === 'copilot') {
-    // GitHub Copilot CLI: `-p <prompt>` for non-interactive, JSON event
-    // stream on stdout. `--allow-all-tools` is mandatory for `-p` per the
-    // CLI's help; `--no-ask-user` keeps it from emitting synthesized
-    // clarifying questions that have nowhere to go in headless mode.
-    args.push('--output-format', 'json', '--allow-all-tools', '--no-ask-user')
+    // GitHub Copilot CLI: `-p <prompt>` for non-interactive, JSON event stream.
+    args.push('--output-format', 'json', ...permissionFlags)
     if (modelArg) args.push('--model', modelArg)
     if (effort && effort !== 'auto' && effort !== 'minimal') {
       args.push('--reasoning-effort', effort)
     }
     args.push('-p', `${skillBody}\n\n---\n\n${userMessage}`)
   } else {
-    // opencode: run with positional prompt
-    args.push('run', '--print-logs', '--format=json')
+    // opencode: run with positional prompt.
+    args.push('run', '--print-logs', '--format=json', ...permissionFlags)
     if (modelArg) args.push('--model', modelArg)
-    args.push(`${skillBody}\n\n---\n\n${userMessage}`)
+    // `--` is required: the skill body starts with YAML frontmatter (`---`),
+    // and without the separator the CLI parses the leading `--` as an unknown flag.
+    args.push('--', `${skillBody}\n\n---\n\n${userMessage}`)
   }
+
+  return { args, stdin }
+}
+
+async function spawnCliWithSkill(opts: SpawnCliOpts): Promise<void> {
+  const { bin, projectRoot, onLine, onUsage, signal } = opts
+  const isAborted = () => signal.aborted
+  const { args, stdin } = buildInitCliInvocation(opts)
 
   return new Promise<void>((resolve, reject) => {
     if (isAborted()) { reject(new Error('Cancelled')); return }
 
+    const hostUser = hostUserSpawnOptions()
     const child = spawn(bin, args, {
       cwd: projectRoot,
       shell: false,
+      uid: hostUser.uid,
+      gid: hostUser.gid,
+      env: { ...process.env, PATH: effectiveSpawnPath(), ...(hostUser.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
@@ -953,9 +1035,26 @@ async function spawnCliWithSkill(opts: SpawnCliOpts): Promise<void> {
       child.stdin.end()
     }
 
+    // Track whether the CLI actually produced any usable stdout. A run that
+    // exits 0 with zero stdout chunks is a silent failure — the most common
+    // case is opencode's configured model provider being unreachable; the
+    // failure lands on stderr as an `ERROR ... service=llm` line while
+    // stdout stays empty.
+    let stdoutSeen = false
+    let textOrUsageSeen = false
+    let fatalError: Error | null = null
+
+    function failFast(err: Error) {
+      if (fatalError) return
+      fatalError = err
+      try { child.kill('SIGTERM') } catch { /* ignore */ }
+      setTimeout(() => { try { child.kill('SIGKILL') } catch { /* ignore */ } }, 1_000).unref()
+    }
+
     let stdoutBuf = ''
     child.stdout.setEncoding('utf-8')
     child.stdout.on('data', (chunk: string) => {
+      stdoutSeen = true
       stdoutBuf += chunk
       let nl: number
       while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
@@ -963,22 +1062,41 @@ async function spawnCliWithSkill(opts: SpawnCliOpts): Promise<void> {
         stdoutBuf = stdoutBuf.slice(nl + 1)
         const trimmed = line.trim()
         const text = extractTextFromLine(bin, trimmed)
-        if (text) onLine(text)
+        if (text) { onLine(text); textOrUsageSeen = true }
         if (onUsage) {
           const u = extractUsageFromLine(bin, trimmed)
-          if (u) onUsage(u)
+          if (u) { onUsage(u); textOrUsageSeen = true }
         }
       }
     })
 
     let stderrBuf = ''
+    let stderrLineBuf = ''
     child.stderr.setEncoding('utf-8')
-    child.stderr.on('data', (chunk: string) => { stderrBuf += chunk })
+    child.stderr.on('data', (chunk: string) => {
+      stderrBuf += chunk
+      // Cap stderr buffer to prevent OOM on long-running stuck CLIs that
+      // spam log lines (opencode emits ~50 INFO lines per second on startup).
+      if (stderrBuf.length > 64_000) stderrBuf = stderrBuf.slice(-64_000)
+      stderrLineBuf += chunk
+      let nl: number
+      while ((nl = stderrLineBuf.indexOf('\n')) >= 0) {
+        const line = stderrLineBuf.slice(0, nl)
+        stderrLineBuf = stderrLineBuf.slice(nl + 1)
+        const fatal = detectFatalStderrLine(bin, line)
+        if (fatal) {
+          onLine(`[${bin}] ${fatal}`)
+          failFast(new Error(`${bin} ${fatal}`))
+        }
+      }
+    })
 
     const timer = setTimeout(() => {
       child.kill('SIGTERM')
       setTimeout(() => { try { child.kill('SIGKILL') } catch { /* ignore */ } }, 2_000).unref()
-      reject(new Error(`Agent timed out after ${AGENT_TIMEOUT_MS / 1000}s`))
+      const tail = lastNonEmptyStderrLine(stderrBuf)
+      const detail = tail ? ` — last stderr: ${tail.slice(0, 300)}` : ''
+      reject(new Error(`Agent timed out after ${AGENT_TIMEOUT_MS / 1000}s${detail}`))
     }, AGENT_TIMEOUT_MS)
     timer.unref()
 
@@ -990,11 +1108,32 @@ async function spawnCliWithSkill(opts: SpawnCliOpts): Promise<void> {
     child.on('close', (code) => {
       clearTimeout(timer)
       if (isAborted()) { reject(new Error('Cancelled')); return }
-      if (code === 0 || code === null) {
-        resolve()
-      } else {
-        reject(new Error(`Agent exited with code ${code}. stderr: ${stderrBuf.slice(0, 500)}`))
+      if (fatalError) {
+        reject(fatalError)
+        return
       }
+      if (code !== 0 && code !== null) {
+        reject(new Error(`Agent exited with code ${code}. stderr: ${stderrBuf.slice(-500)}`))
+        return
+      }
+      // Exit 0 (or null) — but did the CLI actually do anything?
+      if (!stdoutSeen) {
+        const tail = lastNonEmptyStderrLine(stderrBuf)
+        const detail = tail ? ` Last stderr: ${tail.slice(0, 300)}` : ''
+        reject(new Error(
+          `${bin} exited cleanly but produced no output — check that the CLI is logged in and its configured model provider is reachable.${detail}`,
+        ))
+        return
+      }
+      if (!textOrUsageSeen) {
+        const tail = lastNonEmptyStderrLine(stderrBuf)
+        const detail = tail ? ` Last stderr: ${tail.slice(0, 300)}` : ''
+        reject(new Error(
+          `${bin} emitted output but no assistant text or token usage was parsed — the CLI may have failed mid-run.${detail}`,
+        ))
+        return
+      }
+      resolve()
     })
 
     child.on('error', (err) => {
@@ -1002,6 +1141,48 @@ async function spawnCliWithSkill(opts: SpawnCliOpts): Promise<void> {
       reject(err)
     })
   })
+}
+
+/**
+ * Detect fatal error lines on stderr that the CLI itself will never recover
+ * from (LLM provider unreachable, auth failure). Returns a short human
+ * description when a fatal pattern matches; null otherwise.
+ *
+ * opencode emits structured log lines like:
+ *   ERROR 2026-... service=llm ... error={"error":{"name":"AI_APICallError",
+ *     "cause":{"code":"ConnectionRefused", "path":"http://..."},...}}
+ * The CLI then retries silently. Without this short-circuit, the init pipeline
+ * waits the full 5-minute timeout with no visible feedback.
+ */
+function detectFatalStderrLine(bin: string, line: string): string | null {
+  if (!line) return null
+  if (bin === 'opencode') {
+    if (!line.startsWith('ERROR')) return null
+    // Only treat LLM-service errors as fatal — file-watcher / formatter
+    // warnings sometimes surface as ERROR but don't block the run.
+    if (!line.includes('service=llm')) return null
+    // Try to extract the most specific cause we can: ConnectionRefused is
+    // the canonical "your provider isn't running" signal; AI_APICallError
+    // covers the broader bucket (auth, 5xx, etc.).
+    const causeCode = line.match(/"code":"([^"]+)"/)?.[1]
+    const causePath = line.match(/"path":"([^"]+)"/)?.[1]
+    const errName   = line.match(/"name":"([^"]+)"/)?.[1]
+    if (causeCode && causePath) {
+      return `LLM provider unreachable (${causeCode} at ${causePath})`
+    }
+    if (errName) return `LLM call failed: ${errName}`
+    return 'LLM call failed (see logs)'
+  }
+  return null
+}
+
+function lastNonEmptyStderrLine(buf: string): string | null {
+  const lines = buf.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (line.length > 0) return line
+  }
+  return null
 }
 
 /**
@@ -1020,16 +1201,30 @@ function extractTextFromLine(bin: string, line: string): string | null {
     }
     // Codex item_completed with text
     if (ev.type === 'item.completed' && ev.item?.text) return String(ev.item.text)
-    // opencode
+    // opencode v1.14+: { type: 'text', part: { type: 'text', text: '...' } }
+    if (ev.type === 'text' && typeof ev.part?.text === 'string' && ev.part.text.length > 0) {
+      return ev.part.text
+    }
+    // opencode (legacy / fallback shapes)
+    if (ev.type === 'text' && typeof ev.text === 'string' && ev.text.length > 0) return ev.text
+    if (ev.type === 'assistant' && typeof ev.text === 'string') return ev.text
     if (ev.type === 'message' && ev.content) return String(ev.content)
     // Copilot CLI: stream events from `copilot --output-format json`.
     //   • assistant.message_delta carries per-chunk text in data.deltaContent
-    //   • assistant.message carries the cumulative text in data.content — we
-    //     skip it to avoid duplicating the deltas (matches CopilotLocalProvider).
-    if (bin === 'copilot' && ev.type === 'assistant.message_delta'
-        && typeof ev.data?.deltaContent === 'string'
-        && ev.data.deltaContent.length > 0) {
-      return ev.data.deltaContent
+    //     (a few chars at a time, sometimes splitting mid-word)
+    //   • assistant.message carries the cumulative text in data.content
+    //
+    // The streaming chat provider uses deltas because it paints text
+    // incrementally and skipping deltas would freeze the UI. The init wizard
+    // is the opposite shape: it appends each emitted string as its own entry
+    // in the agent-output panel, so per-chunk deltas turn one message into
+    // ~50 newline-separated word fragments. Read the cumulative
+    // `assistant.message.content` here and ignore deltas — one message in,
+    // one paragraph out.
+    if (bin === 'copilot' && ev.type === 'assistant.message'
+        && typeof ev.data?.content === 'string'
+        && ev.data.content.length > 0) {
+      return ev.data.content
     }
     return null
   } catch {
@@ -1091,8 +1286,23 @@ function extractUsageFromLine(bin: string, line: string): SpawnUsage | null {
     }
     return null
   }
-  // opencode emits usage on the closing event of each turn; shape matches
-  // its OpenAI-compatible payload.
+  // opencode v1.14+: token totals ride on `step_finish` events under
+  // `part.tokens.{input,output,cache.{read,write}}`. Mirrors
+  // src/embedded/opencode-local-provider.ts:179-190.
+  if (ev.type === 'step_finish' && ev.part?.tokens) {
+    const t = ev.part.tokens
+    if (typeof t.input === 'number' || typeof t.output === 'number') {
+      return {
+        inputTokens: numberOr(t.input, 0),
+        outputTokens: numberOr(t.output, 0),
+        cacheReadTokens: numberOr(t.cache?.read, undefined),
+        cacheCreationTokens: numberOr(t.cache?.write, undefined),
+        model: typeof ev.model === 'string' ? ev.model : undefined,
+      }
+    }
+  }
+  // Legacy / OpenAI-compatible shape that older opencode releases emitted
+  // on the closing event of each turn.
   if (ev.usage && (ev.usage.input_tokens || ev.usage.output_tokens)) {
     const u = ev.usage
     return {

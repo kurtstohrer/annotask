@@ -59,6 +59,21 @@ export interface ThreadMessage {
    * text rollup. Optional so legacy turns (pre work-stream) still parse.
    */
   blocks?: WorkStreamBlock[]
+  /**
+   * True while an assistant turn is still streaming. The embedded agent
+   * appends one assistant message with `isPartial: true` at the start of a
+   * turn, then `update()`s it in place as events arrive (throttled), clearing
+   * the flag on the final flush. Lets *any* subscriber (a Conversation tab
+   * that attached mid-run, an MCP tail-reader) observe progress instead of
+   * waiting for the whole turn to land at once.
+   */
+  isPartial?: boolean
+  /**
+   * Wall-clock of the last streamed event for a partial turn. The stall
+   * watchdog / "stalled?" UI compares it to `now` to detect a run that
+   * stopped producing output.
+   */
+  lastEventAt?: number
 }
 
 export interface TaskThreadOptions {
@@ -81,7 +96,14 @@ export interface AppendInput {
   toolCalls?: ThreadMessage['toolCalls']
   toolUseId?: string
   blocks?: WorkStreamBlock[]
+  isPartial?: boolean
+  lastEventAt?: number
 }
+
+/** Mutable fields an `update()` may patch on an existing message. */
+export type UpdateInput = Partial<
+  Pick<ThreadMessage, 'content' | 'blocks' | 'usage' | 'isPartial' | 'lastEventAt' | 'model' | 'providerId'>
+>
 
 type Listener = (msg: ThreadMessage) => void
 
@@ -90,6 +112,12 @@ export interface TaskThreadStore {
   read(taskId: string, opts?: { afterId?: string }): Promise<ThreadMessage[]>
   /** Append a message; returns the stored record (with id+ts assigned). */
   append(taskId: string, input: AppendInput): Promise<ThreadMessage>
+  /**
+   * Patch an existing message in place (by id). Used to stream a partial
+   * assistant turn: append once, then update the same line as events arrive.
+   * Returns the merged record, or `null` if no message with that id exists.
+   */
+  update(taskId: string, id: string, patch: UpdateInput): Promise<ThreadMessage | null>
   /** Subscribe to live appends. Returns an unsubscribe fn. */
   subscribe(taskId: string, listener: Listener): () => void
   /** Drop the on-disk log for a task — called when the task is deleted. */
@@ -162,6 +190,8 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
       toolCalls: input.toolCalls,
       toolUseId: input.toolUseId,
       blocks: input.blocks,
+      isPartial: input.isPartial,
+      lastEventAt: input.lastEventAt,
     }
     const prev = writeLocks.get(taskId) ?? Promise.resolve()
     const next = prev
@@ -169,8 +199,27 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
       .then(() => appendInternal(taskId, msg))
     writeLocks.set(taskId, next)
     await next
-    // Fan-out after the write lands so subscribers can't observe a message
-    // that isn't on disk yet.
+    fanOut(taskId, msg)
+    return msg
+  }
+
+  /**
+   * Rewrite the whole JSONL file with `lines` via a temp file + atomic
+   * rename, so a reader never sees a half-written log. Runs inside the
+   * per-task write lock (callers chain it through `writeLocks`).
+   */
+  async function rewriteInternal(taskId: string, lines: ThreadMessage[]): Promise<void> {
+    const p = safePath(taskId)
+    if (!p) throw new Error(`Invalid taskId: ${taskId}`)
+    await fsp.mkdir(dir, { recursive: true })
+    const body = lines.map((m) => JSON.stringify(m)).join('\n') + (lines.length > 0 ? '\n' : '')
+    const tmp = `${p}.${crypto.randomBytes(4).toString('hex')}.tmp`
+    await fsp.writeFile(tmp, body, 'utf-8')
+    await fsp.rename(tmp, p)
+  }
+
+  /** Fan a (new or updated) message out to subscribers + the onAppend sink. */
+  function fanOut(taskId: string, msg: ThreadMessage): void {
     const set = listeners.get(taskId)
     if (set) {
       for (const fn of set) {
@@ -180,7 +229,31 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
     if (opts.onAppend) {
       try { opts.onAppend(taskId, msg) } catch { /* never block the response on a downstream sink */ }
     }
-    return msg
+  }
+
+  async function update(taskId: string, id: string, patch: UpdateInput): Promise<ThreadMessage | null> {
+    if (typeof patch.content === 'string' && patch.content.length > MAX_CONTENT_BYTES) {
+      throw new Error(`message content exceeds ${MAX_CONTENT_BYTES} bytes`)
+    }
+    // Serialize against append/update on the same task. The lock value is a
+    // promise resolving to the merged message (or null when the id is gone)
+    // so the awaited result below reflects this update specifically.
+    const prev = writeLocks.get(taskId) ?? Promise.resolve()
+    const next = prev
+      .catch(() => undefined)
+      .then(async (): Promise<ThreadMessage | null> => {
+        const all = await read(taskId)
+        const idx = all.findIndex((m) => m.id === id)
+        if (idx < 0) return null
+        const merged: ThreadMessage = { ...all[idx], ...patch }
+        all[idx] = merged
+        await rewriteInternal(taskId, all)
+        return merged
+      })
+    writeLocks.set(taskId, next)
+    const merged = await next
+    if (merged) fanOut(taskId, merged)
+    return merged
   }
 
   function subscribe(taskId: string, listener: Listener): () => void {
@@ -201,7 +274,7 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
     try { await fsp.unlink(p) } catch { /* already gone */ }
   }
 
-  return { read, append, subscribe, clear }
+  return { read, append, update, subscribe, clear }
 }
 
 /** Async wait used by SSE handlers when there's nothing new to send. */

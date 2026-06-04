@@ -7,8 +7,11 @@
  * in one place instead of spread across hand-rolled checks.
  */
 import { z } from 'zod'
-import { TASK_TYPES } from '../schema.js'
+import { TASK_TYPES, PERMISSION_MODES } from '../schema.js'
 import { SAFE_SCREENSHOT_RE, VALID_TASK_STATUSES, VALID_TRANSITIONS } from './validation.js'
+
+const permissionModeValues = [...PERMISSION_MODES] as [typeof PERMISSION_MODES[number], ...typeof PERMISSION_MODES[number][]]
+const permissionModeError = `Invalid permissionMode. Must be one of: ${permissionModeValues.join(', ')}`
 
 const statusValues = [...VALID_TASK_STATUSES] as [string, ...string[]]
 const statusError = `Invalid status. Must be one of: ${statusValues.join(', ')}`
@@ -99,6 +102,7 @@ export const CreateTaskBody = z.object({
   screenshot: ScreenshotName.optional(),
   screenshot_meta: z.unknown().optional(),
   visual: z.unknown().optional(),
+  permissionMode: z.enum(permissionModeValues, { message: permissionModeError }).optional(),
 })
 
 // ── HTTP: PATCH /tasks/:id ───────────────────────────────
@@ -121,6 +125,10 @@ export const UpdateTaskBody = z.object({
   agent_feedback: AgentFeedbackSchema.optional(),
   blocked_reason: z.string().optional(),
   resolution: z.string().optional(),
+  // `null` clears the per-task override so the task inherits from the persona
+  // tier (or global). Resolution uses `??`, which treats null and undefined
+  // identically — both fall through to the next tier.
+  permissionMode: z.enum(permissionModeValues, { message: permissionModeError }).nullable().optional(),
 })
 
 // ── HTTP: POST /screenshots ──────────────────────────────

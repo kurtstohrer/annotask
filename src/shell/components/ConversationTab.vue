@@ -17,7 +17,10 @@ import { useEmbeddedAgent } from '../composables/useEmbeddedAgent'
 import { useWorkingIndicator } from '../composables/useWorkingIndicator'
 import { useProviderSettings } from '../composables/useProviderSettings'
 import { consumeAutoRun } from '../composables/useAgentMode'
+import { requestAutoRunCancel } from '../composables/useAutoRunDriver'
+import { resolveEffectivePermissionMode, NATIVE_PLAN_PROVIDERS } from '../../embedded/permission-mode'
 import { formatTokens } from '../services/embeddedAgent/pricing'
+import type { PermissionMode } from '../../schema'
 import type { Task } from '../composables/useTasks'
 
 interface Props { task: Task }
@@ -27,18 +30,126 @@ const emit = defineEmits<{
   /** Forwarded up to TaskDetailModal → App.vue → respondToAgent. Same
    *  contract as TaskAgentFeedback's `reply` event. */
   (e: 'reply', taskId: string, answers: Array<{ id: string; value: string }>): void
+  /** Per-task field patch. Forwarded to TaskDetailModal which already
+   *  brokers the same event up to the App-level PATCH handler. */
+  (e: 'update', taskId: string, fields: Record<string, unknown>): void
 }>()
 
 const thread = useTaskThread()
 const agent = useEmbeddedAgent(thread)
+
+/** Re-open the thread stream after the SSE connection gave up (B3). */
+function retryThread() {
+  if (props.task.id) void thread.open(props.task.id)
+}
 const providerSettings = useProviderSettings()
 const detect = useAgentDetect()
+
+// Permission-mode indicator. Mirrors the resolver in useEmbeddedAgent so the
+// chip always shows the mode the next turn will actually run with. Uses the
+// persona-resolved active provider so the provider-tier override (set in
+// Settings → Agents → provider settings) is honored even when the persona
+// routes to a different provider than the global active one.
+const effectivePermissionMode = computed<PermissionMode>(() => {
+  const taskMode = (props.task as { permissionMode?: PermissionMode }).permissionMode
+  const persona = providerSettings.getPersonaForTaskType(props.task.type)
+  const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+  const providerCfg = providerSettings.settings.value.providers[activeProviderId]
+  const providerMode = (providerCfg as { permissionMode?: PermissionMode }).permissionMode
+  return resolveEffectivePermissionMode(
+    taskMode,
+    providerMode,
+    providerSettings.settings.value.permissionMode,
+  )
+})
+
+/** Providers with native plan enforcement (CLI/sandbox-level). */
+
+const PERMISSION_MODE_TOOLTIPS: Record<PermissionMode, string> = {
+  default: 'Default — the CLI asks before non-trivial actions. In headless mode, refused ops surface as failed tool calls.',
+  plan: 'Plan — read-only. The agent can investigate but not write. Enforced via CLI/sandbox + system-prompt directive.',
+  bypass: 'Bypass — every action auto-approves. Fastest, riskiest.',
+}
+const permissionModeTooltip = computed(() => {
+  if (effectivePermissionMode.value !== 'plan') return PERMISSION_MODE_TOOLTIPS[effectivePermissionMode.value]
+  const persona = providerSettings.getPersonaForTaskType(props.task.type)
+  const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+  if (NATIVE_PLAN_PROVIDERS.has(activeProviderId)) return PERMISSION_MODE_TOOLTIPS.plan
+  return 'Plan (best-effort) — read-only enforced via model directive only. This provider has no native CLI/sandbox plan mode.'
+})
+
+// Inline permission-mode picker on the chip — lets the user flip the
+// per-task override from the Conversation tab when an agent gets stuck
+// without bouncing them back to the Details tab.
+const permPopoverOpen = ref(false)
+const PERMISSION_MODE_MENU: ReadonlyArray<{ id: PermissionMode; hint: string }> = [
+  { id: 'default', hint: 'Ask for non-trivial actions' },
+  { id: 'plan',    hint: 'Read-only' },
+  { id: 'bypass',  hint: 'Auto-approve everything' },
+]
+const currentTaskPermissionMode = computed<PermissionMode | undefined>(
+  () => (props.task as { permissionMode?: PermissionMode }).permissionMode,
+)
+function setTaskPermissionMode(mode: PermissionMode | null) {
+  permPopoverOpen.value = false
+  emit('update', props.task.id, { permissionMode: mode })
+}
+function onDocumentClick(ev: MouseEvent) {
+  if (!permPopoverOpen.value) return
+  const target = ev.target as HTMLElement | null
+  if (target && target.closest('.cv-perm-wrap')) return
+  permPopoverOpen.value = false
+}
 
 // Show the working indicator whenever the embedded agent is streaming OR
 // the task itself is in_progress — covers CLI / external-runner flows where
 // nothing streams locally but an agent is still working on the task.
 const isWorking = computed(() => agent.running.value || props.task.status === 'in_progress')
-const working = useWorkingIndicator(isWorking)
+
+// The currently-streaming assistant turn, persisted on the thread. Present
+// whether *this* tab owns the run or it's a headless/auto run we're only
+// observing — so it's the reliable source for the run-start anchor and the
+// live block timeline in an observer tab.
+const livePartial = computed(() => thread.messages.value.find((m) => m.isPartial))
+
+// Past turns to render in the persisted list — exclude the in-flight partial,
+// which is rendered separately as the live turn below (so we don't show it
+// twice in the tab that owns the run).
+const displayMessages = computed(() => thread.messages.value.filter((m) => !m.isPartial))
+
+// Live block timeline: prefer this instance's smooth `currentBlocks` when it
+// owns the run; otherwise fall back to the persisted partial's blocks so an
+// observer tab still streams (throttled) instead of seeing nothing.
+const liveBlocks = computed(() =>
+  agent.currentBlocks.value.length > 0
+    ? agent.currentBlocks.value
+    : (livePartial.value?.blocks ?? []),
+)
+
+// Anchor the elapsed timer to the persisted run start so it survives tab
+// remounts and is correct for a tab that attached mid-run.
+const runStartedAt = computed<number | null>(() => livePartial.value?.ts ?? null)
+const working = useWorkingIndicator(isWorking, runStartedAt)
+
+// "Stalled?" hint: the partial turn hasn't produced output for longer than the
+// idle-timeout window (so the watchdog should be about to fire / has fired).
+const ticker = ref(Date.now())
+let tickerTimer: ReturnType<typeof setInterval> | null = null
+const stalled = computed(() => {
+  const idleMs = providerSettings.settings.value.idleTimeoutMs
+  if (idleMs <= 0 || !isWorking.value) return false
+  const last = livePartial.value?.lastEventAt
+  if (typeof last !== 'number') return false
+  return ticker.value - last > idleMs
+})
+
+function cancelRun() {
+  // Cancel a run we own locally AND a headless run owned by the auto-run
+  // driver (the local agent in this tab isn't the one streaming for an
+  // observed auto run).
+  agent.abort()
+  requestAutoRunCancel(props.task.id)
+}
 
 // Auto-load the per-task transcript whenever the bound task changes.
 // If this task was queued for auto-run, fire the first turn with the task
@@ -64,8 +175,18 @@ watch(
   { immediate: true },
 )
 
-onMounted(() => { fetchAgentDetect() })
-onBeforeUnmount(() => { thread.close() })
+onMounted(() => {
+  fetchAgentDetect()
+  document.addEventListener('click', onDocumentClick, true)
+  // Drive the "stalled?" check off a 1s ticker (cheap; only matters while a
+  // run is in flight).
+  tickerTimer = setInterval(() => { ticker.value = Date.now() }, 1000)
+})
+onBeforeUnmount(() => {
+  thread.close()
+  document.removeEventListener('click', onDocumentClick, true)
+  if (tickerTimer) { clearInterval(tickerTimer); tickerTimer = null }
+})
 
 // Token tally combines persisted history (so totals survive reload) with
 // the in-flight `agent.usage` accumulator for the current turn.
@@ -125,7 +246,7 @@ function scrollToBottom() {
 watch(
   () => [
     thread.messages.value.length,
-    agent.currentBlocks.value.length,
+    liveBlocks.value.length,
     agent.queuedMessages.value.length,
   ],
   async () => { await nextTick(); scrollToBottom() },
@@ -193,15 +314,63 @@ function onReply(answers: Array<{ id: string; value: string }>) {
         <Icon name="bot" :size="13" />
         <span class="cv-provider">{{ activeProvider }}</span>
         <span v-if="activeModel" class="cv-model">· {{ activeModel }}</span>
-        <span v-if="isWorking" class="cv-running" aria-live="polite">
+        <span v-if="isWorking" class="cv-running" :class="{ stalled }" aria-live="polite">
           <span class="cv-running-dot" />
           <span class="cv-running-verb">
-            {{ working.verb.value ?? 'Annotasking' }}<span class="cv-running-dots" aria-hidden="true" />
+            {{ stalled ? 'Stalled?' : (working.verb.value ?? 'Annotasking') }}<span v-if="!stalled" class="cv-running-dots" aria-hidden="true" />
           </span>
           <span class="cv-running-elapsed">{{ working.seconds.value }}s</span>
+          <button
+            type="button"
+            class="cv-cancel"
+            title="Cancel this run"
+            data-testid="cv-cancel-run"
+            @click="cancelRun"
+          >
+            <Icon name="x" :size="11" /> Cancel
+          </button>
         </span>
       </div>
       <div class="cv-header-right">
+        <div class="cv-perm-wrap">
+          <button
+            type="button"
+            class="cv-perm"
+            :class="`cv-perm-${effectivePermissionMode}`"
+            :title="permissionModeTooltip"
+            :aria-expanded="permPopoverOpen"
+            aria-haspopup="menu"
+            data-testid="cv-permission-mode"
+            @click="permPopoverOpen = !permPopoverOpen"
+          >
+            <Icon name="lock" :size="10" />
+            {{ effectivePermissionMode }}
+            <Icon name="chevron-down" :size="10" />
+          </button>
+          <div v-if="permPopoverOpen" class="cv-perm-menu" role="menu" @click.stop>
+            <button
+              type="button"
+              role="menuitem"
+              class="cv-perm-menuitem"
+              @click="setTaskPermissionMode(null)"
+            >
+              <span class="cv-perm-menuitem-label">Inherit</span>
+              <span class="cv-perm-menuitem-hint">Use persona / global ({{ effectivePermissionMode }})</span>
+            </button>
+            <button
+              v-for="m in PERMISSION_MODE_MENU"
+              :key="m.id"
+              type="button"
+              role="menuitem"
+              class="cv-perm-menuitem"
+              :class="{ active: currentTaskPermissionMode === m.id }"
+              @click="setTaskPermissionMode(m.id)"
+            >
+              <span class="cv-perm-menuitem-label">{{ m.id }}</span>
+              <span class="cv-perm-menuitem-hint">{{ m.hint }}</span>
+            </button>
+          </div>
+        </div>
         <span
           v-if="tokenSummary.hasUsage || isWorking"
           class="cv-tokens"
@@ -220,16 +389,29 @@ function onReply(answers: Array<{ id: string; value: string }>) {
       <span>{{ localCliBlocked }}. Pick another provider in Settings → AI.</span>
     </div>
 
+    <!-- Conversation-stream connection state. The agent's own run streams on a
+         separate channel, so this only reflects the read-only transcript feed. -->
+    <div v-if="thread.status.value === 'reconnecting'" class="cv-banner warning">
+      <Icon name="triangle-alert" :size="12" />
+      <span>Reconnecting to the conversation stream…</span>
+    </div>
+    <div v-else-if="thread.status.value === 'error' && thread.error.value" class="cv-banner danger">
+      <Icon name="triangle-alert" :size="12" />
+      <span>{{ thread.error.value }}</span>
+      <button type="button" class="cv-banner-retry" @click="retryThread">Retry</button>
+    </div>
+
     <div ref="scrollerEl" class="cv-scroller">
       <div v-if="thread.status.value === 'loading'" class="cv-empty">Loading conversation…</div>
-      <div v-else-if="thread.messages.value.length === 0 && agent.currentBlocks.value.length === 0" class="cv-empty">
+      <div v-else-if="displayMessages.length === 0 && liveBlocks.length === 0" class="cv-empty">
         <Icon name="bot" :size="20" />
         <p>The agent's work shows up here. If you need to steer, type a note — it'll send after the current step.</p>
       </div>
 
-      <!-- Persisted past turns. Each may have a rich block timeline. -->
+      <!-- Persisted past turns. Each may have a rich block timeline. The
+           in-flight partial turn is excluded here and rendered below. -->
       <ConversationMessage
-        v-for="msg in thread.messages.value"
+        v-for="msg in displayMessages"
         :key="msg.id"
         :role="msg.role"
         :content="msg.content"
@@ -239,14 +421,16 @@ function onReply(answers: Array<{ id: string; value: string }>) {
         :ts="msg.ts"
       />
 
-      <!-- In-flight turn — streams the block timeline live. -->
+      <!-- In-flight turn — streams the block timeline live. Uses this tab's
+           own `currentBlocks` when it owns the run, else the persisted
+           partial's blocks (observer / headless-run case). -->
       <ConversationMessage
-        v-if="agent.currentBlocks.value.length > 0"
+        v-if="liveBlocks.length > 0"
         role="assistant"
-        :blocks="agent.currentBlocks.value"
-        :streaming="agent.running.value"
-        :provider-label="activeProvider"
-        :model-label="activeModel"
+        :blocks="liveBlocks"
+        :streaming="isWorking"
+        :provider-label="livePartial?.providerId ?? activeProvider"
+        :model-label="livePartial?.model ?? activeModel"
       />
 
       <!-- Agent paused for input — surface inline as a work-stream block so
@@ -343,6 +527,65 @@ function onReply(answers: Array<{ id: string; value: string }>) {
 .cv-model { color: var(--text-muted); }
 .cv-tokens { font-variant-numeric: tabular-nums; color: var(--text-muted); font-size: 11px; }
 
+.cv-perm-wrap { position: relative; }
+.cv-perm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.cv-perm:hover { filter: brightness(1.1); }
+.cv-perm:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.cv-perm-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 220px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px var(--shadow);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cv-perm-menuitem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.cv-perm-menuitem:hover { background: var(--surface-2); }
+.cv-perm-menuitem.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.cv-perm-menuitem-label { font-weight: 600; }
+.cv-perm-menuitem-hint { font-size: 10.5px; color: var(--text-muted); }
+/* Tint by riskiness so a glance at the chip telegraphs what mode is active. */
+.cv-perm-plan    { color: var(--info);    border-color: color-mix(in srgb, var(--info) 45%, var(--border));    background: color-mix(in srgb, var(--info) 10%, var(--surface-2)); }
+.cv-perm-default { color: var(--text); }
+.cv-perm-bypass  { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); background: color-mix(in srgb, var(--warning) 12%, var(--surface-2)); }
+
 .cv-running {
   display: inline-flex;
   align-items: baseline;
@@ -378,6 +621,24 @@ function onReply(answers: Array<{ id: string; value: string }>) {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
+.cv-running.stalled { color: var(--warning); }
+.cv-running.stalled .cv-running-dot { background: var(--warning); }
+.cv-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 2px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: center;
+}
+.cv-cancel:hover { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); border-color: var(--danger); }
 @keyframes cv-running-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 @keyframes cv-running-verb-in {
   from { opacity: 0; transform: translateY(2px); }
@@ -417,6 +678,25 @@ function onReply(answers: Array<{ id: string; value: string }>) {
   color: var(--danger);
   border-bottom: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
 }
+
+.cv-banner.warning {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--warning);
+  border-bottom-color: color-mix(in srgb, var(--warning) 40%, transparent);
+}
+
+.cv-banner-retry {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cv-banner-retry:hover { background: var(--accent-hover); }
 
 .cv-scroller {
   flex: 1;

@@ -37,7 +37,11 @@ import { useAgentConfigs } from './useAgentConfigs'
 import { markRunStarted, markRunFinished } from './useAgentMode'
 import { useTasks } from './useTasks'
 import { makeProvider } from '../../embedded/provider-factory.js'
-import type { ProviderMessage, ProviderEvent } from '../../embedded/provider.js'
+import { resolveEffectivePermissionMode } from '../../embedded/permission-mode.js'
+import { permissionModeSystemPromptPrefix, normalizeHeadlessMode, type InitCliBin } from '../../embedded/permission-mode-flags.js'
+import { redactString, redactValue } from '../../embedded/redaction.js'
+import type { ProviderMessage, ProviderEvent, ProviderContentBlock } from '../../embedded/provider.js'
+import type { PermissionMode } from '../../schema'
 import type { WorkStreamBlock } from '../../shared/work-stream'
 import { summarizeToolCall, summarizeToolResult } from '../utils/toolSummary'
 import { fetchMcpToolCatalog } from '../services/mcpClient'
@@ -93,26 +97,92 @@ function isLocalCliProvider(id: string): boolean {
   return LOCAL_CLI_PROVIDERS.has(id)
 }
 
-/** Compose the seed prompt sent to the local CLI. The CLI sees task id,
- *  type, file/line anchors, and the user-authored description — enough to
- *  find the target without round-tripping through MCP. The runner handles
- *  the status lifecycle (lock-on-start, mark-review-on-clean-exit), so the
- *  CLI doesn't need to call `annotask_update_task`. */
-function buildSeedPrompt(task: { id?: string; type?: string; file?: string | null; line?: number | null; component?: string | null }, description: string): string {
-  const lines: string[] = []
-  lines.push(`Apply annotask task ${task.id ?? '<unknown>'} (type: ${task.type ?? 'unknown'}).`)
-  if (task.file) {
-    const at = task.line ? `:${task.line}` : ''
-    lines.push(`File: ${task.file}${at}`)
-  }
-  if (task.component) {
-    lines.push(`Component: ${task.component}`)
-  }
-  lines.push('')
-  lines.push(description.trim())
-  lines.push('')
-  lines.push('Use your file-edit tools to make the change. The annotask runner will mark the task for review when you exit cleanly. If you cannot apply the change, exit with a short explanation.')
-  return lines.join('\n')
+/**
+ * Redact secrets from provider messages before they leave the machine.
+ *
+ * Applied when `redactionEnabled` is true. Catches provider API keys, PEM
+ * private keys, JWTs, bearer tokens, and common env-var secrets — see
+ * `redaction.ts` for the full pattern set.
+ *
+ * Limitation: local CLIs can independently read project files via their
+ * tool loop, so redaction here covers only what the shell explicitly sends
+ * (system prompt, conversation messages). It is defense-in-depth, not airtight.
+ */
+function redactMessages(messages: ProviderMessage[]): ProviderMessage[] {
+  return messages.map((msg) => {
+    if (typeof msg.content === 'string') {
+      return { ...msg, content: redactString(msg.content) }
+    }
+    const blocks: ProviderContentBlock[] = msg.content.map((block) => {
+      if (block.type === 'text') return { ...block, text: redactString(block.text) }
+      if (block.type === 'tool_result') return { ...block, content: redactString(block.content) }
+      // tool_use carries structured `input` (tool arguments) that can contain a
+      // secret the model echoed back; walk it with the recursive redactor.
+      if (block.type === 'tool_use') return { ...block, input: redactValue(block.input) }
+      return block
+    })
+    return { ...msg, content: blocks }
+  })
+}
+
+/**
+ * Compose the seed prompt sent to the local CLI.
+ *
+ * Two things go in: the task id (canonical handle) and the description
+ * (rendered as a blockquote). Everything else — file, line, component, theme,
+ * selected element, screenshot, interaction history, type-specific context —
+ * lives behind `annotask_get_task` and the agent fetches what it needs.
+ *
+ * Why this shape:
+ *   - The id is the only field the agent strictly needs; MCP carries the rest.
+ *   - The description is decorative for the agent (it'll get a richer copy via
+ *     MCP) but **load-bearing for the human** reading the Conversation tab —
+ *     without it, the chat thread is just opaque task IDs.
+ *   - Also serves as a graceful-degrade fallback when MCP isn't configured:
+ *     the agent still has the user's request as plain text.
+ *
+ * The runner handles status transitions (lock-on-start, mark-review-on-clean-
+ * exit), so the agent does NOT need to call `annotask_update_task`.
+ */
+function buildSeedPrompt(
+  task: { id?: string; status?: string; feedback?: string; resolution?: string },
+  description: string,
+): string {
+  const id = task.id ?? '<unknown>'
+  const quoted = description
+    .trim()
+    .split('\n')
+    .map(line => `> ${line}`)
+    .join('\n')
+  // Retry context: when the task is being re-run after a deny, surface the
+  // previous attempt's resolution + the user's deny feedback inline so the
+  // agent doesn't need to round-trip through `annotask_get_task` to learn
+  // what was rejected and why. Same shape for plain `description` blocks
+  // (`>` quoted) so the model parses it consistently.
+  const isRetry = task.status === 'denied' && (task.feedback ?? '').trim().length > 0
+  const retryBlock = isRetry
+    ? [
+        '',
+        '**This is a retry.** Your previous attempt was denied by the user.',
+        '',
+        'Previous attempt resolution:',
+        (task.resolution ?? '(no resolution recorded)').trim().split('\n').map(l => `> ${l}`).join('\n'),
+        '',
+        'User feedback on the denial:',
+        (task.feedback ?? '').trim().split('\n').map(l => `> ${l}`).join('\n'),
+        '',
+        'Address the feedback specifically — do not repeat the previous approach unless the feedback explicitly asks for a small tweak on top of it.',
+      ].join('\n')
+    : ''
+  return [
+    `Apply Annotask task \`${id}\`:`,
+    '',
+    quoted,
+    retryBlock,
+    '',
+    `Use \`annotask_get_task\` with this id for full context if you need it.`,
+    `Annotask handles the status transitions for you — exit cleanly when done, or reply with a short explanation if you can't apply the change.`,
+  ].filter(Boolean).join('\n')
 }
 
 /**
@@ -151,6 +221,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
   const running = computed(() => status.value === 'running')
 
   let aborter: AbortController | null = null
+  let currentProvider: import('../../embedded/provider.js').LLMProvider | null = null
 
   function reset() {
     currentBlocks.value = []
@@ -316,7 +387,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     if (personaExtras.length > 0) layers.push(personaExtras)
     const systemPrompt = layers.join('\n\n---\n\n')
 
-    let provider
+    let provider: import('../../embedded/provider.js').LLMProvider
     try {
       // If a persona is active and selects a different provider than the
       // global active one, fork the settings so makeProvider keys off the
@@ -328,6 +399,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
         referer: typeof window !== 'undefined' ? window.location.origin : undefined,
         appTitle: 'Annotask',
       })
+      currentProvider = provider
     } catch (err) {
       status.value = 'error'
       errorMessage.value = (err as Error).message
@@ -337,17 +409,165 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     aborter = new AbortController()
     let stopReason: string | undefined
 
+    // Resolve the effective permission mode (task ?? provider ?? global).
+    // Local-CLI providers translate the mode to their own permission flag at
+    // spawn time. HTTP/API providers currently ignore it (no client-side
+    // write tools wired).
+    const taskPermissionMode = currentTask?.permissionMode
+    const providerPermissionMode = (activeCfg as { permissionMode?: PermissionMode }).permissionMode
+    const resolvedPermissionMode = resolveEffectivePermissionMode(
+      taskPermissionMode,
+      providerPermissionMode,
+      providerSettings.settings.value.permissionMode,
+    )
+    // Local CLIs run headless, so `'default'` ("Auto") escalates to the
+    // per-CLI working mode: bypass on claude/opencode (no headless ask-mode),
+    // while codex/copilot keep their safer sandboxed/minimal `default`. HTTP
+    // providers ignore permission mode entirely.
+    const cliBin: InitCliBin | null = activeProviderId.endsWith('-local')
+      ? (activeProviderId.slice(0, -'-local'.length) as InitCliBin)
+      : null
+    const effectivePermissionMode = cliBin
+      ? normalizeHeadlessMode(resolvedPermissionMode, cliBin)
+      : resolvedPermissionMode
+
+    // Plan mode needs model-level enforcement on opencode/copilot (no native
+    // read-only flag in their headless modes). Prepend a strong directive so
+    // the model refuses write tools on its own. Claude/codex still get
+    // CLI/sandbox enforcement on top via `permissionMode` below.
+    const permissionPrefix = permissionModeSystemPromptPrefix(effectivePermissionMode)
+    const systemPromptWithPermission = permissionPrefix
+      ? `${permissionPrefix}\n\n---\n\n${systemPrompt}`
+      : systemPrompt
+
+    // Redact secrets from outgoing messages/prompt when enabled.
+    const redact = providerSettings.settings.value.redactionEnabled
+    const outHistory = redact ? redactMessages(history) : history
+    const outSystemPrompt = redact ? redactString(systemPromptWithPermission) : systemPromptWithPermission
+
+    const logEnabled = providerSettings.settings.value.eventLogEnabled
+    const { eventLog } = providerSettings
+    const conversationId = taskId ?? 'chat'
+    const turnStartTime = Date.now()
+
+    // Stream the turn as a single *partial* assistant message: append it now
+    // (empty) and patch it in place as events arrive. This is the only channel
+    // by which an observer that isn't this exact instance — a Conversation tab
+    // that attached mid-run, an external MCP tail-reader, the running-timer in
+    // another tab — sees live progress. `currentBlocks` (below) stays the
+    // smooth local surface for the tab that owns the run.
+    let partialId: string | null = null
     try {
-      for await (const ev of provider.stream(history, [], {
-        systemPrompt,
+      const seed = await thread.append({
+        role: 'assistant',
+        content: '',
+        providerId: activeProviderId,
+        model: activeModel,
+        isPartial: true,
+        lastEventAt: turnStartTime,
+      })
+      partialId = seed.id
+    } catch {
+      // Non-fatal: fall back to the single post-turn write (still works, just
+      // not streamed). partialId stays null and the final persist re-appends.
+    }
+
+    // Throttled flush of the live blocks into the partial message (~300ms).
+    let lastEventAt = turnStartTime
+    let lastFlushedBlocks: WorkStreamBlock[] | null = null
+    let flushing = false
+    async function flushPartial(final: boolean): Promise<void> {
+      if (!partialId) return
+      if (flushing && !final) return
+      const blocks = currentBlocks.value
+      if (!final && blocks === lastFlushedBlocks) return // nothing new since last flush
+      flushing = true
+      lastFlushedBlocks = blocks
+      try {
+        await thread.update(partialId, {
+          content: rollupText(blocks),
+          blocks,
+          lastEventAt,
+          ...(final
+            ? {
+                isPartial: false,
+                usage: {
+                  inputTokens: usage.value.input,
+                  outputTokens: usage.value.output,
+                  cacheReadTokens: usage.value.cacheRead,
+                  cacheCreationTokens: usage.value.cacheWrite,
+                },
+              }
+            : {}),
+        })
+      } catch {
+        // Best-effort mid-stream; the final flush re-tries and its error
+        // (if any) surfaces below.
+      } finally {
+        flushing = false
+      }
+    }
+    const flushTimer = partialId ? setInterval(() => { void flushPartial(false) }, 300) : null
+
+    // Stall watchdog. `idleTimeoutMs` aborts a run that stops producing output;
+    // `maxRunDurationMs` is an absolute ceiling. Either triggers `aborter.abort()`
+    // and records a reason so the post-loop block can explain + unblock the queue.
+    // `0` disables that timer.
+    const idleMs = providerSettings.settings.value.idleTimeoutMs
+    const maxMs = providerSettings.settings.value.maxRunDurationMs
+    let watchdogReason: 'idle-timeout' | 'max-duration' | null = null
+    const idleTimer = idleMs > 0
+      ? setInterval(() => {
+          if (Date.now() - lastEventAt > idleMs) {
+            watchdogReason = watchdogReason ?? 'idle-timeout'
+            aborter?.abort()
+          }
+        }, Math.max(1000, Math.min(idleMs, 15_000)))
+      : null
+    const maxTimer = maxMs > 0
+      ? setTimeout(() => {
+          watchdogReason = watchdogReason ?? 'max-duration'
+          aborter?.abort()
+        }, maxMs)
+      : null
+    function clearWatchdog(): void {
+      if (flushTimer) clearInterval(flushTimer)
+      if (idleTimer) clearInterval(idleTimer)
+      if (maxTimer) clearTimeout(maxTimer)
+    }
+
+    try {
+      for await (const ev of provider.stream(outHistory, [], {
+        systemPrompt: outSystemPrompt,
         signal: aborter.signal,
         model: activeModel || undefined,
         effort: activeEffort,
+        permissionMode: effectivePermissionMode,
       })) {
+        lastEventAt = Date.now()
         applyEvent(ev)
-        if (ev.type === 'error') {
+        if (ev.type === 'tool_call' && logEnabled) {
+          eventLog.appendToolCall({
+            conversationId,
+            provider: activeProviderId,
+            model: activeModel || 'default',
+            toolName: ev.name,
+            toolUseId: ev.id,
+            input: ev.input,
+          })
+        } else if (ev.type === 'error') {
           errorMessage.value = ev.error
           stopReason = stopReason ?? 'error'
+          if (logEnabled) {
+            eventLog.append({
+              kind: 'error',
+              conversationId,
+              provider: activeProviderId,
+              model: activeModel || 'default',
+              reason: 'provider_error',
+              detail: ev.error,
+            })
+          }
         } else if (ev.type === 'done') {
           if (!stopReason) stopReason = ev.stopReason
         }
@@ -355,13 +575,47 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     } catch (err) {
       stopReason = stopReason ?? 'error'
       errorMessage.value = errorMessage.value ?? (err as Error).message
+    } finally {
+      clearWatchdog()
     }
 
-    // Persist the turn. The block timeline is the rich surface; `content` is
-    // a flat text rollup so MCP / CLI tail-readers (annotask_conversation_read)
-    // still see meaningful output without parsing blocks.
+    // A watchdog abort masquerades as a generic abort to the stream; promote
+    // it to its own stop reason and a human-readable message so observers
+    // understand the run was killed for inactivity / duration, not by the user.
+    if (watchdogReason) {
+      stopReason = 'aborted'
+      const idleSecs = Math.round(idleMs / 1000)
+      const maxMins = Math.round(maxMs / 60_000)
+      errorMessage.value = watchdogReason === 'idle-timeout'
+        ? `Run cancelled: no output for ${idleSecs}s.`
+        : `Run cancelled: exceeded the ${maxMins}-minute limit.`
+    }
+
+    // Log the completed turn to the local event log.
+    if (logEnabled) {
+      eventLog.append({
+        kind: 'turn',
+        conversationId,
+        provider: activeProviderId,
+        model: activeModel || 'default',
+        inputTokens: usage.value.input,
+        outputTokens: usage.value.output,
+        cacheReadTokens: usage.value.cacheRead || undefined,
+        cacheCreationTokens: usage.value.cacheWrite || undefined,
+        latencyMs: Date.now() - turnStartTime,
+        stopReason: stopReason ?? 'end_turn',
+      })
+    }
+
+    // Persist the turn. With a partial message in flight we flush it one last
+    // time (clears `isPartial`, attaches final usage). Without one (the seed
+    // append failed earlier) we fall back to the legacy single append. The
+    // block timeline is the rich surface; `content` is a flat text rollup so
+    // MCP / CLI tail-readers still see meaningful output without parsing blocks.
     const blocks = currentBlocks.value
-    if (blocks.length > 0) {
+    if (partialId) {
+      await flushPartial(true)
+    } else if (blocks.length > 0) {
       try {
         await thread.append({
           role: 'assistant',
@@ -381,15 +635,29 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       }
     }
 
+    // Surface a watchdog stall as a system message so it's part of the
+    // persisted transcript (visible to every observer + MCP tail-readers).
+    if (watchdogReason && errorMessage.value) {
+      try {
+        await thread.append({ role: 'system', content: errorMessage.value })
+      } catch { /* best-effort */ }
+    }
+
     const finalBlocks = blocks
     currentBlocks.value = []
     aborter = null
+    currentProvider = null
     status.value =
       stopReason === 'aborted' ? 'aborted'
       : stopReason === 'error' ? 'error'
       : 'completed'
 
-    if (isSeed && taskId && status.value === 'completed') {
+    if (isSeed && taskId && watchdogReason) {
+      // A stalled/timed-out seed run lands the task in `blocked` (not `pending`)
+      // so the auto-run driver won't immediately re-queue it into the same
+      // stall — a human reviews the reason and retries deliberately.
+      await markTaskBlocked(taskId, errorMessage.value ?? 'Run cancelled by the stall watchdog.')
+    } else if (isSeed && taskId && status.value === 'completed') {
       await markTaskForReview(taskId, finalBlocks)
     }
 
@@ -433,6 +701,23 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       await taskSystem.updateTaskStatus(taskId, 'review', undefined, { resolution })
     } catch (err) {
       errorMessage.value = `Couldn't mark task for review: ${(err as Error).message}`
+    }
+  }
+
+  /**
+   * Flip a seed run's task to `blocked` after the stall watchdog killed it.
+   * `blocked` is terminal for the auto-run queue (not re-drained), so a task
+   * that consistently stalls can't loop. Only transitions from `in_progress`
+   * (the lock the seed run took) — anything else the agent moved deliberately.
+   */
+  async function markTaskBlocked(taskId: string, reason: string): Promise<void> {
+    try {
+      const taskSystem = useTasks()
+      const current = taskSystem.tasks.value.find((t) => t.id === taskId)
+      if (!current || current.status !== 'in_progress') return
+      await taskSystem.updateTaskStatus(taskId, 'blocked', undefined, { blocked_reason: reason })
+    } catch (err) {
+      errorMessage.value = `Couldn't mark task blocked: ${(err as Error).message}`
     }
   }
 
@@ -501,6 +786,10 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
 
   function abort(): void {
     if (aborter) aborter.abort()
+    // Kill the CLI subprocess server-side so it doesn't linger after the
+    // browser-side fetch is aborted. Falls back to req.on('close') if the
+    // explicit DELETE doesn't reach the server in time.
+    currentProvider?.abortRun?.()
   }
 
   return {

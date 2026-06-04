@@ -10,6 +10,7 @@ import ConversationTab from './ConversationTab.vue'
 import Icon from './Icon.vue'
 import { useProviderSettings } from '../composables/useProviderSettings'
 import { requestAutoRun } from '../composables/useAgentMode'
+import { PERMISSION_MODES, type PermissionMode } from '../../schema'
 
 const props = defineProps<{
   task: Task
@@ -48,17 +49,65 @@ watch(
 const providerSettings = useProviderSettings()
 const agentMode = computed(() => providerSettings.settings.value.agentMode)
 const agentReady = computed(() => providerSettings.ready.value)
-const showConversationTab = computed(() => agentMode.value !== 'off')
+// Embedded UI is gated on two things now: the top-level feature toggle
+// (`embeddedAgentEnabled`) and the per-task aggressiveness (`agentMode`).
+// When the user is in skill/MCP mode (`embeddedAgentEnabled !== true`) the
+// Conversation tab and Run-with-agent button never appear, regardless of
+// what `agentMode` is set to.
+const embeddedAgentEnabled = computed(
+  () => providerSettings.settings.value.embeddedAgentEnabled === true,
+)
+const showConversationTab = computed(
+  () => embeddedAgentEnabled.value && agentMode.value !== 'off',
+)
 
 const canManualRun = computed(() =>
-  agentMode.value === 'manual'
+  embeddedAgentEnabled.value
+  && agentMode.value === 'manual'
   && agentReady.value
   && (props.task.status === 'pending' || props.task.status === 'denied' || props.task.status === 'needs_info'),
 )
 
 function runWithAgent() {
-  requestAutoRun(props.task.id)
+  requestAutoRun(props.task.id, 'manual')
   activeTab.value = 'conversation'
+}
+
+// ── Per-task permission mode override ──
+// Resolved at run time as `task ?? global`. Showing "Inherit" as the default
+// keeps the override sparse — only set on tasks the user wants to treat
+// differently from their global default.
+const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ id: PermissionMode; label: string }> = [
+  { id: 'default', label: 'Default — ask for non-trivial actions' },
+  { id: 'plan',    label: 'Plan — read-only' },
+  { id: 'bypass',  label: 'Bypass — auto-approve everything' },
+]
+if (PERMISSION_MODE_OPTIONS.length !== PERMISSION_MODES.length) {
+  // eslint-disable-next-line no-console
+  console.warn('[annotask] TaskDetailModal PERMISSION_MODE_OPTIONS out of sync')
+}
+
+const taskPermissionMode = computed<string>(() => (props.task as { permissionMode?: PermissionMode }).permissionMode ?? '')
+
+// Reflects the mode the task would run with if the user picks "Inherit".
+// Mirrors the resolver: provider override beats global. Uses the persona's
+// provider when one matches the task type so the dropdown shows what'll
+// actually fire on a Run-with-agent click.
+const inheritedPermissionMode = computed<PermissionMode>(() => {
+  const persona = providerSettings.getPersonaForTaskType(props.task.type)
+  const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+  const providerCfg = providerSettings.settings.value.providers[activeProviderId]
+  const providerMode = (providerCfg as { permissionMode?: PermissionMode }).permissionMode
+  return providerMode ?? providerSettings.settings.value.permissionMode
+})
+
+function setTaskPermissionMode(value: string) {
+  if (value === '') {
+    emit('update', props.task.id, { permissionMode: null })
+    return
+  }
+  if (!(PERMISSION_MODES as readonly string[]).includes(value)) return
+  emit('update', props.task.id, { permissionMode: value })
 }
 
 const previewImage = ref<string | null>(null)
@@ -302,6 +351,7 @@ function onKeydown(e: KeyboardEvent) {
         :task="task"
         @open-settings="emit('open-settings')"
         @reply="(taskId, answers) => emit('reply', taskId, answers)"
+        @update="(taskId, fields) => emit('update', taskId, fields)"
       />
 
       <!-- Body -->
@@ -328,6 +378,21 @@ function onKeydown(e: KeyboardEvent) {
             </div>
           </div>
           <div v-else class="td-markdown" data-testid="task-detail-description" :class="{ 'td-clickable': isEditable }" v-html="descriptionHtml" @click="isEditable ? startEditing() : undefined" />
+        </section>
+
+        <!-- Permission mode override (per-task). Inherit = use persona/global. -->
+        <section class="td-section td-perm-section">
+          <h4 class="td-label">Permission mode</h4>
+          <select
+            class="td-perm-select"
+            data-testid="task-permission-mode"
+            :value="taskPermissionMode"
+            @change="setTaskPermissionMode(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">Inherit ({{ inheritedPermissionMode }})</option>
+            <option v-for="m in PERMISSION_MODE_OPTIONS" :key="m.id" :value="m.id">{{ m.label }}</option>
+          </select>
+          <p class="td-perm-hint">Controls how the agent approves actions on this task. Wins over the persona and global settings.</p>
         </section>
 
         <!-- Selected Elements -->
@@ -593,6 +658,25 @@ function onKeydown(e: KeyboardEvent) {
 .td-label {
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-muted); margin-bottom: 8px;
+}
+
+/* Permission-mode picker */
+.td-perm-select {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 5px;
+}
+.td-perm-select:focus { outline: none; border-color: var(--accent); }
+.td-perm-hint {
+  margin: 6px 2px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 /* Inline editor */

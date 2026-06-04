@@ -32,7 +32,13 @@ export interface AnnotaskServerOptions {
 
 export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskServer {
   const wsServer = createWSServer()
-  const state = createProjectState(options.projectRoot, wsServer.broadcast)
+  // Forward-declared so state.ts can notify the init runner when its source
+  // of truth (design-spec.json) is unlinked. The runner is built below; until
+  // then this is a no-op callback.
+  let onSpecCleared: () => void = () => { /* set below */ }
+  const state = createProjectState(options.projectRoot, wsServer.broadcast, {
+    onSpecCleared: () => onSpecCleared(),
+  })
   // Embedded-chat moving parts: per-task message log, subprocess streamer,
   // CLI-detection probe. All scoped to this server instance so a single
   // dispose() tears them down cleanly.
@@ -48,11 +54,17 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
       // Only assistant turns carry usage; user/tool messages are no-ops here.
       const u = msg.usage
       if (!u) return
+      // Fire-and-forget (must not block the SSE response) but surface failures:
+      // the usage ledger is the only audit trail for autonomous-agent spend, so
+      // a silent disk/permission error would let accounting drift unnoticed.
       void state.addTaskUsage(taskId, {
         inputTokens: u.inputTokens,
         outputTokens: u.outputTokens,
         cacheReadTokens: u.cacheReadTokens ?? 0,
         cacheCreationTokens: u.cacheCreationTokens ?? 0,
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[annotask] addTaskUsage failed for task ${taskId}:`, err)
       })
       void usageLedger.append({
         scope: 'task',
@@ -64,6 +76,9 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
         outputTokens: u.outputTokens,
         cacheReadTokens: u.cacheReadTokens,
         cacheCreationTokens: u.cacheCreationTokens,
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[annotask] usage ledger append failed for task ${taskId}:`, err)
       })
     },
   })
@@ -75,6 +90,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     agentDetect,
     usageLedger,
   })
+  onSpecCleared = () => { initRunner.reset() }
 
   const apiMiddleware = createAPIMiddleware({
     projectRoot: options.projectRoot,

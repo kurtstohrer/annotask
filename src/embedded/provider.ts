@@ -54,6 +54,14 @@ export interface StreamOptions {
    * fail — the same `'high'` hint is sent to every provider that's active.
    */
   effort?: 'auto' | 'minimal' | 'low' | 'medium' | 'high'
+  /**
+   * Permission mode for this turn. Local-CLI providers translate it to the
+   * CLI's own permission flag (Claude `--permission-mode`, Codex `--ask-for-
+   * approval` + `--sandbox`, Copilot `--allow-all-tools` toggles). HTTP API
+   * providers currently ignore this (no tool-write loop yet). Resolved by
+   * `resolveEffectivePermissionMode(task, persona, global)` in the runner.
+   */
+  permissionMode?: 'default' | 'plan' | 'bypass'
   /** Caller's abort signal. Providers must terminate the stream when it fires. */
   signal?: AbortSignal
 }
@@ -103,4 +111,11 @@ export interface LLMProvider {
     tools: ProviderTool[],
     options: StreamOptions,
   ): AsyncIterable<ProviderEvent>
+
+  /**
+   * Explicitly abort a running subprocess. Local-CLI providers issue
+   * `DELETE /agent/spawn/:runId` to kill the child process server-side.
+   * HTTP API providers typically don't need this (AbortSignal handles it).
+   */
+  abortRun?(): Promise<void>
 }

@@ -8,7 +8,7 @@
           type="button"
           @click="flow.closeWizard"
           aria-label="Close"
-          title="Close — reopens on reload until Annotask is initialized"
+          title="Close — reopens on reload until you choose a workflow or finish setup"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
             <path d="M4 4l8 8M12 4l-8 8" />
@@ -34,8 +34,96 @@
       </ol>
 
       <div class="init-wizard-body">
+      <!-- Step 0: pick workflow (skill/MCP vs embedded agent) -->
+      <section v-if="flow.wizardStep.value === 'mode'" class="init-step" aria-label="Choose Annotask workflow">
+        <h2 class="init-step-title">How do you want to apply design changes?</h2>
+        <p class="init-step-lead">
+          Annotask annotates the UI in the browser; the code edits can come from
+          your own editor agent or from an agent running inside Annotask itself.
+          Pick whichever fits — you can switch later from <strong>Settings → General</strong>.
+        </p>
+
+        <div class="init-mode-choices" role="radiogroup" aria-label="Workflow">
+          <button
+            type="button"
+            role="radio"
+            class="init-mode-choice"
+            :class="{ selected: selectedMode === 'skill' }"
+            :aria-checked="selectedMode === 'skill'"
+            @click="selectedMode = 'skill'"
+          >
+            <div class="init-mode-body">
+              <div class="init-mode-head">
+                <span class="init-mode-title">Use my editor agent</span>
+                <span class="init-mode-badge init-mode-badge-stable">Recommended</span>
+              </div>
+              <p class="init-mode-blurb">
+                Annotate here; drive init and apply from your own editor agent
+                (Claude Code, Cursor, Windsurf, …). Annotask installs two skills
+                — <code>/annotask-init</code> and <code>/annotask-apply</code> —
+                and exposes an MCP server at
+                <code>http://localhost:5173/__annotask/mcp</code>. No in-shell
+                chat, no spawned subprocesses.
+              </p>
+              <ul class="init-mode-bullets">
+                <li>You stay in your editor; Annotask is read-only on the agent side.</li>
+                <li>Tasks land in <code>.annotask/</code> for your agent to pick up.</li>
+                <li>Works with any editor agent that supports MCP or slash skills.</li>
+              </ul>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            role="radio"
+            class="init-mode-choice"
+            :class="{ selected: selectedMode === 'embedded' }"
+            :aria-checked="selectedMode === 'embedded'"
+            @click="selectedMode = 'embedded'"
+          >
+            <div class="init-mode-body">
+              <div class="init-mode-head">
+                <span class="init-mode-title">Run an agent inside Annotask</span>
+                <span class="init-mode-badge init-mode-badge-experimental">Experimental</span>
+              </div>
+              <p class="init-mode-blurb">
+                Spawn a local CLI agent (claude · codex · opencode · copilot)
+                directly from the Annotask sidebar. Tasks stream live to a
+                Conversation tab and auto-run on creation. One-window
+                experience; great when you don't already have an editor agent
+                set up.
+              </p>
+              <ul class="init-mode-bullets">
+                <li>In-shell Conversation tab with live tool-call streaming.</li>
+                <li>Auto-run on task creation (configurable in Settings).</li>
+                <li>Requires at least one supported CLI installed locally.</li>
+              </ul>
+              <p class="init-mode-warning">
+                <strong>Heads up:</strong> the CLIs run headlessly inside the
+                shell, so they need <strong>bypass</strong> permission mode
+                (claude's <code>--dangerously-skip-permissions</code>, codex's
+                <code>--full-auto</code>, etc.) — there's no interactive
+                prompt to approve tool calls. Pick the editor-agent option
+                if you'd rather review each action in your own terminal.
+              </p>
+            </div>
+          </button>
+        </div>
+
+        <div class="init-step-actions">
+          <button
+            class="init-btn-primary"
+            type="button"
+            :disabled="selectedMode === null"
+            @click="confirmModeChoice"
+          >
+            Continue →
+          </button>
+        </div>
+      </section>
+
       <!-- Step 1: select init agent -->
-      <section v-if="flow.wizardStep.value === 'agent'" class="init-step" aria-label="Select an init agent">
+      <section v-else-if="flow.wizardStep.value === 'agent'" class="init-step" aria-label="Select an init agent">
         <h2 class="init-step-title">Select an init agent</h2>
         <p class="init-step-lead">
           The <strong>init agent</strong> runs once to set up Annotask for this
@@ -76,7 +164,7 @@
           provider as the init agent, and you can change them later in Settings.
         </p>
 
-        <AgentQuickSetup />
+        <AgentQuickSetup :hide-plan-mode="true" :hide-permission-mode="true" />
         <div class="init-step-actions">
           <button class="init-btn-primary" :disabled="!flow.hasConfiguredProvider.value" @click="advanceFromAgent">
             Continue →
@@ -428,6 +516,37 @@
               </p>
             </div>
           </div>
+
+          <!-- Global default permission mode for per-task agents. The
+               wizard intentionally omits "Default" — annotask runs every
+               CLI headless (`--print` / `exec` / `run` / `-p`), so there
+               is no human to answer "may I write this file?" prompts and
+               default mode results in silent denial of every Edit/Bash
+               call. Bypass (write) and Plan (read-only) are the only two
+               modes that actually do anything in this pipeline. -->
+          <div class="init-perm-row">
+            <label class="init-perm-label">
+              <span class="init-perm-label-title">Default permission mode</span>
+              <span class="init-perm-label-hint">How per-task agents approve actions after init. Override per persona or per task later.</span>
+            </label>
+            <select
+              class="init-perm-select"
+              data-testid="init-permission-mode"
+              :value="globalPermissionMode"
+              @change="setGlobalPermissionMode(($event.target as HTMLSelectElement).value)"
+            >
+              <option v-for="m in INIT_PERMISSION_MODE_OPTIONS" :key="m.id" :value="m.id">{{ m.label }}</option>
+            </select>
+          </div>
+          <p class="init-perm-note">
+            Note: per-task agents run headlessly — there's no human to answer
+            permission prompts. Only <strong>Bypass</strong> (writes allowed)
+            and <strong>Plan</strong> (read-only) actually do anything; a
+            "Default" mode would deny every Edit and Bash call silently. The
+            initial scan separately always runs in its CLI's least-permissive
+            headless mode and writes inside <code>.annotask/</code> only.
+          </p>
+
           <AgentDirectionsPanel class="init-adp" />
         </div>
 
@@ -539,14 +658,33 @@ import Icon from './Icon.vue'
 import { useInitFlow } from '../composables/useInitFlow'
 import { useWorkingIndicator } from '../composables/useWorkingIndicator'
 import { useAgentConfigs } from '../composables/useAgentConfigs'
+import { useProviderSettings } from '../composables/useProviderSettings'
 import { BUILT_IN_PERSONAS } from '../../embedded/persona'
+import { PERMISSION_MODES, type PermissionMode } from '../../schema'
 import { marked } from 'marked'
 
 const flow = useInitFlow()
 const initRunning = computed(() => flow.initState.value.running)
 const initWorking = useWorkingIndicator(initRunning)
 const agentConfigs = useAgentConfigs()
+const providerSettings = useProviderSettings()
 const saving = ref(false)
+
+// Permission-mode picker shown in the Agent directions sub-step. `'default'`
+// is the safe "Auto" default: each CLI runs the least-permissive mode that
+// still applies tasks headlessly (codex/copilot sandboxed/minimal; claude/
+// opencode escalate to bypass via normalizeHeadlessMode). `'bypass'` (all
+// sandboxes off) is the explicit opt-in.
+const INIT_PERMISSION_MODE_OPTIONS: ReadonlyArray<{ id: PermissionMode; label: string }> = [
+  { id: 'default', label: 'Auto — safe per-CLI default (recommended)' },
+  { id: 'plan',    label: 'Plan — read-only' },
+  { id: 'bypass',  label: 'Bypass — auto-approve everything, all sandboxes off' },
+]
+const globalPermissionMode = computed<PermissionMode>(() => providerSettings.settings.value.permissionMode)
+function setGlobalPermissionMode(value: string) {
+  if (!(PERMISSION_MODES as readonly string[]).includes(value)) return
+  providerSettings.setPermissionMode(value as PermissionMode)
+}
 
 // Agent directions review state
 const agentDraftDirections = ref<Record<string, string>>({})
@@ -969,18 +1107,25 @@ function onSectionInput(idx: number, value: string) {
 }
 
 const ALL_STEP_LABELS = [
+  { id: 'mode', label: 'Choose workflow' },
   { id: 'agent', label: 'Pick init agent' },
   { id: 'scan', label: 'Scan project' },
   { id: 'review', label: 'Review & Save' },
 ] as const
 
-// Re-init runs the same 3-step flow as init; the only behavior delta is that
-// individual scans become opt-in in rescan mode.
-const stepperLabels = computed(() => ALL_STEP_LABELS)
+// Hide the 'mode' step in the stepper once the user has already chosen a
+// workflow (re-opens from settings, re-scans). The user can't "go back" to
+// re-pick the workflow from inside the wizard — that toggle lives in
+// Settings → General.
+const stepperLabels = computed(() => {
+  const choice = providerSettings.settings.value.embeddedAgentEnabled
+  if (choice == null) return ALL_STEP_LABELS
+  return ALL_STEP_LABELS.filter(s => s.id !== 'mode')
+})
 
 const doneSteps = computed(() => {
   const set = new Set<string>()
-  const order = ['agent', 'scan', 'review'] as const
+  const order = ['mode', 'agent', 'scan', 'review'] as const
   for (const id of order) {
     if (id === flow.wizardStep.value) break
     set.add(id)
@@ -1028,6 +1173,9 @@ async function onRetry() {
 function canJumpTo(stepId: string): boolean {
   if (stepId === flow.wizardStep.value) return false
   if (flow.initState.value.running) return false
+  // 'mode' is a first-run pivot — once the user has chosen, it's not
+  // re-enterable from the stepper. Change it from Settings → General.
+  if (stepId === 'mode') return false
   if (stepId === 'agent') return true
   if (stepId === 'scan') return true
   if (stepId === 'review') {
@@ -1040,8 +1188,26 @@ function canJumpTo(stepId: string): boolean {
 
 function jumpToStep(stepId: string) {
   if (!canJumpTo(stepId)) return
-  if (stepId === 'agent' || stepId === 'scan' || stepId === 'review') {
-    flow.goToStep(stepId)
+  if (stepId === 'mode' || stepId === 'agent' || stepId === 'scan' || stepId === 'review') {
+    flow.goToStep(stepId as 'mode' | 'agent' | 'scan' | 'review')
+  }
+}
+
+// Page 0 selection. 'skill' commits the user to MCP/skill mode and closes
+// the wizard immediately without touching .annotask/. 'embedded' opts the
+// user into the in-shell agent UI and advances to the provider-setup step.
+const selectedMode = ref<'skill' | 'embedded' | null>(null)
+
+function confirmModeChoice() {
+  if (selectedMode.value === 'skill') {
+    providerSettings.setEmbeddedAgentEnabled(false)
+    flow.closeWizard()
+    return
+  }
+  if (selectedMode.value === 'embedded') {
+    providerSettings.setEmbeddedAgentEnabled(true)
+    providerSettings.setAgentMode('auto')
+    flow.goToStep('agent')
   }
 }
 
@@ -1078,6 +1244,11 @@ function close() {
   background: var(--surface);
   display: flex;
   flex-direction: column;
+  /* Soft body-copy color — light grey on dark themes, dark grey on light
+     themes — by mixing the foreground toward the surface. Use this for
+     paragraphs/lists; reserve full `var(--text)` for titles, alerts, and
+     emphasized inline spans. */
+  --init-text-body: color-mix(in srgb, var(--text) 78%, var(--surface));
 }
 
 .init-modal {
@@ -1098,8 +1269,8 @@ function close() {
 }
 
 .init-modal-title {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
   color: var(--text);
   margin: 0;
 }
@@ -1137,11 +1308,13 @@ function close() {
   display: flex;
   align-items: center;
   padding: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
+  color: var(--text);
+  opacity: 0.7;
+  font-size: 14px;
+  font-weight: 600;
   position: relative;
 }
+.init-stepper-item.active { opacity: 1; }
 
 .init-stepper-btn {
   display: flex;
@@ -1231,14 +1404,15 @@ function close() {
 }
 
 .init-step-title {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 700;
   margin: 0;
   color: var(--text);
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: 12px;
+  letter-spacing: -0.01em;
 }
 
 .init-working {
@@ -1296,9 +1470,9 @@ function close() {
 }
 
 .init-step-lead {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--init-text-body);
   margin: 0;
 }
 
@@ -1310,7 +1484,8 @@ function close() {
   background: var(--surface-2);
   padding: 1px 6px;
   border-radius: 3px;
-  font-size: 12px;
+  font-size: 14px;
+  color: var(--text);
 }
 
 .init-agent-duties {
@@ -1318,26 +1493,26 @@ function close() {
   padding: 0 0 0 20px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .init-agent-duties li {
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--init-text-body);
 }
 .init-agent-duties strong {
   color: var(--text);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .init-step-note {
-  font-size: 12px;
-  line-height: 1.55;
-  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--init-text-body);
   margin: 0;
-  padding: 8px 12px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 60%, transparent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  padding: 10px 14px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-radius: 4px;
 }
 
@@ -1347,12 +1522,105 @@ function close() {
   padding-top: 8px;
 }
 
+/* Page 0: workflow chooser */
+.init-mode-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.init-mode-choice {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  padding: 14px 16px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.init-mode-choice:hover:not(.selected) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--surface-3);
+}
+.init-mode-choice:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.init-mode-choice.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+}
+.init-mode-body { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.init-mode-head { display: flex; align-items: center; gap: 10px; }
+.init-mode-title { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: -0.005em; }
+.init-mode-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.init-mode-badge-stable {
+  background: color-mix(in srgb, var(--success) 28%, transparent);
+  color: var(--text);
+}
+.init-mode-badge-experimental {
+  background: color-mix(in srgb, var(--warning) 28%, transparent);
+  color: var(--text);
+}
+.init-mode-blurb {
+  margin: 0;
+  font-size: 15px;
+  color: var(--init-text-body);
+  line-height: 1.6;
+}
+.init-mode-blurb code,
+.init-mode-bullets code {
+  background: var(--surface-3);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 14px;
+  color: var(--text);
+}
+.init-mode-bullets {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 14px;
+  color: var(--init-text-body);
+  line-height: 1.65;
+}
+.init-mode-bullets li { margin-bottom: 3px; }
+
+.init-mode-warning {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--init-text-body);
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
+}
+.init-mode-warning strong { color: var(--text); font-weight: 700; }
+.init-mode-warning code {
+  background: var(--surface-3);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 13px;
+  color: var(--text);
+}
+
 .init-btn-primary,
 .init-btn-secondary {
   font: inherit;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
-  padding: 8px 16px;
+  padding: 10px 20px;
   border-radius: 6px;
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease;
@@ -1383,49 +1651,50 @@ function close() {
   margin: 16px 0 0;
   padding-top: 12px;
   border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 14px;
+  color: var(--init-text-body);
 }
 .init-cmd {
   margin: 6px 0 0;
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text);
   overflow-x: auto;
 }
 .init-cmd code {
   background: transparent;
   padding: 0;
-  font-size: 12px;
+  font-size: 14px;
+  color: var(--text);
 }
 
 .init-skip-btn {
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
   background: none;
   border: none;
-  color: var(--text-muted);
+  color: var(--text);
   cursor: pointer;
   padding: 4px 0;
   text-decoration: underline;
-  text-decoration-color: var(--border);
+  text-decoration-color: var(--text-muted);
   text-underline-offset: 2px;
 }
-.init-skip-btn:hover { color: var(--text); }
+.init-skip-btn:hover { color: var(--accent); }
 
 .init-empty {
-  font-size: 13px;
-  color: var(--text-muted);
-  padding: 16px;
+  font-size: 15px;
+  color: var(--init-text-body);
+  padding: 18px;
   border: 1px dashed var(--border);
   border-radius: 6px;
 }
 .init-empty-small {
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 14px;
+  color: var(--init-text-body);
   margin: 4px 0 0;
 }
 
@@ -1450,11 +1719,12 @@ function close() {
   border-bottom: 1px solid var(--border);
 }
 .init-progress-row:last-child { border-bottom: none; }
+.init-progress-row { font-size: 14px; }
 .init-progress-row.success { color: var(--text); }
-.init-progress-row.pending { color: var(--text-muted); }
+.init-progress-row.pending { color: var(--text); opacity: 0.7; }
 .init-progress-row.running { color: var(--text); }
-.init-progress-row.error { color: var(--danger); }
-.init-progress-row.skipped { color: var(--text-muted); opacity: 0.7; }
+.init-progress-row.error { color: var(--text); font-weight: 600; }
+.init-progress-row.skipped { color: var(--text); opacity: 0.55; }
 
 .init-progress-marker {
   display: inline-flex;
@@ -1512,13 +1782,14 @@ function close() {
 .init-progress-hint {
   display: block;
   margin-top: 2px;
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 13px;
+  color: var(--init-text-body);
 }
 .init-progress-when {
   flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 13px;
+  color: var(--init-text-body);
+  opacity: 0.8;
   font-style: italic;
   margin-left: 8px;
   padding-top: 1px;
@@ -1553,9 +1824,9 @@ function close() {
   padding: 6px 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
   flex-shrink: 0;
 }
 .init-agent-log-body {
@@ -1574,18 +1845,30 @@ function close() {
   word-break: break-word;
 }
 .init-progress-message {
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 13px;
+  color: var(--text);
 }
 
 .init-error {
-  color: var(--danger);
-  font-size: 12px;
+  color: var(--init-text-body);
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  border-left: 3px solid var(--danger);
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.55;
   margin: 0;
 }
 .init-success {
-  color: var(--success);
-  font-size: 12px;
+  color: var(--init-text-body);
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  border-left: 3px solid var(--success);
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.55;
   margin: 0;
 }
 
@@ -1598,15 +1881,15 @@ function close() {
   margin: 0;
 }
 .init-section legend {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
   color: var(--text);
   padding: 0 6px;
 }
 .init-section-hint {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--init-text-body);
   margin: 4px 0 12px;
 }
 
@@ -1620,10 +1903,10 @@ function close() {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 14px;
+  color: var(--init-text-body);
 }
-.init-field span { font-weight: 500; color: var(--text); }
+.init-field span { font-weight: 600; color: var(--text); }
 .init-field input,
 .init-field select,
 .init-field textarea {
@@ -2215,6 +2498,55 @@ function close() {
 /* ── Agent directions sub-step ── */
 .review-panel-agents {
   overflow: hidden;
+}
+
+.init-perm-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+.init-perm-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.init-perm-label-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.init-perm-label-hint  { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+.init-perm-select {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 5px;
+  min-width: 280px;
+}
+.init-perm-select:focus { outline: none; border-color: var(--accent); }
+
+.init-perm-note {
+  margin: -6px 0 16px;
+  padding: 10px 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--init-text-body);
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
+}
+.init-perm-note code {
+  font-size: 13px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .init-adp {

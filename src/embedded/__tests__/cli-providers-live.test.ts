@@ -33,39 +33,19 @@ import type { LLMProvider, ProviderEvent } from '../provider.js'
 
 import { createAgentSpawnHandler } from '../../server/agent-spawn.js'
 import { createAgentDetector } from '../../server/agent-detect.js'
+import {
+  LIVE_CLI_ENABLED,
+  isLiveCliEnabled,
+  liveModelFor,
+  type LiveProviderKey,
+} from './live-cli-helpers.js'
 
-type ProviderKey = 'claude-local' | 'opencode-local' | 'codex-local' | 'copilot-local'
+type ProviderKey = LiveProviderKey
 
-interface ModelEntry {
-  default: string
-  env: string
-}
+const isEnabled = isLiveCliEnabled
+const modelFor = liveModelFor
 
-const MODEL_CONFIG: Record<ProviderKey, ModelEntry> = {
-  'claude-local':   { default: 'claude-sonnet-4-6',      env: 'ANNOTASK_LIVE_CLAUDE_MODEL' },
-  'opencode-local': { default: 'github-copilot/gpt-5.4', env: 'ANNOTASK_LIVE_OPENCODE_MODEL' },
-  'codex-local':    { default: 'gpt-5.4',                env: 'ANNOTASK_LIVE_CODEX_MODEL' },
-  'copilot-local':  { default: 'gpt-5.3-codex',          env: 'ANNOTASK_LIVE_COPILOT_MODEL' },
-}
-
-const ENABLED = process.env.ANNOTASK_LIVE_CLI === '1'
-const ONLY = (process.env.ANNOTASK_LIVE_ONLY ?? '')
-  .split(',')
-  .map((s) => s.trim().toLowerCase())
-  .filter((s) => s.length > 0)
-
-function isEnabled(key: ProviderKey): boolean {
-  if (ONLY.length === 0) return true
-  const short = key.replace(/-local$/, '')
-  return ONLY.includes(short) || ONLY.includes(key)
-}
-
-function modelFor(key: ProviderKey): string {
-  const entry = MODEL_CONFIG[key]
-  return (process.env[entry.env] ?? '').trim() || entry.default
-}
-
-const describeIf = ENABLED ? describe : describe.skip
+const describeIf = LIVE_CLI_ENABLED ? describe : describe.skip
 
 describeIf('Live provider streaming smoke', () => {
   let server: http.Server

@@ -23,9 +23,14 @@ import { useAgentMode, consumeAutoRun } from './useAgentMode'
 import { useTaskThread } from './useTaskThread'
 import { useEmbeddedAgent } from './useEmbeddedAgent'
 import { useTasks } from './useTasks'
+import { useProviderSettings } from './useProviderSettings'
 
 let started = false
 let runningId: string | null = null
+// Cancel hooks for in-flight headless runs, keyed by task id. A Conversation
+// tab observing a headless run can't reach that run's local `aborter` (the
+// driver owns a separate agent instance), so it routes a cancel through here.
+const cancelHooks = new Map<string, () => void>()
 
 export function startAutoRunDriver(): void {
   if (started) return
@@ -44,33 +49,63 @@ export function startAutoRunDriver(): void {
 async function drain(taskSystem: ReturnType<typeof useTasks>): Promise<void> {
   if (runningId) return // already busy; we'll re-enter when this turn finishes
 
+  // Skip the entire drain when the user is in skill/MCP mode. Tasks may
+  // still enqueue (older code paths, tests), but the driver should not
+  // spawn anything embedded. The queue stays put so flipping the toggle
+  // back on doesn't lose work.
+  const providerSettings = useProviderSettings()
+  if (providerSettings.settings.value.embeddedAgentEnabled !== true) {
+    // eslint-disable-next-line no-console
+    console.warn('[annotask:autorun] drain skipped: embeddedAgentEnabled is not true')
+    return
+  }
+
   while (true) {
     const queue = useAgentMode().pendingAutoRun.value
     if (queue.size === 0) return
 
     // FIFO: take the first id in insertion order.
     let id: string | null = null
-    for (const x of queue) { id = x; break }
+    for (const x of queue.keys()) { id = x; break }
     if (!id) return
 
-    if (!consumeAutoRun(id)) {
-      // Another consumer (typically a ConversationTab that mounted faster)
-      // already claimed this id. Move on.
+    if (!consumeAutoRun(id, ['auto'])) {
+      // Either another consumer already claimed this id, or it's a manual
+      // run destined for the Conversation tab. Move on.
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask:autorun] ${id} consumed by another consumer (likely manual run)`)
       continue
     }
 
     const task = taskSystem.tasks.value.find((t) => t.id === id)
     if (!task) {
       // Task vanished before we could run it (deleted?). Drop and continue.
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask:autorun] ${id} not in tasks.value — dropping`)
       continue
     }
 
     const description = (task.description ?? '').trim()
-    if (!description) continue
+    if (!description) {
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask:autorun] ${id} has empty description — dropping`)
+      continue
+    }
 
     runningId = id
+    // eslint-disable-next-line no-console
+    console.log(`[annotask:autorun] starting ${id}`)
     try {
       await runHeadless(id, description)
+      // eslint-disable-next-line no-console
+      console.log(`[annotask:autorun] finished ${id}`)
+    } catch (err) {
+      // Without this catch, errors bubble through the `void drain(...)`
+      // call in the watcher and vanish into unhandled-promise-rejection
+      // limbo — leaving the user with a task stuck "running" and no UI
+      // indication that anything went wrong.
+      // eslint-disable-next-line no-console
+      console.error(`[annotask:autorun] ${id} failed:`, err)
     } finally {
       runningId = null
     }
@@ -84,16 +119,31 @@ async function runHeadless(taskId: string, prompt: string): Promise<void> {
   try {
     await thread.open(taskId)
     const agent = useEmbeddedAgent(thread)
+    // Register a cancel hook so an observer tab can abort this headless run.
+    cancelHooks.set(taskId, () => agent.abort())
     // Seed run — agent treats this prompt as its objective. On clean
     // completion the composable flips the task to `review`.
     await agent.send(prompt, { isSeed: true })
   } finally {
+    cancelHooks.delete(taskId)
     thread.close()
   }
+}
+
+/**
+ * Cancel an in-flight headless auto-run for a task. Returns true if a run was
+ * found and asked to abort. Safe to call when nothing is running (no-op).
+ */
+export function requestAutoRunCancel(taskId: string): boolean {
+  const hook = cancelHooks.get(taskId)
+  if (!hook) return false
+  hook()
+  return true
 }
 
 /** Test seam — resets the singleton so unit tests can re-arm the driver. */
 export function resetAutoRunDriverForTests(): void {
   started = false
   runningId = null
+  cancelHooks.clear()
 }

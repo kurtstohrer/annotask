@@ -101,16 +101,52 @@ export function useAnnotationRects(deps: {
               // per-line rects (which describe text runs, not the element box) by
               // the same delta. Don't overwrite hl.rect with the element rect.
               const prev = (hl as any)._anchorRect as typeof rect | undefined
-              if (prev) {
-                const dx = rect.x - prev.x
-                const dy = rect.y - prev.y
-                if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-                  hl.rects = hl.rects.map(r => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }))
-                  if (hl.rect) hl.rect = { x: hl.rect.x + dx, y: hl.rect.y + dy, width: hl.rect.width, height: hl.rect.height }
-                  ;(hl as any)._anchorRect = rect
-                }
-              } else {
+              if (!prev) {
                 ;(hl as any)._anchorRect = rect
+              } else {
+                const sizeChanged = Math.abs(rect.width - prev.width) > 0.5 || Math.abs(rect.height - prev.height) > 0.5
+                if (sizeChanged) {
+                  // Element resized — text likely reflowed, so line breaks may
+                  // have shifted. Re-measure the actual Range from the iframe;
+                  // delta translation can't track reflow. Fire-and-forget so the
+                  // rAF tick stays cheap.
+                  const targetEid = eids[i]
+                  const hlId = hl.id
+                  const fallbackPrev = prev
+                  iframe.getTextRangeRects(targetEid, hl.selectedText).then(fresh => {
+                    const h2 = annotations.highlights.value.find(x => x.id === hlId)
+                    if (!h2 || h2.eid !== targetEid) return
+                    if (fresh && fresh.length) {
+                      h2.rects = fresh.map(r => ({ x: r.x, y: r.y, width: r.width, height: r.height }))
+                      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+                      for (const r of fresh) {
+                        if (r.x < minX) minX = r.x
+                        if (r.y < minY) minY = r.y
+                        if (r.x + r.width > maxX) maxX = r.x + r.width
+                        if (r.y + r.height > maxY) maxY = r.y + r.height
+                      }
+                      h2.rect = { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+                    } else {
+                      // Re-measure failed (text moved out of the anchor or
+                      // mismatched after reflow) — fall back to translation so
+                      // the overlay at least follows the element.
+                      const dx = rect.x - fallbackPrev.x, dy = rect.y - fallbackPrev.y
+                      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                        h2.rects = h2.rects!.map(r => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }))
+                        if (h2.rect) h2.rect = { x: h2.rect.x + dx, y: h2.rect.y + dy, width: h2.rect.width, height: h2.rect.height }
+                      }
+                    }
+                  })
+                  ;(hl as any)._anchorRect = rect
+                } else {
+                  const dx = rect.x - prev.x
+                  const dy = rect.y - prev.y
+                  if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                    hl.rects = hl.rects.map(r => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }))
+                    if (hl.rect) hl.rect = { x: hl.rect.x + dx, y: hl.rect.y + dy, width: hl.rect.width, height: hl.rect.height }
+                    ;(hl as any)._anchorRect = rect
+                  }
+                }
               }
             } else {
               hl.rect = rect

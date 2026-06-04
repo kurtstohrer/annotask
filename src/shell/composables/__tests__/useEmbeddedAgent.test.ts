@@ -30,12 +30,17 @@ vi.mock('../useTasks', () => ({
 // Mock the provider factory so `runOne()` doesn't try to hit a real API.
 // We return a provider that emits a single text block then `done` — enough
 // for the seed-run lifecycle assertions.
-const providerStreamMock = vi.fn(async function* () {
+const providerStreamMock = vi.fn(async function* (
+  _messages?: unknown,
+  _tools?: unknown,
+  _options?: { signal?: AbortSignal },
+) {
   yield { type: 'text', text: 'All set.' }
   yield { type: 'done', stopReason: 'end_turn' }
 })
+const abortRunMock = vi.fn()
 vi.mock('../../../embedded/provider-factory.js', () => ({
-  makeProvider: () => ({ name: 'mock', stream: providerStreamMock }),
+  makeProvider: () => ({ name: 'mock', stream: providerStreamMock, abortRun: abortRunMock }),
 }))
 
 import { useEmbeddedAgent } from '../useEmbeddedAgent'
@@ -71,6 +76,18 @@ function makeStubThread(initial: ThreadMessage[] = []): UseTaskThread & {
       messages.value = [...messages.value, stored]
       return stored
     }),
+    update: vi.fn(async (id, patch) => {
+      const idx = messages.value.findIndex((m) => m.id === id)
+      const base: ThreadMessage = idx >= 0
+        ? messages.value[idx]
+        : { id, ts: Date.now(), role: 'assistant', content: '' }
+      const merged: ThreadMessage = { ...base, ...patch }
+      const next = messages.value.slice()
+      if (idx >= 0) next[idx] = merged
+      else next.push(merged)
+      messages.value = next
+      return merged
+    }),
     appended,
   }
 }
@@ -90,6 +107,7 @@ beforeEach(() => {
   // Reset mocks between cases — vi.fn instances retain call history.
   updateTaskStatusMock.mockClear()
   providerStreamMock.mockClear()
+  abortRunMock.mockClear()
   tasksRef.value = []
 })
 
@@ -140,6 +158,50 @@ describe('useEmbeddedAgent — surfaces', () => {
   it('exposes informational usage totals', () => {
     const agent = useEmbeddedAgent(makeStubThread())
     expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+  })
+})
+
+describe('useEmbeddedAgent — redaction wiring', () => {
+  it('scrubs secrets from outgoing history before the provider sees them', async () => {
+    const secret = `sk-ant-${'A'.repeat(40)}`
+    const thread = makeStubThread([
+      { id: 'u0', ts: 1, role: 'user', content: `my key is ${secret}` },
+    ])
+    const agent = useEmbeddedAgent(thread)
+
+    // Non-seed turn on the (HTTP) openrouter provider still streams; redaction
+    // is on by default. The raw secret must not reach the provider.
+    await agent.send('continue please')
+
+    expect(providerStreamMock).toHaveBeenCalled()
+    const passedMessages = providerStreamMock.mock.calls[0]?.[0]
+    expect(JSON.stringify(passedMessages)).not.toContain(secret)
+  })
+})
+
+describe('useEmbeddedAgent — abort', () => {
+  it('abort() aborts the run signal and asks the provider to kill the subprocess', async () => {
+    let sawAbort = false
+    providerStreamMock.mockImplementationOnce(async function* (
+      _m?: unknown, _t?: unknown, options?: { signal?: AbortSignal },
+    ) {
+      yield { type: 'text', text: 'working…' }
+      await new Promise<void>((resolve) => {
+        if (options?.signal?.aborted) { sawAbort = true; resolve(); return }
+        options?.signal?.addEventListener('abort', () => { sawAbort = true; resolve() })
+      })
+      yield { type: 'done', stopReason: 'aborted' }
+    })
+
+    const agent = useEmbeddedAgent(makeStubThread())
+    const run = agent.send('go')
+    // Let the run reach the in-flight await before aborting.
+    await new Promise((r) => setTimeout(r, 0))
+    agent.abort()
+    await run
+
+    expect(sawAbort).toBe(true)
+    expect(abortRunMock).toHaveBeenCalled()
   })
 })
 

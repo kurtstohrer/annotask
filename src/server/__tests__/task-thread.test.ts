@@ -82,4 +82,64 @@ describe('TaskThreadStore', () => {
     expect(msgs).toHaveLength(1)
     expect(msgs[0].content).toBe('persistent')
   })
+
+  it('updates a message in place by id (streaming a partial turn)', async () => {
+    const store = createTaskThreadStore({ projectRoot })
+    await store.append('task-up', { role: 'user', content: 'go' })
+    const partial = await store.append('task-up', { role: 'assistant', content: '', isPartial: true })
+
+    const mid = await store.update('task-up', partial.id, {
+      content: 'work...',
+      blocks: [{ kind: 'text', text: 'work...' }],
+      lastEventAt: 123,
+    })
+    expect(mid?.content).toBe('work...')
+    expect(mid?.isPartial).toBe(true) // not cleared yet
+    expect(mid?.lastEventAt).toBe(123)
+
+    const final = await store.update('task-up', partial.id, { content: 'done', isPartial: false })
+    expect(final?.isPartial).toBe(false)
+
+    // Still exactly two lines — the partial line was rewritten, not appended.
+    const msgs = await store.read('task-up')
+    expect(msgs).toHaveLength(2)
+    expect(msgs[1].id).toBe(partial.id)
+    expect(msgs[1].content).toBe('done')
+    expect(msgs[1].blocks).toEqual([{ kind: 'text', text: 'work...' }])
+  })
+
+  it('update returns null for an unknown message id', async () => {
+    const store = createTaskThreadStore({ projectRoot })
+    await store.append('task-up2', { role: 'user', content: 'x' })
+    const res = await store.update('task-up2', 'msg-does-not-exist', { content: 'nope' })
+    expect(res).toBeNull()
+  })
+
+  it('fans out updates to subscribers (so observers stream a partial turn)', async () => {
+    const store = createTaskThreadStore({ projectRoot })
+    const seen: Array<{ content: string; isPartial?: boolean }> = []
+    store.subscribe('task-up3', (m) => { seen.push({ content: m.content, isPartial: m.isPartial }) })
+    const partial = await store.append('task-up3', { role: 'assistant', content: '', isPartial: true })
+    await store.update('task-up3', partial.id, { content: 'a' })
+    await store.update('task-up3', partial.id, { content: 'ab', isPartial: false })
+    expect(seen).toEqual([
+      { content: '', isPartial: true },
+      { content: 'a', isPartial: true },
+      { content: 'ab', isPartial: false },
+    ])
+  })
+
+  it('serializes interleaved append + update under the write lock', async () => {
+    const store = createTaskThreadStore({ projectRoot })
+    const partial = await store.append('task-up4', { role: 'assistant', content: '', isPartial: true })
+    // Fire an update and a fresh append without awaiting between them.
+    await Promise.all([
+      store.update('task-up4', partial.id, { content: 'streamed', isPartial: false }),
+      store.append('task-up4', { role: 'user', content: 'interrupt' }),
+    ])
+    const msgs = await store.read('task-up4')
+    expect(msgs).toHaveLength(2)
+    expect(msgs.find((m) => m.id === partial.id)?.content).toBe('streamed')
+    expect(msgs.some((m) => m.content === 'interrupt')).toBe(true)
+  })
 })

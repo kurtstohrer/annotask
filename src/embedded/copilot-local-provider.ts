@@ -27,6 +27,7 @@ import {
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
+import { copilotPermissionFlags, defaultPermissionModeFor } from './permission-mode-flags.js'
 import type {
   ProviderEvent,
   ProviderMessage,
@@ -62,9 +63,12 @@ export class CopilotLocalProvider extends CliLocalProvider {
     options: StreamOptions,
   ): SpawnRequest {
     // `--allow-all-tools` is required for `-p` (non-interactive) per the CLI's
-    // own help. `--no-ask-user` keeps the agent from synthesising clarifying
-    // questions that have nowhere to go in headless mode.
-    const args = ['--output-format', 'json', '--allow-all-tools', '--no-ask-user']
+    // own help — so even non-bypass modes keep it. `bypass` additionally
+    // enables `--allow-all` (paths + URLs + tools); weaker modes stop at the
+    // minimum required for headless to run. Per-action approval is not
+    // possible in `copilot -p`; surface this limitation in the UI.
+    const args = ['--output-format', 'json']
+    args.push(...copilotPermissionFlags(options.permissionMode ?? defaultPermissionModeFor('copilot')))
     if (this.model) args.push('--model', this.model)
     // Map effort. Copilot exposes "low" | "medium" | "high" | "xhigh".
     if (options.effort && options.effort !== 'auto' && options.effort !== 'minimal') {
@@ -99,9 +103,12 @@ interface CopilotEventData {
   deltaContent?: string
   /** Final cumulative message content. */
   content?: string
-  /** Token count reported on the final message. Copilot only surfaces output
-   *  tokens at this layer — there's no input-token count on the CLI side. */
+  /** Token counts reported on the final message. Copilot historically surfaces
+   *  only output tokens at this layer; we read input/cache too if a newer CLI
+   *  starts emitting them rather than hardcoding the input side to 0. */
   outputTokens?: number
+  inputTokens?: number
+  cacheReadTokens?: number
   /** Tool requests embedded on the final assistant message. Each one
    *  describes a tool the model wants to invoke. */
   toolRequests?: CopilotToolRequest[]
@@ -153,10 +160,16 @@ export function mapCopilotEvent(ev: CopilotCliEvent): ProviderEvent[] {
       })
     }
   }
-  // Per-message output-token count. Input tokens aren't exposed by the CLI;
-  // leave inputTokens at 0 and let the cumulative tally surface output only.
-  if (ev.type === 'assistant.message' && data && typeof data.outputTokens === 'number') {
-    out.push({ type: 'usage', inputTokens: 0, outputTokens: data.outputTokens })
+  // Per-message token counts. Older copilot CLIs surface only outputTokens
+  // (inputTokens stays 0 — the cost meter undercounts input on those); newer
+  // ones may add input/cache, which we pick up here instead of dropping.
+  if (ev.type === 'assistant.message' && data && (typeof data.outputTokens === 'number' || typeof data.inputTokens === 'number')) {
+    out.push({
+      type: 'usage',
+      inputTokens: typeof data.inputTokens === 'number' ? data.inputTokens : 0,
+      outputTokens: typeof data.outputTokens === 'number' ? data.outputTokens : 0,
+      ...(typeof data.cacheReadTokens === 'number' ? { cacheReadTokens: data.cacheReadTokens } : {}),
+    })
   }
   // No usage info beyond what's already surfaced on `assistant.message`. The
   // `result` event carries timing + premiumRequests but no token totals.

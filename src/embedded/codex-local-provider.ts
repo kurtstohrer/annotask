@@ -17,6 +17,7 @@ import {
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
+import { codexPermissionFlags, defaultPermissionModeFor } from './permission-mode-flags.js'
 import type {
   ProviderEvent,
   ProviderMessage,
@@ -52,12 +53,12 @@ export class CodexLocalProvider extends CliLocalProvider {
     options: StreamOptions,
   ): SpawnRequest {
     const args = ['exec', '--json']
-    // Skip the interactive approval prompt — Codex defaults to prompting on
-    // file writes, which the shell has no UI to forward. Mirrors the
-    // claude-local provider; same justification. As of codex-cli 0.111 the
-    // old `--ask-for-approval never --sandbox workspace-write` flags were
-    // removed in favor of a single bypass flag.
-    args.push('--dangerously-bypass-approvals-and-sandbox')
+    // Permission mode → codex sandbox flags. `bypass` keeps the historical
+    // `--dangerously-bypass-approvals-and-sandbox`; `plan` clamps the sandbox
+    // to `read-only`; `default` uses `--full-auto` (workspace-write sandbox).
+    // Headless `exec` doesn't surface per-action approvals. The fail-safe
+    // fallback is codex's safe default (`default` = sandboxed), not bypass.
+    args.push(...codexPermissionFlags(options.permissionMode ?? defaultPermissionModeFor('codex')))
     // Allow running in projects that aren't a git repo. Without this, codex
     // refuses to start when the dev server's cwd isn't inside a repository.
     args.push('--skip-git-repo-check')
@@ -70,8 +71,10 @@ export class CodexLocalProvider extends CliLocalProvider {
     args.push(...this.extraArgs)
     // Codex consumes the prompt as the trailing positional arg. Prepend the
     // annotask system prompt so the persona's instructions reach the model
-    // even though codex has no separate system-prompt flag.
-    args.push(withSystemPrompt(lastUserMessageText(messages), options.systemPrompt))
+    // even though codex has no separate system-prompt flag. The `--` separator
+    // is required: skill bodies often start with `---` (YAML frontmatter), and
+    // without it clap parses the leading `--` as an unknown long flag.
+    args.push('--', withSystemPrompt(lastUserMessageText(messages), options.systemPrompt))
     return { cli: 'codex', args }
   }
 

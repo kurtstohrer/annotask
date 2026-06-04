@@ -5,6 +5,13 @@
  *   - shows a single static verb ("Annotasking")
  *   - tracks elapsed seconds since the run started
  * While false: returns null verb / zero seconds.
+ *
+ * The elapsed count anchors to an optional `startedAt` timestamp ref. Pass the
+ * persisted run-start (the partial assistant message's `ts`) so the timer
+ * survives a tab remount and is correct for a tab that attached mid-run —
+ * without it, the count would reset to 0 on every mount. When no anchor is
+ * supplied (e.g. an external skill/MCP run that creates no partial message)
+ * it falls back to "now" at the moment the run was observed.
  */
 
 import { ref, watch, type Ref } from 'vue'
@@ -17,20 +24,32 @@ export interface WorkingIndicator {
   seconds: Ref<number>
 }
 
-export function useWorkingIndicator(isRunning: Ref<boolean>): WorkingIndicator {
+export function useWorkingIndicator(
+  isRunning: Ref<boolean>,
+  startedAt?: Ref<number | null>,
+): WorkingIndicator {
   const verb = ref<string | null>(null)
   const seconds = ref(0)
-  let startedAt = 0
   let tickTimer: ReturnType<typeof setInterval> | null = null
+  // Fallback anchor for runs with no persisted start (set at observe time).
+  let fallbackStart = 0
+
+  function anchor(): number {
+    const persisted = startedAt?.value
+    if (typeof persisted === 'number' && persisted > 0) return persisted
+    return fallbackStart || Date.now()
+  }
+
+  function tick() {
+    seconds.value = Math.max(0, Math.floor((Date.now() - anchor()) / 1000))
+  }
 
   function start() {
-    startedAt = Date.now()
-    seconds.value = 0
+    fallbackStart = Date.now()
     verb.value = VERB
+    tick()
     if (tickTimer) clearInterval(tickTimer)
-    tickTimer = setInterval(() => {
-      seconds.value = Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
-    }, TICK_MS)
+    tickTimer = setInterval(tick, TICK_MS)
   }
 
   function stop() {
@@ -43,6 +62,12 @@ export function useWorkingIndicator(isRunning: Ref<boolean>): WorkingIndicator {
     if (next) start()
     else stop()
   }, { immediate: true })
+
+  // If the persisted anchor resolves after the run was already observed
+  // (snapshot loads a beat after mount), recompute immediately.
+  if (startedAt) {
+    watch(startedAt, () => { if (verb.value) tick() })
+  }
 
   return { verb, seconds }
 }

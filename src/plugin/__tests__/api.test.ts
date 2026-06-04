@@ -81,6 +81,9 @@ describe('API endpoints', () => {
       append: async (_id: string, input: { role: 'user' | 'assistant' | 'system' | 'tool'; content: string }) => ({
         id: 'msg-test', ts: 0, role: input.role, content: input.content,
       }),
+      update: async (_id: string, msgId: string, patch: { content?: string }) => ({
+        id: msgId, ts: 0, role: 'assistant' as const, content: patch.content ?? '',
+      }),
       subscribe: () => () => { /* no-op */ },
       clear: async () => { /* no-op */ },
     },
@@ -107,6 +110,7 @@ describe('API endpoints', () => {
       cancel: () => { /* no-op */ },
       commit: async () => ({ running: false, steps: [], result: 'success' as const }),
       skip: async () => ({ running: false, steps: [], result: 'success' as const }),
+      reset: () => ({ running: false, steps: [] }),
       getState: () => ({ running: false, steps: [] }),
     },
     getAgentConfigs: async () => ({ version: 1 as const, agents: {} }),

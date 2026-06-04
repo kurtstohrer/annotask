@@ -218,6 +218,21 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   }
 
   /**
+   * Re-measure the per-line rects for a text selection by locating the
+   * substring inside the anchor element's text nodes. Used to refresh
+   * highlight overlays after text reflow (window/container resize), where
+   * delta translation can't track line-break shifts.
+   */
+  async function getTextRangeRects(eid: string, text: string): Promise<BridgeRect[] | null> {
+    if (!eid || !text) return null
+    try {
+      const result = await bridge.request<{ rects: BridgeRect[] } | null>('resolve:text-rects', { eid, text })
+      if (!result || !result.rects || !result.rects.length) return null
+      return result.rects.map(r => toShellRect(r) || r)
+    } catch { return null }
+  }
+
+  /**
    * Ask the iframe for every element whose `data-annotask-file` matches one of
    * the supplied files. Drives the Data view's "where does this render" overlay.
    */
@@ -587,6 +602,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     findTemplateGroup,
     getElementRect,
     getElementRects,
+    getTextRangeRects,
     getFileElementRects,
     getLocationElementRects,
     listProjectComponents,

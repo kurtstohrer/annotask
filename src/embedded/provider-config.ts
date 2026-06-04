@@ -53,46 +53,6 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number]
 export const EffortSchema = z.enum(EFFORT_LEVELS).default('auto')
 
 /**
- * Curated list of well-known models per CLI provider for the model picker
- * dropdown in Settings → Agents and the init wizard. Acts as a typeable
- * combobox suggestion list — the underlying input still accepts any string,
- * so users on bleeding-edge or self-hosted models can paste a custom id.
- *
- * Keep this list short and authoritative — only include current production
- * model ids. Local CLIs that wrap multiple subproviders (opencode) should
- * stay empty so the picker degrades to a free-text input.
- */
-export const MODELS_BY_PROVIDER: Partial<Record<ProviderId, readonly string[]>> = {
-  'claude-local': [
-    'claude-opus-4-7',
-    'claude-sonnet-4-6',
-    'claude-haiku-4-5',
-  ],
-  'codex-local': [
-    'gpt-5',
-    'gpt-5-mini',
-    'gpt-5-nano',
-  ],
-  'opencode-local': [],
-  anthropic: [
-    'claude-opus-4-7',
-    'claude-sonnet-4-6',
-    'claude-haiku-4-5',
-  ],
-  openai: [
-    'gpt-5',
-    'gpt-5-mini',
-    'gpt-5-nano',
-    'o3-mini',
-  ],
-  openrouter: [
-    'anthropic/claude-sonnet-4.6',
-    'openai/gpt-5',
-    'openai/gpt-5-mini',
-  ],
-}
-
-/**
  * Subset of EFFORT_LEVELS each provider actually honors. Providers not listed
  * inherit the full list. The picker filters to this slice so users can't
  * select an effort the provider would silently drop.
@@ -124,6 +84,11 @@ export const EFFORTS_BY_PROVIDER: Partial<Record<ProviderId, readonly EffortLeve
 export const AGENT_MODES = ['auto', 'manual', 'off'] as const
 export type AgentMode = (typeof AGENT_MODES)[number]
 export const AgentModeSchema = z.enum(AGENT_MODES).default('auto')
+
+// Re-export PermissionMode for callers that already import from this module.
+export { PERMISSION_MODES, type PermissionMode } from '../schema.js'
+import { PermissionModeSchema } from './permission-mode.js'
+export { PermissionModeSchema } from './permission-mode.js'
 
 const TrimmedString = z.string().trim()
 const NonEmptyTrimmed = TrimmedString.min(1, 'value cannot be empty')
@@ -168,6 +133,11 @@ function localCliSchema<T extends 'claude-local' | 'codex-local' | 'opencode-loc
     effort: EffortSchema,
     /** Extra args appended after the canonical args. Trim+filter empty. */
     extraArgs: z.array(TrimmedString).default([]),
+    /** Per-provider permission-mode override. When unset, the runner falls
+     *  back to the global `ProviderSettings.permissionMode`. Task overrides
+     *  win over both. Only local-CLI providers carry this — HTTP providers
+     *  have no tool-write loop yet, so the mode is moot for them. */
+    permissionMode: PermissionModeSchema.optional(),
   })
 }
 
@@ -355,16 +325,42 @@ export const ProviderSettingsSchema = z.object({
   activeProvider: ProviderIdSchema.default('claude-local'),
   /**
    * Agent mode (auto | manual | off). See `AgentModeSchema` for semantics.
-   * Defaults to `manual` so the in-shell chat is available but won't fire
-   * unprompted — autonomous behavior is opt-in.
+   * Defaults to `auto` — tasks run autonomously on creation when a provider
+   * is ready. Users can switch to `manual` for click-to-run or `off` to
+   * disable the in-shell chat surface entirely.
    */
   agentMode: AgentModeSchema,
+  /**
+   * Top-level toggle: is the in-shell embedded agent feature enabled at all?
+   * - `null`  — user has not yet chosen (first run). The init wizard's Page 0
+   *             forces an explicit choice between skill/MCP mode and embedded.
+   * - `true`  — embedded UI on; Conversation tab, auto-run driver, and provider
+   *             setup wizard are all available.
+   * - `false` — skill/MCP mode. All embedded surfaces hidden; wizard never
+   *             auto-opens. MCP server still runs (that's how the user's
+   *             editor agent drives `/annotask-apply`).
+   *
+   * Migration of pre-existing installs (no value in localStorage) is handled
+   * in `useProviderSettings` based on the historical `agentMode`.
+   */
+  embeddedAgentEnabled: z.boolean().nullable().default(null),
   /** True once the user has dismissed the first-run setup modal. */
   onboardingDismissed: z.boolean().default(false),
   /** Toggle to disable redaction in *the user's own* config (testing only). */
   redactionEnabled: z.boolean().default(true),
   /** Local event log toggle. Defaults on. Logged data never leaves the box. */
   eventLogEnabled: z.boolean().default(true),
+  /**
+   * Global permission mode for agent actions. Default `'default'` ("Auto"):
+   * each CLI runs the least-permissive mode that still applies tasks headlessly
+   * — codex stays in its `--full-auto` OS sandbox and copilot at the minimal
+   * `--allow-all-tools`, while claude/opencode (which have no headless ask-mode)
+   * escalate to `bypass` via `normalizeHeadlessMode` at spawn time. `bypass`
+   * (all sandboxes off) is now an explicit opt-in, not the default. Pre-feature
+   * installs that already stored `'bypass'` keep it (treated as a deliberate
+   * choice); only fresh installs get the safer `'default'`.
+   */
+  permissionMode: PermissionModeSchema.default('default'),
   /** Stored config per provider. Branches the user hasn't touched stay at defaults. */
   providers: z
     .object({
@@ -411,6 +407,14 @@ export const ProviderSettingsSchema = z.object({
    * users reassign (e.g. force `a11y_fix` to the Designer persona).
    */
   personaOverrides: z.record(z.string(), z.string()).default({}),
+  /**
+   * Run-safety watchdog. `idleTimeoutMs` aborts a run that produces no output
+   * for that long (default 2 min); `maxRunDurationMs` is an absolute per-run
+   * ceiling (default 10 min). `0` disables that timer. Prevents a stuck agent
+   * from blocking the auto-run FIFO queue forever.
+   */
+  idleTimeoutMs: z.number().int().min(0).default(120_000),
+  maxRunDurationMs: z.number().int().min(0).default(600_000),
 })
 export type ProviderSettings = z.infer<typeof ProviderSettingsSchema>
 
@@ -421,9 +425,13 @@ export const DEFAULT_PROVIDER_SETTINGS: ProviderSettings = {
   // the "pick a provider" empty state.
   activeProvider: 'claude-local',
   agentMode: 'auto',
+  embeddedAgentEnabled: null,
   onboardingDismissed: false,
   redactionEnabled: true,
   eventLogEnabled: true,
+  // "Auto" — least-permissive headless-capable mode per CLI (see the schema
+  // comment above and normalizeHeadlessMode). Bypass is an explicit opt-in.
+  permissionMode: 'default',
   providers: {
     'claude-local': DEFAULT_CLAUDE_LOCAL,
     'codex-local': DEFAULT_CODEX_LOCAL,
@@ -437,6 +445,8 @@ export const DEFAULT_PROVIDER_SETTINGS: ProviderSettings = {
   },
   customPersonas: [],
   personaOverrides: {},
+  idleTimeoutMs: 120_000,
+  maxRunDurationMs: 600_000,
 }
 
 /**
@@ -514,6 +524,19 @@ export function parseProviderSettings(raw: unknown): ProviderSettings {
     if (obj.providers && typeof obj.providers === 'object') {
       delete (obj.providers as Record<string, unknown>).copilot
     }
+    // NOTE: the pre-`embeddedAgentEnabled` migration is intentionally
+    // deferred — it now runs inside `useInitFlow`'s watcher once we know
+    // whether the project is initialized. That way an uninitialized project
+    // always lands on Page 0, even if stale `agentMode` settings from a
+    // prior install would otherwise have implied a workflow choice.
+
+    // NOTE: a former migration here rewrote `permissionMode: 'default'` to
+    // `'bypass'` because headless `default` stalls on claude/opencode. That
+    // escalation now happens safely per-CLI at spawn time via
+    // `normalizeHeadlessMode` (codex/copilot keep their sandboxed/minimal
+    // `default`; only claude/opencode escalate). Rewriting the stored value
+    // would wrongly force codex/copilot off their sandbox, so it is gone —
+    // `'default'` is the intended out-of-box default and is preserved as-is.
   }
   const parsed = ProviderSettingsSchema.safeParse(input)
   if (!parsed.success) return DEFAULT_PROVIDER_SETTINGS
@@ -524,15 +547,19 @@ export function parseProviderSettings(raw: unknown): ProviderSettings {
   return {
     activeProvider: parsed.data.activeProvider,
     agentMode: parsed.data.agentMode,
+    embeddedAgentEnabled: parsed.data.embeddedAgentEnabled,
     onboardingDismissed: parsed.data.onboardingDismissed,
     redactionEnabled: parsed.data.redactionEnabled,
     eventLogEnabled: parsed.data.eventLogEnabled,
+    permissionMode: parsed.data.permissionMode,
     providers: {
       ...DEFAULT_PROVIDER_SETTINGS.providers,
       ...parsed.data.providers,
     },
     customPersonas: parsed.data.customPersonas ?? [],
     personaOverrides: parsed.data.personaOverrides ?? {},
+    idleTimeoutMs: parsed.data.idleTimeoutMs,
+    maxRunDurationMs: parsed.data.maxRunDurationMs,
   }
 }
 
@@ -593,6 +620,7 @@ export function redactForLogging(settings: ProviderSettings): unknown {
     onboardingDismissed: settings.onboardingDismissed,
     redactionEnabled: settings.redactionEnabled,
     eventLogEnabled: settings.eventLogEnabled,
+    permissionMode: settings.permissionMode,
     providers: {
       'claude-local': {
         id: 'claude-local',

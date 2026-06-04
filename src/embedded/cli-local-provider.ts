@@ -70,11 +70,22 @@ export abstract class CliLocalProvider implements LLMProvider {
   readonly name: string
   private readonly spawnUrl: string
   private readonly fetchImpl: typeof fetch
+  private lastRunId: string | null = null
 
   constructor(cfg: CliLocalProviderConfig) {
     this.name = cfg.name
     this.spawnUrl = cfg.spawnUrl ?? '/__annotask/api/agent/spawn'
     this.fetchImpl = cfg.fetchImpl ?? globalThis.fetch.bind(globalThis)
+  }
+
+  /** Explicitly kill a running subprocess via the server's abort endpoint. */
+  async abortRun(): Promise<void> {
+    const runId = this.lastRunId
+    if (!runId) return
+    this.lastRunId = null
+    try {
+      await this.fetchImpl(`${this.spawnUrl}/${encodeURIComponent(runId)}`, { method: 'DELETE' })
+    } catch { /* best effort */ }
   }
 
   /** Build the CLI spawn request for this conversation turn. */
@@ -138,10 +149,17 @@ export abstract class CliLocalProvider implements LLMProvider {
     let stderrBuffer = ''
     let stopReason: string | undefined
     let usageEmitted = false
+    this.lastRunId = null
 
     try {
       for await (const ev of iterateSse(response.body, options.signal)) {
-        if (ev.event === 'stdout') {
+        if (ev.event === 'run') {
+          // Capture the server-assigned run ID so abortRun() can kill it.
+          try {
+            const parsed = JSON.parse(ev.data) as { runId?: string }
+            if (parsed.runId) this.lastRunId = parsed.runId
+          } catch { /* ignore */ }
+        } else if (ev.event === 'stdout') {
           for (const out of this.parseStdoutLine(ev.data)) {
             if (out.type === 'usage') usageEmitted = true
             yield out
@@ -163,6 +181,7 @@ export abstract class CliLocalProvider implements LLMProvider {
       yield { type: 'error', error: (err as Error).message ?? String(err) }
       stopReason = 'error'
     }
+    this.lastRunId = null
 
     if (options.signal?.aborted) stopReason = 'aborted'
     else if (exitCode !== null && exitCode !== 0) {

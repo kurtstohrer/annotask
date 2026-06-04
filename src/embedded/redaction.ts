@@ -94,6 +94,22 @@ export const DEFAULT_REDACTION_PATTERNS: ReadonlyArray<RedactionPattern> = [
     label: 'jwt',
     pattern: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
   },
+  // Google API keys — `AIza` + 35 url-safe chars.
+  {
+    label: 'google_api_key',
+    pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g,
+  },
+  // Stripe secret/restricted keys (live and test).
+  {
+    label: 'stripe_secret_key',
+    pattern: /\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}\b/g,
+  },
+  // Credentials embedded in a connection string (`proto://user:PASSWORD@host`).
+  // Redact just the password via the `value` sub-group; the scheme/user stay.
+  {
+    label: 'connection_string_password',
+    pattern: /(?<=[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)(?<value>[^@\s/]+)(?=@)/gi,
+  },
   // .env-style assignments where the variable name screams secret. Match the
   // value only, so the variable name stays in context for debugging.
   {

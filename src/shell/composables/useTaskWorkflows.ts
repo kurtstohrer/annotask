@@ -178,9 +178,22 @@ export function useTaskWorkflows(deps: {
       const dc = await resolveForSelection(denyFile, denyLine)
       if (dc) extra.data_context = dc
     }
-    deps.taskSystem.updateTaskStatus(taskId, 'denied', denyFeedbackText.value.trim(), Object.keys(extra).length > 0 ? extra : undefined)
+    await deps.taskSystem.updateTaskStatus(taskId, 'denied', denyFeedbackText.value.trim(), Object.keys(extra).length > 0 ? extra : undefined)
     denyingTaskId.value = null
     denyFeedbackText.value = ''
+    // Auto-mode retry: hand the denied task (now carrying the user's
+    // feedback) back to the auto-run driver so the agent gets another
+    // pass without the user having to click anything. Same readiness gate
+    // as the create path — if embedded mode is off, agentMode is manual,
+    // or no provider is ready, the deny just sits there for manual retry.
+    const providerSettings = useProviderSettings()
+    if (
+      providerSettings.settings.value.embeddedAgentEnabled === true
+      && providerSettings.settings.value.agentMode === 'auto'
+      && providerSettings.ready.value
+    ) {
+      requestAutoRun(taskId)
+    }
   }
 
   function submitNewTask() {
@@ -283,7 +296,8 @@ export function useTaskWorkflows(deps: {
       // the id here so the watcher in App.vue opens the right modal.
       const providerSettings = useProviderSettings()
       if (
-        providerSettings.settings.value.agentMode === 'auto'
+        providerSettings.settings.value.embeddedAgentEnabled === true
+        && providerSettings.settings.value.agentMode === 'auto'
         && providerSettings.ready.value
       ) {
         requestAutoRun(task.id)

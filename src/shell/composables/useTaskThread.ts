@@ -39,6 +39,10 @@ export interface ThreadMessage {
   toolUseId?: string
   /** Ordered work-stream timeline for the turn. Rendered by the rich UI. */
   blocks?: WorkStreamBlock[]
+  /** True while the assistant turn is still streaming (updated in place). */
+  isPartial?: boolean
+  /** Wall-clock of the last streamed event for a partial turn. */
+  lastEventAt?: number
 }
 
 export interface AppendInput {
@@ -48,6 +52,19 @@ export interface AppendInput {
   model?: string
   usage?: ThreadMessage['usage']
   blocks?: WorkStreamBlock[]
+  isPartial?: boolean
+  lastEventAt?: number
+}
+
+/** Patchable fields for an in-place message update (streaming a partial turn). */
+export interface UpdateInput {
+  content?: string
+  blocks?: WorkStreamBlock[]
+  usage?: ThreadMessage['usage']
+  isPartial?: boolean
+  lastEventAt?: number
+  model?: string
+  providerId?: string
 }
 
 export type ThreadStatus = 'idle' | 'loading' | 'live' | 'error' | 'reconnecting'
@@ -69,6 +86,8 @@ export interface UseTaskThread {
   open(taskId: string): Promise<void>
   /** Append a message via HTTP. Returns the persisted message. */
   append(input: AppendInput): Promise<ThreadMessage>
+  /** Patch a message in place (by id). Returns the merged message. */
+  update(id: string, patch: UpdateInput): Promise<ThreadMessage>
   /** Close the SSE stream. Safe to call repeatedly. */
   close(): void
 }
@@ -84,11 +103,24 @@ export function useTaskThread(): UseTaskThread {
   // Generation counter — every open() bumps it. Late-arriving fetches from a
   // previous open() compare against the current generation and bail out.
   let generation = 0
+  // Give-up after this many consecutive reconnect failures so the user gets an
+  // actionable error instead of a silently-frozen timeline forever. Reset on a
+  // successful (re)connect and on each fresh open().
+  const MAX_RECONNECT_ATTEMPTS = 6
+  let reconnectAttempts = 0
 
   function pushMessage(msg: ThreadMessage) {
-    // Dedupe on id — the SSE stream replays after a reconnect, and we don't
-    // want to double the transcript when the user toggles tabs mid-stream.
-    if (messages.value.some((m) => m.id === msg.id)) return
+    // Upsert by id. A partial assistant turn arrives once on append and then
+    // repeatedly via update() / the SSE echo of each in-place rewrite —
+    // replacing the existing entry lets the timeline grow live. For a brand
+    // new id we append. (Also dedupes the SSE replay after a reconnect.)
+    const idx = messages.value.findIndex((m) => m.id === msg.id)
+    if (idx >= 0) {
+      const next = messages.value.slice()
+      next[idx] = msg
+      messages.value = next
+      return
+    }
     messages.value = [...messages.value, msg]
     lastId.value = msg.id
   }
@@ -112,6 +144,7 @@ export function useTaskThread(): UseTaskThread {
     close()
     taskId.value = id
     reset()
+    reconnectAttempts = 0
     status.value = 'loading'
     try {
       const res = await fetch(`${API_BASE}/tasks/${encodeURIComponent(id)}/messages`)
@@ -145,8 +178,16 @@ export function useTaskThread(): UseTaskThread {
         pushMessage(msg)
       } catch { /* ignore malformed frames */ }
     })
-    es.addEventListener('open', () => { status.value = 'live'; error.value = null })
+    es.addEventListener('open', () => { reconnectAttempts = 0; status.value = 'live'; error.value = null })
     es.addEventListener('error', () => {
+      reconnectAttempts += 1
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        // Stop the indefinite silent reconnect and surface an actionable error.
+        close()
+        status.value = 'error'
+        error.value = 'Lost connection to the conversation stream. Click retry.'
+        return
+      }
       // EventSource auto-reconnects; surface the state but don't tear down.
       status.value = 'reconnecting'
     })
@@ -165,6 +206,8 @@ export function useTaskThread(): UseTaskThread {
         model: input.model,
         usage: input.usage,
         blocks: input.blocks,
+        isPartial: input.isPartial,
+        lastEventAt: input.lastEventAt,
       }),
     })
     if (!res.ok) {
@@ -173,13 +216,33 @@ export function useTaskThread(): UseTaskThread {
     }
     const msg = (await res.json()) as ThreadMessage
     // The SSE stream will also deliver this message (via the server's
-    // broadcast) but the dedupe in pushMessage tolerates both paths so the
+    // broadcast) but the upsert in pushMessage tolerates both paths so the
     // composer can show it immediately without waiting for the round-trip.
     pushMessage(msg)
     return msg
   }
 
-  return { taskId, messages, status, error, lastId, open, append, close }
+  async function update(id: string, patch: UpdateInput): Promise<ThreadMessage> {
+    const tid = taskId.value
+    if (!tid) throw new Error('Thread is not open')
+    const res = await fetch(
+      `${API_BASE}/tasks/${encodeURIComponent(tid)}/messages/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      },
+    )
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`Update failed (HTTP ${res.status}): ${text.slice(0, 200)}`)
+    }
+    const msg = (await res.json()) as ThreadMessage
+    pushMessage(msg)
+    return msg
+  }
+
+  return { taskId, messages, status, error, lastId, open, append, update, close }
 }
 
 /**
