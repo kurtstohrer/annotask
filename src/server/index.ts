@@ -82,7 +82,29 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
       })
     },
   })
-  const agentSpawn = createAgentSpawnHandler()
+  // Orphaned-task finalization. When an agent run ends (child exit) but the
+  // orchestrating client never transitioned the task — e.g. the tab closed
+  // mid-run — the task is stuck in `in_progress` forever (the spawn registry
+  // kills the *process* but can't fix the *status*). The registry reports
+  // every run end; we grace-check a moment later (a normal completion's client
+  // `review`/`blocked` PATCH lands well within this window, so it no-ops) and,
+  // if the task is still `in_progress`, mark it `blocked` so it's surfaced
+  // instead of stuck.
+  const ORPHAN_FINALIZE_GRACE_MS = 12_000
+  function scheduleOrphanFinalize(taskId: string): void {
+    setTimeout(() => {
+      const task = state.getTasks().tasks.find((t: { id?: string; status?: string }) => t?.id === taskId)
+      if (!task || task.status !== 'in_progress') return
+      void state.updateTask(taskId, {
+        status: 'blocked',
+        blocked_reason: 'The agent run ended before finishing (the tab was likely closed). Re-run the task to continue.',
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[annotask] orphan finalize failed for task ${taskId}:`, err)
+      })
+    }, ORPHAN_FINALIZE_GRACE_MS).unref()
+  }
+  const agentSpawn = createAgentSpawnHandler({ onRunEnd: scheduleOrphanFinalize })
   const agentDetect = createAgentDetector()
   const initRunner = createInitRunner({
     projectRoot: options.projectRoot,

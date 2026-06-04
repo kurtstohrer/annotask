@@ -30,6 +30,9 @@ import fs from 'node:fs'
 /** Allow-listed CLI binary names. Free-form names are rejected. */
 const ALLOWED_CLIS = new Set(['claude', 'codex', 'opencode', 'copilot'])
 
+/** Task id shape (`task-<...>`). Keys the per-task run registry. */
+const SAFE_TASK_ID = /^task-[A-Za-z0-9_-]+$/
+
 /** Env keys the caller may add. PATH/HOME/USER/SHELL/etc. are never overridable. */
 const SAFE_ENV_KEYS = new Set([
   'ANTHROPIC_MODEL',
@@ -109,11 +112,16 @@ export interface SpawnRequestBody {
   args: string[]
   stdin?: string
   env?: Record<string, string>
+  /** Optional task this run is applying. Keys the run registry so one task
+   *  can't be double-spawned (e.g. two tabs auto-running it) and so the run
+   *  end can be reported for orphaned-task finalization. */
+  taskId?: string
 }
 
 interface ActiveRun {
   child: ChildProcessWithoutNullStreams
   kill: () => void
+  taskId?: string
 }
 
 export interface AgentSpawnRegistry {
@@ -121,8 +129,23 @@ export interface AgentSpawnRegistry {
   abort(runId: string): boolean
   /** Number of currently active runs. Exposed for tests. */
   size(): number
+  /** True iff a live run exists for this task id. */
+  taskRunning(taskId: string): boolean
   /** Kill every active run. Called from server.dispose(). */
   killAll(): void
+}
+
+export interface AgentSpawnOptions {
+  /**
+   * Fired once a run that carried a `taskId` ends (child closed or errored),
+   * for normal completion AND interrupted/orphaned runs alike. The wiring in
+   * index.ts uses it to finalize a task the client never transitioned (e.g.
+   * the orchestrating tab closed mid-run) — it grace-checks "still in_progress?"
+   * so a normal completion (client about to set `review`) is a no-op.
+   */
+  onRunEnd?: (taskId: string) => void
+  /** Test seam: inject a child-process factory (defaults to node:child_process spawn). */
+  spawnImpl?: typeof spawn
 }
 
 export interface AgentSpawnHandler {
@@ -210,11 +233,18 @@ export function parseSpawnBody(raw: unknown): SpawnRequestBody | string {
       env[k] = v
     }
   }
-  return { cli: body.cli, args: body.args as string[], stdin: body.stdin as string | undefined, env }
+  let taskId: string | undefined
+  if (body.taskId !== undefined) {
+    if (typeof body.taskId !== 'string' || !SAFE_TASK_ID.test(body.taskId)) return '`taskId` must be a task id when set'
+    taskId = body.taskId
+  }
+  return { cli: body.cli, args: body.args as string[], stdin: body.stdin as string | undefined, env, taskId }
 }
 
-export function createAgentSpawnHandler(): AgentSpawnHandler {
+export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpawnHandler {
   const active = new Map<string, ActiveRun>()
+  // taskId -> runId. Enforces one live run per task (cross-tab dedup).
+  const byTask = new Map<string, string>()
 
   function newRunId(): string {
     return `run-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -232,6 +262,7 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
       try { run.kill() } catch { /* ignore */ }
     }
     active.clear()
+    byTask.clear()
   }
 
   async function handleSpawn(
@@ -278,6 +309,27 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
       return
     }
 
+    const runId = newRunId()
+    // Per-task dedup: at most one live run per task. Closes the cross-tab
+    // double-spawn hole — two tabs each auto-running the same task would
+    // otherwise fork two CLIs editing the same files, which the client-side
+    // (per-tab) concurrency guard can't prevent. Reserve BEFORE the SSE headers
+    // so the rejection can still be a plain 409. (Sync between check and set.)
+    if (parsed.taskId) {
+      if (byTask.has(parsed.taskId)) {
+        res.statusCode = 409
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({
+          error: {
+            code: 'task_already_running',
+            message: `Task ${parsed.taskId} is already running in another tab or session.`,
+          },
+        }))
+        return
+      }
+      byTask.set(parsed.taskId, runId)
+    }
+
     // SSE headers.
     res.statusCode = 200
     res.setHeader('Content-Type', 'text/event-stream')
@@ -285,13 +337,12 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
     res.setHeader('Connection', 'keep-alive')
     res.flushHeaders?.()
 
-    const runId = newRunId()
     write(res, 'run', { runId })
 
     let child: ChildProcessWithoutNullStreams
     try {
       const hostUser = hostUserSpawnOptions()
-      child = spawn(parsed.cli, parsed.args, {
+      child = (opts.spawnImpl ?? spawn)(parsed.cli, parsed.args, {
         cwd: projectRoot,
         shell: false,
         uid: hostUser.uid,
@@ -305,6 +356,7 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
     } catch (err) {
+      if (parsed.taskId && byTask.get(parsed.taskId) === runId) byTask.delete(parsed.taskId)
       write(res, 'error', (err as Error).message)
       write(res, 'exit', { code: null, signal: null })
       res.end()
@@ -320,7 +372,7 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
         try { child.kill('SIGKILL') } catch { /* ignore */ }
       }, KILL_GRACE_MS).unref()
     }
-    active.set(runId, { child, kill: killChild })
+    active.set(runId, { child, kill: killChild, taskId: parsed.taskId })
 
     // Pipe stdin if provided. Attach the async error listener BEFORE writing:
     // a child that closes its read end early emits an *asynchronous* EPIPE that
@@ -424,11 +476,18 @@ export function createAgentSpawnHandler(): AgentSpawnHandler {
     clearInterval(keepalive)
     clearTimeout(maxDuration)
     active.delete(runId)
+    if (parsed.taskId && byTask.get(parsed.taskId) === runId) byTask.delete(parsed.taskId)
     try { res.end() } catch { /* already ended */ }
+    // Report the run end so a task the client never finalized (orphaned by a
+    // closed tab) can be reconciled server-side. Fired for normal completions
+    // too — the handler grace-checks status, so those no-op.
+    if (parsed.taskId) {
+      try { opts.onRunEnd?.(parsed.taskId) } catch { /* never let a sink break cleanup */ }
+    }
   }
 
   return {
-    registry: { abort, killAll, size: () => active.size },
+    registry: { abort, killAll, size: () => active.size, taskRunning: (taskId) => byTask.has(taskId) },
     handleSpawn,
   }
 }

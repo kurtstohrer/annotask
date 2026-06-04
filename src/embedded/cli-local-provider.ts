@@ -115,13 +115,16 @@ export abstract class CliLocalProvider implements LLMProvider {
     }
 
     const spawn = this.buildSpawn(messages, tools, options)
+    // Forward the task id (when this run is applying one) so the server can key
+    // its run registry by task — dedup cross-tab runs + finalize orphans.
+    const spawnBody = options.taskId ? { ...spawn, taskId: options.taskId } : spawn
 
     let response: Response
     try {
       response = await this.fetchImpl(this.spawnUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify(spawn),
+        body: JSON.stringify(spawnBody),
         signal: options.signal,
       })
     } catch (err) {

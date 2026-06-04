@@ -199,7 +199,7 @@ describeIf('apply CLI matrix — marketing playground (live)', () => {
       let errorString: string | null = null
       const textParts: string[] = []
       for await (const ev of provider.stream(
-        [{ role: 'user', content: userPrompt }], [], { systemPrompt, model },
+        [{ role: 'user', content: userPrompt }], [], { systemPrompt, model, taskId: task.id },
       ) as AsyncIterable<ProviderEvent>) {
         if (ev.type === 'text') textParts.push(ev.text)
         else if (ev.type === 'tool_call') sawTool = true

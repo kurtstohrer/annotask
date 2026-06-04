@@ -88,7 +88,7 @@ describe('API endpoints', () => {
       clear: async () => { /* no-op */ },
     },
     agentSpawn: {
-      registry: { abort: () => false, size: () => 0, killAll: () => { /* no-op */ } },
+      registry: { abort: () => false, size: () => 0, taskRunning: () => false, killAll: () => { /* no-op */ } },
       handleSpawn: async (_req: unknown, res: { statusCode: number; end: (s?: string) => void }) => {
         res.statusCode = 501; res.end('not supported in this test')
       },

@@ -543,6 +543,9 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
         model: activeModel || undefined,
         effort: activeEffort,
         permissionMode: effectivePermissionMode,
+        // Lets the server key its run registry by task: one live run per task
+        // (no cross-tab double-spawn) + orphaned-task finalization.
+        taskId: taskId ?? undefined,
       })) {
         lastEventAt = Date.now()
         applyEvent(ev)

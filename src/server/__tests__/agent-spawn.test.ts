@@ -1,6 +1,39 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { parseSpawnBody, permissionLevelOfArgs, maxPermissionCap, exceedsPermissionCap, __test } from '../agent-spawn.js'
+import { EventEmitter } from 'node:events'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { ChildProcessWithoutNullStreams, spawn as nodeSpawn } from 'node:child_process'
+import { parseSpawnBody, permissionLevelOfArgs, maxPermissionCap, exceedsPermissionCap, createAgentSpawnHandler, __test } from '../agent-spawn.js'
 import { initPermissionFlagsFor } from '../../embedded/permission-mode-flags.js'
+
+// ── Mocks so the registry/lifecycle can be tested without a real subprocess ──
+class FakeStream extends EventEmitter {
+  setEncoding() { /* noop */ }
+  write(_data: unknown, cb?: () => void) { if (cb) cb(); return true }
+  end() { /* noop */ }
+}
+class FakeChild extends EventEmitter {
+  stdin = new FakeStream()
+  stdout = new FakeStream()
+  stderr = new FakeStream()
+  killed = false
+  kill() { this.killed = true; return true }
+  /** Resolve the handler's wait by emitting the child's `close`. */
+  finish(code = 0) { this.emit('close', code, null) }
+}
+class FakeRes extends EventEmitter {
+  statusCode = 200
+  ended = false
+  body = ''
+  setHeader() { /* noop */ }
+  flushHeaders() { /* noop */ }
+  write(s: string) { this.body += s; return true }
+  end(s?: string) { if (s) this.body += s; this.ended = true; this.emit('close'); return this }
+}
+function fakeReq() { return new EventEmitter() as unknown as IncomingMessage }
+function fakeRes() { return new FakeRes() as unknown as ServerResponse & FakeRes }
+function fakeSpawn(child: FakeChild): typeof nodeSpawn {
+  return (() => child as unknown as ChildProcessWithoutNullStreams) as unknown as typeof nodeSpawn
+}
 
 describe('parseSpawnBody', () => {
   it('accepts a well-formed body', () => {
@@ -122,6 +155,63 @@ describe('exceedsPermissionCap applied to init flags (the init-pipeline floor)',
     for (const bin of bins) {
       expect(exceedsPermissionCap(initPermissionFlagsFor(bin))).not.toBeNull()
     }
+  })
+})
+
+describe('parseSpawnBody — taskId', () => {
+  it('accepts a valid task id and rejects malformed ones', () => {
+    const ok = parseSpawnBody({ cli: 'claude', args: [], taskId: 'task-abc_1-XYZ' })
+    expect(typeof ok === 'string').toBe(false)
+    if (typeof ok !== 'string') expect(ok.taskId).toBe('task-abc_1-XYZ')
+    expect(typeof parseSpawnBody({ cli: 'claude', args: [], taskId: '../evil' })).toBe('string')
+    expect(typeof parseSpawnBody({ cli: 'claude', args: [], taskId: 'nope' })).toBe('string')
+    expect(typeof parseSpawnBody({ cli: 'claude', args: [], taskId: 123 })).toBe('string')
+    // Absent taskId is fine (free-form chat / non-task runs).
+    expect(typeof parseSpawnBody({ cli: 'claude', args: [] }) === 'string').toBe(false)
+  })
+})
+
+describe('run registry — per-task dedup + orphan hook', () => {
+  it('rejects a second spawn for a task already running (cross-tab dedup)', async () => {
+    const child = new FakeChild()
+    const handler = createAgentSpawnHandler({ spawnImpl: fakeSpawn(child) })
+
+    // Run 1 starts and parks awaiting the child's close.
+    const p1 = handler.handleSpawn(fakeReq(), fakeRes(), { cli: 'claude', args: [], taskId: 'task-dup' }, '/tmp')
+    expect(handler.registry.taskRunning('task-dup')).toBe(true)
+
+    // Run 2 for the SAME task is refused with 409 — no second child.
+    const res2 = fakeRes()
+    await handler.handleSpawn(fakeReq(), res2, { cli: 'claude', args: [], taskId: 'task-dup' }, '/tmp')
+    expect(res2.statusCode).toBe(409)
+    expect(res2.body).toContain('already running')
+    expect(handler.registry.taskRunning('task-dup')).toBe(true) // run 1 still holds it
+
+    // Finishing run 1 releases the task slot.
+    child.finish(0)
+    await p1
+    expect(handler.registry.taskRunning('task-dup')).toBe(false)
+  })
+
+  it('fires onRunEnd with the task id when a run ends (orphan-finalization hook)', async () => {
+    const ended: string[] = []
+    const child = new FakeChild()
+    const handler = createAgentSpawnHandler({ spawnImpl: fakeSpawn(child), onRunEnd: (id) => ended.push(id) })
+    const p = handler.handleSpawn(fakeReq(), fakeRes(), { cli: 'claude', args: [], taskId: 'task-orphan' }, '/tmp')
+    child.finish(0)
+    await p
+    expect(ended).toEqual(['task-orphan'])
+  })
+
+  it('does not dedup or fire the hook for runs without a taskId', async () => {
+    const ended: string[] = []
+    const child = new FakeChild()
+    const handler = createAgentSpawnHandler({ spawnImpl: fakeSpawn(child), onRunEnd: (id) => ended.push(id) })
+    const p = handler.handleSpawn(fakeReq(), fakeRes(), { cli: 'claude', args: [] }, '/tmp')
+    expect(handler.registry.size()).toBe(1)
+    child.finish(0)
+    await p
+    expect(ended).toEqual([]) // no taskId → no orphan reconciliation
   })
 })
 

@@ -142,4 +142,36 @@ describe('TaskThreadStore', () => {
     expect(msgs.find((m) => m.id === partial.id)?.content).toBe('streamed')
     expect(msgs.some((m) => m.content === 'interrupt')).toBe(true)
   })
+
+  it('tail-rewrites the streaming partial: many updates stay consistent on disk', async () => {
+    const store = createTaskThreadStore({ projectRoot })
+    await store.append('task-stream', { role: 'user', content: 'task' })
+    const partial = await store.append('task-stream', { role: 'assistant', content: '', isPartial: true })
+    // Simulate a streaming turn: many in-place updates to the last (partial) line.
+    for (let i = 1; i <= 25; i++) {
+      await store.update('task-stream', partial.id, { content: 'x'.repeat(i), isPartial: i < 25 })
+    }
+    // A FRESH store reads from disk only — proves the tail-rewrites left a valid
+    // JSONL file (exactly two lines, last one fully updated), not a corrupted tail.
+    const fresh = createTaskThreadStore({ projectRoot })
+    const msgs = await fresh.read('task-stream')
+    expect(msgs).toHaveLength(2)
+    expect(msgs[0].content).toBe('task')
+    expect(msgs[1].id).toBe(partial.id)
+    expect(msgs[1].content).toBe('x'.repeat(25))
+    expect(msgs[1].isPartial).toBe(false)
+  })
+
+  it('updates an earlier (non-last) message via the full-rewrite fallback', async () => {
+    const store = createTaskThreadStore({ projectRoot })
+    const first = await store.append('task-mid', { role: 'user', content: 'first' })
+    await store.append('task-mid', { role: 'assistant', content: 'second' })
+    await store.append('task-mid', { role: 'user', content: 'third' })
+    const updated = await store.update('task-mid', first.id, { content: 'FIRST-EDITED' })
+    expect(updated?.content).toBe('FIRST-EDITED')
+    const fresh = createTaskThreadStore({ projectRoot })
+    const msgs = await fresh.read('task-mid')
+    expect(msgs.map((m) => m.content)).toEqual(['FIRST-EDITED', 'second', 'third'])
+    expect(msgs).toHaveLength(3)
+  })
 })

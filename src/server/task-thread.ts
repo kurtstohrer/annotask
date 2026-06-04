@@ -131,6 +131,54 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
   // interleave their JSONL lines.
   const writeLocks = new Map<string, Promise<unknown>>()
 
+  // In-memory mirror of each task's thread. This store is the SOLE writer of
+  // the conversation JSONL (external agents only read / tail it), so the mirror
+  // is authoritative. It lets update() skip re-reading+parsing the whole file
+  // on every throttled partial-turn flush, and lets the common "update the
+  // last (streaming) message" case rewrite only the tail instead of the whole
+  // file — turning the old O(n) per-flush (O(n^2) over a turn) into O(1)
+  // amortized. `bytes` tracks the file's byte length so the tail offset is known
+  // without a stat.
+  interface TaskCache { messages: ThreadMessage[]; bytes: number }
+  const caches = new Map<string, TaskCache>()
+  const loading = new Map<string, Promise<TaskCache>>()
+
+  function lineBytes(msg: ThreadMessage): number {
+    return Buffer.byteLength(JSON.stringify(msg) + '\n', 'utf-8')
+  }
+
+  async function ensureCache(taskId: string): Promise<TaskCache> {
+    const have = caches.get(taskId)
+    if (have) return have
+    let load = loading.get(taskId)
+    if (!load) {
+      load = (async (): Promise<TaskCache> => {
+        const p = safePath(taskId)
+        let raw = ''
+        if (p) {
+          try { raw = await fsp.readFile(p, 'utf-8') }
+          catch (err: unknown) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+          }
+        }
+        const messages: ThreadMessage[] = []
+        for (const line of raw.split('\n')) {
+          const t = line.trim()
+          if (!t) continue
+          try { messages.push(JSON.parse(t) as ThreadMessage) } catch { /* skip malformed */ }
+        }
+        // Sole-writer invariant ⇒ a well-formed JSONL file, so byte length is
+        // the sum of serialized message lines.
+        const entry: TaskCache = { messages, bytes: messages.reduce((n, m) => n + lineBytes(m), 0) }
+        caches.set(taskId, entry)
+        loading.delete(taskId)
+        return entry
+      })()
+      loading.set(taskId, load)
+    }
+    return load
+  }
+
   function safePath(taskId: string): string | null {
     if (!SAFE_TASK_ID.test(taskId)) return null
     return path.join(dir, `${taskId}.jsonl`)
@@ -148,31 +196,14 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
     taskId: string,
     o: { afterId?: string } = {},
   ): Promise<ThreadMessage[]> {
-    const p = safePath(taskId)
-    if (!p) return []
-    let raw: string
-    try { raw = await fsp.readFile(p, 'utf-8') }
-    catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw err
-    }
-    const msgs: ThreadMessage[] = []
-    for (const line of raw.split('\n')) {
-      const t = line.trim()
-      if (!t) continue
-      try {
-        const parsed = JSON.parse(t) as ThreadMessage
-        msgs.push(parsed)
-      } catch {
-        // Skip malformed lines silently — better to serve a partial thread
-        // than to 500 because one byte got corrupted.
-      }
-    }
+    const { messages } = await ensureCache(taskId)
     if (o.afterId) {
-      const idx = msgs.findIndex((m) => m.id === o.afterId)
-      if (idx >= 0) return msgs.slice(idx + 1)
+      const idx = messages.findIndex((m) => m.id === o.afterId)
+      if (idx >= 0) return messages.slice(idx + 1)
     }
-    return msgs
+    // Return a copy so callers can't splice the cache; message objects are
+    // shared but update() replaces them immutably, so that's safe.
+    return messages.slice()
   }
 
   async function append(taskId: string, input: AppendInput): Promise<ThreadMessage> {
@@ -193,10 +224,15 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
       isPartial: input.isPartial,
       lastEventAt: input.lastEventAt,
     }
+    const entry = await ensureCache(taskId)
     const prev = writeLocks.get(taskId) ?? Promise.resolve()
     const next = prev
       .catch(() => undefined)
-      .then(() => appendInternal(taskId, msg))
+      .then(async () => {
+        await appendInternal(taskId, msg)
+        entry.messages.push(msg)
+        entry.bytes += lineBytes(msg)
+      })
     writeLocks.set(taskId, next)
     await next
     fanOut(taskId, msg)
@@ -242,12 +278,29 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
     const next = prev
       .catch(() => undefined)
       .then(async (): Promise<ThreadMessage | null> => {
-        const all = await read(taskId)
-        const idx = all.findIndex((m) => m.id === id)
+        const entry = await ensureCache(taskId)
+        const idx = entry.messages.findIndex((m) => m.id === id)
         if (idx < 0) return null
-        const merged: ThreadMessage = { ...all[idx], ...patch }
-        all[idx] = merged
-        await rewriteInternal(taskId, all)
+        const merged: ThreadMessage = { ...entry.messages[idx], ...patch }
+        const p = safePath(taskId)
+        if (idx === entry.messages.length - 1 && p) {
+          // Common case — updating the in-flight (last) message. Rewrite only
+          // the tail line. Non-atomic (truncate then append), but the dropped
+          // line is the streaming partial and in-process readers serve from the
+          // cache, so they never observe the gap.
+          const lineStart = entry.bytes - lineBytes(entry.messages[idx])
+          const newLine = JSON.stringify(merged) + '\n'
+          await fsp.truncate(p, lineStart)
+          await fsp.appendFile(p, newLine, 'utf-8')
+          entry.bytes = lineStart + Buffer.byteLength(newLine, 'utf-8')
+        } else {
+          // Updating an earlier message (rare) — atomic full rewrite.
+          const tentative = entry.messages.slice()
+          tentative[idx] = merged
+          await rewriteInternal(taskId, tentative)
+          entry.bytes = tentative.reduce((n, m) => n + lineBytes(m), 0)
+        }
+        entry.messages[idx] = merged
         return merged
       })
     writeLocks.set(taskId, next)
@@ -269,6 +322,8 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
   }
 
   async function clear(taskId: string): Promise<void> {
+    caches.delete(taskId)
+    loading.delete(taskId)
     const p = safePath(taskId)
     if (!p) return
     try { await fsp.unlink(p) } catch { /* already gone */ }

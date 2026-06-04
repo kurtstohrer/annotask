@@ -62,6 +62,13 @@ export interface StreamOptions {
    * `resolveEffectivePermissionMode(task, persona, global)` in the runner.
    */
   permissionMode?: 'default' | 'plan' | 'bypass'
+  /**
+   * Task this run is applying, if any. Local-CLI providers forward it in the
+   * spawn request so the server can key its run registry by task (one live run
+   * per task → no cross-tab double-spawn) and finalize orphaned tasks. HTTP
+   * providers ignore it.
+   */
+  taskId?: string
   /** Caller's abort signal. Providers must terminate the stream when it fires. */
   signal?: AbortSignal
 }
