@@ -19,6 +19,9 @@ import type { AgentDetector } from './agent-detect.js'
 import type { InitRunner, ScanOptions } from './init.js'
 import type { UsageLedger } from './usage-ledger.js'
 import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
+import { isWireframeDocument, type WireframeDocument, type WireframeInstance } from '../shared/wireframe-types.js'
+import { WireframeRevConflictError } from './wireframe-store.js'
+import type { DraftEditRequest } from './draft-edits.js'
 import { PROVIDER_IDS, EFFORT_LEVELS } from '../embedded/provider-config.js'
 
 export interface APIOptions {
@@ -27,11 +30,22 @@ export interface APIOptions {
   apiSchemaUrls?: string[]
   /** Extra project-relative schema file paths. */
   apiSchemaFiles?: string[]
+  /**
+   * Hostnames allowed in the Host header beyond localhost / IP literals —
+   * DNS-rebinding gate (see `isAllowedHost`). A function because the bind
+   * host is only known after the dev server starts listening, which is after
+   * this middleware is constructed.
+   */
+  allowedHosts?: () => readonly string[]
   getReport: () => unknown
   getConfig: () => unknown
   getDesignSpec: () => unknown
   getTasks: () => { version: string; tasks: Array<Record<string, unknown>> }
-  updateTask: (id: string, updates: Record<string, unknown>) => unknown | Promise<unknown>
+  updateTask: (
+    id: string,
+    updates: Record<string, unknown>,
+    opts?: { guard?: (task: Record<string, unknown>) => string | null },
+  ) => unknown | Promise<unknown>
   deleteTask: (id: string) => unknown | Promise<unknown>
   addTask: (task: Record<string, unknown>) => unknown | Promise<unknown>
   saveInteractionHistory: (taskId: string, snapshot: unknown) => Promise<void>
@@ -58,6 +72,15 @@ export interface APIOptions {
   getAgentConfigs: () => Promise<AgentConfigs>
   /** Writes one persona's project directions. */
   setAgentConfig: (personaId: string, entry: Partial<AgentConfigEntry>) => Promise<AgentConfigs>
+  /** Reads the persisted multi-route wireframe document. */
+  getWireframe: () => Promise<WireframeDocument>
+  /** Replaces the wireframe document (whole-document PUT). */
+  setWireframe: (doc: WireframeDocument) => Promise<WireframeDocument>
+  /** Render-in-place draft capability (P1.3). OFF unless ANNOTASK_RENDER_IN_PLACE
+   *  is set — the draft endpoints 404 when disabled. */
+  renderInPlaceEnabled: boolean
+  writeDraft: (req: DraftEditRequest) => Promise<{ draftId: string }>
+  revertDraft: (draftId: string) => Promise<{ reverted: boolean }>
   /** Append-only token-usage ledger across init / task / apply runs. */
   usageLedger: UsageLedger
 }
@@ -93,11 +116,13 @@ export type ApiErrorCode =
   | 'validation_failed'
   | 'invalid_transition'
   | 'forbidden_origin'
+  | 'forbidden_host'
   | 'origin_port_mismatch'
   | 'not_found'
   | 'missing_field'
   | 'invalid_id'
   | 'invalid_body'
+  | 'conflict'
 
 export interface ApiErrorBody {
   error: { code: ApiErrorCode; message: string }
@@ -109,7 +134,7 @@ function sendError(res: ServerResponse, status: number, message: string, code: A
   res.end(JSON.stringify(body))
 }
 
-import { isLocalOrigin, originMatchesPort } from './origin.js'
+import { isAllowedHost, isLocalOrigin, originMatchesPort } from './origin.js'
 import { scanComponentLibraries } from './component-scanner.js'
 import { filterTasksByMfe } from '../shared/task-summary.js'
 import { getCodeContext } from './code-context.js'
@@ -174,8 +199,70 @@ function deriveServerPort(req: IncomingMessage): number | undefined {
   return Number.isFinite(p) ? p : undefined
 }
 
+/**
+ * Server-side wireframe lifecycle closure. When a `wireframe_apply` task is
+ * ACCEPTED its placements are done — remove them from wireframe.json so the
+ * shell never re-mounts a wireframe copy next to the agent's real component.
+ * When the task is DELETED the work was abandoned — revert its instances to
+ * 'placed' (and clear `taskId`) so the user can rebuild them. (A DENIED task
+ * keeps 'building': the agent retries the same task.)
+ *
+ * Best-effort by design: the task mutation has already committed, so a
+ * wireframe failure must not fail the response. CAS conflicts (another tab
+ * writing concurrently) retry the read-modify-write a few times; the worst
+ * case after exhausting retries is a stale placement the user can delete from
+ * the placements panel. `setWireframe` broadcasts `wireframe:updated`, so live
+ * shells re-load without polling.
+ */
+async function closeWireframeLifecycle(
+  options: Pick<APIOptions, 'getWireframe' | 'setWireframe'>,
+  taskId: string,
+  mode: 'remove' | 'revert',
+): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const doc = await options.getWireframe()
+    let touched = false
+    const routes = doc.routes.map((route) => {
+      if (!route.instances.some((i) => i.taskId === taskId)) return route
+      touched = true
+      const instances: WireframeInstance[] = mode === 'remove'
+        ? route.instances.filter((i) => i.taskId !== taskId)
+        : route.instances.map((i) => {
+            if (i.taskId !== taskId) return i
+            const { taskId: _cleared, ...rest } = i
+            return { ...rest, status: 'placed' as const, updatedAt: Date.now() }
+          })
+      return { ...route, instances, updatedAt: Date.now() }
+    })
+    if (!touched) return
+    try {
+      await options.setWireframe({ ...doc, routes, updatedAt: Date.now() })
+      return
+    } catch (err) {
+      // A non-conflict failure (disk error) won't get better on retry.
+      if (!(err instanceof WireframeRevConflictError)) {
+        console.warn(`[Annotask] wireframe ${mode} for ${taskId} failed:`, err)
+        return
+      }
+    }
+  }
+  console.warn(`[Annotask] wireframe ${mode} for ${taskId} gave up after rev conflicts`)
+}
+
 export function createAPIMiddleware(options: APIOptions) {
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    // DNS-rebinding gate — runs FIRST, for ALL methods. The Origin checks
+    // below only cover mutating requests; without a Host check a rebound page
+    // can read every GET endpoint (read-file, source excerpts, tasks,
+    // screenshots, transcripts). Vite's own allowedHosts middleware never
+    // sees /__annotask/* because Annotask registers ahead of it, so this is
+    // the only host gate these routes get. Covers the screenshot route too
+    // (it lives in this middleware, above the /api/ prefix check).
+    if (req.url?.startsWith('/__annotask/') && !isAllowedHost(req.headers.host, options.allowedHosts?.() ?? [])) {
+      res.setHeader('Content-Type', 'application/json')
+      return sendError(res, 403, 'Forbidden: host not allowed (see ANNOTASK_ALLOWED_HOSTS)', 'forbidden_host')
+    }
+
     // Serve screenshots (outside /api/ path)
     if (req.url?.startsWith('/__annotask/screenshots/') && req.method === 'GET') {
       const filename = (req.url.replace('/__annotask/screenshots/', '')).replace(/\?.*$/, '')
@@ -463,6 +550,83 @@ export function createAPIMiddleware(options: APIOptions) {
       }
     }
 
+    // ── Wireframe document (.annotask/wireframe.json) ──
+    // GET returns the whole multi-route doc, or just one route's slice with
+    // `?route=PATH`. PUT replaces the whole document (the shell owns the
+    // in-memory merge and PUTs the full doc — small, single-writer file).
+    if (path === 'wireframe' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const route = urlObj.searchParams.get('route')
+      const doc = await options.getWireframe()
+      if (route) {
+        res.end(JSON.stringify({ ...doc, routes: doc.routes.filter(r => r.route === route) }, null, 2))
+        return
+      }
+      res.end(JSON.stringify(doc, null, 2))
+      return
+    }
+
+    if (path === 'wireframe' && req.method === 'PUT') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+        return sendError(res, 400, 'Request body must be a JSON object', 'body_not_object')
+      }
+      if (!isWireframeDocument(parsed.data)) {
+        return sendError(res, 400, 'Body must be a wireframe document { version: "1.0", updatedAt, routes[] } with well-formed instances', 'validation_failed')
+      }
+      try {
+        const saved = await options.setWireframe(parsed.data)
+        res.end(JSON.stringify(saved, null, 2))
+      } catch (err) {
+        // Stale/missing rev — another writer (tab, accept hook) committed
+        // first. The client must re-GET and merge; never auto-retry the write.
+        if (err instanceof WireframeRevConflictError) {
+          return sendError(res, 409, err.message, 'conflict')
+        }
+        throw err
+      }
+      return
+    }
+
+    // ── Render-in-place draft (P1.3, opt-in via ANNOTASK_RENDER_IN_PLACE) ──
+    // Writes a reversible component-usage draft at an anchor so Vite HMR
+    // re-renders it in real context. 404 when the feature flag is off — this is
+    // the only path that mutates real project source, so it stays opt-in.
+    if (path === 'wireframe/draft' && req.method === 'POST') {
+      if (!options.renderInPlaceEnabled) return sendError(res, 404, 'render-in-place is disabled', 'not_found')
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      const b = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data as Record<string, unknown> : null
+      if (!b || typeof b.file !== 'string' || typeof b.line !== 'number' || typeof b.position !== 'string' || typeof b.componentName !== 'string') {
+        return sendError(res, 400, 'Body must include file, line, position, componentName', 'invalid_body')
+      }
+      try {
+        const result = await options.writeDraft(b as unknown as DraftEditRequest)
+        res.end(JSON.stringify(result, null, 2))
+      } catch (err) {
+        return sendError(res, 500, `Draft write failed: ${(err as Error).message}`, 'validation_failed')
+      }
+      return
+    }
+
+    if (path === 'wireframe/draft/revert' && req.method === 'POST') {
+      if (!options.renderInPlaceEnabled) return sendError(res, 404, 'render-in-place is disabled', 'not_found')
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      const b = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data as Record<string, unknown> : null
+      if (!b || typeof b.draftId !== 'string') return sendError(res, 400, 'Body must include draftId', 'invalid_body')
+      const result = await options.revertDraft(b.draftId)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
     if (path === 'tasks' && req.method === 'GET') {
       const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
       const mfeFilter = urlObj.searchParams.get('mfe')
@@ -537,16 +701,28 @@ export function createAPIMiddleware(options: APIOptions) {
       const result = parseWith(UpdateTaskBody, parsed.data)
       if (!result.ok) return sendError(res, 400, result.error)
       const updates = result.data
-      if (updates.status !== undefined) {
-        const currentTask = options.getTasks().tasks.find(t => t.id === id)
-        if (currentTask) {
-          const reason = assertTransition(currentTask.status, updates.status)
-          if (reason) return sendError(res, 400, reason, 'invalid_transition')
-        }
-      }
-      const updated = await options.updateTask(id, updates as Record<string, unknown>) as any
+      // Transition validity is asserted INSIDE the task lock (state.updateTask
+      // runs the guard against the task it actually loads under the mutex).
+      // Checking here against options.getTasks() would be a TOCTOU race: two
+      // concurrent PATCHes (e.g. both pending → in_progress) could each pass
+      // the pre-check before either commits, and both would lock the task.
+      const guard = updates.status !== undefined
+        ? (task: Record<string, unknown>) => assertTransition(task.status, updates.status)
+        : undefined
+      // Capture the type BEFORE updating — an accepted task is removed from
+      // the store by state.updateTask, so it can't be looked up afterwards.
+      const taskBefore = options.getTasks().tasks.find(t => t.id === id)
+      const updated = await options.updateTask(id, updates as Record<string, unknown>, guard ? { guard } : undefined) as any
       if (updated && typeof updated === 'object' && updated.error === 'Task not found') {
         return sendError(res, 404, 'Task not found', 'not_found')
+      }
+      if (updated && typeof updated === 'object' && updated.error === 'Invalid transition') {
+        return sendError(res, 400, updated.reason ?? 'Invalid state transition', 'invalid_transition')
+      }
+      // Lifecycle closure: accepting a wireframe_apply task retires its
+      // placements so they never re-mount beside the now-real component.
+      if (updates.status === 'accepted' && taskBefore?.type === 'wireframe_apply') {
+        await closeWireframeLifecycle(options, id, 'remove')
       }
       res.end(JSON.stringify(updated, null, 2))
       return
@@ -554,9 +730,16 @@ export function createAPIMiddleware(options: APIOptions) {
 
     if (path.startsWith('tasks/') && !path.slice('tasks/'.length).includes('/') && req.method === 'DELETE') {
       const id = decodeURIComponent(path.replace('tasks/', ''))
+      // Capture the type BEFORE deleting — the record is gone afterwards.
+      const taskBefore = options.getTasks().tasks.find(t => t.id === id)
       const deleted = await options.deleteTask(id) as any
       if (deleted && typeof deleted === 'object' && deleted.error === 'Task not found') {
         return sendError(res, 404, 'Task not found', 'not_found')
+      }
+      // Lifecycle closure: deleting a wireframe_apply task abandons the batch —
+      // revert its placements to 'placed' so the user can rebuild them.
+      if (taskBefore?.type === 'wireframe_apply') {
+        await closeWireframeLifecycle(options, id, 'revert')
       }
       res.end(JSON.stringify(deleted, null, 2))
       return

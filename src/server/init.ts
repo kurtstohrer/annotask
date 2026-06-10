@@ -33,6 +33,7 @@ import { scanApiSchemas } from './api-schema-scanner.js'
 import type { AgentDetector } from './agent-detect.js'
 import type { UsageLedger } from './usage-ledger.js'
 import { loadSkill } from '../skills/index.js'
+import { atomicWrite } from './state.js'
 import { BUILT_IN_PERSONAS } from '../embedded/persona.js'
 import type { ProviderId, EffortLevel } from '../embedded/provider-config.js'
 import { EFFORTS_BY_PROVIDER, EFFORT_LEVELS } from '../embedded/provider-config.js'
@@ -854,12 +855,14 @@ export function createInitRunner(deps: Deps): InitRunner {
     const stylePath = path.join(deps.projectRoot, '.annotask', 'STYLE_GUIDE.md')
 
     try {
-      await fsp.mkdir(path.dirname(specPath), { recursive: true })
-      await fsp.writeFile(specPath, JSON.stringify(spec, null, 2), 'utf-8')
+      // Atomic temp+rename (atomicWrite mkdirs the parent): state.ts reads
+      // design-spec.json with a sync readFileSync on cache miss, so a plain
+      // writeFile could hand it a half-written file mid-commit.
+      await atomicWrite(specPath, JSON.stringify(spec, null, 2))
       if (state.draft.styleGuideExists && !overwriteStyleGuide) {
         // preserve existing
       } else {
-        await fsp.writeFile(stylePath, styleGuide, 'utf-8')
+        await atomicWrite(stylePath, styleGuide)
       }
       state = { ...state, result: 'success', committedAt: Date.now(), draft: { ...state.draft, spec, styleGuide } }
       broadcastProgress()
@@ -888,8 +891,8 @@ export function createInitRunner(deps: Deps): InitRunner {
       }
     }
     try {
-      await fsp.mkdir(path.dirname(specPath), { recursive: true })
-      await fsp.writeFile(specPath, JSON.stringify(baseSpec, null, 2), 'utf-8')
+      // Same atomic temp+rename as commit() — see the comment there.
+      await atomicWrite(specPath, JSON.stringify(baseSpec, null, 2))
       state = { ...state, result: 'success', committedAt: Date.now() }
       broadcastProgress()
     } catch (err) {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
+import Button from 'primevue/button'
 import Header from './components/Header.vue'
 
 type Theme = 'dark' | 'light'
@@ -43,6 +44,8 @@ function toggleTheme() {
     <main class="content">
       <router-view />
     </main>
+
+    <Button label="Button" />
   </div>
 </template>
 

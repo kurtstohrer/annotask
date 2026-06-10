@@ -652,6 +652,7 @@ export const TASK_TYPES = [
   'a11y_fix',
   'error_fix',
   'perf_fix',
+  'wireframe_apply',
 ] as const
 
 export type TaskType = typeof TASK_TYPES[number]

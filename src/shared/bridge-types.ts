@@ -35,6 +35,20 @@ export interface ResolveAtPointPayload {
   y: number
 }
 
+/** Result of resolving the node to GRAB for a Reposition move. Prefers the
+ *  nearest wireframe placement container; otherwise the source-bearing app
+ *  element (which becomes a ComponentMoveChange in the report). */
+export interface ResolveMoveSourceResult {
+  eid: string
+  isInstance: boolean
+  instanceId?: string
+  file?: string
+  line?: string
+  component?: string
+  tag: string
+  rect: BridgeRect
+}
+
 export interface ResolvedElement {
   eid: string
   file: string
@@ -428,7 +442,7 @@ export interface KeyDownEvent {
 
 // ── Mode ────────────────────────────────────────────────
 
-export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight'
+export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight' | 'reposition'
 
 export interface ModeSetPayload {
   mode: InteractionMode
@@ -498,6 +512,9 @@ export interface InsertPlaceholderPayload {
   category?: string
   library?: string
   defaultProps?: Record<string, unknown>
+  /** Wireframe instance id — stamped on the placeholder as
+   *  `data-annotask-instance` so the Reposition tool can identify it. */
+  instanceId?: string
 }
 
 export interface InsertPlaceholderResult {
@@ -515,17 +532,63 @@ export interface InsertComponentPayload {
   position: 'before' | 'after' | 'append' | 'prepend'
   componentName: string
   props?: Record<string, unknown>
+  /** Import specifier for on-demand loading when the component isn't already
+   *  registered on the current route (e.g. "primevue/button"). */
+  module?: string
+  /** Wireframe instance id — stamped on the mounted container as
+   *  `data-annotask-instance` so the Reposition tool can identify which
+   *  placement a grabbed node belongs to. */
+  instanceId?: string
 }
+
+/** Why a component mount did not produce a real, in-context render. */
+export type MountReason =
+  | 'not-registered'
+  | 'threw'
+  | 'rendered-empty'
+  | 'no-runtime'
+  | 'async-pending'
+
+/** How faithfully the dropped component is rendered on the canvas. */
+export type MountFidelity = 'live' | 'isolated-preview' | 'placeholder'
 
 export interface InsertComponentResult {
   eid: string
   mounted: boolean
+  /** Present whenever the mount was not a clean in-context render. */
+  reason?: MountReason | null
+  /** `live` = Vue in real app context, `isolated-preview` = detached
+   *  React/Svelte/Solid (no provider tree), `placeholder` = could not render. */
+  fidelity?: MountFidelity
 }
 
 /** @deprecated Use InsertComponentPayload */
 export type InsertVueComponentPayload = InsertComponentPayload
 /** @deprecated Use InsertComponentResult */
 export type InsertVueComponentResult = InsertComponentResult
+
+export interface PreviewComponentPayload {
+  componentName: string
+  props?: Record<string, unknown>
+  /** Import specifier for on-demand loading (e.g. "primevue/button"). */
+  module?: string
+  /** Render width for the offscreen snapshot (px). */
+  width?: number
+}
+
+export interface PreviewComponentResult {
+  mounted: boolean
+  fidelity?: MountFidelity
+  reason?: MountReason | null
+  /** The actual render error message when reason === 'threw'. */
+  detail?: string | null
+  /** PNG data URL of the rendered component, when it rendered + snapshotted. */
+  dataUrl?: string
+  width?: number
+  height?: number
+  /** Set when the mount succeeded but the snapshot itself failed. */
+  error?: string
+}
 
 // ── Component Library ──────────────────────────────────
 

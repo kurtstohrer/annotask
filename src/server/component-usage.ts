@@ -54,18 +54,18 @@ export async function scanComponentUsage(projectRoot: string): Promise<Component
 }
 
 async function scanUncached(projectRoot: string): Promise<ComponentUsageMap> {
-  // Walk every workspace package so the host's annotask sees imports from
-  // sibling MFEs. When not inside a workspace, this collapses to scanning
-  // projectRoot alone.
+  // Scope to the RUNNING package only. Walking every workspace package pulled
+  // in unrelated sibling apps' imports (a Vue app would show a sibling React
+  // app's component usages), polluting on-page detection. Paths stay
+  // workspace-relative (against `ws.root`) so the shell's currentDir
+  // translation still lines them up with the iframe's data-annotask-file.
   const ws = await resolveWorkspace(projectRoot)
   const relRoot = ws.root
   const files: string[] = []
-  for (const pkgDir of ws.packages) {
-    const srcDir = nodePath.join(pkgDir, 'src')
-    const scanRoot = fs.existsSync(srcDir) ? srcDir : pkgDir
-    await walk(scanRoot, files)
-    if (files.length >= MAX_FILES_SCANNED) break
-  }
+  const absRoot = nodePath.resolve(projectRoot)
+  const srcDir = nodePath.join(absRoot, 'src')
+  const scanRoot = fs.existsSync(srcDir) ? srcDir : absRoot
+  await walk(scanRoot, files)
 
   const usage: Record<string, Set<string>> = {}
   const imports: Record<string, Record<string, Set<string>>> = {}

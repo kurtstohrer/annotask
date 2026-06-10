@@ -113,6 +113,12 @@
   color: var(--text-on-accent);
 }
 
+.mode-btn.mode-reposition.active {
+  background: var(--mode-reposition);
+  border-color: var(--mode-reposition);
+  color: #fff;
+}
+
 /* Segmented panel toggle (Tokens/Inspector/Components/Tasks etc.) */
 .panel-toggle {
   display: inline-flex;

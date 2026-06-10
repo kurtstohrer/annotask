@@ -3,6 +3,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PlanetCard from '../components/PlanetCard.vue'
 import PlanetDetail from '../components/PlanetDetail.vue'
+import Button from 'primevue/button'
+import Tag from 'primevue/tag'
 import { usePlanets } from '../composables/usePlanets'
 import type { Planet, PlanetType } from '../types'
 
@@ -51,6 +53,12 @@ const filtered = computed(() => {
   })
   return out
 })
+
+function resetFilters() {
+  search.value = ''
+  typeFilter.value = ''
+  sortBy.value = 'distance_from_sun_mkm'
+}
 
 function select(planet: Planet) {
   selected.value = planet
@@ -112,6 +120,9 @@ watch(
           <option value="avg_temp_c">Temperature</option>
         </select>
       </label>
+      <!-- PrimeVue components — exercise component-library discovery + highlights -->
+      <Tag :value="`${filtered.length} planets`" severity="info" rounded />
+      <Button label="Reset" icon="pi pi-times" severity="secondary" size="small" outlined @click="resetFilters" />
     </div>
 
     <div class="layout">

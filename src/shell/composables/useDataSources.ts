@@ -350,6 +350,9 @@ function buildNetworkHighlightSources(): DataHighlightSource[] {
       sites,
       defaultLabel: label,
       color,
+      // Network color is a latency bucket, not an identity hue — tag it so the
+      // overlay draws a distinct (solid) border and the legend can say so.
+      encoding: 'latency',
     })
   }
   return out
@@ -436,8 +439,12 @@ function buildApiHighlightSources(): DataHighlightSource[] {
     try { return new URL(raw).origin } catch { return null }
   }
   const pathOf = (raw: string): string => {
-    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
-    try { return new URL(raw).pathname } catch { return raw }
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      try { return new URL(raw).pathname } catch { return raw }
+    }
+    // Relative path — strip the query string / fragment so an endpoint like
+    // `/api/solar/planets?sort_by=x` still matches the schema op `/api/solar/planets`.
+    return raw.split(/[?#]/)[0]
   }
   // An entry's origin comes from its resolved_endpoint (proxy-aware) first,
   // falling back to a literal absolute URL in `endpoint`. We also pre-compute
@@ -455,14 +462,19 @@ function buildApiHighlightSources(): DataHighlightSource[] {
     const seen = new Set<string>()
     for (const entry of cat.project_entries) {
       if (!entry.endpoint) continue
-      const entryUrl = entry.resolved_endpoint ?? entry.endpoint
-      const entryOrigin = originOf(entryUrl)
-      // Strict origin match when both sides know their origin.
+      // Use the ORIGINAL endpoint for the origin. A relative endpoint
+      // (`/api/...`) is a same-origin (often Vite-proxied) call — match it by
+      // PATH against any schema. resolved_endpoint's proxy-target host
+      // (e.g. :8888) is a server-side detail; gating on it dropped every proxied
+      // entry from the schema (whose origin is the browser-visible dev-server
+      // origin), so the APIs tab highlighted nothing.
+      const entryOrigin = entry.endpoint.startsWith('/') ? null : originOf(entry.endpoint)
+      // Strict origin match only when the entry itself is an absolute URL.
       if (schemaOrigin && entryOrigin && schemaOrigin !== entryOrigin) continue
-      // When the entry has a known origin but this schema doesn't, skip if
-      // another schema covers the entry's origin — that's the right owner.
+      // When the entry has a known (absolute) origin but this schema doesn't,
+      // skip if another schema covers that origin — that's the right owner.
       if (!schemaOrigin && entryOrigin && schemaOrigins.has(entryOrigin)) continue
-      const entryPath = pathOf(entryUrl)
+      const entryPath = pathOf(entry.endpoint)
       const match = schema.operations.find(op => matchesOpPath(op.path, entryPath))
       if (!match) continue
       const graph = bindingsByName.value.get(entryBindingKey(entry))
@@ -648,8 +660,12 @@ function matchSchemaForEntry(entry: ProjectDataEntry, all: ApiSchema[]): { schem
     try { return new URL(raw).origin } catch { return null }
   }
   const pathOf = (raw: string): string => {
-    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
-    try { return new URL(raw).pathname } catch { return raw }
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      try { return new URL(raw).pathname } catch { return raw }
+    }
+    // Relative path — strip the query string / fragment so an endpoint like
+    // `/api/solar/planets?sort_by=x` still matches the schema op `/api/solar/planets`.
+    return raw.split(/[?#]/)[0]
   }
   const entryOrigin = originOf(entry.endpoint)
   const entryPath = pathOf(entry.endpoint)

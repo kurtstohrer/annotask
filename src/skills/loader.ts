@@ -99,11 +99,16 @@ export interface SystemPromptOptions extends LoaderOptions {
   taskType?: string
 }
 
-const TASK_TYPE_COMPANIONS: Record<string, string> = {
+/** Task type → companion playbook basename inside the `annotask-apply` skill
+ *  directory. Exported so the MCP `annotask_get_playbook` tool and the CLI
+ *  `playbook` command can serve the same files to pure-MCP clients that never
+ *  see the installed skill directory. */
+export const TASK_TYPE_COMPANIONS: Record<string, string> = {
   a11y_fix: 'A11Y_RULES.md',
   theme_update: 'THEME_UPDATE.md',
   error_fix: 'ERROR_FIX.md',
   perf_fix: 'PERF_FIX.md',
+  wireframe_apply: 'WIREFRAME_APPLY.md',
 }
 
 /** Assemble the agent-facing system prompt: `annotask-apply` SKILL.md, plus

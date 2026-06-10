@@ -1,6 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import http from 'http'
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { createAPIMiddleware } from '../../server/api'
+import { createWireframeStore } from '../../server/wireframe-store'
+import type { WireframeDocument, WireframeInstance } from '../../shared/wireframe-types'
 
 function createTestServer(options: Parameters<typeof createAPIMiddleware>[0]) {
   const middleware = createAPIMiddleware(options)
@@ -18,7 +24,7 @@ function createTestServer(options: Parameters<typeof createAPIMiddleware>[0]) {
 function request(server: http.Server, method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<{ status: number; data: any; raw: string }> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, `http://localhost:${(server.address() as any).port}`)
-    const options: http.RequestOptions = { method, hostname: url.hostname, port: url.port, path: url.pathname, headers: { ...extraHeaders } }
+    const options: http.RequestOptions = { method, hostname: url.hostname, port: url.port, path: url.pathname + url.search, headers: { ...extraHeaders } }
     if (body !== undefined) {
       options.headers = { ...options.headers, 'Content-Type': 'application/json' }
     }
@@ -42,6 +48,11 @@ describe('API endpoints', () => {
   const tasks: any[] = []
 
   let perfSnapshot: unknown = null
+  // Real wireframe store on a temp dir — the rev CAS and the accept/delete
+  // lifecycle hooks are exactly what these tests exercise, so stubbing the
+  // store would test nothing.
+  let wireframeRoot: string
+  let wireframeStore: ReturnType<typeof createWireframeStore>
   const options = {
     projectRoot: '/tmp/annotask-test',
     getReport: () => ({ version: '1.0', changes: [] }),
@@ -53,9 +64,15 @@ describe('API endpoints', () => {
       tasks.push(newTask)
       return newTask
     },
-    updateTask: (id: string, updates: Record<string, unknown>) => {
+    updateTask: (id: string, updates: Record<string, unknown>, opts?: { guard?: (task: Record<string, unknown>) => string | null }) => {
       const task = tasks.find(t => t.id === id)
       if (!task) return { error: 'Task not found' }
+      // Mirror the real store: the transition guard runs against the task as
+      // it exists at update time (state.ts runs it inside the task lock).
+      if (opts?.guard) {
+        const reason = opts.guard(task)
+        if (reason) return { error: 'Invalid transition', reason }
+      }
       Object.assign(task, updates)
       return task
     },
@@ -115,6 +132,11 @@ describe('API endpoints', () => {
     },
     getAgentConfigs: async () => ({ version: 1 as const, agents: {} }),
     setAgentConfig: async () => ({ version: 1 as const, agents: {} }),
+    getWireframe: async () => wireframeStore.get(),
+    setWireframe: async (doc: WireframeDocument) => wireframeStore.set(doc),
+    renderInPlaceEnabled: false,
+    writeDraft: async () => ({ draftId: 'draft-test' }),
+    revertDraft: async () => ({ reverted: true }),
     usageLedger: {
       append: async (e: { scope: 'task' | 'init' | 'apply' | 'chat' }) => ({ ts: 0, scope: e.scope, inputTokens: 0, outputTokens: 0 }),
       readAll: async () => [],
@@ -135,12 +157,15 @@ describe('API endpoints', () => {
   }
 
   beforeAll(async () => {
+    wireframeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-api-wf-'))
+    wireframeStore = createWireframeStore(wireframeRoot)
     server = createTestServer(options)
     await new Promise<void>((resolve) => server.listen(0, resolve))
   })
 
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
+    await fsp.rm(wireframeRoot, { recursive: true, force: true })
   })
 
   it('GET /api/report returns report', async () => {
@@ -248,7 +273,7 @@ describe('API endpoints', () => {
     it('accepts every canonical task type', async () => {
       const canonical = [
         'annotation', 'section_request', 'style_update', 'theme_update',
-        'a11y_fix', 'error_fix', 'perf_fix',
+        'a11y_fix', 'error_fix', 'perf_fix', 'wireframe_apply',
       ]
       for (const type of canonical) {
         const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
@@ -494,6 +519,78 @@ describe('API endpoints', () => {
       })
       expect(status).toBe(200)
     })
+
+    it('concurrent pending → in_progress PATCHes: exactly one wins (guard runs at update time)', async () => {
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation',
+        description: 'Race test task',
+      })
+      expect(created.status).toBe(200)
+      const id = created.data.id
+      const [a, b] = await Promise.all([
+        request(server, 'PATCH', `/__annotask/api/tasks/${id}`, { status: 'in_progress' }),
+        request(server, 'PATCH', `/__annotask/api/tasks/${id}`, { status: 'in_progress' }),
+      ])
+      const ok = [a, b].filter(r => r.status === 200)
+      const rejected = [a, b].filter(r => r.status === 400)
+      expect(ok).toHaveLength(1)
+      expect(rejected).toHaveLength(1)
+      expect(rejected[0].data.error.code).toBe('invalid_transition')
+      expect(rejected[0].data.error.message).toContain('Invalid state transition')
+    })
+  })
+
+  describe('host validation (DNS-rebinding gate)', () => {
+    afterEach(() => {
+      delete process.env.ANNOTASK_ALLOWED_HOSTS
+    })
+
+    it('blocks GET /api/tasks with a non-local Host header', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: 'evil.example' })
+      expect(status).toBe(403)
+      expect(data.error.code).toBe('forbidden_host')
+    })
+
+    it('blocks the screenshot route with a non-local Host header', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/screenshots/screenshot-1-a.png', undefined, { Host: 'evil.example:5173' })
+      expect(status).toBe(403)
+      expect(data.error.code).toBe('forbidden_host')
+    })
+
+    it('blocks mutations with a non-local Host header even when Origin is local', async () => {
+      const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation', description: 'rebound',
+      }, { Host: 'evil.example', Origin: 'http://localhost:5173' })
+      expect(status).toBe(403)
+      expect(data.error.code).toBe('forbidden_host')
+    })
+
+    it('allows explicit localhost and IP-literal Host headers', async () => {
+      const local = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: 'localhost:9999' })
+      expect(local.status).toBe(200)
+      const lan = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: '192.168.1.20:5173' })
+      expect(lan.status).toBe(200)
+    })
+
+    it('allows a host listed in ANNOTASK_ALLOWED_HOSTS', async () => {
+      process.env.ANNOTASK_ALLOWED_HOSTS = 'evil.example'
+      const { status } = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: 'evil.example' })
+      expect(status).toBe(200)
+    })
+
+    it('allows hosts threaded via the allowedHosts option (announced bind host)', async () => {
+      const gated = createTestServer({ ...options, allowedHosts: () => ['dev.example.com'] })
+      await new Promise<void>((resolve) => gated.listen(0, resolve))
+      try {
+        const ok = await request(gated, 'GET', '/__annotask/api/tasks', undefined, { Host: 'dev.example.com:5173' })
+        expect(ok.status).toBe(200)
+        const blocked = await request(gated, 'GET', '/__annotask/api/tasks', undefined, { Host: 'other.example.com' })
+        expect(blocked.status).toBe(403)
+        expect(blocked.data.error.code).toBe('forbidden_host')
+      } finally {
+        await new Promise<void>((resolve) => gated.close(() => resolve()))
+      }
+    })
   })
 
   describe('origin validation', () => {
@@ -521,6 +618,181 @@ describe('API endpoints', () => {
         description: 'From localhost',
       }, { Origin: 'http://localhost:5173' })
       expect(status).toBe(200)
+    })
+  })
+
+  describe('wireframe GET/PUT', () => {
+    it('GET returns an empty document on a fresh project', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(status).toBe(200)
+      expect(data.version).toBe('1.0')
+      expect(Array.isArray(data.routes)).toBe(true)
+    })
+
+    it('PUT persists a document and GET returns it (with route filtering)', async () => {
+      const doc: WireframeDocument = {
+        version: '1.0',
+        updatedAt: 1,
+        routes: [
+          { route: '/planets', instances: [
+            { id: 'wfi-1', kind: 'component', anchor: { file: 'PlanetsPage.vue', line: 12, position: 'append' }, inserted: { tag: 'planetcard', componentName: 'PlanetCard' }, fidelity: 'live', mounted: true, createdAt: 1 },
+          ] },
+          { route: '/', instances: [] },
+        ],
+      }
+      const put = await request(server, 'PUT', '/__annotask/api/wireframe', doc as unknown as Record<string, unknown>)
+      expect(put.status).toBe(200)
+      expect(put.data.routes).toHaveLength(2)
+      // First write against a rev-less doc stamps the rev.
+      expect(put.data.rev).toBe(1)
+
+      const all = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(all.data.routes).toHaveLength(2)
+      expect(all.data.rev).toBe(1)
+
+      const filtered = await request(server, 'GET', '/__annotask/api/wireframe?route=/planets')
+      expect(filtered.data.routes).toHaveLength(1)
+      expect(filtered.data.routes[0].instances[0].id).toBe('wfi-1')
+    })
+
+    it('PUT rejects a non-wireframe body', async () => {
+      const { status, data } = await request(server, 'PUT', '/__annotask/api/wireframe', { nope: true })
+      expect(status).toBe(400)
+      expect(data.error.code).toBe('validation_failed')
+    })
+
+    it('PUT rejects a document with one malformed instance', async () => {
+      const current = await request(server, 'GET', '/__annotask/api/wireframe')
+      const { status, data } = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        version: '1.0', updatedAt: 2, rev: current.data.rev,
+        routes: [{ route: '/planets', instances: [{ id: 'wfi-bad' /* no kind/anchor/inserted */ }] }],
+      })
+      expect(status).toBe(400)
+      expect(data.error.code).toBe('validation_failed')
+    })
+
+    it('PUT with the current rev succeeds and increments; stale/missing rev → 409 conflict', async () => {
+      const current = await request(server, 'GET', '/__annotask/api/wireframe')
+      const rev = current.data.rev as number
+
+      const ok = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        ...current.data, updatedAt: Date.now(), rev,
+      })
+      expect(ok.status).toBe(200)
+      expect(ok.data.rev).toBe(rev + 1)
+
+      // Replaying the same (now stale) rev — the other-tab scenario.
+      const stale = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        ...current.data, updatedAt: Date.now(), rev,
+      })
+      expect(stale.status).toBe(409)
+      expect(stale.data.error.code).toBe('conflict')
+
+      // Missing rev once the doc carries one is just as stale.
+      const { rev: _omitted, ...revless } = current.data
+      const missing = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        ...revless, updatedAt: Date.now(),
+      })
+      expect(missing.status).toBe(409)
+      expect(missing.data.error.code).toBe('conflict')
+
+      // The losing writes must not have advanced the doc.
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(after.data.rev).toBe(rev + 1)
+    })
+
+    it('draft endpoint 404s when render-in-place is disabled', async () => {
+      const { status, data } = await request(server, 'POST', '/__annotask/api/wireframe/draft', {
+        file: 'X.vue', line: 1, position: 'append', componentName: 'Foo',
+      })
+      expect(status).toBe(404)
+      expect(data.error.code).toBe('not_found')
+    })
+  })
+
+  describe('wireframe lifecycle closure (task accept / delete hooks)', () => {
+    function instance(id: string, extra: Partial<WireframeInstance> = {}): WireframeInstance {
+      return {
+        id,
+        kind: 'component',
+        anchor: { file: 'PlanetsPage.vue', line: 9, position: 'append' },
+        inserted: { tag: 'planetcard', componentName: 'PlanetCard' },
+        fidelity: 'live',
+        mounted: true,
+        createdAt: 1,
+        ...extra,
+      }
+    }
+
+    /** PUT the routes payload with the current rev (CAS round-trip). */
+    async function putRoutes(routes: WireframeDocument['routes']): Promise<void> {
+      const current = await request(server, 'GET', '/__annotask/api/wireframe')
+      const put = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        version: '1.0', updatedAt: Date.now(), rev: current.data.rev, routes,
+      })
+      expect(put.status).toBe(200)
+    }
+
+    it('accepting a wireframe_apply task removes its instances (and only its instances)', async () => {
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'wireframe_apply', description: 'Build /planets',
+      })
+      expect(created.status).toBe(200)
+      const taskId = created.data.id as string
+
+      await putRoutes([
+        { route: '/planets', instances: [
+          instance('wfi-owned-1', { status: 'building', taskId }),
+          instance('wfi-owned-2', { status: 'building', taskId }),
+          instance('wfi-other', { status: 'placed' }),
+        ] },
+      ])
+
+      // Walk the full lifecycle the agent would: lock → review → accept.
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'in_progress' })
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'review' })
+      const accepted = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'accepted' })
+      expect(accepted.status).toBe(200)
+
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      const planets = after.data.routes.find((r: { route: string }) => r.route === '/planets')
+      expect(planets.instances.map((i: { id: string }) => i.id)).toEqual(['wfi-other'])
+    })
+
+    it('deleting a wireframe_apply task reverts its instances to placed and clears taskId', async () => {
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'wireframe_apply', description: 'Build /moons',
+      })
+      expect(created.status).toBe(200)
+      const taskId = created.data.id as string
+
+      await putRoutes([
+        { route: '/moons', instances: [
+          instance('wfi-reverted', { status: 'building', taskId }),
+        ] },
+      ])
+
+      const deleted = await request(server, 'DELETE', `/__annotask/api/tasks/${taskId}`)
+      expect(deleted.status).toBe(200)
+
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      const moons = after.data.routes.find((r: { route: string }) => r.route === '/moons')
+      expect(moons.instances).toHaveLength(1)
+      expect(moons.instances[0].status).toBe('placed')
+      expect(moons.instances[0].taskId).toBeUndefined()
+    })
+
+    it('accepting a non-wireframe task leaves the wireframe document untouched', async () => {
+      const before = await request(server, 'GET', '/__annotask/api/wireframe')
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation', description: 'unrelated',
+      })
+      const taskId = created.data.id as string
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'in_progress' })
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'review' })
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'accepted' })
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(after.data.rev).toBe(before.data.rev)
     })
   })
 })

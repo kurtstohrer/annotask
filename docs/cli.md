@@ -186,6 +186,33 @@ annotask code-context <task-id> --context-lines=25
 
 Returns excerpt, enclosing symbol, import block, and excerpt hash.
 
+### `source-excerpt`
+
+Fetch a direct source excerpt by file and line, without a task.
+
+```bash
+annotask source-excerpt src/components/Header.vue 12
+annotask source-excerpt src/components/Header.vue 12 --context-lines=25 --mcp
+```
+
+### `playbook`
+
+Print a task-type companion playbook (`a11y_fix`, `theme_update`, `error_fix`, `perf_fix`, `wireframe_apply`).
+
+```bash
+annotask playbook wireframe_apply
+annotask playbook a11y_fix --mcp
+```
+
+### `agent-directions`
+
+Fetch per-persona project directions from `.annotask/agents.json`.
+
+```bash
+annotask agent-directions
+annotask agent-directions --mcp
+```
+
 ### `data-context`
 
 Resolve or re-resolve a task's `data_context`.

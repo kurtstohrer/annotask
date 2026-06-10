@@ -189,6 +189,31 @@ export function useStyleEditor() {
     return id
   }
 
+  /** Record a Reposition move of an existing app element — emits a
+   *  `component_move` change for the report → /annotask-apply pipeline. */
+  function recordMove(
+    from: { file: string; line: number; tag: string; component?: string },
+    to: { target_file: string; target_line: number; position: 'before' | 'after' | 'append' | 'prepend' },
+  ): string {
+    changeCounter++
+    const id = `cm${changeCounter}`
+    const record: MoveChangeRecord = {
+      id,
+      type: 'component_move',
+      description: `Move <${from.tag}> ${to.position} target`,
+      file: to.target_file,
+      section: 'template',
+      line: to.target_line,
+      component: from.component,
+      element_tag: from.tag,
+      from_file: from.file,
+      from_line: from.line,
+      move_to: to,
+    }
+    changes.value.push(record)
+    return id
+  }
+
   function recordAnnotation(meta: {
     file: string; line: string; component: string; mfe?: string;
     intent: string; action?: string; elementTag?: string; elementClasses?: string;
@@ -429,5 +454,5 @@ export function useStyleEditor() {
     { deep: true }
   )
 
-  return { changes, applyStyle, recordInsert, recordAnnotation, recordClassChange, removeChange, removeChangesFor, removeAnnotationsByFile, undo, clearChanges, report, broadcast }
+  return { changes, applyStyle, recordInsert, recordMove, recordAnnotation, recordClassChange, removeChange, removeChangesFor, removeAnnotationsByFile, undo, clearChanges, report, broadcast }
 }

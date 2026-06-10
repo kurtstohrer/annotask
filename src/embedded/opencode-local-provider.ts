@@ -15,8 +15,7 @@
 
 import {
   CliLocalProvider,
-  lastUserMessageText,
-  withSystemPrompt,
+  rollupHistoryAsPrompt,
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
@@ -64,10 +63,12 @@ export class OpencodeLocalProvider extends CliLocalProvider {
     if (this.model) args.push('--model', this.model)
     args.push(...this.extraArgs)
     // Prepend the annotask system prompt to the positional — opencode has
-    // no separate system-prompt flag in headless mode. The `--` separator
-    // is required: skill bodies often start with `---` (YAML frontmatter),
+    // no separate system-prompt flag in headless mode — and roll up the
+    // prior turns as a transcript, since each turn spawns a fresh
+    // `opencode run` with no memory of its own. The `--` separator is
+    // required: skill bodies often start with `---` (YAML frontmatter),
     // and without it the CLI parses the leading `--` as an unknown long flag.
-    args.push('--', withSystemPrompt(lastUserMessageText(messages), options.systemPrompt))
+    args.push('--', rollupHistoryAsPrompt(messages, options.systemPrompt))
     return { cli: 'opencode', args }
   }
 

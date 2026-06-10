@@ -441,10 +441,10 @@ export function useTaskWorkflows(deps: {
     pendingTaskText.value = ''
   }
 
-  async function submitPendingArrowTask(id: string, description: string) {
+  async function submitPendingArrowTask(id: string, description: string): Promise<Task | null> {
     const arrow = deps.annotations.arrows.value.find(a => a.id === id)
-    if (!arrow || !description.trim()) return
-    if (arrowTaskIds.has(id)) return
+    if (!arrow || !description.trim()) return null
+    if (arrowTaskIds.has(id)) return null
     arrowTaskIds.add(id)
 
     deps.annotations.updateArrow(id, { label: description.trim() })
@@ -462,7 +462,7 @@ export function useTaskWorkflows(deps: {
     const toText = (meta.toText as string) || ''
     const fromCC = arrow.fromEid ? await componentContextCapture.capture(arrow.fromEid) : {}
     const toCC = arrow.toEid ? await componentContextCapture.capture(arrow.toEid) : {}
-    createRouteTask({
+    const task = await createRouteTask({
       type: 'annotation',
       description: description.trim(),
       file: arrow.fromFile || '',
@@ -488,6 +488,10 @@ export function useTaskWorkflows(deps: {
 
       },
     })
+    // Failed creation (400/network): release the dedup guard so the user can
+    // retry the same arrow after fixing whatever the server rejected.
+    if (!task) arrowTaskIds.delete(id)
+    return task
   }
 
   async function submitPendingTask() {
@@ -498,6 +502,11 @@ export function useTaskWorkflows(deps: {
 
     submittingPendingTask.value = true
     try {
+      // Track the created task per branch — a null result (server 400 or
+      // network failure) must keep the user's typed draft in the panel so
+      // they can retry without retyping. useTasks().lastError carries the
+      // reason for the UI to surface.
+      let created: Task | null = null
       if (ctx.kind === 'pin') {
         const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number; elementText?: string; elementSourceTag?: string }
         deps.annotations.updatePinNote(ctx.annotationId!, description)
@@ -506,7 +515,7 @@ export function useTaskWorkflows(deps: {
           intent: description,
           elementTag: meta.elementTag, elementClasses: meta.elementClasses,
         })
-        await createRouteTask({
+        created = await createRouteTask({
           type: 'annotation',
           description,
           file: ctx.file, line: parseInt(String(ctx.line)) || 0, component: ctx.component,
@@ -519,7 +528,7 @@ export function useTaskWorkflows(deps: {
           },
         })
       } else if (ctx.kind === 'arrow') {
-        await submitPendingArrowTask(ctx.annotationId!, description)
+        created = await submitPendingArrowTask(ctx.annotationId!, description)
       } else if (ctx.kind === 'highlight') {
         const meta = ctx.meta as { selectedText: string; elementTag: string; elementSourceTag?: string }
         deps.annotations.updateHighlight(ctx.annotationId!, { prompt: description })
@@ -529,7 +538,7 @@ export function useTaskWorkflows(deps: {
           file: ctx.file, line: String(ctx.line), component: ctx.component,
           intent, action: 'text_edit', elementTag: meta.elementTag,
         })
-        await createRouteTask({
+        created = await createRouteTask({
           type: 'annotation', description: intent, file: ctx.file, line: parseInt(String(ctx.line)) || 0,
           component: ctx.component, action: 'text_edit',
           visual: { kind: 'highlight', annotationId: ctx.annotationId, eid: hl?.eid, rect: hl?.rect, rects: hl?.rects, color: hl?.color },
@@ -558,10 +567,15 @@ export function useTaskWorkflows(deps: {
           deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: task.id, rect }))]
           deps.startAnnotationLoop()
         }
+        created = task
       }
 
-      pendingTaskCreation.value = null
-      pendingTaskText.value = ''
+      // Only a successful creation clears the draft and closes the panel.
+      // On failure the annotation + typed description stay put for a retry.
+      if (created) {
+        pendingTaskCreation.value = null
+        pendingTaskText.value = ''
+      }
     } finally {
       submittingPendingTask.value = false
     }

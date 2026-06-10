@@ -136,32 +136,28 @@ export async function scanDataSources(projectRoot: string): Promise<DataSourceCa
 }
 
 async function scanDataSourcesUncached(projectRoot: string): Promise<DataSourceCatalog> {
-  // 1. Read package.json deps across every workspace package
+  // 1. Read package.json deps for the RUNNING package only. Aggregating every
+  //    workspace package surfaced sibling apps' data libraries + entries (a Vue
+  //    app would show another app's hooks and endpoints), polluting the catalog
+  //    and the on-page data highlights — the same over-reach fixed in the
+  //    component scanner. Run an MFE/app directly to scan its own data sources.
   const ws = await resolveWorkspace(projectRoot)
-  const deps: Record<string, string> = {}
-  for (const pkgDir of ws.packages) {
-    const pkgDeps = await readDeps(pkgDir)
-    for (const [name, v] of Object.entries(pkgDeps)) {
-      if (!deps[name]) deps[name] = v
-    }
-  }
+  const deps: Record<string, string> = await readDeps(projectRoot)
   const libraryCandidates: Array<{ name: string; version?: string; patterns: string[] }> = []
   for (const depName of Object.keys(deps)) {
     const patterns = DATA_LIB_PATTERNS[depName]
     if (patterns) libraryCandidates.push({ name: depName, version: deps[depName], patterns })
   }
 
-  // 2. Walk src/ of every workspace package and read every candidate file
-  //    into memory once. Paths are relativized against the workspace root so
-  //    cross-MFE references resolve unambiguously.
+  // 2. Walk the running package's src/ once, reading every candidate file into
+  //    memory. Paths are relativized against the workspace root (`ws.root`) so
+  //    they stay workspace-relative for the shell's currentDir translation.
   const relRoot = ws.root
   const files: string[] = []
-  for (const pkgDir of ws.packages) {
-    const srcDir = nodePath.join(pkgDir, 'src')
-    const scanRoot = fs.existsSync(srcDir) ? srcDir : pkgDir
-    await walk(scanRoot, files)
-    if (files.length >= MAX_FILES_SCANNED) break
-  }
+  const absRoot = nodePath.resolve(projectRoot)
+  const srcDir = nodePath.join(absRoot, 'src')
+  const scanRoot = fs.existsSync(srcDir) ? srcDir : absRoot
+  await walk(scanRoot, files)
 
   const fileContents = new Map<string, string>()
   for (const fp of files) {

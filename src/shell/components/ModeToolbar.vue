@@ -27,6 +27,9 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
     <button data-testid="tool-highlight" :class="['mode-btn mode-highlight', { active: modelValue === 'highlight' }]" @click="emit('update:modelValue', 'highlight')" title="Highlight Text (H)">
       <Icon name="highlighter" />
     </button>
+    <button data-testid="tool-reposition" :class="['mode-btn mode-reposition', { active: modelValue === 'reposition' }]" @click="emit('update:modelValue', 'reposition')" title="Reposition (R)">
+      <Icon name="move" />
+    </button>
   </div>
 </template>
 
@@ -49,5 +52,6 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
 .mode-btn.arrow.active { background: var(--mode-arrow); border-color: var(--mode-arrow); }
 .mode-btn.draw.active { background: var(--mode-draw); border-color: var(--mode-draw); }
 .mode-btn.mode-highlight.active { background: var(--mode-highlight); border-color: var(--mode-highlight); }
+.mode-btn.mode-reposition.active { background: var(--mode-reposition); border-color: var(--mode-reposition); }
 .mode-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; align-self: center; }
 </style>

@@ -177,25 +177,73 @@ export function maxPermissionCap(): PermissionLevelName {
 
 /** Flags that, if present, mean the run removes sandboxes / auto-approves all. */
 const BYPASS_FLAGS = new Set([
-  '--dangerously-skip-permissions',
-  '--dangerously-bypass-approvals-and-sandbox',
-  '--allow-all',
+  '--dangerously-skip-permissions', // claude, opencode
+  '--dangerously-bypass-approvals-and-sandbox', // codex
+  '--allow-all', // copilot
 ])
 /** Flags that imply a sandboxed/minimal "default" level (still writes, but scoped). */
 const DEFAULT_FLAGS = new Set(['--full-auto', '--allow-all-tools'])
 
 /**
- * Re-derive the highest permission level the given argv implies. Bypass flags
- * win over default-level flags; absence of any (e.g. opencode/claude plan) is
- * the safest `plan` level.
+ * Re-derive the highest permission level the given argv implies. Best-effort
+ * floor, not a full parser: it mirrors exactly what the client emits per CLI
+ * per mode (see ../embedded/permission-mode-flags.ts) PLUS the synonym
+ * spellings a crafted request could substitute for them — claude's
+ * `--permission-mode bypassPermissions`/`acceptEdits`, codex's
+ * `--sandbox danger-full-access` and `--ask-for-approval never`, and the
+ * `--flag=value` joined form of each. Bypass flags win over default-level
+ * flags; absence of any recognized flag is the safest `plan` level. When an
+ * allow-listed CLI grows new permission flags they MUST be added here, or
+ * the ANNOTASK_MAX_PERMISSION cap won't see them.
+ *
+ * Two deliberate asymmetries:
+ *   - copilot's plan and default modes emit identical flags (headless `-p`
+ *     requires `--allow-all-tools`; plan is prompt-enforced), so copilot plan
+ *     derives as `default` — a conservative over-count, never an under-count.
+ *   - codex `--ask-for-approval never` is only as dangerous as the sandbox it
+ *     pairs with: harmless under an explicit `read-only` sandbox, but with a
+ *     writable or absent sandbox flag the effective sandbox comes from the
+ *     user's config.toml (which we can't see) — assume `bypass`.
  */
 export function permissionLevelOfArgs(args: string[]): PermissionLevelName {
-  for (const a of args) if (BYPASS_FLAGS.has(a)) return 'bypass'
-  for (let i = 0; i < args.length; i++) {
-    if (DEFAULT_FLAGS.has(args[i])) return 'default'
-    if (args[i] === '--permission-mode' && args[i + 1] === 'default') return 'default'
+  let level: PermissionLevelName = 'plan'
+  const bump = (l: PermissionLevelName) => {
+    if (PERMISSION_LEVEL[l] > PERMISSION_LEVEL[level]) level = l
   }
-  return 'plan'
+  // codex's approval policy and sandbox interact — track both, resolve after.
+  let sandbox: string | undefined
+  let approvalNever = false
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]
+    // Accept both `--flag value` and `--flag=value` spellings — every
+    // allow-listed CLI's arg parser does, so the floor must too.
+    const eq = token.startsWith('-') ? token.indexOf('=') : -1
+    const flag = eq > 0 ? token.slice(0, eq) : token
+    const value = eq > 0 ? token.slice(eq + 1) : args[i + 1]
+
+    if (BYPASS_FLAGS.has(flag)) return 'bypass'
+    if (DEFAULT_FLAGS.has(flag)) { bump('default'); continue }
+    if (flag === '--permission-mode') { // claude
+      if (value === 'bypassPermissions') return 'bypass'
+      // default / acceptEdits / unknown future modes: at least writes files.
+      if (value !== 'plan') bump('default')
+      continue
+    }
+    if (flag === '--sandbox' || flag === '-s') { // codex
+      sandbox = value
+      if (value === 'danger-full-access') return 'bypass'
+      // workspace-write / unknown future modes: writes, but OS-scoped.
+      if (value !== 'read-only') bump('default')
+      continue
+    }
+    if ((flag === '--ask-for-approval' || flag === '-a') && value === 'never') { // codex
+      approvalNever = true
+    }
+  }
+
+  if (approvalNever && sandbox !== 'read-only') return 'bypass'
+  return level
 }
 
 /**
@@ -347,6 +395,12 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
         shell: false,
         uid: hostUser.uid,
         gid: hostUser.gid,
+        // POSIX: make the child a process-group leader so killChild can signal
+        // the whole group (`process.kill(-pid)`). Agent CLIs routinely fork
+        // grandchildren (shell commands, MCP servers) — killing only the
+        // direct child would orphan those mid-run on abort/disconnect.
+        // Windows has no process groups, so detaching buys nothing there.
+        detached: process.platform !== 'win32',
         // Force PWD to match cwd. The inherited PWD points at wherever the dev
         // server was launched, which usually equals projectRoot — but when it
         // doesn't (monorepo / Docker / nested launch), CLIs that read $PWD for
@@ -364,13 +418,21 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
     }
 
     let killed = false
+    // Signal the whole process group on POSIX (the child was spawned detached,
+    // i.e. as a group leader) so grandchildren the agent forked die with it.
+    // Falls back to the direct child.kill when there's no pid (spawn-time
+    // failure), when the group is already gone (ESRCH), and always on win32.
+    function killGroup(sig: NodeJS.Signals) {
+      if (process.platform !== 'win32' && typeof child.pid === 'number') {
+        try { process.kill(-child.pid, sig); return } catch { /* ESRCH/EPERM — fall through */ }
+      }
+      try { child.kill(sig) } catch { /* ignore */ }
+    }
     function killChild() {
       if (killed) return
       killed = true
-      try { child.kill('SIGTERM') } catch { /* ignore */ }
-      setTimeout(() => {
-        try { child.kill('SIGKILL') } catch { /* ignore */ }
-      }, KILL_GRACE_MS).unref()
+      killGroup('SIGTERM')
+      setTimeout(() => { killGroup('SIGKILL') }, KILL_GRACE_MS).unref()
     }
     active.set(runId, { child, kill: killChild, taskId: parsed.taskId })
 

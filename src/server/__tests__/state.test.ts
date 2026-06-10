@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { createProjectState } from '../state'
+import { createProjectState, ensureAnnotaskIgnored } from '../state'
+import { createTaskThreadStore } from '../task-thread'
+import { assertTransition } from '../schemas'
 
 function mkTmpRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-state-test-'))
@@ -193,6 +195,73 @@ describe('createProjectState — task store serialization', () => {
     state.dispose()
   })
 
+  it('quarantines a corrupt tasks.json before falling back to empty', async () => {
+    const dir = path.join(root, '.annotask')
+    fs.mkdirSync(dir, { recursive: true })
+    const corruptBytes = '{"version":"1.0","tasks":[{"id":"task-trunc'
+    fs.writeFileSync(path.join(dir, 'tasks.json'), corruptBytes)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const state = createProjectState(root, noopBroadcast)
+    expect(state.getTasks().tasks).toHaveLength(0)
+
+    // The corrupt original is preserved next to tasks.json so the next
+    // mutation's atomic flush can't silently destroy it.
+    const quarantined = fs.readdirSync(dir).filter(f => f.startsWith('tasks.json.corrupt-'))
+    expect(quarantined).toHaveLength(1)
+    expect(fs.readFileSync(path.join(dir, quarantined[0]), 'utf-8')).toBe(corruptBytes)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('quarantined'))
+    warn.mockRestore()
+    state.dispose()
+  })
+
+  it('does not quarantine when tasks.json simply does not exist', async () => {
+    const state = createProjectState(root, noopBroadcast)
+    expect(state.getTasks().tasks).toHaveLength(0)
+    const dir = path.join(root, '.annotask')
+    const entries = fs.existsSync(dir) ? fs.readdirSync(dir) : []
+    expect(entries.filter(f => f.includes('corrupt'))).toHaveLength(0)
+    state.dispose()
+  })
+
+  it('updateTask guard runs inside the lock — concurrent transition race has exactly one winner', async () => {
+    const state = createProjectState(root, noopBroadcast)
+    const t = await state.addTask({ type: 'annotation', description: 'race' }) as any
+
+    // Both callers validated `pending → in_progress` before queuing (the old
+    // pre-lock check would let both through). The guard re-asserts against
+    // the task as it exists under the mutex, so the second sees in_progress.
+    const guard = (task: Record<string, unknown>) => assertTransition(task.status, 'in_progress')
+    const [a, b] = await Promise.all([
+      state.updateTask(t.id, { status: 'in_progress' }, { guard }),
+      state.updateTask(t.id, { status: 'in_progress' }, { guard }),
+    ]) as any[]
+
+    const winners = [a, b].filter(r => r.error === undefined)
+    const losers = [a, b].filter(r => r.error === 'Invalid transition')
+    expect(winners).toHaveLength(1)
+    expect(losers).toHaveLength(1)
+    expect(losers[0].reason).toContain('Invalid state transition')
+    expect(state.getTasks().tasks[0].status).toBe('in_progress')
+    await state.flush()
+    state.dispose()
+  })
+
+  it('a rejected guard leaves the task untouched', async () => {
+    const state = createProjectState(root, noopBroadcast)
+    const t = await state.addTask({ type: 'annotation', description: 'guarded' }) as any
+    const r = await state.updateTask(t.id, { status: 'accepted' }, {
+      guard: (task) => assertTransition(task.status, 'accepted'),
+    }) as any
+    expect(r.error).toBe('Invalid transition')
+    const snap = state.getTasks().tasks[0]
+    expect(snap.status).toBe('pending')
+    // The accepted-branch cleanup must not have removed the task.
+    expect(state.getTasks().tasks).toHaveLength(1)
+    await state.flush()
+    state.dispose()
+  })
+
   it('loads an existing tasks.json on first read', async () => {
     const dir = path.join(root, '.annotask')
     fs.mkdirSync(dir, { recursive: true })
@@ -209,6 +278,130 @@ describe('createProjectState — task store serialization', () => {
     // Mutation should preserve the preloaded task.
     await state.addTask({ type: 'annotation', description: 'added' })
     expect(state.getTasks().tasks).toHaveLength(2)
+    state.dispose()
+  })
+})
+
+describe('transcript cleanup (onTaskRemoved → taskThread.clear)', () => {
+  let root: string
+  beforeEach(() => { root = mkTmpRoot() })
+  afterEach(async () => { await fsp.rm(root, { recursive: true, force: true }) })
+
+  /** Wire state + thread store the way src/server/index.ts does. */
+  function makeWiredState() {
+    const taskThread = createTaskThreadStore({ projectRoot: root })
+    const state = createProjectState(root, noopBroadcast, {
+      onTaskRemoved: (taskId) => { void taskThread.clear(taskId) },
+    })
+    return { state, taskThread }
+  }
+
+  function transcriptPath(taskId: string): string {
+    return path.join(root, '.annotask', 'conversations', `${taskId}.jsonl`)
+  }
+
+  /** The unlink chains off the flush continuation — poll briefly. */
+  async function waitGone(p: string): Promise<boolean> {
+    for (let i = 0; i < 40; i++) {
+      if (!fs.existsSync(p)) return true
+      await new Promise(r => setTimeout(r, 25))
+    }
+    return !fs.existsSync(p)
+  }
+
+  it('removes the conversation transcript when a task is accepted', async () => {
+    const { state, taskThread } = makeWiredState()
+    const t = await state.addTask({ type: 'annotation', description: 'chatty' }) as any
+    await taskThread.append(t.id, { role: 'user', content: 'please fix' })
+    expect(fs.existsSync(transcriptPath(t.id))).toBe(true)
+
+    await state.updateTask(t.id, { status: 'in_progress' })
+    await state.updateTask(t.id, { status: 'review' })
+    await state.updateTask(t.id, { status: 'accepted' })
+    await state.flush()
+
+    expect(await waitGone(transcriptPath(t.id))).toBe(true)
+    state.dispose()
+  })
+
+  it('removes the conversation transcript when a task is deleted', async () => {
+    const { state, taskThread } = makeWiredState()
+    const t = await state.addTask({ type: 'annotation', description: 'doomed' }) as any
+    await taskThread.append(t.id, { role: 'user', content: 'never mind' })
+    expect(fs.existsSync(transcriptPath(t.id))).toBe(true)
+
+    await state.deleteTask(t.id)
+    await state.flush()
+
+    expect(await waitGone(transcriptPath(t.id))).toBe(true)
+    state.dispose()
+  })
+
+  it('does not fire onTaskRemoved for plain status updates', async () => {
+    const removed: string[] = []
+    const state = createProjectState(root, noopBroadcast, {
+      onTaskRemoved: (id) => { removed.push(id) },
+    })
+    const t = await state.addTask({ type: 'annotation', description: 'alive' }) as any
+    await state.updateTask(t.id, { status: 'in_progress' })
+    await state.flush()
+    expect(removed).toHaveLength(0)
+    state.dispose()
+  })
+})
+
+describe('ensureAnnotaskIgnored', () => {
+  let root: string
+  beforeEach(() => { root = mkTmpRoot() })
+  afterEach(async () => { await fsp.rm(root, { recursive: true, force: true }) })
+
+  const gitignorePath = () => path.join(root, '.gitignore')
+
+  it('appends a .annotask/ entry once when the project is a git repo', () => {
+    fs.mkdirSync(path.join(root, '.git'))
+    fs.writeFileSync(gitignorePath(), 'node_modules/\n')
+
+    ensureAnnotaskIgnored(root)
+    const after = fs.readFileSync(gitignorePath(), 'utf-8')
+    expect(after).toContain('node_modules/')
+    expect(after).toContain('.annotask/')
+
+    // Idempotent — a second boot must not duplicate the entry.
+    ensureAnnotaskIgnored(root)
+    const matches = fs.readFileSync(gitignorePath(), 'utf-8').match(/^\.annotask\/$/gm)
+    expect(matches).toHaveLength(1)
+  })
+
+  it('creates .gitignore when missing and handles a file without trailing newline', () => {
+    fs.mkdirSync(path.join(root, '.git'))
+    ensureAnnotaskIgnored(root)
+    expect(fs.readFileSync(gitignorePath(), 'utf-8')).toContain('.annotask/')
+
+    // No-trailing-newline case: the entry must land on its own line.
+    fs.writeFileSync(gitignorePath(), 'dist')
+    ensureAnnotaskIgnored(root)
+    expect(fs.readFileSync(gitignorePath(), 'utf-8')).toMatch(/^dist\n/)
+    expect(fs.readFileSync(gitignorePath(), 'utf-8').match(/^\.annotask\/$/gm)).toHaveLength(1)
+  })
+
+  it('respects existing entry variants (.annotask, /.annotask/)', () => {
+    fs.mkdirSync(path.join(root, '.git'))
+    for (const variant of ['.annotask', '/.annotask/', '.annotask/']) {
+      fs.writeFileSync(gitignorePath(), `${variant}\n`)
+      ensureAnnotaskIgnored(root)
+      expect(fs.readFileSync(gitignorePath(), 'utf-8')).toBe(`${variant}\n`)
+    }
+  })
+
+  it('does nothing outside a git repo', () => {
+    ensureAnnotaskIgnored(root)
+    expect(fs.existsSync(gitignorePath())).toBe(false)
+  })
+
+  it('runs on createProjectState boot', () => {
+    fs.mkdirSync(path.join(root, '.git'))
+    const state = createProjectState(root, noopBroadcast)
+    expect(fs.readFileSync(gitignorePath(), 'utf-8')).toContain('.annotask/')
     state.dispose()
   })
 })

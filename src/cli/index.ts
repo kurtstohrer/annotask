@@ -1,24 +1,55 @@
 import WebSocket from 'ws'
-import { existsSync, mkdirSync, cpSync, readdirSync, symlinkSync, lstatSync, rmSync, readlinkSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, cpSync, readdirSync, symlinkSync, lstatSync, rmSync, readlinkSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { resolve, dirname, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { buildTaskSummary, stripTaskVisual, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { buildTaskSummary, stripTaskVisual, stripTaskForList, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
+import { loadSkill, TASK_TYPE_COMPANIONS } from '../skills/loader.js'
+import { TASK_TYPES } from '../schema.js'
 
-const args = process.argv.slice(2)
-const command = args[0] || 'watch'
-const portArg = args.find(a => a.startsWith('--port='))?.split('=')[1] || ''
-const hostArg = args.find(a => a.startsWith('--host='))?.split('=')[1] || ''
-const serverArg = args.find(a => a.startsWith('--server='))?.split('=')[1] || ''
-const mfeArg = args.find(a => a.startsWith('--mfe='))?.split('=')[1] || ''
-const prettyFlag = args.includes('--pretty')
-const detailFlag = args.includes('--detail')
+// ── Argv-derived state ────────────────────────────────
+// Module-level because every command reads it; `let` (not const) because
+// `runCli()` re-initializes it per invocation so the CLI can be driven
+// in-process (tests, embedding) as well as from the bin entry.
+
+let args: string[] = []
+let command = 'watch'
+let portArg = ''
+let hostArg = ''
+let serverArg = ''
+let mfeArg = ''
+let prettyFlag = false
+let detailFlag = false
 /**
  * --mcp forces agent-parity output: compact JSON on stdout, no ANSI colors,
  * no human-readable prefixes. The shape matches what the MCP server returns
  * for the equivalent `annotask_*` tool call, so skills that prefer MCP can
  * fall back to CLI invocations with identical parsing. Overrides --pretty.
  */
-const mcpFlag = args.includes('--mcp')
+let mcpFlag = false
+let baseUrl = 'http://localhost:5173'
+let baseUrlSource: BaseUrlSource = 'fallback'
+let mfeFilter = ''
+let wsUrl = ''
+let apiUrl = ''
+
+function initFlags(argv: string[]): void {
+  args = argv
+  command = args[0] || 'watch'
+  portArg = args.find(a => a.startsWith('--port='))?.split('=')[1] || ''
+  hostArg = args.find(a => a.startsWith('--host='))?.split('=')[1] || ''
+  serverArg = args.find(a => a.startsWith('--server='))?.split('=')[1] || ''
+  mfeArg = args.find(a => a.startsWith('--mfe='))?.split('=')[1] || ''
+  prettyFlag = args.includes('--pretty')
+  detailFlag = args.includes('--detail')
+  mcpFlag = args.includes('--mcp')
+
+  const discovered = discoverBaseUrl()
+  baseUrl = discovered.url
+  baseUrlSource = discovered.source
+  mfeFilter = mfeArg || discovered.mfe || ''
+  wsUrl = baseUrl.replace(/^http/, 'ws') + '/__annotask/ws'
+  apiUrl = baseUrl + '/__annotask/api'
+}
 
 /** Compact JSON for agent-facing output; strips null/undefined/empty arrays */
 function fmt(data: unknown): string {
@@ -33,6 +64,51 @@ function color(code: string, text: string): string {
 /** stderr log that's suppressed under --mcp (keeps tool output machine-clean). */
 function info(text: string): void {
   if (!mcpFlag) console.error(text)
+}
+
+// ── Exit / failure plumbing ───────────────────────────
+
+/** Thrown instead of terminating when `runCli` runs in-process. */
+class CliExit extends Error {
+  constructor(public readonly code: number) { super(`CLI exit ${code}`) }
+}
+
+let inProcess = false
+
+/**
+ * Exit indirection. From the bin entry this is `process.exit`; under
+ * `runCli(..., { inProcess: true })` it throws `CliExit` instead, so command
+ * bodies still stop at the exit point but the host process survives and
+ * `runCli` resolves with the code.
+ */
+function exit(code: number): never {
+  if (inProcess) throw new CliExit(code)
+  process.exit(code)
+}
+
+/**
+ * Shared failure path for every command. Under --mcp this prints a structured
+ * `{"error":{"code","message"}}` envelope to *stdout* and exits 1 — skills
+ * that fall back from the MCP server to `npx annotask ... --mcp` can parse
+ * failures exactly like successes instead of scraping ANSI stderr text.
+ * Without --mcp it keeps the human stderr behavior (plus optional hint lines).
+ */
+function fail(code: string, message: string, hint?: string): never {
+  if (mcpFlag) {
+    console.log(JSON.stringify({ error: { code, message } }))
+    exit(1)
+  }
+  console.error(`${color('31', '[Annotask]')} ${message}`)
+  if (hint) console.error(hint)
+  exit(1)
+}
+
+/** Classify a thrown fetch error into a stable machine code for `fail`.
+ *  Commands throw `HTTP <status>` for non-ok responses; anything else is a
+ *  transport failure (server down, wrong port, DNS). */
+function errCode(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /^HTTP \d+/.test(msg) ? 'http_error' : 'server_unreachable'
 }
 
 /**
@@ -65,15 +141,6 @@ function discoverBaseUrl(): { url: string; source: BaseUrlSource; mfe?: string }
   return { url: 'http://localhost:5173', source: 'fallback' }
 }
 
-const discovered = discoverBaseUrl()
-const baseUrl = discovered.url
-const baseUrlSource = discovered.source
-let mfeFilter = mfeArg
-if (!mfeFilter && discovered.mfe) mfeFilter = discovered.mfe
-
-const wsUrl = baseUrl.replace(/^http/, 'ws') + '/__annotask/ws'
-const apiUrl = baseUrl + '/__annotask/api'
-
 /** Human-readable hint for the agent when a connection fails. */
 function serverHint(): string {
   if (baseUrlSource === 'server-json' || baseUrlSource === 'flag') {
@@ -105,65 +172,108 @@ function parseTargets(): string[] {
   return DEFAULT_TARGETS
 }
 
-// ── Commands ──────────────────────────────────────────
+// ── Entry points ──────────────────────────────────────
 
-if (command === 'watch') {
-  watchChanges()
-} else if (command === 'report') {
-  fetchReport()
-} else if (command === 'status') {
-  checkStatus()
-} else if (command === 'init-skills') {
-  initSkills()
-} else if (command === 'init-mcp') {
-  initMcp()
-} else if (command === 'screenshot') {
-  fetchScreenshot()
-} else if (command === 'tasks') {
-  fetchTasks()
-} else if (command === 'task') {
-  fetchTask()
-} else if (command === 'design-spec') {
-  fetchDesignSpec()
-} else if (command === 'update-task') {
-  updateTask()
-} else if (command === 'components') {
-  listComponents()
-} else if (command === 'component') {
-  showComponent()
-} else if (command === 'code-context') {
-  fetchCodeContext()
-} else if (command === 'component-examples') {
-  fetchComponentExamples()
-} else if (command === 'data-context') {
-  fetchDataContext()
-} else if (command === 'interaction-history') {
-  fetchInteractionHistory()
-} else if (command === 'rendered-html') {
-  fetchRenderedHtml()
-} else if (command === 'data-sources') {
-  fetchDataSources()
-} else if (command === 'data-source-examples') {
-  fetchDataSourceExamples()
-} else if (command === 'data-source-details') {
-  fetchDataSourceDetails()
-} else if (command === 'api-schemas') {
-  fetchApiSchemas()
-} else if (command === 'api-operation') {
-  fetchApiOperation()
-} else if (command === 'resolve-endpoint') {
-  resolveEndpointCmd()
-} else if (command === 'runtime-endpoints') {
-  fetchRuntimeEndpoints()
-} else if (command === 'mcp') {
-  runMcpStdio()
-} else if (command === 'help' || command === '--help') {
-  printHelp()
-} else {
-  console.error(`Unknown command: ${command}`)
-  printHelp()
-  process.exit(1)
+export interface RunCliOptions {
+  /** Throw-based exit instead of process.exit — for in-process callers/tests. */
+  inProcess?: boolean
 }
+
+/**
+ * Programmatic CLI entry. Resolves with the exit code (0 on success). The bin
+ * entry calls this with `process.argv.slice(2)`; tests call it with
+ * `inProcess: true` so `exit()` unwinds via `CliExit` instead of killing the
+ * test runner.
+ */
+export async function runCli(argv: string[], opts: RunCliOptions = {}): Promise<number> {
+  initFlags(argv)
+  inProcess = opts.inProcess === true
+  try {
+    await dispatch()
+    return 0
+  } catch (err) {
+    if (err instanceof CliExit) return err.code
+    throw err
+  } finally {
+    inProcess = false
+  }
+}
+
+async function dispatch(): Promise<void> {
+  if (command === 'watch') {
+    watchChanges()
+  } else if (command === 'report') {
+    await fetchReport()
+  } else if (command === 'status') {
+    await checkStatus()
+  } else if (command === 'init-skills') {
+    initSkills()
+  } else if (command === 'init-mcp') {
+    initMcp()
+  } else if (command === 'screenshot') {
+    await fetchScreenshot()
+  } else if (command === 'tasks') {
+    await fetchTasks()
+  } else if (command === 'task') {
+    await fetchTask()
+  } else if (command === 'design-spec') {
+    await fetchDesignSpec()
+  } else if (command === 'update-task') {
+    await updateTask()
+  } else if (command === 'components') {
+    await listComponents()
+  } else if (command === 'component') {
+    await showComponent()
+  } else if (command === 'code-context') {
+    await fetchCodeContext()
+  } else if (command === 'source-excerpt') {
+    await fetchSourceExcerpt()
+  } else if (command === 'playbook') {
+    fetchPlaybook()
+  } else if (command === 'agent-directions') {
+    await fetchAgentDirections()
+  } else if (command === 'component-examples') {
+    await fetchComponentExamples()
+  } else if (command === 'data-context') {
+    await fetchDataContext()
+  } else if (command === 'interaction-history') {
+    await fetchInteractionHistory()
+  } else if (command === 'rendered-html') {
+    await fetchRenderedHtml()
+  } else if (command === 'data-sources') {
+    await fetchDataSources()
+  } else if (command === 'data-source-examples') {
+    await fetchDataSourceExamples()
+  } else if (command === 'data-source-details') {
+    await fetchDataSourceDetails()
+  } else if (command === 'api-schemas') {
+    await fetchApiSchemas()
+  } else if (command === 'api-operation') {
+    await fetchApiOperation()
+  } else if (command === 'resolve-endpoint') {
+    await resolveEndpointCmd()
+  } else if (command === 'runtime-endpoints') {
+    await fetchRuntimeEndpoints()
+  } else if (command === 'mcp') {
+    runMcpStdio()
+  } else if (command === 'help' || command === '--help') {
+    printHelp()
+  } else {
+    if (mcpFlag) fail('usage', `Unknown command: ${command}`)
+    console.error(`Unknown command: ${command}`)
+    printHelp()
+    exit(1)
+  }
+}
+
+// Run automatically only when executed as the bin entry (dist/cli.js, or a
+// node_modules/.bin symlink resolving to it) — importing `runCli` from tests
+// or other tooling must never trigger a command.
+const isMainModule = (() => {
+  if (!process.argv[1]) return false
+  try { return pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url } catch { return false }
+})()
+if (isMainModule) void runCli(process.argv.slice(2))
 
 // ── Watch: live stream of changes via WebSocket ──────
 
@@ -259,9 +369,7 @@ async function fetchReport() {
     console.log(fmt(report))
     if (mfeFilter) info(`${color('36', '[Annotask]')} Filtered by MFE: ${mfeFilter}`)
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch report: ${err.message}`)
-    if (!mcpFlag) console.error(serverHint())
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch report: ${err.message}`, serverHint())
   }
 }
 
@@ -279,13 +387,15 @@ async function checkStatus() {
     if (mfeFilter) console.log(`${color('36', '[Annotask]')} MFE filter: ${mfeFilter}`)
     console.log(JSON.stringify(data, null, 2))
   } catch {
+    // Deliberately NOT the fail() envelope: skills probe `status --mcp` and
+    // parse this richer unreachable payload (url/source/hint) to self-correct.
     if (mcpFlag) {
       console.log(fmt({ status: 'unreachable', url: baseUrl, source: baseUrlSource, hint: serverHint() }))
-      process.exit(1)
+      exit(1)
     }
     console.log(`${color('31', '[Annotask]')} No Annotask server found at ${baseUrl}`)
     console.log(serverHint())
-    process.exit(1)
+    exit(1)
   }
 }
 
@@ -294,8 +404,7 @@ async function checkStatus() {
 async function fetchScreenshot() {
   const taskId = args[1]
   if (!taskId) {
-    console.error('\x1b[31m[Annotask]\x1b[0m Usage: annotask screenshot <task-id> [--output=path.png]')
-    process.exit(1)
+    fail('usage', 'Usage: annotask screenshot <task-id> [--output=path.png]')
   }
 
   try {
@@ -303,13 +412,13 @@ async function fetchScreenshot() {
     const tasksRes = await fetch(`${apiUrl}/tasks`)
     const tasksData = await tasksRes.json()
     const task = tasksData.tasks.find((t: any) => t.id === taskId)
-    if (!task) { console.error(`\x1b[31m[Annotask]\x1b[0m Task not found: ${taskId}`); process.exit(1) }
-    if (!task.screenshot) { console.error(`\x1b[31m[Annotask]\x1b[0m Task has no screenshot`); process.exit(1) }
+    if (!task) fail('not_found', `Task not found: ${taskId}`)
+    if (!task.screenshot) fail('not_found', 'Task has no screenshot')
 
     // Download the screenshot
     const screenshotUrl = `${baseUrl}/__annotask/screenshots/${task.screenshot}`
     const res = await fetch(screenshotUrl)
-    if (!res.ok) { console.error(`\x1b[31m[Annotask]\x1b[0m Screenshot not found: ${task.screenshot}`); process.exit(1) }
+    if (!res.ok) fail('not_found', `Screenshot not found: ${task.screenshot}`)
     const buffer = Buffer.from(await res.arrayBuffer())
 
     const outputArg = args.find(a => a.startsWith('--output='))
@@ -319,10 +428,11 @@ async function fetchScreenshot() {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
     writeFileSync(outputPath, buffer)
-    console.log(`\x1b[32m[Annotask]\x1b[0m Screenshot saved to ${outputPath}`)
+    if (mcpFlag) { console.log(fmt({ task_id: taskId, saved: outputPath })) }
+    else console.log(`\x1b[32m[Annotask]\x1b[0m Screenshot saved to ${outputPath}`)
   } catch (err: any) {
-    console.error(`\x1b[31m[Annotask]\x1b[0m Failed to fetch screenshot: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch screenshot: ${err.message}`)
   }
 }
 
@@ -340,10 +450,12 @@ async function fetchTasks() {
     if (statusFilter) tasks = tasks.filter(t => t.status === statusFilter)
 
     // With --detail (or legacy --pretty without --mcp) we return full task
-    // objects. In MCP-parity mode we strip the shell-only `visual` field so
-    // the shape matches annotask_get_tasks(detail:true).
+    // objects. In MCP-parity mode we use the list strip so the shape matches
+    // annotask_get_tasks(detail:true): no shell-only `visual`, and the bulky
+    // `interaction_history` / `context.rendered` payloads come off too (each
+    // has its own retrieval command).
     if (detailFlag) {
-      data.tasks = mcpFlag ? tasks.map(stripTaskVisual) : tasks
+      data.tasks = mcpFlag ? tasks.map(stripTaskForList) : tasks
     } else if (prettyFlag && !mcpFlag) {
       data.tasks = tasks
     } else {
@@ -353,8 +465,7 @@ async function fetchTasks() {
 
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch tasks: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch tasks: ${err.message}`)
   }
 }
 
@@ -363,21 +474,17 @@ async function fetchTasks() {
 async function fetchTask() {
   const taskId = args[1]
   if (!taskId) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask task <task-id>`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask task <task-id>')
   }
   try {
     const res = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}`)
-    if (res.status === 404) {
-      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
-      process.exit(1)
-    }
+    if (res.status === 404) fail('not_found', `Task not found: ${taskId}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const task = await res.json() as Record<string, unknown>
     console.log(fmt(trimAgentFeedback(stripTaskVisual(task))))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch task: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch task: ${err.message}`)
   }
 }
 
@@ -395,8 +502,7 @@ async function fetchDesignSpec() {
       const slice: Record<string, unknown> = { version: spec.version, framework: spec.framework }
       if (categoryArg !== 'framework') {
         if (!(categoryArg in spec)) {
-          console.error(`${color('31', '[Annotask]')} Unknown category: ${categoryArg}`)
-          process.exit(1)
+          fail('invalid_argument', `Unknown category: ${categoryArg}`)
         }
         slice[categoryArg] = spec[categoryArg]
       }
@@ -422,8 +528,8 @@ async function fetchDesignSpec() {
     }
     console.log(fmt(summary))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch design spec: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch design spec: ${err.message}`)
   }
 }
 
@@ -438,11 +544,11 @@ async function updateTask() {
   const resolutionArg = args.find(a => a.startsWith('--resolution='))?.split('=').slice(1).join('=')
 
   if (!taskId || (!statusArg && !askArg && !blockedReasonArg)) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask update-task <task-id> --status=<status> [--feedback=<text>]`)
-    console.error('       annotask update-task <task-id> --ask=\'{"message":"...","questions":[...]}\'')
-    console.error('       annotask update-task <task-id> --blocked-reason="Cannot fix: issue is in third-party library"')
-    console.error('  Valid statuses: pending, in_progress, applied, review, accepted, denied, needs_info, blocked')
-    process.exit(1)
+    fail('usage', 'Usage: annotask update-task <task-id> --status=<status> [--feedback=<text>]', [
+      '       annotask update-task <task-id> --ask=\'{"message":"...","questions":[...]}\'',
+      '       annotask update-task <task-id> --blocked-reason="Cannot fix: issue is in third-party library"',
+      '  Valid statuses: pending, in_progress, applied, review, accepted, denied, needs_info, blocked',
+    ].join('\n'))
   }
 
   try {
@@ -453,7 +559,7 @@ async function updateTask() {
       const taskRes = await fetch(`${apiUrl}/tasks`)
       const taskData = await taskRes.json()
       const task = taskData.tasks.find((t: any) => t.id === taskId)
-      if (!task) { console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`); process.exit(1) }
+      if (!task) fail('not_found', `Task not found: ${taskId}`)
 
       const askData = JSON.parse(askArg)
       const entry = {
@@ -483,13 +589,15 @@ async function updateTask() {
     const data = await res.json()
     if (data.error) {
       const msg = typeof data.error === 'string' ? data.error : data.error.message ?? 'Unknown error'
-      console.error(`${color('31', '[Annotask]')} ${msg}`)
-      process.exit(1)
+      // The API's error body is already { error: { code, message } } — keep
+      // the server's code (e.g. invalid_transition) when it provides one.
+      const code = typeof data.error === 'object' && typeof data.error.code === 'string' ? data.error.code : 'http_error'
+      fail(code, msg)
     }
     console.log(fmt(mcpFlag ? stripTaskVisual(data) : data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to update task: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to update task: ${err.message}`)
   }
 }
 
@@ -503,7 +611,7 @@ function initSkills() {
 
   if (!existsSync(srcSkills)) {
     console.error(`\x1b[31m[Annotask]\x1b[0m Skills directory not found in package. Expected: ${srcSkills}`)
-    process.exit(1)
+    exit(1)
   }
 
   const skillNames = readdirSync(srcSkills).filter(name =>
@@ -512,7 +620,7 @@ function initSkills() {
 
   if (skillNames.length === 0) {
     console.error(`\x1b[31m[Annotask]\x1b[0m No skills found in ${srcSkills}`)
-    process.exit(1)
+    exit(1)
   }
 
   // Resolve target paths — known names map to dotfile dirs, anything else is used as-is
@@ -629,7 +737,7 @@ function initMcp() {
 
   if (transportArg !== 'stdio' && transportArg !== 'http') {
     console.error(`\x1b[31m[Annotask]\x1b[0m Unknown --transport=${transportArg}. Valid: stdio, http`)
-    process.exit(1)
+    exit(1)
   }
 
   /**
@@ -646,7 +754,7 @@ function initMcp() {
   const unknown = targetKeys.filter(k => !MCP_EDITORS[k])
   if (unknown.length > 0) {
     console.error(`\x1b[31m[Annotask]\x1b[0m Unknown editor(s): ${unknown.join(', ')}. Valid: ${Object.keys(MCP_EDITORS).join(', ')}, all`)
-    process.exit(1)
+    exit(1)
   }
 
   let written = 0
@@ -761,8 +869,7 @@ async function listComponents() {
       }
     }
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch components: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch components: ${err.message}`)
   }
 }
 
@@ -771,8 +878,7 @@ async function listComponents() {
 async function showComponent() {
   const name = args[1]
   if (!name) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask component <ComponentName>`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask component <ComponentName>')
   }
 
   const jsonFlag = args.includes('--json') || mcpFlag
@@ -793,12 +899,12 @@ async function showComponent() {
     }
 
     if (matches.length === 0) {
-      if (mcpFlag) {
-        console.error(fmt({ error: `Component not found: ${name}${libraryArg ? ` (library: ${libraryArg})` : ''}` }))
-      } else {
-        console.error(`${color('31', '[Annotask]')} Component "${name}" not found. Use ${color('33', 'annotask components')} to list available components.`)
-      }
-      process.exit(1)
+      // Under --mcp this now goes through fail() so the envelope is the
+      // structured { error: { code, message } } shape on stdout — previously
+      // a bare { error } string landed on stderr and broke skill parsing.
+      fail('not_found', mcpFlag
+        ? `Component not found: ${name}${libraryArg ? ` (library: ${libraryArg})` : ''}`
+        : `Component "${name}" not found. Use ${color('33', 'annotask components')} to list available components.`)
     }
 
     if (matches.length > 1 && !libraryArg) {
@@ -811,7 +917,7 @@ async function showComponent() {
       if (jsonFlag) { console.log(JSON.stringify(ambiguous, null, 2)); return }
       console.error(`${color('31', '[Annotask]')} ${ambiguous.message}`)
       for (const c of ambiguous.candidates) console.error(`  ${c.library}: ${c.module}`)
-      process.exit(1)
+      exit(1)
     }
 
     const { library: libName, version, component: found } = matches[0]
@@ -839,8 +945,8 @@ async function showComponent() {
       }
     }
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch component: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch component: ${err.message}`)
   }
 }
 
@@ -849,23 +955,99 @@ async function showComponent() {
 async function fetchCodeContext() {
   const taskId = args[1]
   if (!taskId) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask code-context <task-id> [--context-lines=N]`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask code-context <task-id> [--context-lines=N]')
   }
   const ctxLinesArg = args.find(a => a.startsWith('--context-lines='))?.split('=')[1]
   const qs = ctxLinesArg ? `?context_lines=${encodeURIComponent(ctxLinesArg)}` : ''
   try {
     const res = await fetch(`${apiUrl}/code-context/${encodeURIComponent(taskId)}${qs}`)
-    if (res.status === 404) {
-      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
-      process.exit(1)
-    }
+    if (res.status === 404) fail('not_found', `Task not found: ${taskId}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch code context: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch code context: ${err.message}`)
+  }
+}
+
+// ── Source excerpt: ground an arbitrary file/line ───────
+// File-keyed sibling of code-context — for locations beyond a task's own
+// file/line (wireframe_apply anchors, arrow to_element targets, …).
+
+async function fetchSourceExcerpt() {
+  const fileArg = args.find(a => a.startsWith('--file='))?.split('=')[1]
+  const lineArg = args.find(a => a.startsWith('--line='))?.split('=')[1]
+  if (!fileArg || !lineArg) {
+    fail('usage', 'Usage: annotask source-excerpt --file=PATH --line=N [--context-lines=N]')
+  }
+  const ctxLinesArg = args.find(a => a.startsWith('--context-lines='))?.split('=')[1]
+  const params = new URLSearchParams()
+  params.set('file', fileArg)
+  params.set('line', lineArg)
+  if (ctxLinesArg) params.set('context_lines', ctxLinesArg)
+  try {
+    const res = await fetch(`${apiUrl}/source-excerpt?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    fail(errCode(err), `Failed to fetch source excerpt: ${err.message}`)
+  }
+}
+
+// ── Playbook: task-type companion apply instructions ────
+
+/**
+ * Served from the bundled skill files, no dev server needed — the same
+ * content the MCP annotask_get_playbook tool returns, so the CLI fallback
+ * gives agents identical material when the editor has no MCP registration.
+ */
+function fetchPlaybook() {
+  const taskType = args[1] && !args[1].startsWith('--') ? args[1] : ''
+  if (!taskType) {
+    fail('usage', `Usage: annotask playbook <task_type>  (one of: ${TASK_TYPES.join(', ')})`)
+  }
+  if (!(TASK_TYPES as readonly string[]).includes(taskType)) {
+    fail('invalid_argument', `Unknown task type: ${taskType}. Valid: ${TASK_TYPES.join(', ')}`)
+  }
+  const companion = TASK_TYPE_COMPANIONS[taskType]
+  if (!companion) {
+    const message = `No companion playbook for "${taskType}" — the base annotask-apply instructions cover this type.`
+    if (mcpFlag) { console.log(fmt({ task_type: taskType, message })); return }
+    console.log(`${color('33', '[Annotask]')} ${message}`)
+    return
+  }
+  let content: string | undefined
+  try {
+    content = loadSkill('annotask-apply').files[companion]
+  } catch (err: any) {
+    fail('skill_load_failed', `Could not load skill files: ${err.message}`)
+  }
+  if (!content) fail('not_found', `Playbook file missing from the installed package: ${companion}`)
+  if (mcpFlag) { console.log(fmt({ task_type: taskType, file: companion, content })); return }
+  console.log(content)
+}
+
+// ── Agent directions: per-persona project directions ────
+
+async function fetchAgentDirections() {
+  const personaId = args[1] && !args[1].startsWith('--') ? args[1] : ''
+  try {
+    const res = await fetch(`${apiUrl}/agent-configs`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json() as { version?: unknown; agents?: Record<string, Record<string, unknown>> }
+    if (personaId) {
+      const entry = data.agents?.[personaId]
+      // Match annotask_get_agent_directions: an unconfigured persona is not
+      // an error — agents just get empty directions plus a flag.
+      if (!entry) { console.log(fmt({ persona_id: personaId, projectDirections: '', not_configured: true })); return }
+      console.log(fmt({ persona_id: personaId, ...entry }))
+      return
+    }
+    console.log(fmt(data))
+  } catch (err: any) {
+    fail(errCode(err), `Failed to fetch agent directions: ${err.message}`)
   }
 }
 
@@ -874,8 +1056,7 @@ async function fetchCodeContext() {
 async function fetchComponentExamples() {
   const name = args[1]
   if (!name) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask component-examples <ComponentName> [--limit=N] [--library=NAME]`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask component-examples <ComponentName> [--limit=N] [--library=NAME]')
   }
   const limitArg = args.find(a => a.startsWith('--limit='))?.split('=')[1]
   const libraryArg = args.find(a => a.startsWith('--library='))?.split('=')[1]
@@ -889,8 +1070,7 @@ async function fetchComponentExamples() {
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch component examples: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch component examples: ${err.message}`)
   }
 }
 
@@ -899,8 +1079,7 @@ async function fetchComponentExamples() {
 async function fetchDataContext() {
   const taskId = args[1]
   if (!taskId) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask data-context <task-id> [--refresh]`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask data-context <task-id> [--refresh]')
   }
   const refresh = args.includes('--refresh')
   try {
@@ -910,28 +1089,22 @@ async function fetchDataContext() {
     let res: Response
     if (refresh) {
       const tasksRes = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}`)
-      if (tasksRes.status === 404) {
-        console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
-        process.exit(1)
-      }
+      if (tasksRes.status === 404) fail('not_found', `Task not found: ${taskId}`)
       const task = await tasksRes.json() as Record<string, unknown>
       const file = typeof task.file === 'string' ? task.file : ''
       const line = typeof task.line === 'number' ? task.line : 0
-      if (!file) { console.error(`${color('31', '[Annotask]')} Task has no file reference`); process.exit(1) }
+      if (!file) fail('no_file_reference', 'Task has no file reference')
       res = await fetch(`${apiUrl}/data-context/resolve?file=${encodeURIComponent(file)}&line=${line}`)
     } else {
       res = await fetch(`${apiUrl}/data-context/${encodeURIComponent(taskId)}`)
-      if (res.status === 404) {
-        console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
-        process.exit(1)
-      }
+      if (res.status === 404) fail('not_found', `Task not found: ${taskId}`)
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch data context: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch data context: ${err.message}`)
   }
 }
 
@@ -940,21 +1113,17 @@ async function fetchDataContext() {
 async function fetchInteractionHistory() {
   const taskId = args[1]
   if (!taskId) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask interaction-history <task-id>`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask interaction-history <task-id>')
   }
   try {
     const res = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}/interaction-history`)
-    if (res.status === 404) {
-      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
-      process.exit(1)
-    }
+    if (res.status === 404) fail('not_found', `Task not found: ${taskId}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch interaction history: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch interaction history: ${err.message}`)
   }
 }
 
@@ -963,21 +1132,17 @@ async function fetchInteractionHistory() {
 async function fetchRenderedHtml() {
   const taskId = args[1]
   if (!taskId) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask rendered-html <task-id>`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask rendered-html <task-id>')
   }
   try {
     const res = await fetch(`${apiUrl}/tasks/${encodeURIComponent(taskId)}/rendered-html`)
-    if (res.status === 404) {
-      console.error(`${color('31', '[Annotask]')} Task not found: ${taskId}`)
-      process.exit(1)
-    }
+    if (res.status === 404) fail('not_found', `Task not found: ${taskId}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch rendered HTML: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch rendered HTML: ${err.message}`)
   }
 }
 
@@ -1000,8 +1165,7 @@ async function fetchDataSources() {
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch data sources: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch data sources: ${err.message}`)
   }
 }
 
@@ -1040,8 +1204,7 @@ async function fetchRuntimeEndpoints() {
     }
     console.log(fmt({ ...data, endpoints }))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch runtime endpoints: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch runtime endpoints: ${err.message}`)
   }
 }
 
@@ -1050,8 +1213,7 @@ async function fetchRuntimeEndpoints() {
 async function fetchDataSourceExamples() {
   const name = args[1]
   if (!name) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask data-source-examples <name> [--kind=composable|signal|store|fetch|graphql|loader|rpc] [--limit=N]`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask data-source-examples <name> [--kind=composable|signal|store|fetch|graphql|loader|rpc] [--limit=N]')
   }
   const kind = args.find(a => a.startsWith('--kind='))?.split('=')[1]
   const limit = args.find(a => a.startsWith('--limit='))?.split('=')[1]
@@ -1065,8 +1227,7 @@ async function fetchDataSourceExamples() {
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch data source examples: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch data source examples: ${err.message}`)
   }
 }
 
@@ -1075,8 +1236,7 @@ async function fetchDataSourceExamples() {
 async function fetchDataSourceDetails() {
   const name = args[1]
   if (!name) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask data-source-details <name> [--kind=K] [--file=PATH] [--context-lines=N]`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask data-source-details <name> [--kind=K] [--file=PATH] [--context-lines=N]')
   }
   const kind = args.find(a => a.startsWith('--kind='))?.split('=')[1]
   const file = args.find(a => a.startsWith('--file='))?.split('=')[1]
@@ -1092,8 +1252,7 @@ async function fetchDataSourceDetails() {
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch data source details: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch data source details: ${err.message}`)
   }
 }
 
@@ -1112,16 +1271,14 @@ async function fetchApiSchemas() {
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch api schemas: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to fetch api schemas: ${err.message}`)
   }
 }
 
 async function fetchApiOperation() {
   const opPath = args[1]
   if (!opPath) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask api-operation <path> [--method=GET] [--schema-location=PATH]`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask api-operation <path> [--method=GET] [--schema-location=PATH]')
   }
   const method = args.find(a => a.startsWith('--method='))?.split('=')[1]
   const schemaLocation = args.find(a => a.startsWith('--schema-location='))?.split('=').slice(1).join('=')
@@ -1131,24 +1288,20 @@ async function fetchApiOperation() {
   if (schemaLocation) params.set('schema_location', schemaLocation)
   try {
     const res = await fetch(`${apiUrl}/api-operation?${params.toString()}`)
-    if (res.status === 404) {
-      console.error(`${color('31', '[Annotask]')} Operation not found: ${opPath}`)
-      process.exit(1)
-    }
+    if (res.status === 404) fail('not_found', `Operation not found: ${opPath}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to fetch api operation: ${err.message}`)
-    process.exit(1)
+    if (err instanceof CliExit) throw err
+    fail(errCode(err), `Failed to fetch api operation: ${err.message}`)
   }
 }
 
 async function resolveEndpointCmd() {
   const url = args[1]
   if (!url) {
-    console.error(`${color('31', '[Annotask]')} Usage: annotask resolve-endpoint <url> [--method=GET]`)
-    process.exit(1)
+    fail('usage', 'Usage: annotask resolve-endpoint <url> [--method=GET]')
   }
   const method = args.find(a => a.startsWith('--method='))?.split('=')[1]
   const params = new URLSearchParams()
@@ -1160,8 +1313,7 @@ async function resolveEndpointCmd() {
     const data = await res.json()
     console.log(fmt(data))
   } catch (err: any) {
-    console.error(`${color('31', '[Annotask]')} Failed to resolve endpoint: ${err.message}`)
-    process.exit(1)
+    fail(errCode(err), `Failed to resolve endpoint: ${err.message}`)
   }
 }
 
@@ -1298,6 +1450,12 @@ function printHelp() {
   update-task     Update a task's status / resolution / feedback
   screenshot      Download a task's screenshot
   code-context    Resolve a task to grounded source context (excerpt, symbol, imports, hash)
+  source-excerpt  Ground an arbitrary --file/--line to current source (same payload as
+                  code-context, but not task-keyed — for multi-file anchors)
+  playbook        Print the task-type companion playbook (a11y_fix, theme_update,
+                  error_fix, perf_fix, wireframe_apply). Reads bundled skill files;
+                  no dev server needed.
+  agent-directions  Fetch per-persona project directions (all personas, or one by id)
   component-examples  Find in-repo usages of a component (snippet + import path)
   data-context    Resolve (or return stored) data_context for a task (hooks/stores/fetch refs)
   interaction-history  Fetch the user's pre-task navigation + action trace for a task
@@ -1331,7 +1489,8 @@ function printHelp() {
   --mfe=NAME        Filter tasks by MFE identity (overrides server.json mfe)
   --mcp             Emit MCP-parity output: compact JSON, no ANSI, matches the
                     annotask_* tool shapes. Use in agent skills so responses
-                    are identical whether reached via MCP or the CLI.
+                    are identical whether reached via MCP or the CLI. Failures
+                    print {"error":{"code","message"}} to stdout and exit 1.
   --pretty          Pretty-print JSON output (ignored under --mcp)
   --detail          tasks: return full task objects instead of summaries
   --status=STATUS   tasks: filter by status (pending, review, denied, ...)
@@ -1341,9 +1500,11 @@ function printHelp() {
   --library=NAME    components / component: restrict to one library
   --limit=N         components / component-examples / data-source-examples: max results (default 50 / 3 / 3)
   --offset=N        components: skip the first N results (pagination)
-  --context-lines=N code-context: lines of context around task.line (default 15, max 200)
+  --context-lines=N code-context / source-excerpt: lines of context (default 15, max 200)
                     data-source-details: lines around the definition (default 15, max 40)
-  --file=PATH       data-source-details: disambiguate by file when multiple definitions share a name
+  --file=PATH       source-excerpt: project-relative file to excerpt (required)
+                    data-source-details: disambiguate by file when multiple definitions share a name
+  --line=N          source-excerpt: 1-based line to center the excerpt on (required)
   --refresh         data-context: force a fresh scan even if the task has stored data_context
   --used-only       data-sources: restrict project entries to used_count > 0
   --kind=K          data-sources / data-source-examples: filter by composable|signal|store|fetch|graphql|loader|rpc
@@ -1377,6 +1538,9 @@ function printHelp() {
   annotask components --mcp Button        # Compact JSON, filtered by name
   annotask component Button --mcp         # Full component JSON
   annotask update-task TASK_ID --status=in_progress --mcp
+  annotask source-excerpt --file=src/App.vue --line=42 --mcp
+  annotask playbook wireframe_apply --mcp # Companion playbook as JSON
+  annotask agent-directions designer --mcp
   annotask status --mcp                   # Compact JSON status
   annotask watch                          # Watch live changes (human)
   annotask init-skills                    # Install AI agent skills

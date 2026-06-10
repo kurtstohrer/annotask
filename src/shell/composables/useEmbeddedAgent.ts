@@ -334,7 +334,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     // the user how to fix it.
     if (isSeed && !isLocalCliProvider(activeProviderId)) {
       status.value = 'error'
-      errorMessage.value = `${activeProviderId} can't apply tasks yet — pick a persona that uses a local CLI (claude-local, codex-local, opencode-local) in Settings → Agents.`
+      errorMessage.value = `${activeProviderId} can't apply tasks yet — pick a persona that uses a local CLI (claude-local, codex-local, opencode-local, copilot-local) in Settings → Agents.`
       if (taskId) markRunFinished(taskId)
       return
     }
@@ -356,7 +356,9 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     } catch (err) {
       status.value = 'error'
       errorMessage.value = `Failed to record user message: ${(err as Error).message}`
-      if (taskId) markRunFinished(taskId)
+      // The seed lock was already taken above — release it (and clear the
+      // live-run indicator) or the task is stuck in_progress forever.
+      await finalizeErrorExit(taskId, isSeed)
       return
     }
 
@@ -403,6 +405,10 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     } catch (err) {
       status.value = 'error'
       errorMessage.value = (err as Error).message
+      // Same stuck-task hazard as the append failure above: a seed run
+      // already locked the task, so a missing-API-key (or any factory)
+      // error must still unwind the lock + live-run indicator.
+      await finalizeErrorExit(taskId, isSeed)
       return
     }
 
@@ -638,9 +644,11 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       }
     }
 
-    // Surface a watchdog stall as a system message so it's part of the
-    // persisted transcript (visible to every observer + MCP tail-readers).
-    if (watchdogReason && errorMessage.value) {
+    // Surface a watchdog stall or a failed seed run as a system message so
+    // it's part of the persisted transcript (visible to every observer +
+    // MCP tail-readers) — the error strip is local to this tab.
+    const seedRunFailed = isSeed && !!taskId && !watchdogReason && stopReason === 'error'
+    if ((watchdogReason || seedRunFailed) && errorMessage.value) {
       try {
         await thread.append({ role: 'system', content: errorMessage.value })
       } catch { /* best-effort */ }
@@ -662,6 +670,11 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       await markTaskBlocked(taskId, errorMessage.value ?? 'Run cancelled by the stall watchdog.')
     } else if (isSeed && taskId && status.value === 'completed') {
       await markTaskForReview(taskId, finalBlocks)
+    } else if (isSeed && taskId && status.value === 'error') {
+      // A seed run that errored out (provider stream threw, CLI exited
+      // non-zero, spawn failed mid-flight) must release its lock or the
+      // task stays in_progress forever with no agent attached.
+      await revertTaskToPending(taskId)
     }
 
     if (taskId) markRunFinished(taskId)
@@ -722,6 +735,50 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     } catch (err) {
       errorMessage.value = `Couldn't mark task blocked: ${(err as Error).message}`
     }
+  }
+
+  /**
+   * Release a failed seed run's lock. The seed run took `pending|denied →
+   * in_progress` at start; when the run errors out instead of completing,
+   * the lock must come off (`in_progress → pending`) or the task is stranded
+   * — locked against the auto-run queue and showing a phantom "agent
+   * working" status forever. Unlike a watchdog stall (→ `blocked`, terminal
+   * for the queue), a plain error is usually transient (provider misconfig,
+   * spawn failure), so `pending` keeps the task retryable. Only transitions
+   * from `in_progress` (the lock this run took) — anything else the agent
+   * or user moved deliberately.
+   */
+  async function revertTaskToPending(taskId: string): Promise<void> {
+    try {
+      const taskSystem = useTasks()
+      const current = taskSystem.tasks.value.find((t) => t.id === taskId)
+      if (!current || current.status !== 'in_progress') return
+      await taskSystem.updateTaskStatus(taskId, 'pending')
+    } catch (err) {
+      errorMessage.value = `Couldn't revert task to pending: ${(err as Error).message}`
+    }
+  }
+
+  /**
+   * Shared cleanup for runs that die before reaching the end-of-stream
+   * finalization (provider construction failed, user-message append failed).
+   * Mirrors the watchdog path's pattern: persist the failure as a system
+   * message so every observer (other tabs, MCP tail-readers) sees why the
+   * run ended, release a seed run's task lock, and clear the live-run
+   * indicator. Chat turns (isSeed=false) only clear the indicator — they
+   * never touched task.status.
+   */
+  async function finalizeErrorExit(taskId: string | null, isSeed: boolean): Promise<void> {
+    if (!taskId) return
+    if (isSeed) {
+      if (errorMessage.value) {
+        try {
+          await thread.append({ role: 'system', content: errorMessage.value })
+        } catch { /* best-effort — the thread itself may be what failed */ }
+      }
+      await revertTaskToPending(taskId)
+    }
+    markRunFinished(taskId)
   }
 
   /**

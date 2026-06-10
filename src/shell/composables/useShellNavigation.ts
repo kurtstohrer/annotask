@@ -29,6 +29,10 @@ function migrateLegacyNavigation(): void {
     if (legacyDevelop === 'libraries') {
       localStorage.setItem(DEVELOP_SECTION_KEY, 'data')
     }
+    // The standalone Palette section was merged into Components.
+    if (localStorage.getItem(DESIGN_SECTION_KEY) === 'palette') {
+      localStorage.setItem(DESIGN_SECTION_KEY, 'components')
+    }
     if (!legacyView && !legacyPerf) return
 
     if (legacyView === 'theme') {

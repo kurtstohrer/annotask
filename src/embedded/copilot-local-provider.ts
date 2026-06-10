@@ -22,8 +22,7 @@
 
 import {
   CliLocalProvider,
-  lastUserMessageText,
-  withSystemPrompt,
+  rollupHistoryAsPrompt,
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
@@ -76,8 +75,10 @@ export class CopilotLocalProvider extends CliLocalProvider {
     }
     args.push(...this.extraArgs)
     // Copilot consumes the prompt via `-p <text>`. Prepend the system prompt
-    // since there's no separate system-prompt flag.
-    args.push('-p', withSystemPrompt(lastUserMessageText(messages), options.systemPrompt))
+    // (there's no separate system-prompt flag) and roll up the prior turns
+    // as a transcript — each turn spawns a fresh `copilot -p` with no
+    // session memory of its own.
+    args.push('-p', rollupHistoryAsPrompt(messages, options.systemPrompt))
     return { cli: 'copilot', args }
   }
 

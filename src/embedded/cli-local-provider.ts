@@ -1,8 +1,9 @@
 /**
  * Base class for "local CLI" providers — claude-local, codex-local,
- * opencode-local. These don't speak HTTP wire formats; instead, the browser
- * asks the Annotask dev server to spawn the user's locally-installed CLI in
- * headless JSON mode and pipes the user's message in on stdin. The CLI
+ * opencode-local, copilot-local. These don't speak HTTP wire formats;
+ * instead, the browser asks the Annotask dev server to spawn the user's
+ * locally-installed CLI in headless JSON mode and pipes the user's message
+ * in on stdin. The CLI
  * streams JSON events back on stdout, which the server forwards as SSE,
  * which this provider parses into the shared `ProviderEvent` shape.
  *
@@ -201,6 +202,20 @@ export abstract class CliLocalProvider implements LLMProvider {
   }
 }
 
+/** Extract the text payload of one provider message. Tool blocks have no
+ *  positional-prompt representation here — by the time a thread message
+ *  reaches a provider its `content` already carries the flat text rollup
+ *  (including `[Tool] …` / `[Result] …` summary lines), so text blocks are
+ *  the only thing worth reading. */
+function messageText(msg: ProviderMessage): string {
+  if (typeof msg.content === 'string') return msg.content
+  const text: string[] = []
+  for (const block of msg.content) {
+    if (block.type === 'text') text.push(block.text)
+  }
+  return text.join('')
+}
+
 /** Flatten the provider-agnostic message history into a single prompt string. */
 export function flattenMessagesAsPrompt(
   messages: ProviderMessage[],
@@ -209,16 +224,9 @@ export function flattenMessagesAsPrompt(
   const parts: string[] = []
   if (systemPrompt) parts.push(systemPrompt, '')
   for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      parts.push(`${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
-      continue
-    }
-    const text: string[] = []
-    for (const block of msg.content) {
-      if (block.type === 'text') text.push(block.text)
-    }
+    const text = messageText(msg)
     if (text.length > 0) {
-      parts.push(`${msg.role === 'user' ? 'User' : 'Assistant'}: ${text.join('')}`)
+      parts.push(`${msg.role === 'user' ? 'User' : 'Assistant'}: ${text}`)
     }
   }
   return parts.join('\n').trim()
@@ -227,9 +235,10 @@ export function flattenMessagesAsPrompt(
 /**
  * Prepend a system prompt to a positional CLI prompt. Used by CLIs whose
  * headless modes don't expose a separate system-prompt flag (`codex exec`,
- * `opencode run`). The CLI receives one prompt that opens with the system
- * instructions, a separator, then the user turn — the model still picks up
- * the instructions even though everything is technically one user message.
+ * `opencode run`, `copilot -p`). The CLI receives one prompt that opens with
+ * the system instructions, a separator, then the user turn — the model still
+ * picks up the instructions even though everything is technically one user
+ * message.
  *
  * `claude --print` already supports a real system prompt via stdin's flatten
  * helper above, so it doesn't go through this.
@@ -243,21 +252,114 @@ export function withSystemPrompt(userText: string, systemPrompt: string): string
 /**
  * Extract just the latest user turn as a single string. Used by CLIs whose
  * headless mode runs one-shot ("answer this one prompt") rather than a true
- * multi-turn protocol — `codex exec`, `opencode run`. Multi-turn context can
- * still be expressed by prepending the rolled-up history.
+ * multi-turn protocol — `codex exec`, `opencode run`, `copilot -p`.
+ * Multi-turn context is expressed by prepending the rolled-up history — see
+ * `rollupHistoryAsPrompt` below.
  */
 export function lastUserMessageText(messages: ProviderMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
     if (m.role !== 'user') continue
-    if (typeof m.content === 'string') return m.content
-    const text: string[] = []
-    for (const block of m.content) {
-      if (block.type === 'text') text.push(block.text)
-    }
-    return text.join('')
+    return messageText(m)
   }
   return ''
+}
+
+/**
+ * Character budget for prompts passed as a single argv element. Linux caps
+ * one argv string at MAX_ARG_STRLEN (128 KiB) and macOS shares a 1 MiB
+ * ARG_MAX across the whole argv + environment — 100 KB leaves comfortable
+ * headroom for the rest of the command line on both. claude isn't affected
+ * (its prompt rides on stdin), only the positional-prompt CLIs are.
+ */
+export const POSITIONAL_PROMPT_MAX_CHARS = 100_000
+
+/** Inserted at the top of the rolled-up transcript when old turns were
+ *  dropped, so the model knows the history is incomplete rather than
+ *  inventing the missing context. */
+export const HISTORY_TRUNCATED_MARKER = '[earlier turns truncated]'
+
+/**
+ * Roll up the full conversation into a single positional prompt for one-shot
+ * CLIs (`codex exec`, `opencode run`, `copilot -p`). Each chat turn spawns a
+ * fresh subprocess, so without this every follow-up message would lose ALL
+ * prior context — the rolled-up history is the only memory these CLIs get.
+ *
+ * Shape (system prompt first so it reads as instructions, then the prior
+ * turns as a clearly-delimited transcript, then the live request):
+ *
+ *   <system prompt>
+ *   ---
+ *   ## Conversation so far
+ *   User: …
+ *   Assistant: …
+ *   ## Current request
+ *   <latest user message>
+ *
+ * First turns (no prior history) keep the exact single-shot shape of
+ * `withSystemPrompt(lastUserMessageText(...), ...)` so seed-run prompts are
+ * byte-identical to what they were before multi-turn support.
+ *
+ * Budget: the whole prompt must fit in one argv element (see
+ * `POSITIONAL_PROMPT_MAX_CHARS`). The system prompt and the current request
+ * are never truncated — history turns are dropped OLDEST-first until the
+ * rest fits, with `HISTORY_TRUNCATED_MARKER` left where they were.
+ */
+export function rollupHistoryAsPrompt(
+  messages: ProviderMessage[],
+  systemPrompt: string,
+  maxChars: number = POSITIONAL_PROMPT_MAX_CHARS,
+): string {
+  // The current turn is the LAST user message; everything before it is
+  // prior conversation. (Messages after it shouldn't exist — the runner
+  // always appends the user turn last before streaming.)
+  let lastUserIdx = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') { lastUserIdx = i; break }
+  }
+  const current = lastUserIdx >= 0 ? messageText(messages[lastUserIdx]) : ''
+  if (lastUserIdx <= 0) {
+    return withSystemPrompt(current, systemPrompt)
+  }
+
+  const turns: string[] = []
+  for (let i = 0; i < lastUserIdx; i++) {
+    const m = messages[i]
+    const text = messageText(m).trim()
+    if (text.length === 0) continue
+    turns.push(`${m.role === 'user' ? 'User' : 'Assistant'}: ${text}`)
+  }
+  if (turns.length === 0) {
+    return withSystemPrompt(current, systemPrompt)
+  }
+
+  const heading = '## Conversation so far'
+  const currentHeading = '## Current request'
+  // Fixed cost = everything that survives no matter what: system prompt,
+  // both headings, the current request, plus reserved room for the
+  // truncation marker (cheaper to always reserve its ~30 chars than to
+  // re-balance the budget when truncation kicks in).
+  const fixedCost = withSystemPrompt(
+    [heading, '', currentHeading, '', current].join('\n'),
+    systemPrompt,
+  ).length + HISTORY_TRUNCATED_MARKER.length + 2
+  let remaining = maxChars - fixedCost
+
+  // Walk history NEWEST-first so the budget keeps the most recent turns;
+  // the first turn that doesn't fit ends the walk (skipping it but keeping
+  // older turns would scramble the transcript's continuity).
+  const kept: string[] = []
+  let truncated = false
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const cost = turns[i].length + 2 // +2 for the blank-line separator
+    if (cost > remaining) { truncated = true; break }
+    kept.unshift(turns[i])
+    remaining -= cost
+  }
+  if (truncated) kept.unshift(HISTORY_TRUNCATED_MARKER)
+
+  const body = [heading, '', kept.join('\n\n'), '', currentHeading, '', current].join('\n')
+  return withSystemPrompt(body, systemPrompt)
 }
 
 /** Parsed SSE event from the spawn endpoint. */

@@ -1,10 +1,19 @@
 import { describe, it, expect } from 'vitest'
-import { transformSvelte } from '../transform'
+import { globSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { compile } from 'svelte/compiler'
+import { transformFile, transformSvelte } from '../transform'
 
 const ROOT = '/project'
 
 function transform(code: string, file = '/project/src/Counter.svelte') {
   return transformSvelte(code, file, ROOT)
+}
+
+/** Assert the transformed source still compiles under the real Svelte compiler. */
+function expectCompiles(source: string) {
+  expect(() => compile(source, { generate: 'client', filename: 'Test.svelte' })).not.toThrow()
 }
 
 describe('transformSvelte', () => {
@@ -177,5 +186,119 @@ describe('transformSvelte', () => {
       ROOT
     )!
     expect(result).toContain('data-annotask-component="MyComponent"')
+  })
+
+  // Regression: findTagEnd must track {} brace depth in Svelte markup —
+  // attribute expressions like `onclick={() => ...}` contain bare `>` that
+  // would otherwise terminate the tag early and inject attributes INSIDE
+  // the expression (svelte/compiler js_parse_error).
+  describe('attribute expressions (brace tracking)', () => {
+    it('handles on:click={() => fn(null)} (Svelte 4 events)', () => {
+      const code = [
+        '<script>',
+        '  function fn(v) { console.log(v) }',
+        '</script>',
+        '<button on:click={() => fn(null)}>go</button>',
+      ].join('\n')
+      const result = transform(code)!
+      // Expression intact, injection landed on the tag — never inside braces
+      expect(result).toContain('on:click={() => fn(null)}')
+      expect(result).not.toMatch(/\{[^}]*data-annotask/)
+      expect(result).toMatch(/<button on:click=\{\(\) => fn\(null\)\} data-annotask-file/)
+      expectCompiles(result)
+    })
+
+    it('handles onclick={() => fn(1)} (Svelte 5 events)', () => {
+      const code = [
+        '<script>',
+        '  function fn(v) { console.log(v) }',
+        '</script>',
+        '<button onclick={() => fn(1)}>go</button>',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('onclick={() => fn(1)}')
+      expect(result).not.toMatch(/\{[^}]*data-annotask/)
+      expectCompiles(result)
+    })
+
+    it('handles bare > comparison in class={a > b}', () => {
+      const code = [
+        '<script>',
+        '  let a = 1',
+        '  let b = 2',
+        '</script>',
+        '<div class={a > b}>x</div>',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('class={a > b}')
+      expect(result).not.toMatch(/\{[^}]*data-annotask/)
+      expectCompiles(result)
+    })
+
+    it('handles arrow-function attribute value attr={x => y}', () => {
+      const code = [
+        '<script>',
+        '  let y = 1',
+        '</script>',
+        '<div data-handler={x => y}>hi</div>',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('data-handler={x => y}')
+      expect(result).not.toMatch(/\{[^}]*data-annotask/)
+      expectCompiles(result)
+    })
+
+    it('handles multiline tags with expression attributes and trailing >', () => {
+      const code = [
+        '<button',
+        '  type="button"',
+        '  class:active={value === null}',
+        '  onclick={() => onselect(null)}',
+        '>',
+        '  All',
+        '</button>',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('class:active={value === null}')
+      expect(result).toContain('onclick={() => onselect(null)}')
+      expect(result).not.toMatch(/\{[^}]*data-annotask/)
+    })
+
+    it('transforms the real playground FilterChips.svelte without corruption', () => {
+      const playgroundRoot = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../playgrounds/simple/svelte-vite'
+      )
+      const file = path.join(playgroundRoot, 'src/components/FilterChips.svelte')
+      const code = readFileSync(file, 'utf8')
+      const result = transformFile(code, file, playgroundRoot)!
+      expect(result).toContain('onclick={() => onselect(null)}')
+      expect(result).toContain('onclick={() => onselect(option)}')
+      expect(result).not.toMatch(/\{[^}]*data-annotask/)
+      // Both <button>s and the wrapping <div> get instrumented
+      expect(result.match(/data-annotask-file/g)!.length).toBe(3)
+      expectCompiles(result)
+    })
+
+    it('keeps every playground svelte-vite component compilable after transform', () => {
+      // End-to-end net: real-world Svelte 5 sources (snippets, $props,
+      // expression attributes, each blocks) must survive the transform.
+      const playgroundRoot = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../playgrounds/simple/svelte-vite'
+      )
+      const files = globSync('src/**/*.svelte', { cwd: playgroundRoot })
+      expect(files.length).toBeGreaterThan(0)
+      for (const rel of files) {
+        const file = path.join(playgroundRoot, rel)
+        const code = readFileSync(file, 'utf8')
+        const result = transformFile(code, file, playgroundRoot)
+        if (result === null) continue // nothing instrumentable
+        expect(
+          () => compile(result, { generate: 'client', filename: rel }),
+          `${rel} no longer compiles after transform`
+        ).not.toThrow()
+      }
+    })
   })
 })

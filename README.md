@@ -110,8 +110,8 @@ npx annotask init-skills
 
 ## Agent surfaces
 
-- **MCP**: `POST /__annotask/mcp` with 21 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, and rendered HTML.
-- **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `runtime-endpoints`, `interaction-history`, `rendered-html`, `api-schemas`, `resolve-endpoint`, `init-mcp`, `init-skills`, `mcp`, and more.
+- **MCP**: `POST /__annotask/mcp` with 27 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, rendered HTML, playbooks, and per-task conversations.
+- **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `runtime-endpoints`, `interaction-history`, `rendered-html`, `api-schemas`, `resolve-endpoint`, `source-excerpt`, `playbook`, `agent-directions`, `init-mcp`, `init-skills`, `mcp`, and more.
 - **HTTP + WebSocket**: local API under `/__annotask/api/*` and live updates on `/__annotask/ws`.
 
 ## Task model
@@ -125,7 +125,7 @@ Canonical task types live in `src/schema.ts`:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `api_update`
+- `wireframe_apply` — wireframe palette placements ("Build this route"); `context.wireframe` carries `{ route, instances[] }` with a per-instance `anchor` (`file`, `line`, `position`, `component`, `targetTag`) and `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`)
 
 Statuses:
 

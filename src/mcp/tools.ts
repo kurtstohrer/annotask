@@ -6,10 +6,13 @@
 
 import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
+import { z } from 'zod'
 import { scanComponentLibraries } from '../server/component-scanner.js'
-import { buildTaskSummary, filterTasksByMfe, stripTaskVisual, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
+import { buildTaskSummary, filterTasksByMfe, stripTaskVisual, stripTaskForList, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
 import { isSafeScreenshot } from '../server/validation.js'
 import { getCodeContext } from '../server/code-context.js'
+import { createAgentConfigStore } from '../server/agent-configs.js'
+import { loadSkill, TASK_TYPE_COMPANIONS } from '../skills/loader.js'
 import { getComponentExamples } from '../server/component-examples.js'
 import { resolveDataContext } from '../server/data-context.js'
 import { scanDataSources } from '../server/data-source-scanner.js'
@@ -43,10 +46,41 @@ import {
   McpGetApiOperationArgs,
   McpResolveEndpointArgs,
   McpGetRuntimeEndpointsArgs,
+  SafeSourceFile,
   parseWith,
   assertTransition,
   AgentFeedbackSchema,
 } from '../server/schemas.js'
+
+// ── MCP-only argument schemas ────────────────────────────
+// These tools have no HTTP body counterpart in server/schemas.ts (the
+// source-excerpt route parses query params by hand), so their schemas live
+// next to the dispatcher that consumes them.
+
+/** `annotask_get_tasks` with optional pagination. Extends the shared schema
+ *  rather than replacing it so status/mfe/detail validation stays single-
+ *  sourced. No default limit — omitting both params preserves the historical
+ *  "return everything" behavior. */
+const McpGetTasksPagedArgs = McpGetTasksArgs.extend({
+  limit: z.number().int().min(1).max(500).optional(),
+  offset: z.number().int().min(0).optional(),
+})
+
+const McpGetSourceExcerptArgs = z.object({
+  file: SafeSourceFile,
+  line: z.number().int().min(1, 'line must be >= 1'),
+  context_lines: z.number().int().min(0).max(200).optional(),
+})
+
+const taskTypeValues = [...TASK_TYPES] as [typeof TASK_TYPES[number], ...typeof TASK_TYPES[number][]]
+const McpGetPlaybookArgs = z.object({
+  task_type: z.enum(taskTypeValues, { message: `Invalid task type. Must be one of: ${TASK_TYPES.join(', ')}` }),
+})
+
+const McpGetAgentDirectionsArgs = z.object({
+  // Same id shape the HTTP PATCH /agent-configs/:id route enforces.
+  persona_id: z.string().regex(/^[a-z0-9-]+$/, 'Invalid persona id').optional(),
+})
 
 export interface ToolDef {
   name: string
@@ -128,8 +162,10 @@ export const MCP_TOOLS: ToolDef[] = [
     name: 'annotask_get_tasks',
     description:
       'Get design tasks from Annotask. Returns task summaries by default (id, type, status, description, file, line, action, screenshot). ' +
-      'Use detail=true for full objects including context, viewport, and interaction_history. ' +
+      'Use detail=true for full objects including context and viewport. Even in detail mode, two bulky per-task payloads are always stripped from list output: ' +
+      '`interaction_history` (fetch via annotask_get_interaction_history) and `context.rendered` (fetch via annotask_get_rendered_html). ' +
       'Use annotask_get_task to fetch full detail for a single task. ' +
+      'Paginate with `limit`/`offset` — omitting both returns every matching task. ' +
       'Focus on "pending" and "denied" (with feedback) tasks for work to do.',
     inputSchema: {
       type: 'object',
@@ -147,6 +183,8 @@ export const MCP_TOOLS: ToolDef[] = [
           type: 'boolean',
           description: 'If true, return full task objects. Default false returns summaries.',
         },
+        limit: { type: 'number', description: 'Max tasks to return. No default — omit to return all matches.' },
+        offset: { type: 'number', description: 'Skip the first N matching tasks (pagination). Default 0.' },
       },
     },
   },
@@ -304,6 +342,22 @@ export const MCP_TOOLS: ToolDef[] = [
         context_lines: { type: 'number', description: 'Lines of context on each side of task.line. Default 15, max 200.' },
       },
       required: ['task_id'],
+    },
+  },
+  {
+    name: 'annotask_get_source_excerpt',
+    description:
+      'Ground an *arbitrary* file/line to current source: same payload as annotask_get_code_context (±N line excerpt, nearest enclosing symbol, import block, `excerpt_hash`) but keyed by file path instead of task id. ' +
+      'Use this when a task references locations beyond its own `file`/`line` — e.g. each `anchor.file`/`anchor.line` of a wireframe_apply instance, an arrow task\'s `to_element`, or any file you are about to edit and want to re-anchor first. ' +
+      'Paths are project-relative and containment-checked server-side; escaping paths return an `error` field. Use `context_lines` to widen/narrow the window (default 15, max 200).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Project-relative source file path (e.g. "src/pages/Home.vue")' },
+        line: { type: 'number', description: '1-based line number to center the excerpt on' },
+        context_lines: { type: 'number', description: 'Lines of context on each side. Default 15, max 200.' },
+      },
+      required: ['file', 'line'],
     },
   },
   {
@@ -524,6 +578,35 @@ export const MCP_TOOLS: ToolDef[] = [
       required: ['name'],
     },
   },
+  {
+    name: 'annotask_get_playbook',
+    description:
+      'Fetch the task-type companion playbook — detailed apply instructions that supplement the base annotask-apply skill. ' +
+      'Companions exist for: a11y_fix, theme_update, error_fix, perf_fix, wireframe_apply. Call this before applying your first task of one of those types ' +
+      '(once per batch, not once per task). Other task types return no `content`, just a `message` — the base instructions (served as MCP initialize.instructions) already cover them. ' +
+      'Response shape: `{ task_type, file, content }` where `content` is the playbook markdown.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_type: { type: 'string', description: 'Task type to fetch the playbook for', enum: [...TASK_TYPES] },
+      },
+      required: ['task_type'],
+    },
+  },
+  {
+    name: 'annotask_get_agent_directions',
+    description:
+      'Fetch per-persona project directions — project-specific guidance written by the init agent and editable in Settings (conventions, file layout, gotchas the user wants every agent to honor). ' +
+      'Built-in persona ids: general (annotations/sections/wireframes), designer (style/theme), a11y, bug-hunter (errors/perf). ' +
+      'Without `persona_id`, returns the full `{ version, agents }` map. With one, returns that persona\'s entry — `not_configured: true` (with empty directions) when nothing was written for it. ' +
+      'Read the directions for the persona matching your task type before applying changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        persona_id: { type: 'string', description: 'Persona id (e.g. "general", "designer", "a11y", "bug-hunter"). Omit for all personas.' },
+      },
+    },
+  },
 ]
 
 function toolError(text: string): ToolResult {
@@ -548,7 +631,7 @@ function optionalStringArg(args: Record<string, unknown>, key: string): string |
 export async function callTool(name: string, rawArgs: Record<string, unknown>, deps: McpDeps): Promise<ToolResult> {
   switch (name) {
     case 'annotask_get_tasks': {
-      const parsed = parseWith(McpGetTasksArgs, rawArgs)
+      const parsed = parseWith(McpGetTasksPagedArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
       const args = parsed.data
       const taskData = deps.getTasks()
@@ -556,11 +639,23 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       if (args.status) tasks = tasks.filter(t => t.status === args.status)
       if (args.mfe) tasks = filterTasksByMfe(tasks, args.mfe)
 
+      // `total` is the post-filter, pre-pagination count (mirrors the
+      // per-library `total` in annotask_get_components). No default limit —
+      // both params omitted returns everything, as before pagination existed.
+      const total = tasks.length
+      if (args.limit != null || args.offset != null) {
+        const offset = args.offset ?? 0
+        tasks = tasks.slice(offset, args.limit != null ? offset + args.limit : undefined)
+      }
+
+      // Detail mode uses the *list* strip: interaction_history and
+      // context.rendered always come off here — they each have a dedicated
+      // retrieval tool and would otherwise dominate the payload.
       const output = args.detail === true
-        ? tasks.map(stripVisual)
+        ? tasks.map(stripTaskForList)
         : tasks.map(buildTaskSummary)
 
-      return { content: [{ type: 'text', text: compact({ version: taskData.version, count: output.length, tasks: output }) }] }
+      return { content: [{ type: 'text', text: compact({ version: taskData.version, total, count: output.length, tasks: output }) }] }
     }
 
     case 'annotask_get_task': {
@@ -747,6 +842,19 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       const file = typeof task.file === 'string' ? task.file : ''
       const line = typeof task.line === 'number' ? task.line : 0
       if (!file) return toolError('Task has no file reference — cannot resolve code context')
+      const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
+      const result = await getCodeContext(deps.projectRoot, file, line, contextLines ?? 15, workspaceRoot)
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_source_excerpt': {
+      const parsed = parseWith(McpGetSourceExcerptArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { file, line, context_lines: contextLines } = parsed.data
+      // Same resolution as GET /__annotask/api/source-excerpt: getCodeContext
+      // runs the path through resolveProjectFile, so escaping/absolute paths
+      // come back as `{ error: 'Invalid or escaping file path' }` rather than
+      // reading outside the workspace.
       const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
       const result = await getCodeContext(deps.projectRoot, file, line, contextLines ?? 15, workspaceRoot)
       return { content: [{ type: 'text', text: compact(result) }] }
@@ -984,6 +1092,50 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       })
       const msgs = received ? [received] : []
       return { content: [{ type: 'text', text: compact({ task_id: taskId, count: msgs.length, messages: msgs }) }] }
+    }
+
+    case 'annotask_get_playbook': {
+      const parsed = parseWith(McpGetPlaybookArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { task_type: taskType } = parsed.data
+      const companion = TASK_TYPE_COMPANIONS[taskType]
+      if (!companion) {
+        // No `content` key on purpose — compactJson would strip a null anyway.
+        return { content: [{ type: 'text', text: compact({
+          task_type: taskType,
+          message: `No companion playbook for "${taskType}" — the base annotask-apply instructions (served as MCP initialize.instructions) cover this type.`,
+        }) }] }
+      }
+      // Served from the bundled skill files so pure-MCP clients get the exact
+      // content an installed SKILL.md would tell a filesystem agent to read.
+      let content: string | undefined
+      try {
+        content = loadSkill('annotask-apply').files[companion]
+      } catch (err: any) {
+        return toolError(`Could not load skill files: ${err?.message ?? String(err)}`)
+      }
+      if (!content) return toolError(`Playbook file missing from the installed package: ${companion}`)
+      return { content: [{ type: 'text', text: compact({ task_type: taskType, file: companion, content }) }] }
+    }
+
+    case 'annotask_get_agent_directions': {
+      const parsed = parseWith(McpGetAgentDirectionsArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const personaId = parsed.data.persona_id
+      // Same store the HTTP /agent-configs route reads. It is deliberately
+      // uncached (the init pipeline writes agents.json directly), so building
+      // it per call always serves the current file contents.
+      const configs = await createAgentConfigStore(deps.projectRoot).get()
+      if (personaId) {
+        const entry = configs.agents[personaId]
+        if (!entry) {
+          // Unconfigured isn't an error — it just means the init agent (or
+          // user) hasn't written directions for this persona yet.
+          return { content: [{ type: 'text', text: compact({ persona_id: personaId, projectDirections: '', not_configured: true }) }] }
+        }
+        return { content: [{ type: 'text', text: compact({ persona_id: personaId, ...entry }) }] }
+      }
+      return { content: [{ type: 'text', text: compact(configs) }] }
     }
 
     case 'annotask_get_screenshot': {

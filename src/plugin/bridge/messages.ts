@@ -119,7 +119,17 @@ export function bridgeMessages(): string {
   window.addEventListener('message', function(event) {
     var msg = event.data;
     if (!msg || msg.source !== 'annotask-shell') return;
-    if (shellOrigin === '*' && event.origin) shellOrigin = event.origin;
+    // Origin gate: only local origins may drive the bridge, and the first
+    // validated sender locks shellOrigin for the session. msg.source alone
+    // is spoofable by any page that iframes the dev app — without this
+    // check such a page could read outerHTML, set styles, and mount
+    // components cross-origin. Post-lock, even local-but-different origins
+    // are rejected so a second hostile localhost context can't hijack an
+    // established session. Locking happens BEFORE dispatch so responses
+    // (and the flushed pre-lock queue) post to the validated origin only.
+    if (!isLocalBridgeOrigin(event.origin)) return;
+    if (shellOrigin === null) lockShellOrigin(event.origin);
+    else if (event.origin !== shellOrigin) return;
 
     var type = msg.type;
     var payload = msg.payload || {};
@@ -186,6 +196,38 @@ export function bridgeMessages(): string {
         rect: getRect(src.sourceEl),
         classes: typeof src.targetEl.className === 'string' ? src.targetEl.className : '',
         text: getVisibleText(src.targetEl, 200)
+      });
+      return;
+    }
+
+    if (type === 'resolve:move-source') {
+      // The Reposition tool needs the actual node to grab, not its source-
+      // bearing parent. Prefer the nearest wireframe placement container
+      // ([data-annotask-instance]); otherwise fall back to the source element
+      // (an existing app element → a ComponentMoveChange in the report).
+      var rmEl = document.elementFromPoint(payload.x, payload.y);
+      if (!rmEl || rmEl === document.documentElement || rmEl === document.body) { respond(id, null); return; }
+      var rmInst = rmEl.closest ? rmEl.closest('[data-annotask-instance]') : null;
+      if (rmInst) {
+        respond(id, {
+          eid: getEid(rmInst),
+          isInstance: true,
+          instanceId: rmInst.getAttribute('data-annotask-instance'),
+          tag: rmInst.tagName.toLowerCase(),
+          rect: getRect(rmInst)
+        });
+        return;
+      }
+      var rmSrc = findSourceElement(rmEl);
+      var rmData = getSourceData(rmSrc.sourceEl);
+      respond(id, {
+        eid: getEid(rmSrc.sourceEl),
+        isInstance: false,
+        file: rmData.file,
+        line: rmData.line,
+        component: rmData.component,
+        tag: rmSrc.sourceEl.tagName.toLowerCase(),
+        rect: getRect(rmSrc.sourceEl)
       });
       return;
     }
@@ -1007,6 +1049,61 @@ export function bridgeMessages(): string {
       return;
     }
 
+    if (type === 'preview:component') {
+      // Render a real component instance OFFSCREEN in the iframe (so it gets
+      // the app's true styles + provider context), snapshot it with
+      // html2canvas, then tear it down. Returns the honest fidelity so the
+      // shell can show a thumbnail or an explicit placeholder. Load the
+      // component on demand first if it isn't on the current route.
+      ensureComponentLoaded(payload.componentName, payload.module).then(function() {
+      var pvContainer = document.createElement('div');
+      pvContainer.setAttribute('data-annotask-preview', 'true');
+      pvContainer.style.cssText = 'position:fixed;left:-99999px;top:0;z-index:-1;width:' + (payload.width || 320) + 'px;padding:12px;background:#ffffff;color:#111111;box-sizing:border-box;';
+      document.body.appendChild(pvContainer);
+      var pvRes = tryMountComponent(pvContainer, payload.componentName, payload.props || {});
+      function pvCleanup() {
+        try { if (pvContainer.__annotask_unmount) pvContainer.__annotask_unmount(); } catch(e) {}
+        try { pvContainer.remove(); } catch(e) {}
+      }
+      if (!pvRes.mounted) {
+        pvCleanup();
+        respond(id, { mounted: false, reason: pvRes.reason || null, fidelity: pvRes.fidelity, detail: pvRes.detail || null });
+        return;
+      }
+      function pvSnapshot() {
+        var h2c = window.html2canvas;
+        if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
+        if (typeof h2c !== 'function') { pvCleanup(); respond(id, { mounted: true, fidelity: pvRes.fidelity, error: 'html2canvas not loaded' }); return; }
+        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: true, backgroundColor: '#ffffff', width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
+          var dataUrl = canvas.toDataURL('image/png');
+          pvCleanup();
+          respond(id, { mounted: true, fidelity: pvRes.fidelity, dataUrl: dataUrl, width: canvas.width, height: canvas.height });
+        }).catch(function(err) {
+          pvCleanup();
+          respond(id, { mounted: true, fidelity: pvRes.fidelity, error: (err && err.message) || 'snapshot failed' });
+        });
+      }
+      function pvAfterFrames() {
+        // Two frames so async React/Svelte/Solid renders settle before snapshot.
+        requestAnimationFrame(function() { requestAnimationFrame(function() {
+          if (isEmptyMount(pvContainer)) { pvCleanup(); respond(id, { mounted: false, reason: 'rendered-empty', fidelity: 'placeholder' }); return; }
+          pvSnapshot();
+        }); });
+      }
+      if (window.html2canvas) { pvAfterFrames(); }
+      else {
+        var pvScript = document.createElement('script');
+        pvScript.src = '/__annotask/vendor/html2canvas.min.js';
+        var savedDefinePv;
+        if (typeof window.define === 'function' && window.define.amd) { savedDefinePv = window.define; window.define = undefined; }
+        pvScript.onload = function() { if (savedDefinePv !== undefined) window.define = savedDefinePv; pvAfterFrames(); };
+        pvScript.onerror = function() { if (savedDefinePv !== undefined) window.define = savedDefinePv; pvCleanup(); respond(id, { mounted: true, fidelity: pvRes.fidelity, error: 'failed to load html2canvas' }); };
+        document.head.appendChild(pvScript);
+      }
+      });
+      return;
+    }
+
     if (type === 'layout:scan') {
       var layoutResults = [];
       var allEls = document.querySelectorAll('*');
@@ -1131,6 +1228,7 @@ export function bridgeMessages(): string {
       var ipTarget = getEl(payload.targetEid);
       if (!ipTarget) { respond(id, { placeholderEid: '' }); return; }
       var ipEl = createPlaceholder(payload);
+      if (payload.instanceId) ipEl.setAttribute('data-annotask-instance', payload.instanceId);
       var ipRef = ipTarget;
       switch (payload.position) {
         case 'before': ipRef.parentElement && ipRef.parentElement.insertBefore(ipEl, ipRef); break;
@@ -1166,6 +1264,9 @@ export function bridgeMessages(): string {
     if (type === 'move:element') {
       var meEl = getEl(payload.eid);
       var meTarget = getEl(payload.targetEid);
+      // Never drop an element into itself or its own descendant — that would
+      // throw HierarchyRequestError (or silently detach the subtree).
+      if (meEl && meTarget && (meEl === meTarget || meEl.contains(meTarget))) { respond(id, {}); return; }
       if (meEl && meTarget) {
         switch (payload.position) {
           case 'before': meTarget.parentElement && meTarget.parentElement.insertBefore(meEl, meTarget); break;
@@ -1180,17 +1281,56 @@ export function bridgeMessages(): string {
 
     if (type === 'insert:vue-component' || type === 'insert:component') {
       var vcTarget = getEl(payload.targetEid);
-      if (!vcTarget) { respond(id, { eid: '', mounted: false }); return; }
+      if (!vcTarget) { respond(id, { eid: '', mounted: false, reason: 'no-runtime', fidelity: 'placeholder' }); return; }
+      // Load the component on demand first if it isn't on the current route.
+      ensureComponentLoaded(payload.componentName, payload.module).then(function() {
       var vcContainer = document.createElement('div');
       vcContainer.setAttribute('data-annotask-placeholder', 'true');
+      // Repositionable: tag the container with its wireframe instance id so the
+      // Reposition tool can tell which placement a grabbed node belongs to.
+      if (payload.instanceId) vcContainer.setAttribute('data-annotask-instance', payload.instanceId);
       switch (payload.position) {
         case 'before': vcTarget.parentElement && vcTarget.parentElement.insertBefore(vcContainer, vcTarget); break;
         case 'after': vcTarget.parentElement && vcTarget.parentElement.insertBefore(vcContainer, vcTarget.nextSibling); break;
         case 'append': vcTarget.appendChild(vcContainer); break;
         case 'prepend': vcTarget.insertBefore(vcContainer, vcTarget.firstChild); break;
       }
-      var mounted = tryMountComponent(vcContainer, payload.componentName, payload.props);
-      respond(id, { eid: getEid(vcContainer), mounted: mounted });
+      // Layout affordances so a live mount isn't collapsed to zero width in a
+      // flex/grid row (mirrors insert:placeholder). box-sizing keeps padding sane.
+      vcContainer.style.boxSizing = 'border-box';
+      var vcParent = (payload.position === 'append' || payload.position === 'prepend') ? vcTarget : vcTarget.parentElement;
+      if (vcParent) {
+        var vcCs = window.getComputedStyle(vcParent);
+        if ((vcCs.display.indexOf('flex') >= 0 || vcCs.display.indexOf('grid') >= 0) && !vcContainer.style.width) {
+          var vcRow = vcCs.flexDirection === 'row' || vcCs.flexDirection === 'row-reverse' || vcCs.display.indexOf('grid') >= 0;
+          if (vcRow) vcContainer.style.flex = '1';
+        }
+      }
+      var vcRes = tryMountComponent(vcContainer, payload.componentName, payload.props);
+      // Honest fidelity: stamp the container and render a VISIBLY different state
+      // per outcome so a failed mount is never a silent empty div.
+      vcContainer.setAttribute('data-annotask-fidelity', vcRes.fidelity);
+      if (vcRes.reason) vcContainer.setAttribute('data-annotask-mount-reason', vcRes.reason);
+      if (!vcRes.mounted) {
+        renderUnmountedBadge(vcContainer, payload.componentName, vcRes.reason);
+      } else {
+        renderFidelityPill(vcContainer, vcRes.fidelity);
+      }
+      // Settle two frames so async React/Svelte/Solid renders finish and their
+      // scheduleEmptyCheck has run (it may flip fidelity → placeholder + badge).
+      // Then respond with the SETTLED truth read off the container, not the
+      // optimistic pre-settle result — so the drop reports what the preview
+      // snapshot would. Vue mounts synchronously, so this is just a short delay.
+      requestAnimationFrame(function() { requestAnimationFrame(function() {
+        var settledFidelity = vcContainer.getAttribute('data-annotask-fidelity') || vcRes.fidelity;
+        var settledMounted = vcContainer.hasAttribute('data-annotask-mounted');
+        var settledReason = vcContainer.getAttribute('data-annotask-mount-reason') || vcRes.reason || null;
+        // A live mount that measured zero height would be invisible — floor it
+        // so the user actually sees the (real) render.
+        if (settledMounted && vcContainer.offsetHeight === 0) vcContainer.style.minHeight = '24px';
+        respond(id, { eid: getEid(vcContainer), mounted: settledMounted, reason: settledReason, fidelity: settledFidelity });
+      }); });
+      });
       return;
     }
 

@@ -62,6 +62,10 @@ Initial public release.
 ## [Unreleased]
 
 ### Added
+- **Embedded local-CLI agents.** All four local agent CLIs — claude, codex, opencode, and copilot — are first-class providers. Per-task conversation history persists to `.annotask/conversations/<taskId>.jsonl` and stays in sync across the shell Conversation tab, MCP readers, and the terminal for every provider.
+- **MCP grounding tools.** `annotask_conversation_read` / `annotask_conversation_post` / `annotask_conversation_subscribe` for the per-task thread, plus `annotask_get_source_excerpt`, `annotask_get_playbook`, and `annotask_get_agent_directions` (with matching `source-excerpt`, `playbook`, and `agent-directions` CLI commands).
+- **Wireframe lifecycle M1.** Drag-and-drop palette placements persist to a multi-route `.annotask/wireframe.json` document (`GET|PUT /api/wireframe`), opt-in render-in-place drafts behind `ANNOTASK_RENDER_IN_PLACE`, and a new `wireframe_apply` task type applied via the `WIREFRAME_APPLY.md` companion playbook.
+- **`scripts/sync-skills.mjs`** + `pnpm sync:skills` — `skills/` is the canonical skill tree; the `.claude/skills/`, `.agents/skills/`, and vue-webpack playground mirrors are regenerated from it, and CI fails when the mirrors drift.
 - **`src/server/validation.ts`** — canonical home for screenshot filename regex, valid task statuses, allowed status transitions, POST/PATCH field whitelists, and `agent_feedback` schema. Replaces ad-hoc duplication across the HTTP API, MCP server, and state layer.
 - **`src/server/schemas.ts`** — zod schemas for every HTTP body and MCP tool argument set. The HTTP API and MCP server now parse at the boundary via `schema.safeParse()` instead of ad-hoc type checks.
 - **`AnnotaskServer.flush()`** — drain pending task/perf writes before shutdown. `startStandaloneServer`'s `close()` is now async and flushes before closing.
@@ -74,6 +78,8 @@ Initial public release.
 - Zod (`^4.3.6`) as a runtime dependency.
 
 ### Changed
+- Docs/contract drift sweep: removed the long-dead `api_update` task type from every doc that still taught it as live (it was removed with no successor — backend-contract work now arrives as `annotation` tasks grounded with `data_context` and runtime-endpoint evidence), documented `wireframe_apply` in every task-type list, documented the embedded-agent / wireframe / init / usage / conversation endpoint surface and new WebSocket events, and rewrote the `PERF_FIX.md` playbook to match the real perf-finding enums (`category: vital|resource|long-task|bundle`, `severity: good|needs-improvement|poor`, uppercase `metric` on vital findings only).
+- Plugin transform fixes and a webpack dev-server `/__annotask` proxy fix landed as part of the embedded-agents change set.
 - **BREAKING (internal):** `ProjectState.addTask/updateTask/deleteTask` are now `async`. Callers inside annotask already `await` them; any external consumer of `createProjectState` must await.
 - Task mutations serialize through a single in-process mutex (`withTaskLock`). Concurrent PATCH requests to disjoint fields of the same task no longer lose writes.
 - Screenshot unlinks (on `accepted` or delete) are chained after the successful write. A failed write no longer leaves an orphan screenshot.
@@ -97,6 +103,7 @@ Initial public release.
 - `src/shell/composables/useThemeMode.ts` — the deprecated wrapper around `useShellTheme` was unused at any call site.
 
 ### Security
+- GET endpoints are Host-gated against non-local hostnames. Agent spawn routes additionally enforce same-port origin matching (`origin_port_mismatch`) and the server-side `ANNOTASK_MAX_PERMISSION` permission ceiling (`plan|default`) so a page on another localhost port cannot spawn credential-bearing CLIs, and no client can request more permission than the admin allows.
 - `annotask_get_screenshot` MCP tool now routes `task.screenshot` through `isSafeScreenshot` before path construction, closing a path-traversal hole for maliciously constructed task records.
 - Added `originMatchesPort` helper for endpoints that want a stricter same-port origin check (available for future hardening; not wired by default since the shell can be served from a different port than the user's app).
 

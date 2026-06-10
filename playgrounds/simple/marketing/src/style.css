@@ -84,7 +84,7 @@ header nav a:hover { color: var(--fg); text-decoration: none; }
 .cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
 
 /* ── Buttons ───────────────────────────────────────────────────── */
-.btn { display: inline-flex; align-items: center; gap: 6px; padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px; border: 1px solid var(--border); cursor: pointer; transition: all 0.15s; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 14px 20px; border-radius: 12px; font-weight: 600; font-size: 15px; border: 1px solid var(--border); cursor: pointer; transition: all 0.15s; }
 .btn.primary { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
 .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); text-decoration: none; }
 .btn.ghost { background: transparent; color: var(--fg); }

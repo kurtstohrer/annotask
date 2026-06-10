@@ -12,8 +12,7 @@
 
 import {
   CliLocalProvider,
-  lastUserMessageText,
-  withSystemPrompt,
+  rollupHistoryAsPrompt,
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
@@ -71,10 +70,13 @@ export class CodexLocalProvider extends CliLocalProvider {
     args.push(...this.extraArgs)
     // Codex consumes the prompt as the trailing positional arg. Prepend the
     // annotask system prompt so the persona's instructions reach the model
-    // even though codex has no separate system-prompt flag. The `--` separator
-    // is required: skill bodies often start with `---` (YAML frontmatter), and
-    // without it clap parses the leading `--` as an unknown long flag.
-    args.push('--', withSystemPrompt(lastUserMessageText(messages), options.systemPrompt))
+    // even though codex has no separate system-prompt flag, and roll up the
+    // prior turns as a transcript — each turn spawns a fresh `codex exec`,
+    // so the prompt is the only memory follow-up messages get. The `--`
+    // separator is required: skill bodies often start with `---` (YAML
+    // frontmatter), and without it clap parses the leading `--` as an
+    // unknown long flag.
+    args.push('--', rollupHistoryAsPrompt(messages, options.systemPrompt))
     return { cli: 'codex', args }
   }
 

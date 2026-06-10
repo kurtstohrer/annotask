@@ -13,6 +13,7 @@ describe('TASK_TYPES enforcement', () => {
       'a11y_fix',
       'error_fix',
       'perf_fix',
+      'wireframe_apply',
     ])
   })
 

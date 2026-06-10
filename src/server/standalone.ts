@@ -12,7 +12,14 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
   close: () => Promise<void>
 }> {
   const port = options.port || 24678
-  const uiServer = createAnnotaskServer({ projectRoot: options.projectRoot })
+  // The standalone server binds 127.0.0.1 only, so the API middleware's Host
+  // gate (DNS rebinding) passes on the IP literal already — the array exists
+  // so the announced host stays allowed if the bind logic ever changes.
+  const extraAllowedHosts: string[] = []
+  const uiServer = createAnnotaskServer({
+    projectRoot: options.projectRoot,
+    allowedHosts: () => extraAllowedHosts,
+  })
 
   const httpServer = http.createServer((req, res) => {
     uiServer.middleware(req, res, () => {
@@ -41,6 +48,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
         httpServer.listen(0, '127.0.0.1', () => {
           const addr = httpServer.address() as { port: number; address: string }
           writeServerInfo(options.projectRoot, addr.port, addr.address)
+          extraAllowedHosts.push(addr.address)
           resolve({ port: addr.port, close: shutdown })
         })
       } else {
@@ -50,6 +58,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
 
     httpServer.listen(port, '127.0.0.1', () => {
       writeServerInfo(options.projectRoot, port, '127.0.0.1')
+      extraAllowedHosts.push('127.0.0.1')
       resolve({ port, close: shutdown })
     })
   })

@@ -55,7 +55,8 @@ function isSunHit(x: number, y: number): boolean {
   if (!sunHit) return false
   const dx = x - sunHit.x
   const dy = y - sunHit.y
-  return dx * dx + dy * dy <= sunHit.r * sunHit.r
+  const hitR = sunHit.r + 4
+  return dx * dx + dy * dy <= hitR * hitR
 }
 
 function onCanvasPointerMove(event: PointerEvent) {
@@ -192,6 +193,15 @@ function startOrbitAnimation(canvas: HTMLCanvasElement, list: Planet[]) {
       ctx!.stroke()
       ctx!.restore()
     }
+    if (hoveredSun.value && sunHit) {
+      ctx!.save()
+      ctx!.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx!.lineWidth = 1.5
+      ctx!.beginPath()
+      ctx!.arc(sunHit.x, sunHit.y, sunHit.r + 4, 0, Math.PI * 2)
+      ctx!.stroke()
+      ctx!.restore()
+    }
 
     rafId = requestAnimationFrame(frame)
   }
@@ -208,7 +218,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="overview">
     <header class="page-header">
-      <h1 class="title">Solar System</h1>
+      <h1 class="title">The Solar System</h1>
       <p class="lede">
         Eight planets, dozens of moons, one star. All facts served live from the Solar System API.
       </p>

@@ -164,6 +164,27 @@ export function stripTaskVisual(task: unknown): Record<string, unknown> {
 }
 
 /**
+ * List-mode variant of `stripTaskVisual` for `detail=true` task *lists*
+ * (MCP `annotask_get_tasks` and CLI `tasks --detail --mcp`). On top of the
+ * visual/timestamp stripping it drops the two per-task payloads that can be
+ * huge and each have a dedicated retrieval tool:
+ * - `interaction_history` → `annotask_get_interaction_history`
+ * - `context.rendered` (embedded outerHTML, up to 200 KB per task) →
+ *   `annotask_get_rendered_html`
+ * Single-task fetches (`annotask_get_task`) keep both fields — only bulk
+ * listings strip them, since N tasks × 200 KB would swamp an agent's context.
+ */
+export function stripTaskForList(task: unknown): Record<string, unknown> {
+  const rest = stripTaskVisual(task)
+  delete rest.interaction_history
+  if (rest.context && typeof rest.context === 'object' && !Array.isArray(rest.context)) {
+    const { rendered, ...ctx } = rest.context as Record<string, unknown>
+    if (rendered !== undefined) rest.context = ctx
+  }
+  return rest
+}
+
+/**
  * Trim `agent_feedback` to the latest resolved exchange plus every unresolved
  * one. Keeps the thread agent-friendly without re-sending old answered
  * questions on every fetch.

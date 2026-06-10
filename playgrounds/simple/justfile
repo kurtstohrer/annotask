@@ -82,7 +82,13 @@ clear-init name:
     rm -f "$dir/.annotask/usage.jsonl"
     rm -f "$dir/.annotask/runtime-endpoints.json"
     rm -rf "$dir/.annotask/cache"
+    # Drop a sentinel that tells the shell to wipe browser-side state
+    # (localStorage: workflow choice, provider settings, theme, route cache)
+    # on its next load. The dev server returns `sessionReset: true` from
+    # /__annotask/api/status until App.vue acknowledges via DELETE.
+    touch "$dir/.annotask/.session-reset"
     echo "[Annotask] Cleared init state for $dir"
+    echo "[Annotask] Browser localStorage will reset on next shell load (refresh http://localhost:5173/__annotask/)."
 
 # Install dependencies for all playgrounds
 install:

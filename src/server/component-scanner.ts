@@ -3,7 +3,6 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { Worker } from 'node:worker_threads'
-import { resolveWorkspace } from './workspace.js'
 
 export interface ScannedProp {
   name: string
@@ -36,6 +35,15 @@ export interface ScannedComponent {
   slots: ScannedSlot[]
   events: ScannedEvent[]
   sourceFile: string | null   // absolute path — only populated for local components
+  /** Provider-dependence markers found in source (useContext/inject/useRouter/
+   *  useQuery/provide + router/query/store imports). Empty when none or when
+   *  source is unavailable (.d.ts-only libs). Lets the palette pre-mark a
+   *  component before attempting a throwing mount. */
+  providerSignals: string[]
+  /** Coarse render-fidelity hint for the palette: 'live' (should mount in
+   *  context), 'isolated-preview' (detached, provider-dependent), or 'unknown'
+   *  (source unavailable — the live mount itself confirms). */
+  fidelityHint: 'live' | 'isolated-preview' | 'placeholder' | 'unknown'
 }
 
 export interface ScannedLibrary {
@@ -98,26 +106,21 @@ function diskCachePath(projectRoot: string): string {
 }
 
 /**
- * Fingerprint of every workspace package.json plus its mtime. If any dep is
- * added, removed, or bumped, the key changes and the disk cache is ignored.
- * Cheap to compute (one stat + one read per package.json) relative to the
- * 20s+ scan it replaces.
+ * Fingerprint of the running package's package.json plus its mtime. If any dep
+ * is added, removed, or bumped, the key changes and the disk cache is ignored.
+ * Cheap (one stat + one read) relative to the 20s+ scan it replaces.
  */
 async function computeCacheKey(projectRoot: string): Promise<string | null> {
   try {
-    const ws = await resolveWorkspace(projectRoot)
-    const parts: string[] = []
-    for (const pkgDir of ws.packages) {
-      const p = path.join(pkgDir, 'package.json')
-      try {
-        const stat = await fsp.stat(p)
-        const content = await fsp.readFile(p, 'utf-8')
-        const pkg = JSON.parse(content)
-        const deps = { ...pkg.dependencies, ...pkg.devDependencies }
-        parts.push(`${pkgDir}|${stat.mtimeMs}|${JSON.stringify(deps)}`)
-      } catch { /* missing package.json — skip */ }
-    }
-    return crypto.createHash('sha1').update(parts.join('\n')).digest('hex')
+    // Scoped to the running package — the scan now reads only this package's
+    // deps, so the cache key must track exactly the same set.
+    const p = path.join(projectRoot, 'package.json')
+    const stat = await fsp.stat(p)
+    const content = await fsp.readFile(p, 'utf-8')
+    const pkg = JSON.parse(content)
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+    const part = `${projectRoot}|${stat.mtimeMs}|${JSON.stringify(deps)}`
+    return crypto.createHash('sha1').update(part).digest('hex')
   } catch { return null }
 }
 
@@ -192,6 +195,14 @@ export function clearComponentCache() {
 }
 
 /** Build a ScannedComponent with sensible empty defaults for optional enrichment fields. */
+// Barrel scanning of some libraries (notably PrimeVue, whose `*Style` modules
+// are ~half its exports) picks up internal style/service/directive objects that
+// aren't renderable components. Drop them so the catalog shows real components.
+const NON_COMPONENT_NAME_RE = /(Style|Service|Directive)$/
+function isLikelyComponentName(name: string): boolean {
+  return !NON_COMPONENT_NAME_RE.test(name)
+}
+
 function makeComponent(fields: {
   name: string
   module: string
@@ -203,7 +214,9 @@ function makeComponent(fields: {
   tags?: string[]
   deprecated?: boolean
   sourceFile?: string | null
+  providerSignals?: string[]
 }): ScannedComponent {
+  const providerSignals = fields.providerSignals ?? []
   return {
     name: fields.name,
     module: fields.module,
@@ -215,7 +228,55 @@ function makeComponent(fields: {
     slots: fields.slots ?? [],
     events: fields.events ?? [],
     sourceFile: fields.sourceFile ?? null,
+    providerSignals,
+    fidelityHint: deriveFidelityHint(fields.sourceFile ?? null, providerSignals),
   }
+}
+
+/** Coarse fidelity hint for the palette. We only assert when we actually read
+ *  the component's source (local components). Library components (.d.ts-only,
+ *  no recorded sourceFile) stay 'unknown' — the live mount confirms. Vue mounts
+ *  share the host app's provides/router/components by reference, so a
+ *  provider-dependent Vue component usually still renders in context ('live');
+ *  React/Svelte/Solid mount detached with no provider tree, so provider deps
+ *  degrade ('isolated-preview'). */
+function deriveFidelityHint(
+  sourceFile: string | null,
+  providerSignals: string[],
+): ScannedComponent['fidelityHint'] {
+  if (!sourceFile) return 'unknown'
+  if (providerSignals.length === 0) return 'live'
+  return path.extname(sourceFile) === '.vue' ? 'live' : 'isolated-preview'
+}
+
+const PROVIDER_SIGNAL_RULES: Array<[RegExp, string]> = [
+  // Call sites (provider/context/router/data consumers).
+  [/\binject\s*\(/, 'inject'],
+  [/\bprovide\s*\(/, 'provide'],
+  [/\buseContext\s*\(/, 'useContext'],
+  [/\buseRouter\s*\(/, 'useRouter'],
+  [/\buseRoute\s*\(/, 'useRoute'],
+  [/\buseParams\s*\(/, 'useParams'],
+  [/\buseSearchParams\s*\(/, 'useSearchParams'],
+  [/\buseStore\s*\(/, 'useStore'],
+  [/\buse(Query|Mutation|InfiniteQuery)\s*\(/, 'useQuery'],
+  // Provider-bearing imports (router/query/store libs).
+  [/from\s+['"]vue-router['"]/, 'vue-router'],
+  [/from\s+['"]react-router(?:-dom)?['"]/, 'react-router'],
+  [/from\s+['"]@tanstack\/[a-z-]*query[a-z-]*['"]/, '@tanstack/query'],
+  [/from\s+['"]pinia['"]/, 'pinia'],
+  [/from\s+['"](?:vuex|react-redux|@reduxjs\/toolkit)['"]/, 'store'],
+]
+
+/** Scan component source for provider-dependence markers. Heuristic by design:
+ *  false positives degrade gracefully (the now-honest 'threw'/'isolated-preview'
+ *  path), false negatives are caught by the mount itself. */
+function detectProviderSignals(content: string): string[] {
+  const found = new Set<string>()
+  for (const [re, label] of PROVIDER_SIGNAL_RULES) {
+    if (re.test(content)) found.add(label)
+  }
+  return Array.from(found)
 }
 
 /** Heuristic category from component name/module path. Returns null when nothing matches. */
@@ -397,20 +458,19 @@ function runScanOffThread(projectRoot: string): Promise<ComponentCatalog> {
 export async function scanComponentLibrariesUncached(projectRoot: string): Promise<ComponentCatalog> {
   const libraries: ScannedLibrary[] = []
 
-  // Aggregate dependencies across every workspace package so the host's
-  // catalog includes libs that only sibling MFEs depend on (e.g. host has
-  // Radix, sibling MFE has Mantine — both should appear).
-  const ws = await resolveWorkspace(projectRoot)
+  // Scope to the RUNNING package's own dependencies. Aggregating every
+  // workspace package made a standalone app inherit unrelated sibling apps'
+  // UI kits — a plain Vue app showed React's Mantine, Solid's Kobalte, web-
+  // component Shoelace, etc.: libraries it can never actually render. Run an
+  // MFE/app directly to scan its own libraries.
   const deps: Record<string, { version: string; from: string }> = {}
-  for (const pkgDir of ws.packages) {
-    try {
-      const pkg = JSON.parse(await fsp.readFile(path.join(pkgDir, 'package.json'), 'utf-8'))
-      const merged = { ...pkg.dependencies, ...pkg.devDependencies }
-      for (const [name, version] of Object.entries(merged)) {
-        if (!deps[name]) deps[name] = { version: String(version), from: pkgDir }
-      }
-    } catch { /* missing or unreadable package.json — skip this package */ }
-  }
+  try {
+    const pkg = JSON.parse(await fsp.readFile(path.join(projectRoot, 'package.json'), 'utf-8'))
+    const merged = { ...pkg.dependencies, ...pkg.devDependencies }
+    for (const [name, version] of Object.entries(merged)) {
+      if (!deps[name]) deps[name] = { version: String(version), from: projectRoot }
+    }
+  } catch { /* missing or unreadable package.json */ }
   if (Object.keys(deps).length === 0) return { libraries: [], scannedAt: Date.now() }
 
   // Scan every dependency in parallel. Each `scanLibrary` is largely async
@@ -566,6 +626,7 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
     let slots: ScannedSlot[] = []
     let events: ScannedEvent[] = []
     let description: string | null = null
+    let providerSignals: string[] = []
 
     // Try to extract props from .d.ts first (most reliable)
     let dtsDescription: string | null = null
@@ -588,6 +649,7 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
         slots = vueDetails.slots
         events = vueDetails.events
         description = vueDetails.description ?? dtsDescription
+        providerSignals = vueDetails.providerSignals
       }
     }
     if (!description) description = dtsDescription
@@ -599,6 +661,7 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
       slots,
       events,
       description,
+      providerSignals,
     }))
   }
 
@@ -624,8 +687,12 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
 
   if (components.length === 0) return null
 
-  components.sort((a, b) => a.name.localeCompare(b.name))
-  return { name, version, components }
+  // Drop internal *Style/*Service/*Directive exports (keep the originals only if
+  // filtering would somehow remove everything, so we never hide a whole lib).
+  const real = components.filter(c => isLikelyComponentName(c.name))
+  const finalComponents = real.length > 0 ? real : components
+  finalComponents.sort((a, b) => a.name.localeCompare(b.name))
+  return { name, version, components: finalComponents }
 }
 
 /**
@@ -1064,6 +1131,7 @@ async function collectComponentExports(
         events: details.events,
         description: details.description,
         sourceFile: resolved,
+        providerSignals: details.providerSignals,
       }))
     } else {
       // JS/TS file — follow the chain. If the chain produces nothing AND the
@@ -1499,15 +1567,19 @@ export interface ExtractedComponentDetails {
   slots: ScannedSlot[]
   events: ScannedEvent[]
   description: string | null
+  providerSignals: string[]
 }
 
-/** Extract full component metadata (props + slots + events + description) from a source file. */
+/** Extract full component metadata (props + slots + events + description +
+ *  provider signals) from a source file. */
 async function extractComponentDetails(filePath: string): Promise<ExtractedComponentDetails> {
   const ext = path.extname(filePath)
-  const empty: ExtractedComponentDetails = { props: [], slots: [], events: [], description: null }
+  const empty: ExtractedComponentDetails = { props: [], slots: [], events: [], description: null, providerSignals: [] }
 
   let content: string
   try { content = await fsp.readFile(filePath, 'utf-8') } catch { return empty }
+
+  const providerSignals = detectProviderSignals(content)
 
   if (ext === '.vue') {
     return {
@@ -1515,6 +1587,7 @@ async function extractComponentDetails(filePath: string): Promise<ExtractedCompo
       slots: extractSlotsFromVueContent(content),
       events: extractEventsFromVueContent(content),
       description: extractComponentJsDoc(content),
+      providerSignals,
     }
   }
   if (ext === '.tsx' || ext === '.jsx') {
@@ -1523,6 +1596,7 @@ async function extractComponentDetails(filePath: string): Promise<ExtractedCompo
       slots: [],
       events: [],
       description: extractComponentJsDoc(content),
+      providerSignals,
     }
   }
   if (ext === '.svelte') {
@@ -1531,6 +1605,7 @@ async function extractComponentDetails(filePath: string): Promise<ExtractedCompo
       slots: extractSlotsFromSvelteContent(content),
       events: [],
       description: extractComponentJsDoc(content),
+      providerSignals,
     }
   }
   return empty

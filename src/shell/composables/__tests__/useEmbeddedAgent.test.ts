@@ -39,11 +39,16 @@ const providerStreamMock = vi.fn(async function* (
   yield { type: 'done', stopReason: 'end_turn' }
 })
 const abortRunMock = vi.fn()
+// Indirection so individual tests can make provider construction itself
+// throw (the missing-API-key path) via mockImplementationOnce — the factory
+// mock defers to this fn per call.
+const makeProviderMock = vi.fn(() => ({ name: 'mock', stream: providerStreamMock, abortRun: abortRunMock }))
 vi.mock('../../../embedded/provider-factory.js', () => ({
-  makeProvider: () => ({ name: 'mock', stream: providerStreamMock, abortRun: abortRunMock }),
+  makeProvider: () => makeProviderMock(),
 }))
 
 import { useEmbeddedAgent } from '../useEmbeddedAgent'
+import { useAgentMode } from '../useAgentMode'
 import { resetProviderSettingsForTests, useProviderSettings } from '../useProviderSettings'
 import type { UseTaskThread, ThreadMessage } from '../useTaskThread'
 
@@ -108,6 +113,7 @@ beforeEach(() => {
   updateTaskStatusMock.mockClear()
   providerStreamMock.mockClear()
   abortRunMock.mockClear()
+  makeProviderMock.mockClear()
   tasksRef.value = []
 })
 
@@ -259,5 +265,113 @@ describe('useEmbeddedAgent — seed run lifecycle', () => {
       expect(reviewCall[0]).toBe('task-test')
       expect(reviewCall[3]).toMatchObject({ resolution: 'All set.' })
     }
+  })
+})
+
+describe('useEmbeddedAgent — seed run error paths', () => {
+  // Each case presets the task at `in_progress` (the post-lock state — the
+  // mock updateTaskStatus doesn't mutate tasksRef, so we start where the
+  // lock would have landed) and asserts the failed run releases the lock
+  // back to `pending` and clears the live-run indicator.
+
+  it('provider stream throwing reverts the task to pending + clears the run indicator', async () => {
+    tasksRef.value = [{ id: 'task-test', status: 'in_progress', description: 'x' }]
+    let activeDuringRun = false
+    providerStreamMock.mockImplementationOnce(async function* () {
+      activeDuringRun = useAgentMode().activeRuns.value.has('task-test')
+      yield { type: 'text', text: 'partial output…' }
+      throw new Error('boom')
+    })
+    const thread = makeStubThread()
+    const agent = useEmbeddedAgent(thread)
+
+    await agent.send('Do the thing.', { isSeed: true })
+
+    expect(agent.status.value).toBe('error')
+    expect(activeDuringRun).toBe(true)
+    expect(useAgentMode().activeRuns.value.has('task-test')).toBe(false)
+    expect(updateTaskStatusMock).toHaveBeenCalledWith('task-test', 'pending')
+    // The failure is persisted as a system message so every observer (other
+    // tabs, MCP tail-readers) sees why the run ended — same as the watchdog.
+    expect(thread.appended.some((m) => m.role === 'system' && m.content.includes('boom'))).toBe(true)
+  })
+
+  it('makeProvider throwing (missing API key) reverts the task to pending', async () => {
+    tasksRef.value = [{ id: 'task-test', status: 'in_progress', description: 'x' }]
+    makeProviderMock.mockImplementationOnce(() => { throw new Error('no API key configured') })
+    const thread = makeStubThread()
+    const agent = useEmbeddedAgent(thread)
+
+    await agent.send('Do the thing.', { isSeed: true })
+
+    expect(agent.status.value).toBe('error')
+    expect(useAgentMode().activeRuns.value.has('task-test')).toBe(false)
+    expect(updateTaskStatusMock).toHaveBeenCalledWith('task-test', 'pending')
+    expect(thread.appended.some((m) => m.role === 'system' && m.content.includes('no API key configured'))).toBe(true)
+  })
+
+  it('user-message append failure reverts the task to pending', async () => {
+    tasksRef.value = [{ id: 'task-test', status: 'in_progress', description: 'x' }]
+    const thread = makeStubThread()
+    vi.mocked(thread.append).mockRejectedValueOnce(new Error('disk full'))
+    const agent = useEmbeddedAgent(thread)
+
+    await agent.send('Do the thing.', { isSeed: true })
+
+    expect(agent.status.value).toBe('error')
+    expect(useAgentMode().activeRuns.value.has('task-test')).toBe(false)
+    expect(updateTaskStatusMock).toHaveBeenCalledWith('task-test', 'pending')
+  })
+
+  it('chat-turn (non-seed) errors never touch task.status but still clear the indicator', async () => {
+    tasksRef.value = [{ id: 'task-test', status: 'in_progress', description: 'x' }]
+    providerStreamMock.mockImplementationOnce(async function* () {
+      yield { type: 'text', text: 'hmm' }
+      throw new Error('boom')
+    })
+    const thread = makeStubThread()
+    const agent = useEmbeddedAgent(thread)
+
+    await agent.send('free-form follow-up')
+
+    expect(agent.status.value).toBe('error')
+    expect(updateTaskStatusMock).not.toHaveBeenCalled()
+    expect(useAgentMode().activeRuns.value.has('task-test')).toBe(false)
+    // No system message either — the error strip is enough for a chat turn.
+    expect(thread.appended.some((m) => m.role === 'system')).toBe(false)
+  })
+})
+
+describe('useEmbeddedAgent — seed gate lists all four local CLIs', () => {
+  it('refusal message names claude/codex/opencode/copilot and never locks the task', async () => {
+    // Pin the task type to a custom persona on an HTTP provider so the
+    // "local CLIs only" apply gate actually fires.
+    const store = useProviderSettings()
+    store.upsertPersona({
+      id: 'custom:http-tester',
+      name: 'HTTP Tester',
+      description: '',
+      taskTypes: [],
+      providerId: 'openrouter',
+      model: '',
+      effort: 'auto',
+      roleDirections: '',
+      systemPromptExtras: '',
+      isCustom: true,
+    })
+    store.setPersonaOverride('annotation', 'custom:http-tester')
+    tasksRef.value = [{ id: 'task-test', status: 'pending', description: 'x', type: 'annotation' }]
+    const agent = useEmbeddedAgent(makeStubThread())
+
+    await agent.send('x', { isSeed: true })
+
+    expect(agent.status.value).toBe('error')
+    for (const cli of ['claude-local', 'codex-local', 'opencode-local', 'copilot-local']) {
+      expect(agent.errorMessage.value).toContain(cli)
+    }
+    // The gate fires before the lock — the task stays pending and the
+    // live-run indicator doesn't leak.
+    expect(updateTaskStatusMock).not.toHaveBeenCalled()
+    expect(useAgentMode().activeRuns.value.has('task-test')).toBe(false)
   })
 })

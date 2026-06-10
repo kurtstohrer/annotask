@@ -31,6 +31,7 @@ import A11yPanel from './components/A11yPanel.vue'
 import AuditPanel from './components/AuditPanel.vue'
 import DataSourcesPage from './components/DataSourcesPage.vue'
 import ComponentsPage from './components/ComponentsPage.vue'
+import OverlayLegend from './components/OverlayLegend.vue'
 import HelpOverlay from './components/HelpOverlay.vue'
 import SettingsOverlay from './components/SettingsOverlay.vue'
 import InitWizard from './components/InitWizard.vue'
@@ -68,6 +69,7 @@ import { useBridgeEventHandlers } from './composables/useBridgeEventHandlers'
 import { useShellLifecycle } from './composables/useShellLifecycle'
 import { useInteractionModeSync } from './composables/useInteractionModeSync'
 import { normalizeRoute } from './utils/routes'
+import { useWireframeCanvas } from './composables/useWireframeCanvas'
 import { navigateIframe as navigateIframeUtil, useAppUrl, useIframeStyle } from './utils/iframeNavigation'
 
 const shellTheme = useShellTheme()
@@ -111,6 +113,7 @@ const { shellView, designSection, developSection, activePanel } = useShellNaviga
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
+
 // Keep the shared active-theme signal in sync with the iframe so views that
 // don't see iframe.colorScheme directly (e.g. the token palette popover) can
 // still resolve the iframe's current design-spec variant.
@@ -429,7 +432,7 @@ const dataHighlightActive = computed(() =>
   (shellView.value === 'design' && designSection.value === 'components'))
 const dataHighlights = useDataHighlights({ iframe, active: dataHighlightActive })
 
-function rectClass(h: { eid: string; sourceName: string; ownerSources?: string[]; confidence?: 'precise' | 'fallback' | 'runtime-only' }) {
+function rectClass(h: { eid: string; sourceName: string; ownerSources?: string[]; confidence?: 'precise' | 'fallback' | 'runtime-only'; encoding?: 'identity' | 'latency' }) {
   const fEid = dataHighlights.focusedEid.value
   const fName = dataHighlights.focusedName.value
   const owners = h.ownerSources ?? [h.sourceName]
@@ -442,6 +445,8 @@ function rectClass(h: { eid: string; sourceName: string; ownerSources?: string[]
     dimmed: hasFocus && !isFocused,
     'hover-only': shellView.value === 'design' && designSection.value === 'components',
     fallback: h.confidence === 'fallback',
+    'runtime-only': h.confidence === 'runtime-only',
+    latency: h.encoding === 'latency',
     multi: owners.length > 1,
   }
 }
@@ -512,9 +517,18 @@ iframe.onBridgeEvent('data:hover', (payload: DataHoverPayload) => {
   const iframeRect = iframeEl?.getBoundingClientRect()
   const offX = iframeRect?.left ?? 0
   const offY = iframeRect?.top ?? 0
+  // Clamp/flip the fixed-position tooltip to the viewport so it never renders
+  // off-screen at the iframe's right/bottom edges (where dense overlays cluster).
+  const ttW = Math.min(280, 34 + hit.label.length * 7) // estimate before paint
+  const ttH = 26
+  let ttX = offX + payload.clientX + 12
+  let ttY = offY + payload.clientY + 14
+  if (ttX + ttW > window.innerWidth - 8) ttX = offX + payload.clientX - ttW - 12 // flip left
+  ttX = Math.max(8, Math.min(ttX, window.innerWidth - ttW - 8))
+  ttY = Math.max(8, Math.min(ttY, window.innerHeight - ttH - 8))
   dataTooltip.value = {
-    x: offX + payload.clientX + 12,
-    y: offY + payload.clientY + 14,
+    x: ttX,
+    y: ttY,
     label: hit.label,
     color: hit.color,
   }
@@ -570,6 +584,18 @@ const {
   submitPendingTask, cancelPendingTask,
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
 } = taskWorkflows
+
+// ── Wireframe canvas (palette drop pipeline + Reposition + Build) ──
+// Initialized after taskWorkflows because Build creates its task through
+// createRouteTask (route/viewport/color-scheme enrichment).
+const {
+  paletteDrag, wireframeDoc, reposition,
+  dropIndicator,
+  onPaletteDragOver, onPaletteDragLeave, onPaletteDrop,
+  onRepositionPointerDown, onRepositionPointerMove, onRepositionPointerUp,
+  wireframePlacements,
+  buildWireframeRoute, deletePlacement,
+} = useWireframeCanvas({ iframe, interactionMode, styleEditor, createRouteTask })
 
 // Auto-mode runs silently: no modal hijack, no forced switch to the
 // Conversation tab. The dedicated driver claims queued ids and runs the
@@ -730,6 +756,28 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined">
         <iframe ref="iframeRef" :src="appUrl" class="app-iframe" :style="iframeStyle" />
 
+        <!-- Wireframe palette drop catcher. HTML5 drag events don't reach the
+             parent document while the cursor is over the iframe, so a
+             transparent shield over the iframe receives dragover/drop. It is
+             always present but pointer-events:none until a palette drag starts
+             (toggling a class avoids a mid-drag mount race; v-if would miss the
+             first dragover). dragover MUST preventDefault or drop never fires;
+             resolveElementAt still hit-tests through it. -->
+        <div class="palette-drop-shield" :class="{ active: !!paletteDrag.draggingItem.value }"
+          @dragenter.prevent
+          @dragover.prevent="onPaletteDragOver"
+          @drop.prevent="onPaletteDrop"
+          @dragleave="onPaletteDragLeave" />
+
+        <!-- Reposition capture shield. Rendered only while the Reposition tool is
+             active: it sits above the iframe so the app's own click/drag behavior
+             is disabled, and drives the pointer-based move (grab → drag → drop). -->
+        <div v-if="interactionMode === 'reposition'" class="reposition-shield"
+          :class="{ grabbing: !!reposition.grab.value }"
+          @pointerdown="onRepositionPointerDown"
+          @pointermove="onRepositionPointerMove"
+          @pointerup="onRepositionPointerUp" />
+
         <!-- Hover + selection overlays (editor, design tokens/inspector) -->
         <template v-if="shellView === 'editor' ? showMarkup.inspector : (shellView === 'design' && designSection !== 'components')">
           <div v-if="hoverRect" class="highlight hover"
@@ -778,7 +826,23 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
               :data-impact="h.impact"
               :style="overlayStyle(h.rect)" />
           </template>
+
+          <!-- Live wireframe drop indicator (where a dragged palette item will land). -->
+          <div v-if="dropIndicator" class="drop-indicator" :class="dropIndicator.position"
+            :style="overlayStyle(dropIndicator)" />
         </div>
+
+        <!-- On-canvas legend: decode rect colors without looking at the sidebar.
+             Hovering an identity row focuses that source's rects; the Network
+             tab switches it to a latency-bucket key. -->
+        <OverlayLegend
+          v-if="dataHighlightActive && dataHighlights.sources.value.length"
+          :sources="dataHighlights.sources.value"
+          :focused-name="dataHighlights.focusedName.value"
+          :truncated="dataHighlights.truncated.value"
+          :shown="dataHighlights.rects.value.length"
+          :total="dataHighlights.totalResolved.value"
+          @focus="dataHighlights.setFocus($event)" />
 
         <!-- Tab/focus order overlay — numbered badges. Only rendered while
              the user has opted in via the panel toggle. -->
@@ -835,7 +899,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       </div>
 
       <!-- Design panel (tokens/inspector sub-sections of the Design view) -->
-      <aside v-if="shellView === 'design' && designSection !== 'components' && activePanel !== 'tasks'" class="theme-panel">
+      <aside v-if="shellView === 'design' && (designSection === 'tokens' || designSection === 'inspector') && activePanel !== 'tasks'" class="theme-panel">
         <DesignPanel
           :section="designSection"
           :iframeRef="iframeRef"
@@ -917,7 +981,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         @remove-screenshot="removeScreenshot"
       />
 
-      <!-- Audit > Data: sources + API schemas + api_update task creation -->
+      <!-- Audit > Data: data-source + API-schema browser (read-only — creates no tasks) -->
       <DataSourcesPage v-else-if="shellView === 'develop' && developSection === 'data'"
         key="data-sources-data"
         variant="data"
@@ -925,11 +989,16 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :currentRoute="currentRoute"
       />
 
-      <!-- Design > Components: library components catalog -->
+      <!-- Design > Components: catalog browser + drag-to-place palette + preview -->
       <ComponentsPage v-else-if="shellView === 'design' && designSection === 'components'"
         :iframe="iframe"
         :highlightRects="dataHighlights.rects.value"
         :focusedName="dataHighlights.focusedName.value"
+        :placements="wireframePlacements"
+        :stale-ids="wireframeDoc.staleIds.value"
+        :failed-ids="wireframeDoc.failedIds.value"
+        @build="buildWireframeRoute"
+        @delete-placement="deletePlacement"
       />
 
       <!-- Audit > A11y panel -->
@@ -1065,7 +1134,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   /* Severity */
   --severity-critical: #ef4444; --severity-serious: #ef4444; --severity-moderate: #f59e0b; --severity-minor: #71717a;
   /* Modes */
-  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-draw: #71717a; --mode-highlight: #f59e0b;
+  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-draw: #71717a; --mode-highlight: #f59e0b; --mode-reposition: #06b6d4;
   /* Layout viz */
   --layout-flex: #a855f7; --layout-grid: #22c55e;
   /* Roles */
@@ -1093,7 +1162,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   --status-pending: #6b7280; --status-in-progress: #2563eb; --status-review: #d97706;
   --status-denied: #dc2626; --status-accepted: #16a34a; --status-needs-info: #9333ea; --status-blocked: #ea580c;
   --severity-critical: #dc2626; --severity-serious: #dc2626; --severity-moderate: #d97706; --severity-minor: #6b7280;
-  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-draw: #6b7280; --mode-highlight: #d97706;
+  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-draw: #6b7280; --mode-highlight: #d97706; --mode-reposition: #0891b2;
   --layout-flex: #9333ea; --layout-grid: #16a34a;
   --role-container: #16a34a; --role-content: #2563eb; --role-component: #9333ea;
   --syntax-property: #0369a1; --syntax-string: #15803d; --syntax-number: #b45309;

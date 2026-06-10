@@ -1,3 +1,8 @@
+---
+name: annotask-init
+description: Initialize Annotask for this project by scanning the codebase and generating .annotask/design-spec.json. Use when the user asks to initialize, set up, configure, or scan their project for Annotask, or runs /annotask-init.
+---
+
 # annotask-init
 
 Initialize Annotask for this project by scanning the codebase and generating `.annotask/design-spec.json`.

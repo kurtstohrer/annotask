@@ -5,7 +5,9 @@ import { isSafeScreenshot } from './validation.js'
 import { createRuntimeEndpointStore, type RuntimeEndpointStore } from './runtime-endpoints.js'
 import { createAgentConfigStore } from './agent-configs.js'
 import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
+import { createWireframeStore } from './wireframe-store.js'
 import type { NetworkCall, RuntimeEndpointCatalog, TokenUsage } from '../schema.js'
+import type { WireframeDocument } from '../shared/wireframe-types.js'
 
 const DEFAULT_DESIGN_SPEC = {
   initialized: false,
@@ -74,7 +76,18 @@ export interface ProjectState {
   getConfig: () => unknown
   getTasks: () => { version: string; tasks: any[] }
   addTask: (task: Record<string, unknown>) => Promise<unknown>
-  updateTask: (id: string, updates: Record<string, unknown>) => Promise<unknown>
+  /**
+   * Update a task. `opts.guard` runs INSIDE the task lock against the task as
+   * it exists at update time — the HTTP layer passes its status-transition
+   * assert here so two concurrent PATCHes can't both pass a pre-lock check
+   * (TOCTOU). A non-null guard return aborts the update and surfaces as
+   * `{ error: 'Invalid transition', reason }`.
+   */
+  updateTask: (
+    id: string,
+    updates: Record<string, unknown>,
+    opts?: { guard?: (task: Record<string, unknown>) => string | null },
+  ) => Promise<unknown>
   /**
    * Increment a task's `tokenUsage` rollup. Called from the task-thread store's
    * onAppend hook when an assistant turn lands with usage. Silently no-ops on
@@ -103,6 +116,10 @@ export interface ProjectState {
   getAgentConfigs: () => Promise<AgentConfigs>
   /** Write one persona's project directions and return the updated file. */
   setAgentConfig: (personaId: string, entry: Partial<AgentConfigEntry>) => Promise<AgentConfigs>
+  /** Read the persisted multi-route wireframe document (`.annotask/wireframe.json`). */
+  getWireframe: () => Promise<WireframeDocument>
+  /** Replace the wireframe document, persist atomically, broadcast, and return it. */
+  setWireframe: (doc: WireframeDocument) => Promise<WireframeDocument>
   /** Wait for any pending writes to complete. Use before process shutdown. */
   flush: () => Promise<void>
   dispose: () => void
@@ -113,13 +130,36 @@ function clampNonNeg(n: number | undefined): number {
   return n
 }
 
-/** Atomic write: write to tmp file then rename into place */
-async function atomicWrite(filePath: string, data: string) {
+/** Atomic write: write to tmp file then rename into place. Exported so other
+ *  `.annotask/` writers (init commit/skip) share the same crash-safe pattern
+ *  instead of racing the sync readers here with a plain writeFile. */
+export async function atomicWrite(filePath: string, data: string) {
   const dir = path.dirname(filePath)
   await fsp.mkdir(dir, { recursive: true })
   const tmpPath = filePath + `.tmp.${process.pid}.${Date.now()}`
   await fsp.writeFile(tmpPath, data, 'utf-8')
   await fsp.rename(tmpPath, filePath)
+}
+
+/**
+ * Best-effort: make sure `.annotask/` is gitignored. Transcripts
+ * (conversations/*.jsonl), screenshots, and sidecars accumulate under
+ * `.annotask/` — before this helper the only thing keeping them out of
+ * commits was an instruction inside the LLM skill text. Only touches
+ * projects that have a `.git` (dir or worktree file), appends exactly once,
+ * and never throws — a read-only checkout must not break server boot.
+ */
+export function ensureAnnotaskIgnored(projectRoot: string): void {
+  try {
+    if (!fs.existsSync(path.join(projectRoot, '.git'))) return
+    const gitignorePath = path.join(projectRoot, '.gitignore')
+    let existing = ''
+    try { existing = fs.readFileSync(gitignorePath, 'utf-8') } catch { /* no .gitignore yet */ }
+    // Already covered when any line is `.annotask` / `.annotask/` / `/.annotask/`.
+    if (/^\/?\.annotask\/?\s*$/m.test(existing)) return
+    const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''
+    fs.appendFileSync(gitignorePath, `${prefix}# Annotask local data (tasks, screenshots, conversation transcripts)\n.annotask/\n`, 'utf-8')
+  } catch { /* best-effort — never block boot */ }
 }
 
 export interface ProjectStateOptions {
@@ -131,6 +171,14 @@ export interface ProjectStateOptions {
    * changed.
    */
   onSpecCleared?: () => void
+  /**
+   * Fired after a task leaves the store for good (accepted or deleted) and
+   * the removal has been flushed to disk. Lets the server clean per-task
+   * sidecars state.ts doesn't own — today the conversation transcript
+   * (`.annotask/conversations/<id>.jsonl`, owned by the task-thread store).
+   * Screenshot / interaction-history / rendered-html cleanup stays in here.
+   */
+  onTaskRemoved?: (taskId: string) => void
 }
 
 export function createProjectState(
@@ -140,6 +188,10 @@ export function createProjectState(
 ): ProjectState {
   let cachedDesignSpec: unknown = null
   let specWatcher: fs.FSWatcher | null = null
+  // Canonical boot-time spot for keeping `.annotask/` out of version control —
+  // every server entry (Vite plugin, Webpack plugin, standalone) constructs a
+  // project state exactly once.
+  ensureAnnotaskIgnored(projectRoot)
   const tasksPath = path.join(projectRoot, '.annotask', 'tasks.json')
   const screenshotsDir = path.join(projectRoot, '.annotask', 'screenshots')
   const interactionHistoryDir = path.join(projectRoot, '.annotask', 'interaction-history')
@@ -221,7 +273,19 @@ export function createProjectState(
   function loadTasksFromDisk(): { version: string; tasks: any[] } {
     try {
       return JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
-    } catch {
+    } catch (err) {
+      // Distinguish "no file yet" (normal first boot) from a corrupt-but-
+      // recoverable file. Falling back to empty is fine in memory, but the
+      // next mutation's atomic flush would overwrite the corrupt file with
+      // `[]` — quarantine a copy first so the user (or an agent) can hand-
+      // recover the tasks. Best-effort: a failed copy never blocks boot.
+      if (fs.existsSync(tasksPath)) {
+        const quarantinePath = `${tasksPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+        try {
+          fs.copyFileSync(tasksPath, quarantinePath)
+          console.warn(`[Annotask] tasks.json is unreadable (${(err as Error).message}) — quarantined a copy at ${quarantinePath}`)
+        } catch { /* best-effort */ }
+      }
       return { version: '1.0', tasks: [] }
     }
   }
@@ -314,6 +378,12 @@ export function createProjectState(
             // External edit — drop cache so the next read picks up the disk version.
             taskCache = null
           }
+          if (filename === 'wireframe.json') {
+            // Ignore our own atomic writes; on a genuine external edit tell live
+            // listeners to re-load (the store reads fresh, so no cache to clear).
+            if (Date.now() < wireframeSelfWriteUntil) return
+            broadcast('wireframe:updated', null)
+          }
         })
       } catch { cachedDesignSpec = null }
     }
@@ -339,11 +409,22 @@ export function createProjectState(
     })
   }
 
-  async function updateTask(id: string, updates: Record<string, unknown>) {
+  async function updateTask(
+    id: string,
+    updates: Record<string, unknown>,
+    opts: { guard?: (task: Record<string, unknown>) => string | null } = {},
+  ) {
     return withTaskLock(async () => {
       const data = getTasksSnapshot()
       const task = data.tasks.find((t: any) => t.id === id)
       if (!task) return { error: 'Task not found' }
+      // Run the caller's guard against the task as it exists NOW, under the
+      // lock. The HTTP/MCP boundaries validate transitions before queuing,
+      // but that check races concurrent updates — this one can't.
+      if (opts.guard) {
+        const reason = opts.guard(task)
+        if (reason) return { error: 'Invalid transition', reason }
+      }
       Object.assign(task, updates, { updatedAt: Date.now() })
       let screenshotToUnlink: unknown = null
       let sidecarsToClean: string | null = null
@@ -357,7 +438,12 @@ export function createProjectState(
       // the write fails. Chained off the flush, but not awaited — response
       // goes out as soon as the in-memory state is consistent.
       if (screenshotToUnlink) void flushed.then(() => unlinkScreenshot(screenshotToUnlink))
-      if (sidecarsToClean) void flushed.then(() => cleanTaskSidecars(sidecarsToClean!))
+      if (sidecarsToClean) {
+        void flushed.then(() => {
+          void cleanTaskSidecars(sidecarsToClean!)
+          options.onTaskRemoved?.(sidecarsToClean!)
+        })
+      }
       broadcast('tasks:updated', data)
       return task
     })
@@ -401,7 +487,10 @@ export function createProjectState(
       data.tasks = data.tasks.filter((t: any) => t.id !== id)
       const flushed = queueFlushTasks(data)
       if (screenshotToUnlink) void flushed.then(() => unlinkScreenshot(screenshotToUnlink))
-      void flushed.then(() => cleanTaskSidecars(id))
+      void flushed.then(() => {
+        void cleanTaskSidecars(id)
+        options.onTaskRemoved?.(id)
+      })
       broadcast('tasks:updated', data)
       return { deleted: id }
     })
@@ -426,6 +515,20 @@ export function createProjectState(
 
   // ── Agent configs (.annotask/agents.json) ──
   const agentConfigStore = createAgentConfigStore(projectRoot)
+
+  // ── Wireframe document (.annotask/wireframe.json) ──
+  const wireframeStore = createWireframeStore(projectRoot)
+  // Watcher fires on our own rename; skip events within this window after a self-write.
+  let wireframeSelfWriteUntil = 0
+
+  async function setWireframe(doc: WireframeDocument): Promise<WireframeDocument> {
+    wireframeSelfWriteUntil = Date.now() + 500
+    const saved = await wireframeStore.set(doc)
+    wireframeSelfWriteUntil = Date.now() + 500
+    // Notify live listeners (other shells/tabs) so they re-load without polling.
+    broadcast('wireframe:updated', saved)
+    return saved
+  }
 
   // ── Runtime endpoint catalog ──
   const runtimeEndpoints: RuntimeEndpointStore = createRuntimeEndpointStore(projectRoot)
@@ -473,6 +576,8 @@ export function createProjectState(
     clearRuntimeEndpoints,
     getAgentConfigs: agentConfigStore.get,
     setAgentConfig: agentConfigStore.set,
+    getWireframe: wireframeStore.get,
+    setWireframe,
     flush,
     dispose,
   }

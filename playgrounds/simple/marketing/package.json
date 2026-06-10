@@ -9,5 +9,8 @@
   "devDependencies": {
     "annotask": "workspace:*",
     "vite": "^6.4.2"
+  },
+  "dependencies": {
+    "@shoelace-style/shoelace": "^2.20.1"
   }
 }

@@ -23,11 +23,58 @@ export function bridgeRegistry(): string {
   }
 
   // ── PostMessage Helpers ───────────────────────────────
-  var shellOrigin = '*'; // Will be tightened on first shell message
+  // shellOrigin stays null until the first validated shell message locks it
+  // to that exact origin (see the message handler in messages.ts). It is
+  // never '*' — posting app data to a wildcard origin would let any page
+  // that iframes the dev app read pushes (console error stacks, network
+  // call URLs, hover/click context).
+  var shellOrigin = null;
+
+  // Bounded pre-lock queue: meaningful pushes that fire before the shell has
+  // announced itself (initial network:page-load, early console errors) wait
+  // here and flush to the locked origin. High-frequency transient events are
+  // dropped instead — replaying stale hover state after lock would only
+  // confuse the shell, and queueing them would evict the meaningful entries.
+  var PRE_LOCK_QUEUE_MAX = 50;
+  var preLockQueue = [];
+  var PRE_LOCK_TRANSIENT = { 'hover:enter': true, 'hover:leave': true, 'data:hover': true };
+
+  // Mirrors the server's isLocalHostname (src/server/origin.ts). Implemented
+  // here because the bridge is standalone vanilla JS injected into the app
+  // page — it cannot import server modules. Port-agnostic on purpose: the
+  // webpack standalone topology serves the shell from a different localhost
+  // port than the app, so a same-origin check would break it.
+  function isLocalBridgeOrigin(origin) {
+    if (!origin) return false;
+    var host = '';
+    try { host = new URL(origin).hostname; } catch (e) { return false; }
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+  }
+
+  function lockShellOrigin(origin) {
+    shellOrigin = origin;
+    var queued = preLockQueue.splice(0, preLockQueue.length);
+    for (var qi = 0; qi < queued.length; qi++) {
+      try { window.parent.postMessage(queued[qi], shellOrigin); } catch (e) {}
+    }
+  }
 
   function sendToShell(type, payload, id) {
     var msg = { type: type, payload: payload || {}, source: 'annotask-client' };
     if (id) msg.id = id;
+    if (shellOrigin === null) {
+      // bridge:ready is the one wildcard exception: it carries no app data
+      // and the shell needs it to bootstrap before it has ever messaged us
+      // (in the cross-origin webpack standalone topology the shell cannot
+      // poll the iframe's globals to detect readiness).
+      if (type === 'bridge:ready') {
+        window.parent.postMessage(msg, '*');
+        return;
+      }
+      if (PRE_LOCK_TRANSIENT[type]) return;
+      if (preLockQueue.length < PRE_LOCK_QUEUE_MAX) preLockQueue.push(msg);
+      return;
+    }
     window.parent.postMessage(msg, shellOrigin);
   }
 

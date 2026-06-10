@@ -50,6 +50,11 @@ export interface LibraryComponent {
   slots?: LibrarySlot[]
   events?: LibraryEvent[]
   sourceFile?: string | null
+  /** Provider-dependence markers from the scanner (see ScannedComponent). */
+  providerSignals?: string[]
+  /** Coarse render-fidelity hint so the palette can pre-mark a component as
+   *  isolated-preview before attempting a throwing mount. */
+  fidelityHint?: 'live' | 'isolated-preview' | 'placeholder' | 'unknown'
 }
 
 export interface LibraryCatalog {

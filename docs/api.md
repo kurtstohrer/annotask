@@ -30,8 +30,11 @@ Current error codes:
 - `validation_failed`
 - `invalid_transition`
 - `forbidden_origin`
+- `origin_port_mismatch` (agent spawn routes only — origin must match the server's own port)
 - `not_found`
 - `missing_field`
+- `invalid_id`
+- `invalid_body`
 
 ## Task Model
 
@@ -44,7 +47,9 @@ Canonical task types:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `api_update`
+- `wireframe_apply` — created by the wireframe palette's "Build this route". `context.wireframe` carries `{ route, instances[] }`; each instance has an `anchor` (`file`, `line`, `position`, `component`, `targetTag`) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). Applied via the `WIREFRAME_APPLY.md` companion playbook.
+
+There is no dedicated task type for backend-contract work; it surfaces as `annotation` tasks grounded with `data_context` and runtime-endpoint evidence.
 
 Statuses:
 
@@ -79,11 +84,16 @@ pending -> in_progress -> review -> accepted | denied
 | `GET` | `/__annotask/api/design-spec` | current design spec |
 | `GET` | `/__annotask/api/performance` | latest stored performance snapshot |
 | `POST` | `/__annotask/api/performance` | store a performance snapshot |
+| `GET` | `/__annotask/api/system-prompt` | composed embedded-agent system prompt (`?task_type=` adds the matching companion playbook) |
+| `GET` | `/__annotask/api/style-guide` | contents of `.annotask/STYLE_GUIDE.md` (init wizard review step) |
+| `GET` | `/__annotask/api/read-file` | read one project file by relative `?path=` (traversal-guarded to the project root) |
+| `DELETE` | `/__annotask/api/session-reset` | clear the `.annotask/.session-reset` sentinel after the shell wipes localStorage |
 
 Notes:
 
 - `report` supports `?mfe=NAME`
 - `report` can include `performance` when a snapshot exists
+- `status` reports `sessionReset: true` while the `.session-reset` sentinel exists on disk
 
 ### Tasks
 
@@ -246,6 +256,64 @@ Useful query params:
 - `schema_location`
 - `url`
 
+### Wireframe
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/wireframe` | full multi-route wireframe document, or one route's slice with `?route=PATH` |
+| `PUT` | `/__annotask/api/wireframe` | replace the whole document (the shell owns the in-memory merge) |
+| `POST` | `/__annotask/api/wireframe/draft` | write a reversible render-in-place component draft at an anchor |
+| `POST` | `/__annotask/api/wireframe/draft/revert` | revert a draft by `draftId` (hash-guarded restore) |
+
+The document persists to `.annotask/wireframe.json` and is shape-validated (`{ version: "1.0", updatedAt, routes[] }`) on PUT. The two `draft` routes are the only path that mutates real project source, so they stay opt-in behind `ANNOTASK_RENDER_IN_PLACE` and return 404 when the flag is off.
+
+### Agent Configs
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/agent-configs` | per-persona project directions and provider preferences from `.annotask/agents.json` |
+| `PATCH` | `/__annotask/api/agent-configs/:id` | update one persona's `projectDirections`, `providerId`, `model`, or `effort` |
+
+### Embedded Agent
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/__annotask/api/agent/spawn` | spawn an allow-listed local CLI (claude / codex / opencode / copilot) and stream stdout/stderr back as SSE |
+| `DELETE` | `/__annotask/api/agent/spawn/:runId` | abort a running spawn by run id |
+| `GET` | `/__annotask/api/agent/detect` | detect which local CLIs are installed and logged in |
+| `GET` | `/__annotask/api/agent/models` | per-provider model catalog for `?cli=ID` (`?refresh=1` bypasses the 5-min cache) |
+
+The spawn routes enforce a stricter same-port origin check on top of the general localhost gate — a page on a different localhost port cannot spawn CLIs that have credential access (`origin_port_mismatch`). The server also enforces the `ANNOTASK_MAX_PERMISSION` ceiling (`plan` or `default`) and refuses spawns that request more.
+
+### Task Conversations
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/tasks/:id/messages` | full per-task conversation snapshot (optional `?after=<id>`) |
+| `POST` | `/__annotask/api/tasks/:id/messages` | append a message; broadcasts to subscribers |
+| `GET` | `/__annotask/api/tasks/:id/messages/stream` | SSE stream; honours `Last-Event-ID` for resume |
+| `PATCH` | `/__annotask/api/tasks/:id/messages/:msgId` | update a message in place (used to flush a partial assistant turn while it streams) |
+
+Threads persist as append-only JSONL at `.annotask/conversations/<taskId>.jsonl`.
+
+### Usage
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/usage` | aggregate token-usage totals, per-scope and per-provider, from `.annotask/usage.jsonl` |
+| `GET` | `/__annotask/api/usage/recent` | most recent usage entries, newest first (`?limit=N`, default 50, max 500) |
+
+### Init Wizard
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/init/state` | current init-runner state |
+| `GET` | `/__annotask/api/init/scan-targets` | existence + mtime of the durable scan artifacts (`design-spec.json`, `agents.json`) |
+| `POST` | `/__annotask/api/init/start` | start an init scan (body can skip individual scanners and pin provider/model/effort) |
+| `POST` | `/__annotask/api/init/cancel` | cancel a running scan |
+| `POST` | `/__annotask/api/init/skip` | mark the project initialized without committing token data |
+| `POST` | `/__annotask/api/init/commit` | commit the reviewed spec (and optionally a style guide) to `.annotask/` |
+
 ## WebSocket
 
 Connect to `ws://localhost:<port>/__annotask/ws`.
@@ -261,6 +329,10 @@ Server-to-client events:
 | `changes:cleared` | `null` |
 | `tasks:updated` | task list payload |
 | `designspec:updated` | `null` |
+| `components:updated` | `{ scannedAt }` — a background component scan landed a fresh catalog |
+| `init:progress` | init-runner step state for the wizard |
+| `runtime-endpoints:updated` | current runtime endpoint catalog |
+| `wireframe:updated` | saved wireframe document (`null` when invalidated from disk) |
 
 Client-to-server events:
 
@@ -297,6 +369,12 @@ Current tool surface:
 - `annotask_resolve_endpoint`
 - `annotask_get_data_source_examples`
 - `annotask_get_data_source_details`
+- `annotask_get_source_excerpt`
+- `annotask_get_playbook`
+- `annotask_get_agent_directions`
+- `annotask_conversation_read`
+- `annotask_conversation_post`
+- `annotask_conversation_subscribe`
 
 Behavior differences from raw HTTP:
 

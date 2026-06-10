@@ -3,7 +3,7 @@
  * Injects data-annotask-* attributes into Vue, React, Svelte, and SolidJS templates.
  * Must run BEFORE framework-specific loaders (enforce: 'pre').
  */
-import { transformFile } from '../plugin/transform.js'
+import { transformFile, injectComponentRegistry } from '../plugin/transform.js'
 
 export default function annotaskLoader(this: any, source: string): string {
   const options = this.getOptions?.() || {}
@@ -33,25 +33,8 @@ export default function annotaskLoader(this: any, source: string): string {
   const result = transformFile(source, filePath, projectRoot, mfe)
   if (!result) return source
 
-  // Register imported PascalCase components globally
-  let output = result
-  const importRegex = /import\s+(\w+)\s+from\s+['"]([^'"]+)['"]/g
-  let match
-  const registrations: string[] = []
-  while ((match = importRegex.exec(result)) !== null) {
-    const [, name, src] = match
-    if (name[0] === name[0].toUpperCase() && name[0] !== name[0].toLowerCase() && !src.startsWith('.')) {
-      registrations.push(`window.__ANNOTASK_COMPONENTS__['${name}'] = ${name}`)
-    }
-  }
-  if (registrations.length > 0) {
-    const regCode = `\nif (typeof window !== 'undefined') { window.__ANNOTASK_COMPONENTS__ = window.__ANNOTASK_COMPONENTS__ || {}; ${registrations.join('; ')} }\n`
-    if (filePath.endsWith('.vue') && output.includes('</script>')) {
-      output = output.replace(/<\/script>/, regCode + '</script>')
-    } else {
-      output += regCode
-    }
-  }
-
-  return output
+  // Register this file's imported components into window.__ANNOTASK_COMPONENTS__
+  // via the shared helper (covers named/aliased/relative imports — the old
+  // inline version here only handled default, non-relative imports).
+  return injectComponentRegistry(result, filePath)
 }

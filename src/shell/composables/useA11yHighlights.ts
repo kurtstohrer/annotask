@@ -8,12 +8,15 @@
  * overlays inherit the active shell theme. When `focusedRule` is set, that
  * rule's overlays are visually emphasized and the rest are dimmed.
  *
- * Patterned after useDataHighlights.ts — same RECT_CAP, same loop shape.
+ * Shares the rAF lifecycle + re-entrancy/visibility guards with the Data view
+ * via `useOverlayLoop` (useOverlayEngine.ts); this file only owns the
+ * selector/eid resolve and the per-violation rect shape.
  */
-import { ref, watch, type Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import type { BridgeRect } from '../../shared/bridge-types'
 import type { useIframeManager } from './useIframeManager'
 import type { A11yViolation } from './useA11yScanner'
+import { useOverlayLoop, OVERLAY_RECT_CAP } from './useOverlayEngine'
 
 export interface A11yHighlightRect {
   ruleId: string
@@ -22,8 +25,6 @@ export interface A11yHighlightRect {
   eid: string
   rect: BridgeRect
 }
-
-const RECT_CAP = 400
 
 export function useA11yHighlights(deps: {
   iframe: ReturnType<typeof useIframeManager>
@@ -39,13 +40,8 @@ export function useA11yHighlights(deps: {
 
   const rects = ref<A11yHighlightRect[]>([])
 
-  let loopRunning = false
-  let refreshInFlight = false
-
   async function refreshRects(): Promise<void> {
-    if (refreshInFlight) return
-    refreshInFlight = true
-    try {
+    {
       if (!active.value || violations.value.length === 0) {
         if (rects.value.length) rects.value = []
         return
@@ -61,10 +57,10 @@ export function useA11yHighlights(deps: {
         if (!v.elements) continue
         for (const el of v.elements) {
           if (!el.target && !el.eid) continue
-          if (items.length >= RECT_CAP) break
+          if (items.length >= OVERLAY_RECT_CAP) break
           items.push({ ruleId: v.id, impact: v.impact || 'minor', selector: el.target, eid: el.eid })
         }
-        if (items.length >= RECT_CAP) break
+        if (items.length >= OVERLAY_RECT_CAP) break
       }
 
       if (items.length === 0) {
@@ -105,47 +101,18 @@ export function useA11yHighlights(deps: {
         }
       }
       rects.value = out
-    } finally {
-      refreshInFlight = false
     }
   }
 
-  function startLoop(): void {
-    if (loopRunning) return
-    if (!active.value) return
-    loopRunning = true
-    const tick = () => {
-      if (!active.value || violations.value.length === 0) {
-        loopRunning = false
-        return
-      }
-      if (typeof document !== 'undefined' && document.hidden) {
-        requestAnimationFrame(tick)
-        return
-      }
-      refreshRects()
-      requestAnimationFrame(tick)
-    }
-    requestAnimationFrame(tick)
-  }
-
-  watch(active, (v, old) => {
-    if (v && !old) {
-      // Re-entering the A11y view — refresh rects now instead of waiting for
-      // the next rAF tick so the user sees outlines immediately without
-      // needing to scroll or rescan.
-      refreshRects()
-      startLoop()
-    } else if (!v && old) rects.value = []
+  // Shared overlay loop owns the rAF lifecycle + re-entrancy/visibility guards;
+  // this composable supplies the refresh body and what "idle" means.
+  useOverlayLoop({
+    active,
+    refresh: refreshRects,
+    inputs: () => violations.value,
+    isIdle: () => violations.value.length === 0,
+    onDeactivate: () => { rects.value = [] },
   })
-
-  watch(violations, () => {
-    if (active.value) {
-      refreshRects()
-      startLoop()
-    }
-    if (violations.value.length === 0) rects.value = []
-  }, { deep: false })
 
   function classFor(rect: A11yHighlightRect): string {
     if (focusedRule.value) {

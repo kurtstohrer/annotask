@@ -35,6 +35,10 @@
             @click="onInspectClick" title="Inspect (V)">
             <Icon name="search" />
           </button>
+          <button data-testid="tool-reposition" :class="['mode-btn mode-reposition', { active: interactionMode === 'reposition' }]"
+            @click="$emit('update:interactionMode', 'reposition')" title="Reposition (R)">
+            <Icon name="move" />
+          </button>
         </div>
         <button v-if="designSection !== 'components'"
           :class="['tool-btn', { active: layoutOverlayActive }]" @click="$emit('toggle-layout-overlay')" title="Show Layout (L)">
@@ -114,7 +118,7 @@
             Inspector
           </button>
           <button data-testid="design-components" :class="['toggle-btn', { active: designSection === 'components' && activePanel !== 'tasks' }]"
-            @click="$emit('switch-design-section', 'components')" title="Browse project components">
+            @click="$emit('switch-design-section', 'components')" title="Browse + drag components onto the live app">
             <Icon name="grid-2x2" :size="12" />
             Components
           </button>

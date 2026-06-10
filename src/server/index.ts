@@ -11,6 +11,7 @@ import { createAgentSpawnHandler } from './agent-spawn.js'
 import { createAgentDetector } from './agent-detect.js'
 import { createInitRunner } from './init.js'
 import { createUsageLedger } from './usage-ledger.js'
+import { createDraftStore } from './draft-edits.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -28,16 +29,23 @@ export interface AnnotaskServerOptions {
   apiSchemaUrls?: string[]
   /** Extra project-relative schema file paths. */
   apiSchemaFiles?: string[]
+  /** Hostnames allowed in the Host header beyond localhost / IP literals —
+   *  the host the server announces plus any user-configured allowed hosts.
+   *  A function because the bind host is only known once listening starts. */
+  allowedHosts?: () => readonly string[]
 }
 
 export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskServer {
   const wsServer = createWSServer()
   // Forward-declared so state.ts can notify the init runner when its source
-  // of truth (design-spec.json) is unlinked. The runner is built below; until
-  // then this is a no-op callback.
+  // of truth (design-spec.json) is unlinked, and the task-thread store when a
+  // task is removed for good. Both are built below; until then these are
+  // no-op callbacks.
   let onSpecCleared: () => void = () => { /* set below */ }
+  let onTaskRemoved: (taskId: string) => void = () => { /* set below */ }
   const state = createProjectState(options.projectRoot, wsServer.broadcast, {
     onSpecCleared: () => onSpecCleared(),
+    onTaskRemoved: (taskId) => onTaskRemoved(taskId),
   })
   // Embedded-chat moving parts: per-task message log, subprocess streamer,
   // CLI-detection probe. All scoped to this server instance so a single
@@ -82,6 +90,13 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
       })
     },
   })
+  // Transcript cleanup: accept/delete clean every other per-task sidecar
+  // (screenshot, interaction-history, rendered-html) inside state.ts, but the
+  // conversation transcript lives in the thread store — clear it here, the
+  // one layer that holds both. Fires after the task removal hits disk.
+  onTaskRemoved = (taskId) => {
+    void taskThread.clear(taskId)
+  }
   // Orphaned-task finalization. When an agent run ends (child exit) but the
   // orchestrating client never transitioned the task — e.g. the tab closed
   // mid-run — the task is stuck in `in_progress` forever (the spawn registry
@@ -114,16 +129,21 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
   })
   onSpecCleared = () => { initRunner.reset() }
 
+  // Render-in-place draft store (P1.3). Self-contained: OFF unless the
+  // ANNOTASK_RENDER_IN_PLACE flag is set. The only source-writing capability.
+  const draftStore = createDraftStore(options.projectRoot)
+
   const apiMiddleware = createAPIMiddleware({
     projectRoot: options.projectRoot,
     apiSchemaUrls: options.apiSchemaUrls,
     apiSchemaFiles: options.apiSchemaFiles,
+    allowedHosts: options.allowedHosts,
     getReport: () => wsServer.getReport(),
     getConfig: () => state.getConfig(),
     getDesignSpec: () => state.getDesignSpec(),
     getTasks: () => state.getTasks(),
     addTask: (task) => state.addTask(task),
-    updateTask: (id, updates) => state.updateTask(id, updates),
+    updateTask: (id, updates, opts) => state.updateTask(id, updates, opts),
     deleteTask: (id) => state.deleteTask(id),
     saveInteractionHistory: (id, snapshot) => state.saveInteractionHistory(id, snapshot),
     readInteractionHistory: (id) => state.readInteractionHistory(id),
@@ -140,6 +160,11 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     initRunner,
     getAgentConfigs: () => state.getAgentConfigs(),
     setAgentConfig: (id, entry) => state.setAgentConfig(id, entry),
+    getWireframe: () => state.getWireframe(),
+    setWireframe: (doc) => state.setWireframe(doc),
+    renderInPlaceEnabled: draftStore.enabled,
+    writeDraft: (req) => draftStore.write(req),
+    revertDraft: (id) => draftStore.revert(id),
     usageLedger,
   })
 
@@ -193,7 +218,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     broadcast: (event, data) => wsServer.broadcast(event, data),
     getReport: () => wsServer.getReport(),
     flush: () => state.flush(),
-    dispose: () => { agentSpawn.registry.killAll(); offCatalog(); state.dispose(); wsServer.dispose() },
+    dispose: () => { void draftStore.revertAll(); agentSpawn.registry.killAll(); offCatalog(); state.dispose(); wsServer.dispose() },
   }
 }
 

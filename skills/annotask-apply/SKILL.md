@@ -1,3 +1,8 @@
+---
+name: annotask-apply
+description: Apply pending Annotask design tasks to the source code. Use when the user asks to apply Annotask changes, apply design changes, sync Annotask, or runs /annotask-apply.
+---
+
 # annotask-apply
 
 Apply pending Annotask design tasks to the source code.
@@ -203,6 +208,8 @@ Read the task type and apply accordingly:
 - **`a11y_fix`**: Fix an accessibility violation. Read `A11Y_RULES.md` in this skill directory before applying the change. If you are working through multiple a11y tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: prefer pattern fixes over instance fixes, expect layout/head rules to live in root or layout files, and fetch the screenshot first when the issue is visual (contrast, focus ring, hidden text, similar).
 
 - **`theme_update`**: Apply batched design-token edits from the Theme page. Read `THEME_UPDATE.md` in this skill directory before applying the change. If you are working through multiple theme tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: one task may include many edits, update source files before `.annotask/design-spec.json`, and land `theme_update` before dependent `style_update` tasks.
+
+- **`wireframe_apply`**: Write the user's drag-and-drop palette placements into real source. Read `WIREFRAME_APPLY.md` in this skill directory before applying the change. If you are working through multiple wireframe tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: `context.wireframe.instances[]` carries a durable `anchor` (`file`/`line`/`position`) per placement, resolve component imports via `annotask_get_component_examples` rather than guessing, and never fabricate handlers/children/data bindings — note them in the resolution instead.
 
 - **`annotation` with cross-boundary API edits**: Some frontend requests turn out to depend on backend work (for example, a field is not returned by the current response schema). Do **not** edit the backend and do **not** ask for permission to do so. If there is a meaningful frontend-only fallback, apply it and explain the missing backend support in the resolution note. Otherwise, mark the task `blocked` and tell the user which API/schema change would be required.
 

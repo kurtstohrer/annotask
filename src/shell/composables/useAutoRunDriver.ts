@@ -60,20 +60,34 @@ async function drain(taskSystem: ReturnType<typeof useTasks>): Promise<void> {
     return
   }
 
+  // Ids that refused consumption this drain pass — manual runs owned by the
+  // Conversation tab, or ids another consumer raced us for. They stay in the
+  // queue (the tab consumes manual items on mount), but we must iterate past
+  // them: re-reading the head after a failed consume was a tight synchronous
+  // loop with no await, freezing the tab whenever "Run with agent" enqueued
+  // a manual item before ConversationTab could mount and claim it.
+  const skipped = new Set<string>()
+
   while (true) {
     const queue = useAgentMode().pendingAutoRun.value
-    if (queue.size === 0) return
 
-    // FIFO: take the first id in insertion order.
+    // FIFO among entries we haven't already skipped this pass.
     let id: string | null = null
-    for (const x of queue.keys()) { id = x; break }
+    for (const x of queue.keys()) {
+      if (!skipped.has(x)) { id = x; break }
+    }
+    // Nothing consumable left — either the queue is empty or every remaining
+    // item belongs to a different consumer. Exit; manual items are the
+    // Conversation tab's to drain.
     if (!id) return
 
     if (!consumeAutoRun(id, ['auto'])) {
       // Either another consumer already claimed this id, or it's a manual
-      // run destined for the Conversation tab. Move on.
+      // run destined for the Conversation tab. Skip it for the rest of this
+      // pass and move on to the next queued id.
       // eslint-disable-next-line no-console
       console.warn(`[annotask:autorun] ${id} consumed by another consumer (likely manual run)`)
+      skipped.add(id)
       continue
     }
 
@@ -146,4 +160,9 @@ export function resetAutoRunDriverForTests(): void {
   started = false
   runningId = null
   cancelHooks.clear()
+}
+
+/** Test seam — drives one drain pass directly, bypassing the watcher. */
+export function drainForTests(taskSystem: ReturnType<typeof useTasks>): Promise<void> {
+  return drain(taskSystem)
 }

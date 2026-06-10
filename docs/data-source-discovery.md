@@ -206,7 +206,7 @@ annotask data-source-details useUserQuery --file=src/composables/useUserQuery.ts
 
 Reach for the data-source catalog when a task asks to:
 
-- modify a fetch contract, query, mutation, or store — this is the `api_update` task type's primary surface
+- modify a fetch contract, query, mutation, or store — there is no dedicated task type for this; these arrive as `annotation` tasks carrying `data_context` plus runtime-endpoint evidence, and the catalog is how you ground them
 - add a new UI that needs to bind to existing data — start from `used_only=true` to see what's already fetched on this page
 - rewire a component to a different hook or store that matches project conventions
 - understand what data an element on the current page depends on — use the per-task `data_context`, then call `annotask_get_data_source_details` on the primary source for its shape

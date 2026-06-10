@@ -71,7 +71,7 @@ export const PersonaConfigSchema = z.object({
 export type PersonaConfig = z.infer<typeof PersonaConfigSchema>
 
 /**
- * Five built-in personas covering all eight task types. Keep this list
+ * Four built-in personas covering all task types. Keep this list
  * stable — the ids are referenced from persisted `personaOverrides` maps,
  * so renaming an id orphans existing overrides.
  *
@@ -85,7 +85,7 @@ export const BUILT_IN_PERSONAS: readonly PersonaConfig[] = [
     id: 'general',
     name: 'Frontend Developer',
     description: 'Default for annotations and freeform requests.',
-    taskTypes: ['annotation', 'section_request'],
+    taskTypes: ['annotation', 'section_request', 'wireframe_apply'],
     providerId: 'claude-local',
     model: '',
     effort: 'auto',

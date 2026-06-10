@@ -1,12 +1,12 @@
 import { ref, type Ref } from 'vue'
 import * as bridge from '../services/iframeBridge'
 import type {
-  ResolvedElement, TemplateGroupResult, BridgeRect,
+  ResolvedElement, ResolveMoveSourceResult, TemplateGroupResult, BridgeRect,
   StyleGetComputedResult, StyleApplyResult,
   ClassSetResult, ElementClassificationData,
   LayoutContainerData, LayoutAddTrackResult, LayoutAddChildResult,
   CheckSourceMappingResult, ColorSwatch, ColorSchemeResult,
-  InsertPlaceholderResult, InsertVueComponentResult,
+  InsertPlaceholderResult, InsertVueComponentResult, PreviewComponentResult,
   InteractionMode, PerfScanResult, PerfRecording,
   ResolveComponentChainResult,
   ResolveBySelectorsResult, ResolveBySelectorsMatch,
@@ -187,6 +187,19 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
       const result = await bridge.request<ResolvedElement | null>('resolve:at-point', coords, 500)
       if (!result) return null
       // Convert rect to shell coordinates
+      result.rect = toShellRect(result.rect) || result.rect
+      return result
+    } catch { return null }
+  }
+
+  /** Resolve the node to GRAB for a Reposition move at shell coords — prefers a
+   *  wireframe placement container, else the source-bearing app element. */
+  async function resolveMoveSource(shellX: number, shellY: number): Promise<ResolveMoveSourceResult | null> {
+    const coords = toIframeCoords(shellX, shellY)
+    if (!coords || coords.x < 0 || coords.y < 0) return null
+    try {
+      const result = await bridge.request<ResolveMoveSourceResult | null>('resolve:move-source', coords, 500)
+      if (!result) return null
       result.rect = toShellRect(result.rect) || result.rect
       return result
     } catch { return null }
@@ -467,7 +480,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   async function insertPlaceholder(
     targetEid: string, position: string, tag: string,
-    opts?: { classes?: string; textContent?: string; category?: string; library?: string; defaultProps?: Record<string, unknown> }
+    opts?: { classes?: string; textContent?: string; category?: string; library?: string; defaultProps?: Record<string, unknown>; instanceId?: string }
   ): Promise<string> {
     try {
       const result = await bridge.request<InsertPlaceholderResult>('insert:placeholder', {
@@ -486,17 +499,27 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   }
 
   async function insertComponent(
-    targetEid: string, position: string, componentName: string, props?: Record<string, unknown>
+    targetEid: string, position: string, componentName: string, props?: Record<string, unknown>, module?: string, instanceId?: string
   ): Promise<InsertVueComponentResult> {
     try {
       return await bridge.request<InsertVueComponentResult>('insert:component', {
-        targetEid, position, componentName, props
+        targetEid, position, componentName, props, module, instanceId
       })
-    } catch { return { eid: '', mounted: false } }
+    } catch { return { eid: '', mounted: false, reason: 'no-runtime', fidelity: 'placeholder' } }
   }
 
   /** @deprecated Use insertComponent */
   const insertVueComponent = insertComponent
+
+  /** Render a component offscreen in the iframe and return a PNG snapshot +
+   *  honest fidelity. Used by the Components detail preview + drag thumbnail. */
+  async function previewComponent(
+    componentName: string, props?: Record<string, unknown>, module?: string, width?: number,
+  ): Promise<PreviewComponentResult> {
+    try {
+      return await bridge.request<PreviewComponentResult>('preview:component', { componentName, props, module, width }, 8000)
+    } catch { return { mounted: false, reason: 'no-runtime', fidelity: 'placeholder' } }
+  }
 
   async function getComponentChain(eid: string): Promise<ResolveComponentChainResult | null> {
     try {
@@ -599,6 +622,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     getIframeViewport,
     // Element resolution
     resolveElementAt,
+    resolveMoveSource,
     findTemplateGroup,
     getElementRect,
     getElementRects,
@@ -650,6 +674,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     moveElement,
     insertComponent,
     insertVueComponent,
+    previewComponent,
     // Mode
     setMode,
     // Bridge events

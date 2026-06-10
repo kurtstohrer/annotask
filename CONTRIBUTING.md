@@ -102,7 +102,7 @@ Current task types:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `api_update`
+- `wireframe_apply`
 
 Current statuses:
 

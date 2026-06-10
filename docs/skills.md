@@ -57,7 +57,7 @@ Important current behavior:
 
 ## `/annotask-apply`
 
-Purpose: process actionable Annotask tasks and apply them to source code. `api_update` tasks are the exception: the skill inspects them and reports the required backend changes instead of editing the API.
+Purpose: process actionable Annotask tasks and apply them to source code. Cross-boundary API edits are the exception: the skill never edits the backend — it applies a frontend-only fallback when one exists, or marks the task `blocked` with the required backend change.
 
 The skill prefers MCP when available and falls back to CLI commands with `--mcp` for parity.
 
@@ -65,9 +65,9 @@ Actionable work usually includes:
 
 - `pending`
 - `denied` tasks with reviewer feedback
-- `needs_info` tasks whose questions have been answered
+- `in_progress` tasks whose `agent_feedback` now contains answers to earlier questions
 
-The skill skips unresolved `needs_info` and `blocked` tasks.
+The skill skips `needs_info` (still waiting on the user — answered tasks return to `in_progress`) and `blocked` tasks.
 
 ### Current Apply Flow
 
@@ -75,14 +75,14 @@ The skill skips unresolved `needs_info` and `blocked` tasks.
 2. triage tasks by touched files and shared state
 3. lock a task with `status: "in_progress"`
 4. fetch deeper context only when needed
-5. apply the source change, or report required backend changes for `api_update`
+5. apply the source change, or mark cross-boundary backend work `blocked`
 6. mark the task `review` with a short `resolution`
 7. re-check the queue before finishing
 
 The current workflow is aware of:
 
 - batched `theme_update` tasks with `context.edits[]` (handled via `THEME_UPDATE.md`)
-- `api_update` tasks created from the Audit data view and reported back as required backend work
+- batched `wireframe_apply` tasks with `context.wireframe.instances[]` (handled via `WIREFRAME_APPLY.md`)
 - code-context re-anchoring for retried or drifted tasks
 - component examples and data-source examples as grounding aids
 
@@ -95,7 +95,7 @@ The current workflow is aware of:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `api_update`
+- `wireframe_apply`
 
 ## MCP And CLI Parity
 
@@ -155,5 +155,10 @@ Published skill files live in the package root under:
 - `skills/annotask-apply/SKILL.md`
 - `skills/annotask-apply/A11Y_RULES.md` (companion playbook read on demand for `a11y_fix` tasks)
 - `skills/annotask-apply/THEME_UPDATE.md` (companion playbook read on demand for `theme_update` tasks)
+- `skills/annotask-apply/ERROR_FIX.md` (companion playbook read on demand for `error_fix` tasks)
+- `skills/annotask-apply/PERF_FIX.md` (companion playbook read on demand for `perf_fix` tasks)
+- `skills/annotask-apply/WIREFRAME_APPLY.md` (companion playbook read on demand for `wireframe_apply` tasks)
 
 They are copied or symlinked into the consumer project's chosen skill directories by `annotask init-skills`.
+
+`skills/` is the canonical copy. The in-repo `.claude/skills/`, `.agents/skills/`, and `playgrounds/simple/vue-webpack/.claude/skills/` directories are generated mirrors — run `pnpm sync:skills` after editing the canonical files (CI fails if the mirrors drift).

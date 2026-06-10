@@ -9,6 +9,11 @@
  * - The server pings every 30s; the browser auto-replies with pong.
  * - On visibilitychange → visible, we check the socket state and
  *   reconnect immediately if it's gone stale while backgrounded.
+ *
+ * Synthetic events (emitted locally, never sent by the server):
+ * - `reconnected` — fired when the socket re-opens after a drop. Server
+ *   pushes (tasks:updated, …) sent while we were dark are gone forever, so
+ *   subscribers use this to resync their state over HTTP.
  */
 
 type Handler = (data: unknown) => void
@@ -16,7 +21,17 @@ type Handler = (data: unknown) => void
 let ws: WebSocket | null = null
 let attempt = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+// True once the socket has opened at least once — distinguishes the initial
+// connect (no resync needed, consumers fetch on init) from a re-open after
+// a drop (missed broadcasts, resync required).
+let wasConnected = false
 const listeners = new Map<string, Set<Handler>>()
+
+function emitLocal(event: string) {
+  const handlers = listeners.get(event)
+  if (!handlers) return
+  for (const handler of handlers) handler(undefined)
+}
 
 function getUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -31,7 +46,10 @@ function connect() {
 
     ws.onopen = () => {
       attempt = 0
+      const isReconnect = wasConnected
+      wasConnected = true
       console.log('[Annotask] WebSocket connected')
+      if (isReconnect) emitLocal('reconnected')
     }
 
     ws.onmessage = (e) => {

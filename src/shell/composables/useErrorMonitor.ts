@@ -18,6 +18,35 @@ export interface ErrorEntry {
   lastSeen: number
 }
 
+/**
+ * Normalize a stack-derived file reference to a repo-relative path.
+ *
+ * Stack frames inside the iframe reference dev-server URLs
+ * ("http://localhost:5173/src/App.vue"), Vite /@fs/ absolute imports, and
+ * cache-busted modules ("src/App.vue?t=169..."). The server's SafeSourceFile
+ * schema rejects URL-style paths and colons outright, so passing these
+ * through verbatim turned every error_fix POST into a 400 that the old
+ * createTask silently swallowed. Returns '' when the reference can't be
+ * made repo-relative — the task is still creatable without a source anchor.
+ */
+export function normalizeStackFile(raw: string): string {
+  if (!raw) return ''
+  // Dev-server URL → path portion ("http://localhost:5173/src/App.vue" →
+  // "src/App.vue"). Host may be empty (webpack-internal:///...).
+  let f = raw.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*\//i, '')
+  // Cache-buster / HMR query strings and fragments ("?t=169...", "?import").
+  f = f.replace(/[?#].*$/, '')
+  // Vite /@fs/ imports point at absolute filesystem paths. The shell can't
+  // map those back under the repo root, so drop the anchor entirely.
+  if (/^\/?@fs\//.test(f)) return ''
+  // Leading "./" and "/" — server paths are repo-relative.
+  f = f.replace(/^(\.\/)+/, '').replace(/^\/+/, '')
+  // Anything still scheme- or URL-shaped ("node:internal/...", "data:...")
+  // would 400 against SafeSourceFile — better no anchor than a failed task.
+  if (f.includes(':') || f.includes('//')) return ''
+  return f
+}
+
 export function useErrorMonitor(
   iframe: IframeManager,
   taskSystem: TaskSystem,
@@ -145,15 +174,19 @@ export function useErrorMonitor(
       const match = entry.stack.match(/(?:at\s+(\w+)\s+\()?([^\s()]+\.\w+):(\d+)/)
       if (match) {
         component = match[1] || ''
-        file = match[2] || ''
-        line = parseInt(match[3], 10) || 0
+        // Stack frames carry dev-server URLs, not repo paths — normalize or
+        // drop the anchor so the POST passes SafeSourceFile validation.
+        file = normalizeStackFile(match[2] || '')
+        line = file ? parseInt(match[3], 10) || 0 : 0
       }
     }
 
     const colorScheme = await iframe.getColorScheme()
     const frag = componentContextCapture.fromSource(component, file, line)
 
-    taskSystem.createTask({
+    // Return the result so callers can distinguish success from a rejected
+    // POST (createTask now reports failures via useTasks().lastError).
+    return taskSystem.createTask({
       type: 'error_fix',
       description: title,
       file,

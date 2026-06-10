@@ -324,6 +324,67 @@ describe('initRunner.reset', () => {
   })
 })
 
+describe('init commit/skip — atomic .annotask writes', () => {
+  async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'annotask-init-atomic-'))
+    try { await fn(root) } finally { await fsp.rm(root, { recursive: true, force: true }) }
+  }
+
+  function makeRunner(root: string) {
+    return createInitRunner({
+      projectRoot: root,
+      broadcast: () => {},
+      agentDetect: { detect: async () => snap(), invalidate: () => {} } as any,
+    })
+  }
+
+  /** Tmp-rename leftovers would mean a non-atomic (or crashed) write. */
+  async function annotaskEntries(root: string): Promise<string[]> {
+    return fsp.readdir(path.join(root, '.annotask'))
+  }
+
+  it('skip() writes design-spec.json via temp+rename with no temp file left behind', async () => {
+    await withTempRoot(async (root) => {
+      const runner = makeRunner(root)
+      const state = await runner.skip()
+      expect(state.result).toBe('success')
+
+      const spec = JSON.parse(await fsp.readFile(path.join(root, '.annotask', 'design-spec.json'), 'utf-8'))
+      expect(spec.initialized).toBe(true)
+      const entries = await annotaskEntries(root)
+      expect(entries.filter(f => f.includes('.tmp.'))).toHaveLength(0)
+    })
+  })
+
+  it('commit() writes design-spec.json + STYLE_GUIDE.md atomically', async () => {
+    await withTempRoot(async (root) => {
+      const runner = makeRunner(root)
+      // All scans skipped → the pipeline assembles a scaffold draft without
+      // spawning any CLI, then parks in awaiting_review for commit().
+      runner.start({
+        skipAgentScan: true,
+        skipAgentConfigs: true,
+        skipComponents: true,
+        skipDataSources: true,
+        skipApiSchemas: true,
+      })
+      for (let i = 0; i < 200 && runner.getState().result !== 'awaiting_review'; i++) {
+        await new Promise(r => setTimeout(r, 25))
+      }
+      expect(runner.getState().result).toBe('awaiting_review')
+
+      const state = await runner.commit({ styleGuide: '# Test Guide\n', overwriteStyleGuide: true })
+      expect(state.result).toBe('success')
+
+      const spec = JSON.parse(await fsp.readFile(path.join(root, '.annotask', 'design-spec.json'), 'utf-8'))
+      expect(spec.initialized).toBe(true)
+      expect(await fsp.readFile(path.join(root, '.annotask', 'STYLE_GUIDE.md'), 'utf-8')).toBe('# Test Guide\n')
+      const entries = await annotaskEntries(root)
+      expect(entries.filter(f => f.includes('.tmp.'))).toHaveLength(0)
+    })
+  })
+})
+
 describe('extractTextFromLine — opencode shapes', () => {
   // Regression: prior to the v1.14+ fix the init pipeline only matched
   // {type:'message', content:'...'}, so the wizard streamed zero agent

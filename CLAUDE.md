@@ -29,6 +29,12 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_api_schemas` | List discovered OpenAPI, GraphQL, tRPC, and JSON Schema sources |
 | `annotask_get_api_operation` | Fetch one API operation by path |
 | `annotask_resolve_endpoint` | Match a concrete URL to a known API operation |
+| `annotask_get_source_excerpt` | Direct source excerpt by file/line (no task required) |
+| `annotask_get_playbook` | Fetch a task-type companion playbook (A11Y_RULES, THEME_UPDATE, ERROR_FIX, PERF_FIX, WIREFRAME_APPLY) |
+| `annotask_get_agent_directions` | Fetch per-persona project directions from `.annotask/agents.json` |
+| `annotask_conversation_read` | Read a task's conversation thread (optional `after_id` for cheap polling) |
+| `annotask_conversation_post` | Append a message to a task's conversation thread (role: user/assistant/system/tool) |
+| `annotask_conversation_subscribe` | Long-poll for new conversation messages after `after_id` |
 
 ### Applying tasks via MCP
 
@@ -70,6 +76,9 @@ annotask screenshot <id>     # Download a task's screenshot
 annotask components [search] # List components (add --mcp for JSON)
 annotask component <Name>    # Show component props
 annotask code-context <id>   # Ground task to current source excerpt
+annotask source-excerpt <file> <line>  # Direct source excerpt by file/line
+annotask playbook <task-type>  # Print a task-type companion playbook
+annotask agent-directions [persona]  # Per-persona project directions
 annotask component-examples Button # Real in-repo component usage examples
 annotask data-context <id>   # Resolve task data context
 annotask interaction-history <id>  # Pre-task user trace (always captured, embed toggle decides payload inclusion)
@@ -124,12 +133,34 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET|POST /__annotask/api/tasks/:id/interaction-history` — Per-task user-trace sidecar (always written on task create; embed toggle only gates inclusion in the task payload)
 - `GET|POST /__annotask/api/tasks/:id/rendered-html` — Per-task `outerHTML` sidecar (always written when a selection exists; 200 KB cap)
 - `GET /__annotask/api/agent-configs` — Per-persona project directions (`{ version, agents: { [personaId]: { projectDirections } } }`)
-- `PATCH /__annotask/api/agent-configs/:id` — Update one persona's `projectDirections`
+- `PATCH /__annotask/api/agent-configs/:id` — Update one persona's `projectDirections`, `providerId`, `model`, or `effort`
+- `GET|PUT /__annotask/api/wireframe` — Multi-route wireframe document (`?route=PATH` slices one route; persists to `.annotask/wireframe.json`)
+- `POST /__annotask/api/wireframe/draft` — Reversible render-in-place draft (opt-in via `ANNOTASK_RENDER_IN_PLACE`; 404 when off)
+- `POST /__annotask/api/wireframe/draft/revert` — Revert a draft by `draftId` (hash-guarded)
+- `POST /__annotask/api/agent/spawn` — Spawn an allow-listed local CLI as SSE (same-port origin gate; `ANNOTASK_MAX_PERMISSION` ceiling)
+- `DELETE /__annotask/api/agent/spawn/:runId` — Abort a running spawn
+- `GET /__annotask/api/agent/detect` — Detect installed/logged-in local CLIs
+- `GET /__annotask/api/agent/models` — Per-provider model catalog (`?cli=ID`, `?refresh=1`)
+- `GET|POST /__annotask/api/tasks/:id/messages` — Per-task conversation thread (JSONL at `.annotask/conversations/<id>.jsonl`)
+- `GET /__annotask/api/tasks/:id/messages/stream` — Conversation SSE stream (honours `Last-Event-ID`)
+- `PATCH /__annotask/api/tasks/:id/messages/:msgId` — Update a message in place (partial-turn streaming)
+- `GET /__annotask/api/usage` — Aggregate token-usage summary from `.annotask/usage.jsonl`
+- `GET /__annotask/api/usage/recent` — Recent usage entries (`?limit=N`)
+- `GET /__annotask/api/init/state` — Init-runner state
+- `GET /__annotask/api/init/scan-targets` — Existence + mtime of durable scan artifacts
+- `POST /__annotask/api/init/start` — Start an init scan (skip flags, provider/model/effort)
+- `POST /__annotask/api/init/cancel` — Cancel a running scan
+- `POST /__annotask/api/init/skip` — Mark initialized without committing token data
+- `POST /__annotask/api/init/commit` — Commit reviewed spec (and optional style guide)
+- `GET /__annotask/api/system-prompt` — Composed embedded-agent system prompt (`?task_type=` adds the companion playbook)
+- `GET /__annotask/api/style-guide` — Contents of `.annotask/STYLE_GUIDE.md`
+- `GET /__annotask/api/read-file` — Read one project file by relative `?path=` (traversal-guarded)
+- `DELETE /__annotask/api/session-reset` — Clear the `.session-reset` sentinel after the shell wipes localStorage
 - `GET|POST /__annotask/api/performance` — Performance snapshots
 - `POST /__annotask/api/screenshots` — Upload a screenshot
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
 - `GET /__annotask/api/status` — Health check
-- `ws://localhost:5173/__annotask/ws` — Live WebSocket stream
+- `ws://localhost:5173/__annotask/ws` — Live WebSocket stream (events include `tasks:updated`, `components:updated`, `init:progress`, `runtime-endpoints:updated`, `wireframe:updated`)
 
 Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 
@@ -296,6 +327,7 @@ Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
 | `error_fix` | Errors tab "Fix" action | Console error/warning with `level`, `occurrences`, `errorId` in `context` |
 | `perf_fix` | Perf tab "Fix" action | Performance finding with `metric`, `value`, `unit`, `severity`, `category`, `findingId` in `context` |
+| `wireframe_apply` | Wireframe palette ("Build this route") | One task per route. `context.wireframe` = `{ route, instances[] }` — each instance carries an `anchor` (`file`, `line`, `position`, `component`, `targetTag` — the drop target's source location and placement) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). Applied via the `WIREFRAME_APPLY.md` companion playbook. |
 
 ## Task Lifecycle
 

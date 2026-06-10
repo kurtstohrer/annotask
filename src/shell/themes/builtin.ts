@@ -60,6 +60,7 @@ function deriveDefaults(core: ThemeCoreColors, overrides?: Partial<ShellThemeCol
     'mode-arrow': '#ef4444',
     'mode-draw': core['text-muted'],
     'mode-highlight': '#f59e0b',
+    'mode-reposition': core.cyan,
 
     // Layout viz
     'layout-flex': core.purple,
