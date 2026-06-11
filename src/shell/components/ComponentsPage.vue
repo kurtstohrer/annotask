@@ -292,7 +292,7 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
         <span class="placement-name">{{ placementName(i) }}</span>
         <span class="placement-status" :data-status="placementStatus(i)">{{ placementStatus(i) }}</span>
         <span class="placement-fidelity" :class="'fid-' + i.fidelity">{{ i.fidelity === 'isolated-preview' ? 'preview' : i.fidelity }}</span>
-        <span v-if="props.staleIds?.includes(i.id)" class="placement-stale" title="The anchor element no longer exists in the source — reposition or delete this placement">stale</span>
+        <span v-if="props.staleIds?.includes(i.id)" class="placement-stale" title="The anchor element no longer exists in the source — delete this placement">stale</span>
         <span v-else-if="props.failedIds?.includes(i.id)" class="placement-stale" title="The last re-mount attempt failed — see the console for details">failed</span>
         <button
           class="placement-delete"

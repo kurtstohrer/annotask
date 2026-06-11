@@ -106,7 +106,7 @@ async function saveInstance(route: string, instance: WireframeInstance): Promise
   await persist()
 }
 
-/** Patch one instance in place (e.g. its anchor after a Reposition move) and
+/** Patch one instance in place (e.g. a moved anchor or status change) and
  *  persist. Merges `patch.anchor` shallowly so callers can pass just the moved
  *  fields. No-ops if the instance isn't found. */
 async function updateInstance(route: string, id: string, patch: Partial<WireframeInstance>): Promise<void> {
@@ -208,8 +208,8 @@ async function reapply(
       setMembership(staleIds, inst.id, false)
       appliedIds.add(inst.id)
       const targetEid = group.eids[0]
-      // Stamp the instance id on the re-mounted node so the Reposition tool can
-      // identify it; record the resulting container eid for handle/move lookups.
+      // Stamp the instance id on the re-mounted node (placement identity +
+      // idempotency probe); record the resulting container eid for unmount lookups.
       if (inst.kind === 'component') {
         // Mount with the sample props the user previewed (when captured) so a
         // reload doesn't degrade a live mount to an empty 'rendered-empty' box.

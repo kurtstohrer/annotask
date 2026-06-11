@@ -1,7 +1,7 @@
 import { ref, type Ref } from 'vue'
 import * as bridge from '../services/iframeBridge'
 import type {
-  ResolvedElement, ResolveMoveSourceResult, TemplateGroupResult, BridgeRect,
+  ResolvedElement, TemplateGroupResult, BridgeRect,
   StyleGetComputedResult, StyleApplyResult,
   ClassSetResult, ElementClassificationData,
   LayoutContainerData, LayoutAddTrackResult, LayoutAddChildResult,
@@ -188,19 +188,6 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
       const result = await bridge.request<ResolvedElement | null>('resolve:at-point', coords, 500)
       if (!result) return null
       // Convert rect to shell coordinates
-      result.rect = toShellRect(result.rect) || result.rect
-      return result
-    } catch { return null }
-  }
-
-  /** Resolve the node to GRAB for a Reposition move at shell coords — prefers a
-   *  wireframe placement container, else the source-bearing app element. */
-  async function resolveMoveSource(shellX: number, shellY: number): Promise<ResolveMoveSourceResult | null> {
-    const coords = toIframeCoords(shellX, shellY)
-    if (!coords || coords.x < 0 || coords.y < 0) return null
-    try {
-      const result = await bridge.request<ResolveMoveSourceResult | null>('resolve:move-source', coords, 500)
-      if (!result) return null
       result.rect = toShellRect(result.rect) || result.rect
       return result
     } catch { return null }
@@ -495,10 +482,6 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     try { await bridge.request('insert:remove', { eid }) } catch {}
   }
 
-  async function moveElement(eid: string, targetEid: string, position: string): Promise<void> {
-    try { await bridge.request('move:element', { eid, targetEid, position }) } catch {}
-  }
-
   async function insertComponent(
     targetEid: string, position: string, componentName: string, props?: Record<string, unknown>, module?: string, instanceId?: string
   ): Promise<InsertVueComponentResult> {
@@ -636,7 +619,6 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     getIframeViewport,
     // Element resolution
     resolveElementAt,
-    resolveMoveSource,
     findTemplateGroup,
     getElementRect,
     getElementRects,
@@ -686,7 +668,6 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     // Insert/Move
     insertPlaceholder,
     removePlaceholder,
-    moveElement,
     insertComponent,
     insertVueComponent,
     previewComponent,

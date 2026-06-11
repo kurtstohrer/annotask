@@ -45,25 +45,6 @@ export interface InsertChangeRecord {
   placeholderEl?: Element
 }
 
-export interface MoveChangeRecord {
-  id: string
-  type: 'component_move'
-  description: string
-  file: string
-  section: 'template'
-  line: number
-  component?: string
-  mfe?: string
-  element_tag: string
-  from_file: string
-  from_line: number
-  move_to: {
-    target_file: string
-    target_line: number
-    position: 'before' | 'after' | 'append' | 'prepend'
-  }
-}
-
 export interface AnnotationChangeRecord {
   id: string
   type: 'annotation'
@@ -101,7 +82,7 @@ export interface ClassChangeRecord {
 // WireframeDirectionChange rides the same journal (the apply loop's transport)
 // but is invisible to the report/inspector projections: shapeChange has no
 // case for it, and the pending-change UIs filter to style/class.
-export type ChangeRecord = StyleChangeRecord | ClassChangeRecord | InsertChangeRecord | MoveChangeRecord | AnnotationChangeRecord | WireframeDirectionChange
+export type ChangeRecord = StyleChangeRecord | ClassChangeRecord | InsertChangeRecord | AnnotationChangeRecord | WireframeDirectionChange
 
 let changeCounter = 0
 
@@ -213,34 +194,6 @@ export function useStyleEditor() {
     session.record({
       change: record,
       anchor: { file: target.file, line, component: target.component, position: target.position as InsertChangeRecord['insert_position'] },
-    })
-    return id
-  }
-
-  /** Record a Reposition move of an existing app element — emits a
-   *  `component_move` change for the report → /annotask-apply pipeline. */
-  function recordMove(
-    from: { file: string; line: number; tag: string; component?: string },
-    to: { target_file: string; target_line: number; position: 'before' | 'after' | 'append' | 'prepend' },
-  ): string {
-    changeCounter++
-    const id = `cm${changeCounter}`
-    const record: MoveChangeRecord = {
-      id,
-      type: 'component_move',
-      description: `Move <${from.tag}> ${to.position} target`,
-      file: to.target_file,
-      section: 'template',
-      line: to.target_line,
-      component: from.component,
-      element_tag: from.tag,
-      from_file: from.file,
-      from_line: from.line,
-      move_to: to,
-    }
-    session.record({
-      change: record,
-      anchor: { file: to.target_file, line: to.target_line, targetTag: from.tag, component: from.component, position: to.position },
     })
     return id
   }
@@ -419,12 +372,6 @@ export function useStyleEditor() {
         return { ...base, component: c.component, element: c.element, before: c.before, after: c.after }
       case 'component_insert':
         return { ...base, insert_inside: c.insert_inside, insert_position: c.insert_position, component: c.inserted }
-      case 'component_move':
-        return {
-          ...base,
-          element: { tag: c.element_tag, component: c.component, from_file: c.from_file, from_line: c.from_line },
-          move_to: c.move_to,
-        }
       case 'annotation':
         return { ...base, component: c.component, intent: c.intent, action: c.action, context: c.context }
       default:
@@ -471,7 +418,7 @@ export function useStyleEditor() {
     if (changes.value.length === 0) return null
 
     const meaningful = changes.value.filter(c => {
-      if (c.type === 'component_insert' || c.type === 'component_move' || c.type === 'annotation') return true
+      if (c.type === 'component_insert' || c.type === 'annotation') return true
       if (c.type === 'wireframe_direction') return false // apply-loop transport, never reported
       if (c.type === 'class_update') return c.before.classes !== c.after.classes
       return c.before !== c.after
@@ -518,5 +465,5 @@ export function useStyleEditor() {
     { deep: true }
   )
 
-  return { changes, applyStyle, recordInsert, recordMove, recordAnnotation, recordClassChange, removeChange, removeChangesFor, removeAnnotationsByFile, undo, clearChanges, report, broadcast }
+  return { changes, applyStyle, recordInsert, recordAnnotation, recordClassChange, removeChange, removeChangesFor, removeAnnotationsByFile, undo, clearChanges, report, broadcast }
 }

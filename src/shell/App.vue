@@ -588,17 +588,16 @@ const {
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
 } = taskWorkflows
 
-// ── Wireframe canvas (palette drop pipeline + Reposition + Build) ──
+// ── Wireframe canvas (palette drop pipeline + Build) ──
 // Initialized after taskWorkflows because Build creates its task through
 // createRouteTask (route/viewport/color-scheme enrichment).
 const {
-  paletteDrag, wireframeDoc, reposition,
+  paletteDrag, wireframeDoc,
   dropIndicator,
   onPaletteDragOver, onPaletteDragLeave, onPaletteDrop,
-  onRepositionPointerDown, onRepositionPointerMove, onRepositionPointerUp,
   wireframePlacements,
   buildWireframeRoute, deletePlacement,
-} = useWireframeCanvas({ iframe, interactionMode, styleEditor, createRouteTask })
+} = useWireframeCanvas({ iframe, createRouteTask })
 
 // Keep the design-session journal stamped with the current iframe route so
 // entries recorded by the style-editor façade carry the route they happened on.
@@ -837,15 +836,6 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           @set-note="wireframeMode.setNote"
           @add-placeholder="wireframeMode.addPlaceholderBlock"
           @palette-drop="onWireframePaletteDrop" />
-
-        <!-- Reposition capture shield. Rendered only while the Reposition tool is
-             active: it sits above the iframe so the app's own click/drag behavior
-             is disabled, and drives the pointer-based move (grab → drag → drop). -->
-        <div v-if="interactionMode === 'reposition'" class="reposition-shield"
-          :class="{ grabbing: !!reposition.grab.value }"
-          @pointerdown="onRepositionPointerDown"
-          @pointermove="onRepositionPointerMove"
-          @pointerup="onRepositionPointerUp" />
 
         <!-- Hover + selection overlays (editor, design tokens/inspector) -->
         <template v-if="shellView === 'editor' ? showMarkup.inspector : (shellView === 'design' && designSection !== 'components')">
@@ -1204,7 +1194,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   /* Severity */
   --severity-critical: #ef4444; --severity-serious: #ef4444; --severity-moderate: #f59e0b; --severity-minor: #71717a;
   /* Modes */
-  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-draw: #71717a; --mode-highlight: #f59e0b; --mode-reposition: #06b6d4;
+  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-draw: #71717a; --mode-highlight: #f59e0b;
   /* Layout viz */
   --layout-flex: #a855f7; --layout-grid: #22c55e;
   /* Roles */
@@ -1232,7 +1222,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   --status-pending: #6b7280; --status-in-progress: #2563eb; --status-review: #d97706;
   --status-denied: #dc2626; --status-accepted: #16a34a; --status-needs-info: #9333ea; --status-blocked: #ea580c;
   --severity-critical: #dc2626; --severity-serious: #dc2626; --severity-moderate: #d97706; --severity-minor: #6b7280;
-  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-draw: #6b7280; --mode-highlight: #d97706; --mode-reposition: #0891b2;
+  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-draw: #6b7280; --mode-highlight: #d97706;
   --layout-flex: #9333ea; --layout-grid: #16a34a;
   --role-container: #16a34a; --role-content: #2563eb; --role-component: #9333ea;
   --syntax-property: #0369a1; --syntax-string: #15803d; --syntax-number: #b45309;

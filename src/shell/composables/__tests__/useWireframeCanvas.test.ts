@@ -17,7 +17,6 @@ vi.mock('../../services/wsClient', () => {
 })
 
 import { useWireframeCanvas, type WireframeCanvasIframe } from '../useWireframeCanvas'
-import type { InteractionMode } from '../useInteractionMode'
 import type { WireframeDocument, WireframeInstance } from '../../../shared/wireframe-types'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -50,12 +49,10 @@ function makeIframe(): WireframeCanvasIframe {
     currentRoute: ref('/r'),
     bridgeReady: ref(false), // watchers stay quiet — these tests drive Build directly
     resolveElementAt: vi.fn(async () => null),
-    resolveMoveSource: vi.fn(async () => null),
     findTemplateGroup: vi.fn(async () => ({ eids: ['target-1'] })),
     insertComponent: vi.fn(async () => ({ eid: 'mounted-1', mounted: true })),
     insertPlaceholder: vi.fn(async () => 'mounted-1'),
     removePlaceholder: vi.fn(async () => undefined),
-    moveElement: vi.fn(async () => undefined),
   }
 }
 
@@ -84,8 +81,6 @@ describe('useWireframeCanvas — Build collector', () => {
     })
     canvas = useWireframeCanvas({
       iframe: makeIframe(),
-      interactionMode: ref<InteractionMode>('select'),
-      styleEditor: { recordMove: vi.fn(() => 'cm1') },
       createRouteTask,
     })
     // Let the doc singleton's initial load settle before seeding the doc, so a
@@ -160,16 +155,14 @@ describe('useWireframeCanvas — Build collector', () => {
 
   it('deletePlacement unmounts the live node and removes the instance from the doc', async () => {
     canvas.wireframeDoc.doc.value = docWith([instance('wfi-1'), instance('wfi-2')])
-    canvas.reposition.registerContainer('wfi-1', 'container-eid-1')
+    canvas.registerContainer('wfi-1', 'container-eid-1')
     const iframe = makeIframe()
     // Re-create the canvas against this iframe so removePlaceholder is observable.
     const localCanvas = useWireframeCanvas({
       iframe,
-      interactionMode: ref<InteractionMode>('select'),
-      styleEditor: { recordMove: vi.fn(() => 'cm1') },
       createRouteTask,
     })
-    localCanvas.reposition.registerContainer('wfi-1', 'container-eid-1')
+    localCanvas.registerContainer('wfi-1', 'container-eid-1')
     await localCanvas.deletePlacement('wfi-1')
     expect(iframe.removePlaceholder).toHaveBeenCalledWith('container-eid-1')
     expect(localCanvas.wireframeDoc.instancesForRoute('/r').map((i) => i.id)).toEqual(['wfi-2'])

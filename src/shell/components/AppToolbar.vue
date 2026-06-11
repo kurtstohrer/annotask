@@ -35,11 +35,6 @@
             @click="onInspectClick" title="Inspect (V)">
             <Icon name="search" />
           </button>
-          <button data-testid="tool-reposition" :class="['mode-btn mode-reposition', { active: interactionMode === 'reposition' }]"
-            :disabled="wireframeActive"
-            @click="$emit('update:interactionMode', 'reposition')" title="Reposition (R)">
-            <Icon name="move" />
-          </button>
           <button data-testid="tool-wireframe" :class="['mode-btn mode-wireframe', { active: wireframeActive }]"
             :disabled="wireframeCapturing"
             @click="$emit('toggle-wireframe')" title="Wireframe — freeze the route into a manipulable sketch">

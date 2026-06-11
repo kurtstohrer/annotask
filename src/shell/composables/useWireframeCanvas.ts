@@ -1,14 +1,12 @@
 import { ref, computed, watch, type Ref } from 'vue'
 import { usePaletteDrag } from './usePaletteDrag'
 import { useWireframeDoc, type WireframeIframe } from './useWireframeDoc'
-import { useRepositionMode } from './useRepositionMode'
 import { useDesignSession } from './useDesignSession'
 import { normalizeRoute } from '../utils/routes'
 import type { DropIndicatorRect } from '../types'
-import type { InteractionMode } from './useInteractionMode'
-import type { useStyleEditor, InsertChangeRecord } from './useStyleEditor'
+import type { InsertChangeRecord } from './useStyleEditor'
 import type { WireframeInstance, WireframeFidelity } from '../../shared/wireframe-types'
-import type { ResolvedElement, ResolveMoveSourceResult, InsertVueComponentResult } from '../../shared/bridge-types'
+import type { ResolvedElement, InsertVueComponentResult } from '../../shared/bridge-types'
 
 /** The iframe surface the wireframe canvas needs — structural so tests can
  *  pass a small mock; useIframeManager's return satisfies it. */
@@ -16,16 +14,12 @@ export interface WireframeCanvasIframe extends WireframeIframe {
   currentRoute: Ref<string>
   bridgeReady: Ref<boolean>
   resolveElementAt: (shellX: number, shellY: number) => Promise<ResolvedElement | null>
-  resolveMoveSource: (shellX: number, shellY: number) => Promise<ResolveMoveSourceResult | null>
   insertComponent: (targetEid: string, position: string, componentName: string, props?: Record<string, unknown>, module?: string, instanceId?: string) => Promise<InsertVueComponentResult>
   removePlaceholder: (eid: string) => Promise<void>
-  moveElement: (eid: string, targetEid: string, position: string) => Promise<void>
 }
 
 export interface WireframeCanvasDeps {
   iframe: WireframeCanvasIframe
-  interactionMode: Ref<InteractionMode>
-  styleEditor: Pick<ReturnType<typeof useStyleEditor>, 'recordMove'>
   /** Task creation goes through useTaskWorkflows so wireframe tasks pick up
    *  route/viewport/color-scheme enrichment like every other task type. */
   createRouteTask: (data: Record<string, unknown>) => Promise<{ id: string } | null>
@@ -33,19 +27,25 @@ export interface WireframeCanvasDeps {
 
 /**
  * Wireframe canvas pipeline — the drop shield handlers (palette drag-over
- * throttle + drop indicator + instance construction/persistence), the
- * Reposition tool's pointer handlers, the Build collector, placement deletion,
- * and the bridgeReady/route reapply watchers. Extracted from App.vue per the
- * shell architecture rule: App.vue orchestrates, composables own behavior.
+ * throttle + drop indicator + instance construction/persistence), the Build
+ * collector, placement deletion, and the bridgeReady/route reapply watchers.
+ * Extracted from App.vue per the shell architecture rule: App.vue
+ * orchestrates, composables own behavior.
  */
 export function useWireframeCanvas(deps: WireframeCanvasDeps) {
-  const { iframe, interactionMode, styleEditor } = deps
+  const { iframe } = deps
   const { currentRoute } = iframe
 
   const paletteDrag = usePaletteDrag()
   const wireframeDoc = useWireframeDoc()
-  const reposition = useRepositionMode()
   const session = useDesignSession()
+  // instanceId → live container eid, populated on drop + on reapply. Runtime
+  // only (container eids are session-volatile). deletePlacement reads it to
+  // unmount the live node; reapply repopulates it after reload/route change.
+  const containerEids = new Map<string, string>()
+  function registerContainer(instanceId: string, containerEid: string): void {
+    containerEids.set(instanceId, containerEid)
+  }
   const dropIndicator = ref<DropIndicatorRect | null>(null)
   // dragover fires at high frequency; throttle the resolve round-trip (~30fps)
   // and guard against re-entrant in-flight requests, like the overlay engine.
@@ -93,7 +93,8 @@ export function useWireframeCanvas(deps: WireframeCanvasDeps) {
     const position = dropPositionFor(hit.rect, e.clientY)
 
     // Generate the instance id up front so it can be stamped on the mounted node
-    // (data-annotask-instance) — the Reposition tool keys off it.
+    // (data-annotask-instance) — placement identity for click/selection,
+    // drop-target refusal, capture exclusion, and reapply's idempotency probe.
     const instanceId = `wfi-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     // Components live-mount (honest fidelity from the bridge). HTML / layout
     // presets render through insert:placeholder (createPlaceholder styles them) —
@@ -116,7 +117,7 @@ export function useWireframeCanvas(deps: WireframeCanvasDeps) {
         instanceId,
       })
     }
-    if (containerEid) reposition.registerContainer(instanceId, containerEid)
+    if (containerEid) registerContainer(instanceId, containerEid)
 
     const instance: WireframeInstance = {
       id: instanceId,
@@ -171,60 +172,6 @@ export function useWireframeCanvas(deps: WireframeCanvasDeps) {
     })
   }
 
-  // ── Reposition tool (drag any element to a new location) ──
-  // Reuses the drop indicator + dropPositionFor. The capture shield (rendered only
-  // in reposition mode) feeds these pointer handlers, disabling the app's own
-  // click behavior while active.
-  let lastRepoResolveAt = 0
-  let repoResolveInFlight = false
-
-  async function onRepositionPointerDown(e: PointerEvent): Promise<void> {
-    if (interactionMode.value !== 'reposition') return
-    const src = await iframe.resolveMoveSource(e.clientX, e.clientY)
-    if (!src) return
-    reposition.beginGrab({ eid: src.eid, instanceId: src.instanceId, tag: src.tag, file: src.file, line: src.line, component: src.component })
-  }
-
-  async function onRepositionPointerMove(e: PointerEvent): Promise<void> {
-    const g = reposition.grab.value
-    if (!g) return
-    const now = Date.now()
-    if (repoResolveInFlight || now - lastRepoResolveAt < 33) return
-    lastRepoResolveAt = now
-    repoResolveInFlight = true
-    try {
-      const hit = await iframe.resolveElementAt(e.clientX, e.clientY)
-      if (!hit || hit.eid === g.eid) { dropIndicator.value = null; return }
-      dropIndicator.value = { x: hit.rect.x, y: hit.rect.y, width: hit.rect.width, height: hit.rect.height, position: dropPositionFor(hit.rect, e.clientY) }
-    } finally {
-      repoResolveInFlight = false
-    }
-  }
-
-  async function onRepositionPointerUp(e: PointerEvent): Promise<void> {
-    const g = reposition.grab.value
-    reposition.endGrab()
-    dropIndicator.value = null
-    if (!g) return
-    const hit = await iframe.resolveElementAt(e.clientX, e.clientY)
-    if (!hit || hit.eid === g.eid) return
-    const position = dropPositionFor(hit.rect, e.clientY)
-    // Relocate the live node (the bridge no-ops a self/descendant drop).
-    await iframe.moveElement(g.eid, hit.eid, position)
-    if (g.instanceId) {
-      // Wireframe placement → update its durable anchor so Build re-emits it here.
-      await wireframeDoc.updateInstance(normalizeRoute(currentRoute.value), g.instanceId, {
-        anchor: { file: hit.file, line: parseInt(hit.line, 10) || 0, position, component: hit.component, targetTag: hit.tag, targetEid: hit.eid },
-      })
-    } else if (g.file) {
-      // Existing app element → record a component_move change for codegen.
-      styleEditor.recordMove(
-        { file: g.file, line: parseInt(g.line || '0', 10) || 0, tag: g.tag, component: g.component },
-        { target_file: hit.file, target_line: parseInt(hit.line, 10) || 0, position },
-      )
-    }
-  }
-
   // Placements on the current route — drives the palette's placements panel.
   const wireframePlacements = computed(() => wireframeDoc.instancesForRoute(normalizeRoute(currentRoute.value)))
   // Only never-built placements are buildable; building/applied ones already
@@ -276,10 +223,10 @@ export function useWireframeCanvas(deps: WireframeCanvasDeps) {
   /** Remove one placement: unmount its live preview node (if mounted this
    *  session), delete it from the persisted doc, and drop its session entry. */
   async function deletePlacement(id: string): Promise<void> {
-    const containerEid = reposition.containerEids.get(id)
+    const containerEid = containerEids.get(id)
     if (containerEid) {
       await iframe.removePlaceholder(containerEid)
-      reposition.containerEids.delete(id)
+      containerEids.delete(id)
     }
     await wireframeDoc.deleteInstance(normalizeRoute(currentRoute.value), id)
     session.removeByInstanceId(id)
@@ -292,28 +239,25 @@ export function useWireframeCanvas(deps: WireframeCanvasDeps) {
   watch(iframe.bridgeReady, (ready) => {
     if (!ready) return
     wireframeDoc.resetApplied()
-    reposition.clearContainers() // fresh DOM → stale container eids
-    void wireframeDoc.reapply(normalizeRoute(currentRoute.value), iframe, { force: true, onInstanceMounted: reposition.registerContainer })
+    containerEids.clear() // fresh DOM → stale container eids
+    void wireframeDoc.reapply(normalizeRoute(currentRoute.value), iframe, { force: true, onInstanceMounted: registerContainer })
     session.resetPreviewApplied()
     void session.reapplyPreviews(normalizeRoute(currentRoute.value), iframe, { force: true })
   })
   watch(currentRoute, (r) => {
     if (!iframe.bridgeReady.value) return
-    void wireframeDoc.reapply(normalizeRoute(r), iframe, { onInstanceMounted: reposition.registerContainer })
+    void wireframeDoc.reapply(normalizeRoute(r), iframe, { onInstanceMounted: registerContainer })
     void session.reapplyPreviews(normalizeRoute(r), iframe)
   })
 
   return {
     paletteDrag,
     wireframeDoc,
-    reposition,
+    registerContainer,
     dropIndicator,
     onPaletteDragOver,
     onPaletteDragLeave,
     onPaletteDrop,
-    onRepositionPointerDown,
-    onRepositionPointerMove,
-    onRepositionPointerUp,
     wireframePlacements,
     placedCount,
     isBuilding,

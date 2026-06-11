@@ -35,20 +35,6 @@ export interface ResolveAtPointPayload {
   y: number
 }
 
-/** Result of resolving the node to GRAB for a Reposition move. Prefers the
- *  nearest wireframe placement container; otherwise the source-bearing app
- *  element (which becomes a ComponentMoveChange in the report). */
-export interface ResolveMoveSourceResult {
-  eid: string
-  isInstance: boolean
-  instanceId?: string
-  file?: string
-  line?: string
-  component?: string
-  tag: string
-  rect: BridgeRect
-}
-
 export interface ResolvedElement {
   eid: string
   file: string
@@ -500,7 +486,7 @@ export interface KeyDownEvent {
 
 // ── Mode ────────────────────────────────────────────────
 
-export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight' | 'reposition'
+export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight'
 
 export interface ModeSetPayload {
   mode: InteractionMode
@@ -571,18 +557,13 @@ export interface InsertPlaceholderPayload {
   library?: string
   defaultProps?: Record<string, unknown>
   /** Wireframe instance id — stamped on the placeholder as
-   *  `data-annotask-instance` so the Reposition tool can identify it. */
+   *  `data-annotask-instance` for placement identity (click/selection,
+   *  drop-target refusal, capture exclusion, reapply idempotency). */
   instanceId?: string
 }
 
 export interface InsertPlaceholderResult {
   placeholderEid: string
-}
-
-export interface MoveElementPayload {
-  eid: string
-  targetEid: string
-  position: 'before' | 'after' | 'append' | 'prepend'
 }
 
 export interface InsertComponentPayload {
@@ -594,8 +575,8 @@ export interface InsertComponentPayload {
    *  registered on the current route (e.g. "primevue/button"). */
   module?: string
   /** Wireframe instance id — stamped on the mounted container as
-   *  `data-annotask-instance` so the Reposition tool can identify which
-   *  placement a grabbed node belongs to. */
+   *  `data-annotask-instance` for placement identity (click/selection,
+   *  drop-target refusal, capture exclusion, reapply idempotency). */
   instanceId?: string
 }
 

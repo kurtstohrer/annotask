@@ -159,7 +159,8 @@ export interface ComponentInsertChange extends Omit<BaseChange, 'component'> {
   }
 }
 
-/** Move/reorder an element */
+/** Legacy — emitted by the removed Reposition tool; no longer produced, but
+ *  agents still apply it when present in older tasks/reports. */
 export interface ComponentMoveChange extends BaseChange {
   type: 'component_move'
   element: {

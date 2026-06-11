@@ -54,19 +54,6 @@
   cursor: copy;
 }
 
-/* Reposition tool: a capture shield over the iframe (rendered only in
-   reposition mode) so the app's native click/drag is disabled while the user
-   grabs and moves elements. */
-.reposition-shield {
-  position: absolute;
-  inset: 0;
-  z-index: 9999;
-  cursor: grab;
-}
-.reposition-shield.grabbing {
-  cursor: grabbing;
-}
-
 /* Live drop indicator inside .overlay-layer (canvas-area-relative coords).
    Outlines the resolved drop target; a top/bottom inset edge bar marks a
    'before'/'after' insertion point. */

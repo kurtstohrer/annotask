@@ -1,10 +1,10 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 
-export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight' | 'reposition'
+export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight'
 
 const stored = localStorage.getItem('annotask:mode')
 const mode = ref<InteractionMode>(
-  stored && ['select', 'interact', 'pin', 'arrow', 'draw', 'highlight', 'reposition'].includes(stored)
+  stored && ['select', 'interact', 'pin', 'arrow', 'draw', 'highlight'].includes(stored)
     ? stored as InteractionMode
     : 'interact'
 )
@@ -20,7 +20,6 @@ function onKeyDown(e: KeyboardEvent) {
     case 'a': mode.value = 'arrow'; break
     case 'd': mode.value = 'draw'; break
     case 'h': mode.value = 'highlight'; break
-    case 'r': mode.value = 'reposition'; break
   }
 }
 

@@ -219,38 +219,6 @@ export function bridgeMessages(): string {
       return;
     }
 
-    if (type === 'resolve:move-source') {
-      // The Reposition tool needs the actual node to grab, not its source-
-      // bearing parent. Prefer the nearest wireframe placement container
-      // ([data-annotask-instance]); otherwise fall back to the source element
-      // (an existing app element → a ComponentMoveChange in the report).
-      var rmEl = document.elementFromPoint(payload.x, payload.y);
-      if (!rmEl || rmEl === document.documentElement || rmEl === document.body) { respond(id, null); return; }
-      var rmInst = rmEl.closest ? rmEl.closest('[data-annotask-instance]') : null;
-      if (rmInst) {
-        respond(id, {
-          eid: getEid(rmInst),
-          isInstance: true,
-          instanceId: rmInst.getAttribute('data-annotask-instance'),
-          tag: rmInst.tagName.toLowerCase(),
-          rect: getRect(rmInst)
-        });
-        return;
-      }
-      var rmSrc = findSourceElement(rmEl);
-      var rmData = getSourceData(rmSrc.sourceEl);
-      respond(id, {
-        eid: getEid(rmSrc.sourceEl),
-        isInstance: false,
-        file: rmData.file,
-        line: rmData.line,
-        component: rmData.component,
-        tag: rmSrc.sourceEl.tagName.toLowerCase(),
-        rect: getRect(rmSrc.sourceEl)
-      });
-      return;
-    }
-
     if (type === 'resolve:template-group') {
       var all = document.querySelectorAll(
         '[data-annotask-file="' + payload.file + '"][data-annotask-line="' + payload.line + '"]'
@@ -1515,24 +1483,6 @@ export function bridgeMessages(): string {
       return;
     }
 
-    if (type === 'move:element') {
-      var meEl = getEl(payload.eid);
-      var meTarget = getEl(payload.targetEid);
-      // Never drop an element into itself or its own descendant — that would
-      // throw HierarchyRequestError (or silently detach the subtree).
-      if (meEl && meTarget && (meEl === meTarget || meEl.contains(meTarget))) { respond(id, {}); return; }
-      if (meEl && meTarget) {
-        switch (payload.position) {
-          case 'before': meTarget.parentElement && meTarget.parentElement.insertBefore(meEl, meTarget); break;
-          case 'after': meTarget.parentElement && meTarget.parentElement.insertBefore(meEl, meTarget.nextSibling); break;
-          case 'append': meTarget.appendChild(meEl); break;
-          case 'prepend': meTarget.insertBefore(meEl, meTarget.firstChild); break;
-        }
-      }
-      respond(id, {});
-      return;
-    }
-
     if (type === 'insert:vue-component' || type === 'insert:component') {
       var vcTarget = getEl(payload.targetEid);
       if (!vcTarget) { respond(id, { eid: '', mounted: false, reason: 'no-runtime', fidelity: 'placeholder' }); return; }
@@ -1540,8 +1490,9 @@ export function bridgeMessages(): string {
       ensureComponentLoaded(payload.componentName, payload.module).then(function() {
       var vcContainer = document.createElement('div');
       vcContainer.setAttribute('data-annotask-placeholder', 'true');
-      // Repositionable: tag the container with its wireframe instance id so the
-      // Reposition tool can tell which placement a grabbed node belongs to.
+      // Tag the container with its wireframe instance id — placement identity
+      // for click/selection, drop-target refusal, capture exclusion, and
+      // reapply's DOM-idempotency probe.
       if (payload.instanceId) vcContainer.setAttribute('data-annotask-instance', payload.instanceId);
       // Placement identity: the click handler reads this for the selection's
       // component field (placements select as placements, not their internals).
