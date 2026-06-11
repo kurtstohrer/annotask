@@ -554,6 +554,61 @@ export type DataSourceDetailsResult =
   | DataSourceDetailsNotFound
 
 /**
+ * One node of a walkable response shape — `schemaToShape()` output
+ * (data-source-shape.ts). Derived from a REAL schema only; residual `$ref`
+ * cycle markers and GraphQL `$type` names degrade to honest `ref` leaves,
+ * never fabricated key trees.
+ */
+export interface DataShapeNode {
+  kind: 'object' | 'array' | 'scalar' | 'ref' | 'unknown'
+  /** JSON-schema scalar type when kind 'scalar' ('string', 'number', …). */
+  scalar?: string
+  /** Object children by key, when kind 'object'. */
+  children?: Record<string, DataShapeNode>
+  /** Array item shape, when kind 'array'. */
+  item?: DataShapeNode
+  /** Named type (cycle marker / GraphQL $type), when kind 'ref'. */
+  ref?: string
+}
+
+/**
+ * Shape resolution for one data source — the binding picker's honesty-tagged
+ * ladder result. `shape_source` says which rung answered:
+ *   'api-schema'     — a real API contract matched the entry's endpoint;
+ *                      `shape` is walkable, `match_confidence` is the
+ *                      endpoint-match score.
+ *   'source-details' — regex-inferred hints only (`return_type` /
+ *                      `referenced_types` / `signature`, with the regex
+ *                      `details_confidence`); NO `shape` tree — expanding a
+ *                      type name into keys would fabricate.
+ *   'none'           — nothing known; the picker offers free-text entry,
+ *                      visibly blind.
+ */
+export interface DataSourceShape {
+  name: string
+  kind: DataSource['kind']
+  file: string
+  endpoint?: string
+  method?: string
+  shape_source: 'api-schema' | 'source-details' | 'none'
+  /** Walkable response shape — present only for 'api-schema'. */
+  shape?: DataShapeNode
+  /** Short schema-type name (e.g. "Planet[]") for agent follow-up. */
+  schema_ref?: string
+  schema_kind?: ApiSchema['kind']
+  /** resolveEndpoint score 0..1 ('api-schema' rung). */
+  match_confidence?: number
+  /** Regex-resolution confidence ('source-details' rung). */
+  details_confidence?: 'high' | 'medium' | 'low'
+  /** Verbatim inferred hints ('source-details' rung). */
+  return_type?: string
+  referenced_types?: string[]
+  signature?: string
+}
+
+export type DataSourceShapeResult = DataSourceShape | DataSourceDetailsAmbiguous | DataSourceDetailsNotFound
+
+/**
  * A single element-rendering site that consumes a data source. The pair
  * (file, line) maps directly onto the `data-annotask-file` + `data-annotask-line`
  * attributes the transform injects on every DOM element, so the iframe can

@@ -12,8 +12,59 @@
  * component-insert codegen shape.
  */
 
+import type { DataSource } from '../schema'
+
 /** How faithfully a dropped component renders on the canvas. */
 export type WireframeFidelity = 'live' | 'isolated-preview' | 'placeholder'
+
+/**
+ * Binding from a wireframe block (palette component or drawn section) to a
+ * REAL project data source — scanner-catalog identity, never invented. The
+ * agent re-grounds it via `annotask_get_data_source_details` /
+ * `annotask_get_api_operation` before wiring; `shape_source` is the honesty
+ * tag for where the drill-down shape came from.
+ */
+export interface WireframeDataBinding {
+  /** REAL catalog identity — scanner names, never invented. */
+  kind: DataSource['kind']
+  /** e.g. "useUserQuery" */
+  name: string
+  module?: string
+  endpoint?: string
+  /** Drill-down into the resolved shape, user-selected.
+   *  e.g. "items[]" (the list), "data.user" (an object). */
+  path?: string
+  /** Keys the element should display, when the user narrowed them.
+   *  e.g. ["name", "price"]. */
+  fields?: string[]
+  /** Where the shape came from — the honesty tag the agent sees.
+   *  'api-schema' (real contract) | 'source-details' (regex inference,
+   *  confidence attached) | 'none' (user typed the path blind). */
+  shape_source: 'api-schema' | 'source-details' | 'none'
+}
+
+/** Runtime mirror of DataSource['kind'] — typed against the union so schema
+ *  drift breaks typecheck instead of silently accepting unknown kinds. */
+export const DATA_SOURCE_KINDS: readonly DataSource['kind'][] =
+  ['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc']
+
+const SHAPE_SOURCES: readonly string[] = ['api-schema', 'source-details', 'none']
+
+export function isWireframeDataBinding(value: unknown): value is WireframeDataBinding {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const b = value as Record<string, unknown>
+  if (!DATA_SOURCE_KINDS.includes(b.kind as DataSource['kind'])) return false
+  if (typeof b.name !== 'string' || !b.name) return false
+  if (!SHAPE_SOURCES.includes(b.shape_source as string)) return false
+  for (const k of ['module', 'endpoint', 'path'] as const) {
+    if (b[k] !== undefined && (typeof b[k] !== 'string' || !b[k])) return false
+  }
+  if (b.fields !== undefined) {
+    if (!Array.isArray(b.fields)) return false
+    if (!(b.fields as unknown[]).every((f) => typeof f === 'string' && !!f)) return false
+  }
+  return true
+}
 
 /** What was dropped: a real project/library component, a raw HTML element, or a
  *  styled layout preset (flex row, grid, container, …). */
@@ -164,6 +215,9 @@ export interface WireframeBlock {
   fidelity?: WireframeFidelity
   // placeholder blocks
   label?: string
+  /** Data-source binding (any kind — palette components and drawn sections).
+   *  REAL catalog identity; carried into the add direction's `added.data`. */
+  data?: WireframeDataBinding
 }
 
 export interface WireframeCanvasState {
@@ -263,6 +317,7 @@ export function isWireframeBlock(value: unknown): value is WireframeBlock {
   if (value.deleted !== undefined && typeof value.deleted !== 'boolean') return false
   if (value.shell !== undefined && typeof value.shell !== 'boolean') return false
   if (value.duplicateOf !== undefined && typeof value.duplicateOf !== 'string') return false
+  if (value.data !== undefined && !isWireframeDataBinding(value.data)) return false
   if (value.kind === 'captured') {
     const anchor = value.anchor as Record<string, unknown> | undefined
     if (!isPlainObject(anchor) || typeof anchor.file !== 'string' || typeof anchor.line !== 'number') return false

@@ -152,6 +152,7 @@ import { probeDataContext, resolveDataContext, resolveElementDataContext } from 
 import { scanDataSources } from './data-source-scanner.js'
 import { getDataSourceExamples } from './data-source-examples.js'
 import { resolveDataSourceDetails } from './data-source-details.js'
+import { resolveDataSourceShape } from './data-source-shape.js'
 import { resolveBindingGraph } from './binding-analysis/index.js'
 import { scanApiSchemas } from './api-schema-scanner.js'
 import { getWorkspaceCatalog } from './workspace-catalog.js'
@@ -1545,6 +1546,31 @@ export function createAPIMiddleware(options: APIOptions) {
         file,
         contextLines,
         workspaceRoot,
+      })
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    // Shape resolution for the wireframe binding picker. Query-param style
+    // (like api-operation) because kind/file disambiguators ride along.
+    if (path === 'data-source-shape' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const name = urlObj.searchParams.get('name') || ''
+      if (!name) return sendError(res, 400, 'Missing name parameter', 'missing_field')
+      const kind = (urlObj.searchParams.get('kind') || undefined) as DataSource['kind'] | undefined
+      const file = urlObj.searchParams.get('file') || undefined
+      const workspaceRoot = await getWorkspaceRoot(options.projectRoot)
+      const result = await resolveDataSourceShape({
+        projectRoot: options.projectRoot,
+        name,
+        kind,
+        file,
+        workspaceRoot,
+        schemaScan: {
+          devServerUrl: deriveDevServerUrl(req),
+          apiSchemaUrls: options.apiSchemaUrls,
+          apiSchemaFiles: options.apiSchemaFiles,
+        },
       })
       res.end(JSON.stringify(result, null, 2))
       return
