@@ -1150,10 +1150,46 @@ export function bridgeMessages(): string {
         else if (wfChrome.length === 0) { wfFinishError('nothing to capture'); return; }
       }
 
+      // Straggler pass: content OUTSIDE the content root that isn't semantic
+      // chrome — a floating button, banner, or toast mounted as a sibling of
+      // <main> would otherwise appear in the honest full-page "before" but
+      // get no block on the canvas. Walk the root→content-root path; at each
+      // level, every qualifying sibling with a real footprint becomes a
+      // block, unless the chrome pass already covers it.
+      var wfStragglers = [];
+      (function() {
+        var wfPath = [];
+        var wfNode = wfContent;
+        while (wfNode && wfNode !== wfRoot) { wfPath.push(wfNode); wfNode = wfNode.parentElement; }
+        if (wfNode !== wfRoot) return; // content root detached from the capture root
+        wfPath.push(wfRoot);
+        for (var wpi = wfPath.length - 1; wpi >= 1; wpi--) {
+          var wpParent = wfPath[wpi];
+          var wpPathChild = wfPath[wpi - 1];
+          var wpKids = wfChildren(wpParent);
+          for (var wpk = 0; wpk < wpKids.length; wpk++) {
+            var wpKid = wpKids[wpk];
+            if (wpKid === wpPathChild) continue;
+            var wpr = wpKid.getBoundingClientRect();
+            if (wpr.width < 48 || wpr.height < 24) continue;
+            var wpCovered = false;
+            for (var wpc = 0; wpc < wfChrome.length && !wpCovered; wpc++) {
+              // Contains-a-chrome-block counts as covered too: blocking the
+              // wrapper would double-capture the header inside it.
+              if (wfChrome[wpc] === wpKid || wfChrome[wpc].contains(wpKid) || wpKid.contains(wfChrome[wpc])) wpCovered = true;
+            }
+            if (!wpCovered) wfStragglers.push(wpKid);
+          }
+        }
+      })();
+
       var wfAll = [];
       for (var wai = 0; wai < wfChrome.length; wai++) wfAll.push(wfChrome[wai]);
       for (var waj = 0; waj < wfContentKids.length; waj++) {
         if (wfAll.indexOf(wfContentKids[waj]) === -1) wfAll.push(wfContentKids[waj]);
+      }
+      for (var wak = 0; wak < wfStragglers.length; wak++) {
+        if (wfAll.indexOf(wfStragglers[wak]) === -1) wfAll.push(wfStragglers[wak]);
       }
       wfAll.sort(function(a, b) {
         var pos = a.compareDocumentPosition(b);

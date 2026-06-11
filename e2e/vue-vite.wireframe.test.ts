@@ -62,6 +62,17 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
     expect(planets.canvas.blocks.some((b: { image?: string }) => b.image)).toBe(true)
     expect(planets.canvas.fullImage).toMatch(/\.png$/)
 
+    // Straggler coverage: the playground's bare <Button> sits AFTER <main> as
+    // a sibling (App.vue:48) — content outside the content root that isn't
+    // semantic chrome must still get a block, not just appear in the
+    // full-page "before" image. (anchor.file alone would false-pass: the
+    // header chrome block also anchors to App.vue via attribute fallthrough.)
+    expect(
+      planets.canvas.blocks.some((b: { kind: string; anchor?: { tag?: string } }) =>
+        b.kind === 'captured' && b.anchor?.tag === 'button'),
+      'the sibling-of-main <Button> must be captured as a block',
+    ).toBe(true)
+
     // Lossless exit: overlay gone, live app visible, zero reloads end-to-end.
     await page.locator('[data-testid="wf-exit"]').click()
     await expect(page.locator('[data-testid="wireframe-canvas"]')).toHaveCount(0)
