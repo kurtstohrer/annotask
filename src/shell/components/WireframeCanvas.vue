@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import GenerateComponentPanel from './GenerateComponentPanel.vue'
 import Icon from './Icon.vue'
 import { computeSnap, type SnapGuide } from '../utils/wireframeSnap'
+import type { useComponentGenerator } from '../composables/useComponentGenerator'
 import type { WireframeBlock, WireframeCanvasState } from '../../shared/wireframe-types'
 import type { WireframeCaptureProgress } from '../../shared/bridge-types'
 
@@ -17,6 +19,9 @@ const props = defineProps<{
   /** Locked: a wireframe_apply task is implementing this sketch right now. */
   building: boolean
   implementing: boolean
+  /** Generate-component session (pick → settings → datasource → generate →
+   *  place). Null when the host view doesn't offer the flow. */
+  generator?: ReturnType<typeof useComponentGenerator> | null
 }>()
 
 const emit = defineEmits<{
@@ -31,6 +36,7 @@ const emit = defineEmits<{
   'undelete-block': [id: string]
   'duplicate-block': [id: string]
   'set-note': [id: string, note: string]
+  'configure-block': [id: string]
   'palette-drop': [at: { x: number; y: number }]
   'add-placeholder': [rect: { x: number; y: number; width: number; height: number }, label: string]
 }>()
@@ -95,6 +101,7 @@ function selectedBlocks(): WireframeBlock[] {
 
 function onKeydown(e: KeyboardEvent): void {
   if (noteEditing.value || labelDraft.value !== null) return // typing — keys belong to the inputs
+  if (e.key === 'Escape' && placing.value) { props.generator?.cancelPlace(); return }
   if (e.key === 'Escape') { select(null); drawMode.value = false; return }
   if (props.building) return // sketch is locked while the agent implements it
   const blocks = selectedBlocks()
@@ -135,6 +142,9 @@ const dragState = ref<{
 function beginDrag(e: PointerEvent, b: WireframeBlock, mode: 'move' | 'resize', handle?: string): void {
   e.preventDefault()
   e.stopPropagation()
+  // Ghost placement wins over every block gesture: clicking anywhere on the
+  // canvas (including over an existing block) places the generated image.
+  if (placing.value) { void props.generator?.placeAt(stagePoint(e)); return }
   select(b.id, e.shiftKey)
   if (props.building) return // selection only — the sketch is locked
   if (e.shiftKey) return // shift-click is selection surgery, never a drag
@@ -248,6 +258,7 @@ function stagePoint(e: PointerEvent | DragEvent): { x: number; y: number } {
 }
 
 function onStagePointerDown(e: PointerEvent): void {
+  if (placing.value) { void props.generator?.placeAt(stagePoint(e)); return }
   stageStart = stagePoint(e)
   if (drawMode.value) {
     stageGesture = 'draw'
@@ -329,6 +340,16 @@ function onCanvasDrop(e: DragEvent): void {
   emit('palette-drop', stagePoint(e))
 }
 
+// ── Ghost placement (generate-component flow's Place step) ──
+
+const placing = computed(() => props.generator?.session.value?.placing === true)
+const ghostPos = ref<{ x: number; y: number } | null>(null)
+
+function onStageHover(e: PointerEvent): void {
+  if (!placing.value) return
+  ghostPos.value = stagePoint(e)
+}
+
 function onRecaptureConfirmed(): void {
   confirmRecapture.value = false
   emit('recapture')
@@ -398,9 +419,10 @@ function onRecaptureConfirmed(): void {
       @dragenter.prevent
       @dragover.prevent
       @drop="onCanvasDrop">
-      <div ref="stageRef" class="wf-stage" :class="{ drawing: drawMode }"
+      <div ref="stageRef" class="wf-stage" :class="{ drawing: drawMode, placing }"
         :style="{ width: canvas.viewport.docWidth + 'px', height: canvas.viewport.docHeight + 'px' }"
-        @pointerdown.self="onStagePointerDown">
+        @pointerdown.self="onStagePointerDown"
+        @pointermove="onStageHover">
         <div v-for="b in visibleBlocks" :key="b.id"
           class="wf-block"
           :class="{ selected: isSelected(b.id), failed: !imageSrc(b) && b.kind === 'captured', placeholder: b.kind === 'placeholder', dragging: dragState?.moved && dragState.items.some((i) => i.id === b.id) }"
@@ -424,6 +446,9 @@ function onRecaptureConfirmed(): void {
           <div v-if="b.kind === 'palette' && b.fidelity && b.fidelity !== 'live'" class="wf-fidelity-pill" :class="b.fidelity">
             {{ b.fidelity === 'isolated-preview' ? 'isolated preview' : 'placeholder render' }}
           </div>
+          <div v-if="b.data" class="wf-data-chip" :data-testid="`wf-data-chip-${b.id}`" :title="`bound to ${b.data.name}${b.data.path ? ' → ' + b.data.path : ''} [${b.data.shape_source}]`">
+            <Icon name="database" :size="9" /> {{ b.data.name }}<template v-if="b.data.path"> · {{ b.data.path }}</template>
+          </div>
 
           <template v-if="primaryBlock?.id === b.id && selectedIds.length === 1">
             <div class="wf-block-header" @pointerdown.stop="beginDrag($event, b, 'move')">
@@ -435,6 +460,9 @@ function onRecaptureConfirmed(): void {
               </button>
               <button class="wf-hbtn" data-testid="wf-note-btn" @pointerdown.stop @click.stop="openNote()" :title="b.note ? `Note: ${b.note}` : 'Add a note for the agent'">
                 <Icon name="pencil" :size="10" />
+              </button>
+              <button v-if="b.kind === 'palette' && generator" class="wf-hbtn" data-testid="wf-configure-btn" @pointerdown.stop @click.stop="emit('configure-block', b.id)" title="Reconfigure — props, data binding, regenerate">
+                <Icon name="settings" :size="10" />
               </button>
               <button class="wf-hbtn" data-testid="wf-duplicate-btn" @pointerdown.stop @click.stop="emit('duplicate-block', b.id)" title="Duplicate (Ctrl+D)">
                 <Icon name="copy" :size="10" />
@@ -478,8 +506,17 @@ function onRecaptureConfirmed(): void {
             placeholder="Label this placeholder… (e.g. pagination here)"
             @keydown.enter.prevent="commitPlaceholder" @keydown.escape="cancelPlaceholder" @blur="commitPlaceholder" />
         </div>
+
+        <!-- Generated-image ghost riding the cursor during Place -->
+        <img v-if="placing && ghostPos && generator?.session.value?.generated?.dataUrl"
+          class="wf-ghost" data-testid="wf-ghost"
+          :src="generator.session.value.generated.dataUrl"
+          :style="{ left: ghostPos.x + 'px', top: ghostPos.y + 'px', width: (generator.session.value.generated.width ?? 320) + 'px' }"
+          alt="" draggable="false" />
       </div>
     </div>
+
+    <GenerateComponentPanel v-if="generator?.session.value" :generator="generator" />
 
     <ConfirmDialog v-if="confirmRecapture"
       message="Discard this sketch and re-capture the live route? Your rearrangement on this canvas will be lost."
@@ -689,6 +726,36 @@ function onRecaptureConfirmed(): void {
   background: color-mix(in srgb, var(--warning) 30%, var(--bg));
   color: var(--text);
   pointer-events: none;
+}
+
+.wf-data-chip {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--info) 25%, var(--bg));
+  color: var(--text);
+  pointer-events: none;
+  max-width: 80%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wf-stage.placing { cursor: copy; }
+
+.wf-ghost {
+  position: absolute;
+  z-index: 10000;
+  opacity: 0.7;
+  pointer-events: none;
+  border: 1px dashed var(--accent);
+  border-radius: 2px;
 }
 
 .wf-block-header {

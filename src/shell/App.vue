@@ -4,6 +4,7 @@ import { useStyleEditor } from './composables/useStyleEditor'
 import { useDesignSession } from './composables/useDesignSession'
 import { useInteractionMode } from './composables/useInteractionMode'
 import { useWireframeMode } from './composables/useWireframeMode'
+import { useComponentGenerator } from './composables/useComponentGenerator'
 import { useDesignSpec, setActiveColorScheme } from './composables/useDesignSpec'
 import { useLayoutOverlay } from './composables/useLayoutOverlay'
 import { useAnnotations } from './composables/useAnnotations'
@@ -607,12 +608,27 @@ watch(iframe.currentRoute, (r) => { designSession.sessionRoute.value = normalize
 // ── Wireframe mode (snapshot canvas over the live iframe) ──
 const wireframeMode = useWireframeMode({ iframe, interactionMode, shellView })
 
+// Generate-component flow (pick → settings → datasource → generate → place).
+// Component drops/clicks open the panel instead of minting a blind block;
+// html/layout-preset drops keep the instant placeholder path.
+const componentGenerator = useComponentGenerator({ iframe, wireframe: wireframeMode })
+
 // Palette drops land on the canvas natively (no iframe shield in the way);
 // the drag item rides usePaletteDrag, not the DataTransfer.
 function onWireframePaletteDrop(at: { x: number; y: number }) {
   const item = paletteDrag.draggingItem.value
   paletteDrag.endDrag()
-  if (item) void wireframeMode.dropPaletteItem(item, at)
+  if (!item) return
+  if (item.kind === 'component' && item.componentName) {
+    componentGenerator.openFromDrop(item, at)
+  } else {
+    void wireframeMode.dropPaletteItem(item, at)
+  }
+}
+
+function onWireframeConfigureBlock(id: string) {
+  const block = wireframeMode.findBlock(id)
+  if (block) componentGenerator.openFromBlock(block)
 }
 
 // "Implement this wireframe" mints the task through the existing apply loop,
@@ -823,6 +839,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           :deleted-blocks="wireframeMode.deletedBlocks.value"
           :building="wireframeMode.building.value"
           :implementing="wireframeMode.implementing.value"
+          :generator="componentGenerator"
           @exit="wireframeMode.exit()"
           @recapture="wireframeMode.recapture()"
           @implement="onImplementWireframe"
@@ -834,6 +851,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           @undelete-block="wireframeMode.undeleteBlock"
           @duplicate-block="wireframeMode.duplicateBlock"
           @set-note="wireframeMode.setNote"
+          @configure-block="onWireframeConfigureBlock"
           @add-placeholder="wireframeMode.addPlaceholderBlock"
           @palette-drop="onWireframePaletteDrop" />
 
@@ -1056,9 +1074,11 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :placements="wireframePlacements"
         :stale-ids="wireframeDoc.staleIds.value"
         :failed-ids="wireframeDoc.failedIds.value"
+        :wireframe-active="wireframeMode.active.value"
         @build="buildWireframeRoute"
         @delete-placement="deletePlacement"
         @run-agent="onApplyRunAgent"
+        @generate-component="componentGenerator.openFromPick"
       />
 
       <!-- Audit > A11y panel -->

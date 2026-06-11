@@ -4,7 +4,7 @@ import { useDesignSession } from './useDesignSession'
 import { computeWireframeDirections } from '../utils/wireframeDirections'
 import { composeWireframeDiff } from '../utils/wireframeComposite'
 import { normalizeRoute } from '../utils/routes'
-import type { WireframeBlock, WireframeCanvasState } from '../../shared/wireframe-types'
+import type { WireframeBlock, WireframeCanvasState, WireframeDataBinding, WireframeFidelity, WireframePaletteRef } from '../../shared/wireframe-types'
 import type { WireframeCapturePayload, WireframeCaptureResult, WireframeCaptureProgress } from '../../shared/bridge-types'
 import type { InteractionMode } from './useInteractionMode'
 
@@ -44,6 +44,16 @@ export interface WireframeModeDeps {
   interactionMode: Ref<InteractionMode>
   /** Top-level shell view — leaving 'design' exits wireframe mode. */
   shellView: Ref<string>
+}
+
+/** The honest snapshot a generate/drop produced — preview:component's
+ *  result, normalized. No dataUrl ⇒ placeholder fidelity, never fabricated. */
+export interface PaletteSnapshot {
+  dataUrl?: string
+  width?: number
+  height?: number
+  fidelity?: WireframeFidelity
+  mounted?: boolean
 }
 
 let blockCounter = 0
@@ -348,6 +358,84 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     return copy.id
   }
 
+  /** Mint one palette block from a component ref + snapshot. Deep-clones the
+   *  ref and binding at the boundary (reactive proxies must never land in the
+   *  persisted doc), registers the in-session image, uploads the sidecar PNG,
+   *  and persists. Returns the new block id. */
+  async function addPaletteBlock(
+    componentRef: WireframePaletteRef,
+    snapshot: PaletteSnapshot,
+    at: { x: number; y: number },
+    data?: WireframeDataBinding,
+  ): Promise<string | null> {
+    const c = canvas.value
+    if (!c) return null
+    const id = mintBlockId()
+    const width = snapshot.width && snapshot.width > 24 ? snapshot.width : 320
+    const height = snapshot.height && snapshot.height > 24 ? snapshot.height : 120
+    const block: WireframeBlock = {
+      id,
+      kind: 'palette',
+      rect: { x: at.x, y: at.y, width, height },
+      z: maxZ() + 1,
+      createdAt: Date.now(),
+      component: JSON.parse(JSON.stringify(componentRef)) as WireframePaletteRef,
+      fidelity: snapshot.fidelity ?? (snapshot.mounted ? 'isolated-preview' : 'placeholder'),
+      ...(data ? { data: JSON.parse(JSON.stringify(data)) as WireframeDataBinding } : {}),
+    }
+    if (snapshot.dataUrl) {
+      liveImages.value = { ...liveImages.value, [id]: snapshot.dataUrl }
+      const filename = await uploadSnapshot(id, snapshot.dataUrl)
+      if (filename) block.image = filename
+    } else {
+      block.fidelity = 'placeholder'
+    }
+    c.blocks.push(block)
+    persistSoon()
+    return id
+  }
+
+  /** Regenerate-in-place: patch a placed palette block's props/binding and/or
+   *  swap its snapshot. Re-uploads under the SAME block id (`<id>.png`
+   *  overwrites; the current session renders from liveImages so there is no
+   *  cache-bust concern). Position is preserved; dims follow the snapshot. */
+  async function updatePaletteBlock(id: string, patch: {
+    props?: Record<string, unknown>
+    previewProps?: Record<string, unknown>
+    data?: WireframeDataBinding | null
+    snapshot?: PaletteSnapshot
+  }): Promise<void> {
+    const b = findBlock(id)
+    if (!b || b.kind !== 'palette' || !b.component) return
+    if (patch.props !== undefined) {
+      if (Object.keys(patch.props).length > 0) b.component.props = JSON.parse(JSON.stringify(patch.props)) as Record<string, unknown>
+      else delete b.component.props
+    }
+    if (patch.previewProps !== undefined) {
+      if (Object.keys(patch.previewProps).length > 0) b.component.previewProps = JSON.parse(JSON.stringify(patch.previewProps)) as Record<string, unknown>
+      else delete b.component.previewProps
+    }
+    if (patch.data !== undefined) {
+      if (patch.data) b.data = JSON.parse(JSON.stringify(patch.data)) as WireframeDataBinding
+      else delete b.data
+    }
+    const snap = patch.snapshot
+    if (snap) {
+      b.fidelity = snap.fidelity ?? (snap.mounted ? 'isolated-preview' : 'placeholder')
+      if (snap.dataUrl) {
+        liveImages.value = { ...liveImages.value, [b.id]: snap.dataUrl }
+        const filename = await uploadSnapshot(b.id, snap.dataUrl)
+        if (filename) b.image = filename
+        if (snap.width && snap.width > 24) b.rect.width = snap.width
+        if (snap.height && snap.height > 24) b.rect.height = snap.height
+      } else {
+        b.fidelity = 'placeholder'
+      }
+    }
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
   /** Palette drop onto the canvas: components render as an honest
    *  preview:component snapshot (live iframe under the overlay does the
    *  mounting); html/layout-preset catalog items become labeled placeholders —
@@ -355,7 +443,6 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   async function dropPaletteItem(item: WireframeDropItem, at: { x: number; y: number }): Promise<void> {
     const c = canvas.value
     if (!c) return
-    const id = mintBlockId()
     if (item.kind === 'component' && item.componentName) {
       // The drag item rides a Vue reactive proxy — postMessage can't clone it
       // (DataCloneError). Strip to plain JSON before anything crosses the
@@ -364,15 +451,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       const props = item.props ? JSON.parse(JSON.stringify(item.props)) as Record<string, unknown> : undefined
       const res = await iframe.previewComponent(item.componentName, previewProps ?? props, item.module, 320)
       if (!res.dataUrl) console.warn('[Annotask] wireframe palette drop: no snapshot —', JSON.stringify(res).slice(0, 300))
-      const width = res.width && res.width > 24 ? res.width : 320
-      const height = res.height && res.height > 24 ? res.height : 120
-      const block: WireframeBlock = {
-        id,
-        kind: 'palette',
-        rect: { x: at.x, y: at.y, width, height },
-        z: maxZ() + 1,
-        createdAt: Date.now(),
-        component: {
+      await addPaletteBlock(
+        {
           tag: item.tag,
           componentName: item.componentName,
           ...(item.library ? { library: item.library } : {}),
@@ -380,17 +460,11 @@ export function useWireframeMode(deps: WireframeModeDeps) {
           ...(props ? { props } : {}),
           ...(previewProps ? { previewProps } : {}),
         },
-        fidelity: (res.fidelity as WireframeBlock['fidelity']) ?? (res.mounted ? 'isolated-preview' : 'placeholder'),
-      }
-      if (res.dataUrl) {
-        liveImages.value = { ...liveImages.value, [id]: res.dataUrl }
-        const filename = await uploadSnapshot(id, res.dataUrl)
-        if (filename) block.image = filename
-      } else {
-        block.fidelity = 'placeholder'
-      }
-      c.blocks.push(block)
+        { dataUrl: res.dataUrl, width: res.width, height: res.height, fidelity: (res.fidelity as WireframeFidelity | null) ?? undefined, mounted: res.mounted },
+        at,
+      )
     } else {
+      const id = mintBlockId()
       c.blocks.push({
         id,
         kind: 'placeholder',
@@ -399,8 +473,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
         createdAt: Date.now(),
         label: item.textContent || item.category || `<${item.tag}>`,
       })
+      persistSoon()
     }
-    persistSoon()
   }
 
   /** User-drawn placeholder box — visibly a sketch, never fabricated UI. */
@@ -712,6 +786,9 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     deletedBlocks,
     duplicateBlock,
     dropPaletteItem,
+    addPaletteBlock,
+    updatePaletteBlock,
+    findBlock,
     addPlaceholderBlock,
     explodeBlock,
     // implement (W3)

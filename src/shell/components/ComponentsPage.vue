@@ -24,9 +24,12 @@ const props = defineProps<{
   staleIds?: string[]
   /** Instance ids whose last re-mount attempt threw. */
   failedIds?: string[]
+  /** Wireframe mode is active — clicking a component opens the generate
+   *  panel instead of the detail preview (which stays behind the info icon). */
+  wireframeActive?: boolean
 }>()
 
-const emit = defineEmits<{ build: []; deletePlacement: [id: string]; runAgent: [taskId: string] }>()
+const emit = defineEmits<{ build: []; deletePlacement: [id: string]; runAgent: [taskId: string]; generateComponent: [item: PaletteDragItem] }>()
 
 // ── Placements panel (current route's wireframe instances) ──
 function placementStatus(i: WireframeInstance): WireframeInstanceStatus {
@@ -350,17 +353,21 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
                 'on-page': cl.isOnPageInLib(lib.name, c.name),
               }"
               :data-component-name="c.name"
-              :title="componentTooltip(lib.name, c) + '\n↳ drag onto the app to place'"
+              :title="componentTooltip(lib.name, c) + (props.wireframeActive ? '\n↳ click to generate, or drag onto the canvas' : '\n↳ drag onto the app to place')"
               draggable="true"
               @dragstart="onDragStart($event, componentDragItem(lib.name, c))"
               @dragend="onDragEnd"
-              @click="cl.select(lib.name, c.name)"
+              @click="props.wireframeActive ? emit('generateComponent', componentDragItem(lib.name, c)) : cl.select(lib.name, c.name)"
               @mouseenter="cl.isOnPageInLib(lib.name, c.name) && cl.setFocus(cl.sourceName(lib.name, c.name))"
               @mouseleave="focusedName === cl.sourceName(lib.name, c.name) && cl.setFocus(null)"
             >
               <div class="item-row">
                 <span class="item-swatch" :style="{ background: colorForLibrary(lib.name) }" />
                 <span class="item-name" :class="{ deprecated: c.deprecated }">{{ c.name }}</span>
+                <button v-if="props.wireframeActive" class="item-info-btn" :title="`Open the ${c.name} detail preview`"
+                  @click.stop="cl.select(lib.name, c.name)">
+                  <Icon name="info" :size="11" />
+                </button>
                 <span v-if="fidelityLabel(c.fidelityHint)" class="item-fidelity" :class="'fid-' + c.fidelityHint" :title="c.providerSignals && c.providerSignals.length ? 'Uses: ' + c.providerSignals.join(', ') : ''">{{ fidelityLabel(c.fidelityHint) }}</span>
                 <span v-if="cl.isOnPageInLib(lib.name, c.name)" class="item-onpage" title="Rendered on the current route">on page</span>
                 <span v-else-if="cl.isUsedInLib(lib.name, c.name)" class="item-used" title="Referenced somewhere in this project">used</span>
@@ -768,6 +775,16 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   text-decoration: line-through;
   color: var(--text-muted);
 }
+.item-info-btn {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.item-info-btn:hover { color: var(--text); }
 .item-used {
   font-size: 9px;
   padding: 1px 4px;

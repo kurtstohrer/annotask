@@ -166,10 +166,10 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
       { timeout: 5_000 }).toBe('pagination here')
 
     // PALETTE DROP: synthetic HTML5 drag of the Header project component —
-    // string props mount standalone, so the drop yields a REAL snapshot (a
+    // string props mount standalone, so generate yields a REAL snapshot (a
     // data-bound component like PlanetCard would honestly degrade to a
-    // placeholder render here).
-    // onto the canvas (drag item state rides usePaletteDrag via dragstart).
+    // placeholder render here). The drop opens the GENERATE PANEL (no more
+    // blind instant block): generate, then place at the remembered drop point.
     await page.locator('.toolbar button', { hasText: 'Components' }).click()
     const paletteItem = page.locator('.components-list-item[data-component-name="Header"]').first()
     await paletteItem.waitFor({ state: 'visible', timeout: 15_000 })
@@ -181,6 +181,11 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
       scroll.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: dropX, clientY: dropY }))
       scroll.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: dropX, clientY: dropY }))
     }, { dropX: stage.x + 500, dropY: stage.y + gridOrigBottom - 50 })
+    await page.locator('[data-testid="gen-panel"]').waitFor({ state: 'visible', timeout: 10_000 })
+    await page.locator('[data-testid="gen-generate"]').click()
+    await page.locator('[data-testid="gen-preview-img"]').waitFor({ state: 'visible', timeout: 20_000 })
+    expect(await page.locator('[data-testid="gen-preview-img"]').evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+    await page.locator('[data-testid="gen-place-drop"]').click()
     await expect.poll(async () => {
       const b = (await getCanvas()).blocks.find((x) => x.kind === 'palette')
       return b?.component?.componentName
@@ -206,6 +211,92 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
     // Placeholder + note chip survived.
     await expect(page.locator('.wf-placeholder-label')).toHaveText('pagination here')
     await expect(page.locator('.wf-note-chip')).toHaveCount(1)
+  })
+
+  // D4: the generate flow binds a REAL data source through the picker's shape
+  // tree (the playground ships a discoverable OpenAPI file, so usePlanets
+  // resolves 'api-schema' without the FastAPI running), survives a reload,
+  // and regenerates in place through the configure button.
+  test('generate flow binds a data source and survives reload', async ({ page, request }) => {
+    test.setTimeout(120_000)
+    await page.setViewportSize({ width: 1600, height: 900 })
+    await bootDesignShell(page)
+    const frame = page.frameLocator('.app-iframe')
+    await expect(frame.locator('h1.title')).toHaveText('Planets', { timeout: 30_000 })
+    await enterWireframeMode(page)
+
+    type Blk = { id: string; kind: string; component?: { componentName?: string }; data?: Record<string, unknown>; image?: string }
+    async function getCanvas(): Promise<{ blocks: Blk[] }> {
+      const wf = await (await request.get('/__annotask/api/wireframe')).json()
+      return wf.routes.find((r: { route: string }) => r.route === '/planets')!.canvas
+    }
+
+    // Drop Header → the generate panel opens with the drop point remembered.
+    await page.locator('.toolbar button', { hasText: 'Components' }).click()
+    await page.locator('.components-list-item[data-component-name="Header"]').first().waitFor({ state: 'visible', timeout: 15_000 })
+    const stage = (await page.locator('.wf-stage').boundingBox())!
+    await page.evaluate(({ dropX, dropY }) => {
+      const item = document.querySelector('.components-list-item[data-component-name="Header"]') as HTMLElement
+      const scroll = document.querySelector('.wf-scroll') as HTMLElement
+      const dt = new DataTransfer()
+      item.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }))
+      scroll.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: dropX, clientY: dropY }))
+      scroll.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientX: dropX, clientY: dropY }))
+    }, { dropX: stage.x + 300, dropY: stage.y + 300 })
+    await page.locator('[data-testid="gen-panel"]').waitFor({ state: 'visible', timeout: 10_000 })
+
+    // Bind: pick usePlanets, drill the REAL shape tree to planets[], narrow
+    // the fields to name + type.
+    await page.locator('[data-testid="gen-bind-open"]').click()
+    await page.locator('[data-testid="binding-picker"]').waitFor({ state: 'visible', timeout: 10_000 })
+    await page.locator('[data-testid="binding-row-usePlanets"]').click()
+    await page.locator('[data-testid="binding-shape-tree"]').waitFor({ state: 'visible', timeout: 15_000 })
+    await expect(page.locator('.bp-shape-tag')).toHaveClass(/api-schema/)
+    await page.locator('.bp-tree-row .bp-twisty').first().click() // expand (response)
+    await page.locator('.bp-tree-row', { hasText: 'planets' }).click() // path = planets[]
+    await page.locator('[data-testid="binding-field-name"]').check()
+    await page.locator('[data-testid="binding-field-type"]').check()
+    await page.locator('[data-testid="binding-confirm"]').click()
+    await expect(page.locator('[data-testid="gen-binding-chip"]')).toContainText('usePlanets')
+
+    // Generate on the app-true surface, place at the remembered drop point.
+    await page.locator('[data-testid="gen-generate"]').click()
+    await page.locator('[data-testid="gen-preview-img"]').waitFor({ state: 'visible', timeout: 20_000 })
+    await page.locator('[data-testid="gen-place-drop"]').click()
+
+    let placed: Blk | undefined
+    await expect.poll(async () => {
+      placed = (await getCanvas()).blocks.find((b) => b.kind === 'palette')
+      return placed?.data?.name
+    }, { timeout: 15_000 }).toBe('usePlanets')
+    expect(placed!.component?.componentName).toBe('Header')
+    expect(placed!.data).toMatchObject({
+      name: 'usePlanets',
+      path: 'planets[]',
+      fields: ['name', 'type'],
+      shape_source: 'api-schema',
+    })
+
+    // F5 — block, binding chip, and snapshot all restore.
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.locator('.toolbar').waitFor({ state: 'visible', timeout: 15_000 })
+    await page.locator('[data-testid="wireframe-canvas"]').waitFor({ state: 'visible', timeout: 15_000 })
+    await page.waitForTimeout(1_000)
+    const blockEl = page.locator(`[data-block-id="${placed!.id}"]`)
+    await expect(page.locator(`[data-testid="wf-data-chip-${placed!.id}"]`)).toContainText('usePlanets')
+    expect(await blockEl.locator('img').evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+
+    // Reconfigure via the gear button: regenerate in place, binding intact.
+    await blockEl.click({ position: { x: 8, y: 8 } })
+    await page.locator('[data-testid="wf-configure-btn"]').click()
+    await page.locator('[data-testid="gen-panel"]').waitFor({ state: 'visible', timeout: 10_000 })
+    await expect(page.locator('[data-testid="gen-binding-chip"]')).toContainText('usePlanets')
+    await page.locator('[data-testid="gen-generate"]').click()
+    await page.locator('[data-testid="gen-preview-img"]').waitFor({ state: 'visible', timeout: 20_000 })
+    await page.locator('[data-testid="gen-apply"]').click()
+    await expect(page.locator('[data-testid="gen-panel"]')).toHaveCount(0)
+    await expect(page.locator(`[data-testid="wf-data-chip-${placed!.id}"]`)).toContainText('usePlanets')
+    expect(await blockEl.locator('img').evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
   })
 
   // W4: marquee multi-select, group nudge, explode-to-children, viewport label.
