@@ -12,6 +12,35 @@ export function bridgeMessages(): string {
   //   3. Sniff explicit DOM markers (class / data-attr). A recognized marker
   //      overrides luminance when unambiguous ('dark'/'light'), since explicit
   //      dev intent should win over a heuristic.
+  function readBg(el) {
+    if (!el) return null;
+    var bg = '';
+    try { bg = window.getComputedStyle(el).backgroundColor || ''; } catch(e) { return null; }
+    if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return null;
+    var parts = bg.match(/[0-9.]+/g);
+    if (!parts || parts.length < 3) return null;
+    var alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
+    if (!alpha) return null;
+    return { r: parseFloat(parts[0]), g: parseFloat(parts[1]), b: parseFloat(parts[2]) };
+  }
+
+  // App-true preview surface: the background the app actually paints (body
+  // first — content sits on it — then html; deliberately the opposite order
+  // of detectColorScheme's viewport probe), plus a contrast-safe text color
+  // from its luminance. Scheme-derived fallback when both are transparent.
+  function resolveAppSurface() {
+    var bg = readBg(document.body) || readBg(document.documentElement);
+    if (bg) {
+      var lum = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b) / 255;
+      return {
+        background: 'rgb(' + Math.round(bg.r) + ', ' + Math.round(bg.g) + ', ' + Math.round(bg.b) + ')',
+        color: lum < 0.5 ? '#f5f5f5' : '#111111'
+      };
+    }
+    var dark = detectColorScheme().scheme === 'dark';
+    return { background: dark ? '#111827' : '#ffffff', color: dark ? '#f5f5f5' : '#111111' };
+  }
+
   function detectColorScheme() {
     var scheme = 'light';
     var source = 'fallback';
@@ -20,18 +49,6 @@ export function bridgeMessages(): string {
     try {
       var html = document.documentElement;
       var body = document.body;
-
-      function readBg(el) {
-        if (!el) return null;
-        var bg = '';
-        try { bg = window.getComputedStyle(el).backgroundColor || ''; } catch(e) { return null; }
-        if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return null;
-        var parts = bg.match(/[0-9.]+/g);
-        if (!parts || parts.length < 3) return null;
-        var alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
-        if (!alpha) return null;
-        return { r: parseFloat(parts[0]), g: parseFloat(parts[1]), b: parseFloat(parts[2]) };
-      }
 
       var bg = readBg(html) || readBg(body);
       if (bg) {
@@ -1278,9 +1295,12 @@ export function bridgeMessages(): string {
       // shell can show a thumbnail or an explicit placeholder. Load the
       // component on demand first if it isn't on the current route.
       ensureComponentLoaded(payload.componentName, payload.module).then(function() {
+      // Snapshot on the app's REAL surface, not a hardcoded white card — a
+      // dropped component should look like it belongs on the page behind it.
+      var pvSurface = resolveAppSurface();
       var pvContainer = document.createElement('div');
       pvContainer.setAttribute('data-annotask-preview', 'true');
-      pvContainer.style.cssText = 'position:fixed;left:-99999px;top:0;z-index:-1;width:' + (payload.width || 320) + 'px;padding:12px;background:#ffffff;color:#111111;box-sizing:border-box;';
+      pvContainer.style.cssText = 'position:fixed;left:-99999px;top:0;z-index:-1;width:' + (payload.width || 320) + 'px;padding:12px;background:' + pvSurface.background + ';color:' + pvSurface.color + ';box-sizing:border-box;';
       document.body.appendChild(pvContainer);
       var pvRes = tryMountComponent(pvContainer, payload.componentName, payload.props || {});
       function pvCleanup() {
@@ -1296,7 +1316,7 @@ export function bridgeMessages(): string {
         var h2c = window.html2canvas;
         if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
         if (typeof h2c !== 'function') { pvCleanup(); respond(id, { mounted: true, fidelity: pvRes.fidelity, error: 'html2canvas not loaded' }); return; }
-        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: true, backgroundColor: '#ffffff', width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
+        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: true, backgroundColor: pvSurface.background, width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
           var dataUrl = canvas.toDataURL('image/png');
           pvCleanup();
           respond(id, { mounted: true, fidelity: pvRes.fidelity, dataUrl: dataUrl, width: canvas.width, height: canvas.height });
