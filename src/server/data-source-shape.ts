@@ -50,6 +50,16 @@ export function schemaToShape(schema: Record<string, unknown>, depth = 0): DataS
 
   if (type === 'object' || isPlainObject(schema.properties)) {
     const children: Record<string, DataShapeNode> = {}
+    // Composition first — `{ type:'object', allOf:[…] }` and
+    // `{ allOf:[…], properties:{…} }` are common OpenAPI inheritance forms;
+    // own properties extend/override the inherited keys.
+    if (Array.isArray(schema.allOf)) {
+      for (const member of schema.allOf) {
+        if (!isPlainObject(member)) continue
+        const walked = schemaToShape(member, depth + 1)
+        if (walked.kind === 'object' && walked.children) Object.assign(children, walked.children)
+      }
+    }
     const props = schema.properties
     if (isPlainObject(props)) {
       for (const [key, value] of Object.entries(props)) {

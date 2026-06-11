@@ -163,7 +163,7 @@ pending -> in_progress -> review -> accepted | denied
 - Performance snapshots, findings, and session recording
 - Console error and warning capture with one-click fix tasks
 - Always-captured interaction history and rendered-HTML sidecars per task
-- 18 built-in shell themes plus custom theme editing across 63 CSS variables
+- 18 built-in shell themes plus custom theme editing across 62 CSS variables
 
 ## Framework support
 

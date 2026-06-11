@@ -100,14 +100,23 @@ export async function applyDesignSession(
   const domLine = entries.find((e) => e.anchor.file === domFile)?.anchor.line
     ?? instances.find((i) => i.anchor.file === domFile)?.anchor.line ?? 0
 
+  // Number ONLY the direction entries (1..N in journal order — the order the
+  // shell recorded them, which is the composite's badge order). Instances and
+  // legacy session edits ride unnumbered so the badge mapping can't drift.
+  let directionNumber = 0
   const summaryLines = [
     ...instances.map((i) => `- place <${i.inserted.componentName ?? i.inserted.tag}> ${i.anchor.position} ${i.anchor.component || i.anchor.targetTag || 'target'}`),
-    ...entries.map((e, idx) => `${hasDirections ? `${instances.length + idx + 1}. ` : '- '}${e.change.description}`),
+    ...entries.map((e) => e.change.type === 'wireframe_direction'
+      ? `${++directionNumber}. ${e.change.description}`
+      : `- ${e.change.description}`),
   ]
-  // Directions get the intent frame: the numbered list maps 1:1 to the badges
-  // burned into the before/after composite, and pixels are hints by contract.
+  // Directions get the intent frame; the composite sentence only when a
+  // composite actually rode along (the screenshot is best-effort by design).
+  const compositeNote = extras?.screenshot
+    ? " The task screenshot is a labeled before/after composite (left: captured render; right: the user's sketch — rearranged images, not real UI). Numbered badges on the right pane match the numbered directions below."
+    : ''
   const description = hasDirections
-    ? `Implement the wireframe sketch on ${route}. The task screenshot is a labeled before/after composite (left: captured render; right: the user's sketch — rearranged images, not real UI). Numbered badges on the right pane match the directions below. Pixel positions are hints — implement the INTENT with idiomatic layout.\n${summaryLines.join('\n')}`
+    ? `Implement the wireframe sketch on ${route}.${compositeNote} Pixel positions are hints — implement the INTENT with idiomatic layout.\n${summaryLines.join('\n')}`
     : `Apply ${summaryLines.length} design-session edit${summaryLines.length === 1 ? '' : 's'} on ${route}:\n${summaryLines.join('\n')}`
 
   const task = await options.addTask({

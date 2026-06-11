@@ -630,8 +630,11 @@ function onWireframeConfigureBlock(id: string) {
 }
 
 // "Implement this wireframe" mints the task through the existing apply loop,
-// then rides the same auto-run path as Apply now / Build.
+// then rides the same auto-run path as Apply now / Build. Any open generate
+// session is cancelled first — the sketch is about to lock, and a pending
+// ghost placement must not mutate it mid-implement.
 async function onImplementWireframe() {
+  componentGenerator.cancel()
   const result = await wireframeMode.implementWireframe()
   if (result?.taskId) onApplyRunAgent(result.taskId)
 }

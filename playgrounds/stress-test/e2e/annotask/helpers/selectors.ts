@@ -20,7 +20,6 @@ export const SEL = {
   toolSelect: '[data-testid="tool-select"]',
   toolPin: '[data-testid="tool-pin"]',
   toolArrow: '[data-testid="tool-arrow"]',
-  toolDraw: '[data-testid="tool-draw"]',
   toolHighlight: '[data-testid="tool-highlight"]',
 
   btnTasksPanel: '[data-testid="btn-tasks-panel"]',

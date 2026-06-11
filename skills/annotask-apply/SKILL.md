@@ -19,7 +19,7 @@ Use this skill when the user says:
 
 ## How it works
 
-Annotask is a visual markup tool that integrates with Vite and Webpack. The user annotates the page with pins, sticky notes, arrows, text highlights, and drawn sections. These become **tasks** stored in `.annotask/tasks.json` and served via API. This skill fetches pending tasks, applies them, and marks them for review.
+Annotask is a visual markup tool that integrates with Vite and Webpack. The user annotates the page with pins, sticky notes, arrows, and text highlights (sections are wireframe sketch material — they arrive as `wireframe_apply` add directions, not Annotate tasks). These become **tasks** stored in `.annotask/tasks.json` and served via API. This skill fetches pending tasks, applies them, and marks them for review.
 
 ## MCP preference
 

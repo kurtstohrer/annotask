@@ -44,6 +44,26 @@ describe('schemaToShape — pure walker', () => {
     })).toEqual({ kind: 'object', children: { id: { kind: 'scalar', scalar: 'string' }, name: { kind: 'scalar', scalar: 'string' } } })
   })
 
+  it('allOf composes with an explicit object type and with sibling properties', () => {
+    // `{ type:'object', allOf:[…] }` — inherited keys must not be swallowed.
+    expect(schemaToShape({
+      type: 'object',
+      allOf: [{ type: 'object', properties: { id: { type: 'string' } } }],
+    })).toEqual({ kind: 'object', children: { id: { kind: 'scalar', scalar: 'string' } } })
+    // Composition + extension: own properties override inherited ones.
+    expect(schemaToShape({
+      allOf: [{ type: 'object', properties: { id: { type: 'string' }, name: { type: 'integer' } } }],
+      properties: { name: { type: 'string' }, extra: { type: 'boolean' } },
+    })).toEqual({
+      kind: 'object',
+      children: {
+        id: { kind: 'scalar', scalar: 'string' },
+        name: { kind: 'scalar', scalar: 'string' }, // own wins
+        extra: { kind: 'scalar', scalar: 'boolean' },
+      },
+    })
+  })
+
   it('takes the first object-ish oneOf/anyOf variant', () => {
     expect(schemaToShape({
       oneOf: [{ type: 'string' }, { type: 'object', properties: { ok: { type: 'boolean' } } }],

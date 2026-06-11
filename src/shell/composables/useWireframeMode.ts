@@ -94,12 +94,13 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     return normalizeRoute(iframe.currentRoute.value)
   }
 
-  /** Resolve a block's image source: session dataUrl first (own id, then the
-   *  duplicated original's), then the persisted sidecar file. Null = the
-   *  honest "capture failed" hatch. */
+  /** Resolve a block's image source: session dataUrl first, then the
+   *  persisted sidecar file. Null = the honest "capture failed" hatch.
+   *  Strictly own-id keyed: duplicates get their own liveImages entry at
+   *  duplication time, so a later regenerate of the original can't bleed
+   *  into them through a shared key. */
   function imageSrc(block: WireframeBlock): string | null {
     const live = liveImages.value[block.id]
-      ?? (block.duplicateOf ? liveImages.value[block.duplicateOf] : undefined)
     if (live) return live
     if (block.image) return `/__annotask/wireframe-snapshots/${block.image}`
     return null
@@ -375,6 +376,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       createdAt: Date.now(),
     }
     delete copy.updatedAt
+    // Own liveImages entry — the copy renders the image AS IT IS NOW even if
+    // the original regenerates later (imageSrc is strictly own-id keyed).
+    const srcLive = liveImages.value[src.id]
+    if (srcLive) liveImages.value = { ...liveImages.value, [copy.id]: srcLive }
     c.blocks.push(copy)
     persistSoon()
     return copy.id
@@ -446,8 +451,19 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       b.fidelity = snap.fidelity ?? (snap.mounted ? 'isolated-preview' : 'placeholder')
       if (snap.dataUrl) {
         liveImages.value = { ...liveImages.value, [b.id]: snap.dataUrl }
-        const filename = await uploadSnapshot(b.id, snap.dataUrl)
-        if (filename) b.image = filename
+        // Fresh filename per regenerate: duplicates may share the OLD file
+        // (overwriting it would silently change them), and the browser caches
+        // snapshot URLs for an hour (same-name re-upload would be masked
+        // after the next reload).
+        const oldImage = b.image
+        const filename = await uploadSnapshot(mintBlockId(), snap.dataUrl)
+        if (filename) {
+          b.image = filename
+          const c = canvas.value
+          if (oldImage && oldImage !== filename && c && !c.blocks.some((x) => x.image === oldImage)) {
+            void deleteSnapshot(oldImage)
+          }
+        }
         if (snap.width && snap.width > 24) b.rect.width = snap.width
         if (snap.height && snap.height > 24) b.rect.height = snap.height
       } else {

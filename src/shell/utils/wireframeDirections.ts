@@ -175,11 +175,20 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       const where = neighbor
         ? `${position === 'append' ? 'inside' : position} the ${label(neighbor)}${fileLine(neighbor)}`
         : 'on the page'
+      // A duplicate whose original LEFT the sketch (deleted/exploded) has no
+      // anchor to copy from — say so honestly instead of claiming the user
+      // sketched a box. A placeholder WITH md is a drawn section: the spec in
+      // added.md is the contract, not "keep it visibly a placeholder".
+      const danglingDup = b.kind === 'captured' && !!b.duplicateOf && !original
       const what = kind === 'component'
         ? `component <${componentName ?? ownLabel}>`
         : kind === 'duplicate'
           ? `a duplicate of the ${label(original!)} block's markup`
-          : `placeholder "${ownLabel}" (user-sketched box ${rectStr(b.rect)}; keep it visibly a placeholder)`
+          : danglingDup
+            ? `a copy of the removed "${ownLabel}" block (its original left the sketch — the AFTER pane shows its content; re-anchor from the screenshot, never invent)`
+            : b.md
+              ? `drawn section "${ownLabel}" (user-sketched box ${rectStr(b.rect)})`
+              : `placeholder "${ownLabel}" (user-sketched box ${rectStr(b.rect)}; keep it visibly a placeholder)`
       // Honest summaries only: the FULL md body rides added.md verbatim (the
       // description quotes its first line); the binding summary names the
       // real source + the shape_source honesty tag.

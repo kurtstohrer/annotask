@@ -31,14 +31,14 @@ for (const app of APPS) {
       await expect(page.locator(SEL.tabAnnotate)).toHaveClass(/active/)
     })
 
-    for (const tool of ['pin', 'arrow', 'draw', 'highlight', 'select', 'interact'] as const) {
+    for (const tool of ['pin', 'arrow', 'highlight', 'select', 'interact'] as const) {
       test(`tool ${tool} activates`, async ({ page }) => {
         test.info().annotations.push({ type: 'matrix', description: `${app.id}/${FEATURE_GROUP}/tool-${tool}` })
         const shell = new AnnotaskShell(page, app)
         await shell.open()
         await shell.activateTool(tool)
         const map = {
-          pin: SEL.toolPin, arrow: SEL.toolArrow, draw: SEL.toolDraw,
+          pin: SEL.toolPin, arrow: SEL.toolArrow,
           highlight: SEL.toolHighlight, select: SEL.toolSelect, interact: SEL.toolInteract,
         } as const
         await expect(page.locator(map[tool])).toHaveClass(/active/)

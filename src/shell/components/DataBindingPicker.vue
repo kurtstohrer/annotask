@@ -40,9 +40,11 @@ const selected = ref<ProjectDataEntry | null>(null)
 const shape = ref<DataSourceShape | null>(null)
 const shapeLoading = ref(false)
 
-// Drill-down state.
+// Drill-down state. pickedPath is null until the user explicitly picks a row
+// — an object ROOT's path is the empty string, so '' can't mean "nothing
+// picked" without falsely highlighting that row.
 const expanded = ref<Set<string>>(new Set())
-const pickedPath = ref('')
+const pickedPath = ref<string | null>(null)
 const pickedNode = ref<DataShapeNode | null>(null)
 const pickedFields = ref<Set<string>>(new Set())
 // Free-text fallbacks for the source-details / none rungs.
@@ -71,12 +73,18 @@ const filtered = computed(() => {
     || (e.endpoint ?? '').toLowerCase().includes(q))
 })
 
+// Monotonic token: a cold first resolve (full scan) can take seconds while a
+// later cache-warm pick returns instantly — a stale response must never land
+// on a newer selection.
+let pickSeq = 0
+
 async function pickEntry(entry: ProjectDataEntry): Promise<void> {
+  const seq = ++pickSeq
   selected.value = entry
   shape.value = null
   shapeLoading.value = true
   expanded.value = new Set()
-  pickedPath.value = ''
+  pickedPath.value = null
   pickedNode.value = null
   pickedFields.value = new Set()
   freePath.value = ''
@@ -86,15 +94,17 @@ async function pickEntry(entry: ProjectDataEntry): Promise<void> {
     if (entry.file) params.set('file', entry.file)
     const res = await fetch(`/__annotask/api/data-source-shape?${params}`)
     const body = await res.json() as DataSourceShape | { error: string }
+    if (seq !== pickSeq) return // a newer pick raced ahead — drop this response
     // Ambiguous/not-found degrade to the blind view — kind+file disambiguate
     // in practice, and honesty beats a guessed tree.
     shape.value = 'error' in body
       ? { name: entry.name, kind: entry.kind, file: entry.file, shape_source: 'none' }
       : body
   } catch {
+    if (seq !== pickSeq) return
     shape.value = { name: entry.name, kind: entry.kind, file: entry.file, shape_source: 'none' }
   } finally {
-    shapeLoading.value = false
+    if (seq === pickSeq) shapeLoading.value = false
   }
 }
 
@@ -145,7 +155,7 @@ function confirm(): void {
   const s = shape.value
   if (!entry || !s) return
   const usingTree = s.shape_source === 'api-schema'
-  const path = usingTree ? pickedPath.value : freePath.value
+  const path = usingTree ? (pickedPath.value ?? '') : freePath.value
   const fields = usingTree
     ? [...pickedFields.value]
     : freeFields.value.split(',').map(f => f.trim()).filter(Boolean)
@@ -225,8 +235,8 @@ function confirm(): void {
                 </span>
               </div>
             </div>
-            <div v-if="pickedPath" class="bp-picked">
-              <span class="bp-picked-path">path: <code>{{ pickedPath }}</code></span>
+            <div v-if="pickedNode" class="bp-picked">
+              <span class="bp-picked-path">path: <code>{{ pickedPath || '(whole response)' }}</code></span>
               <div v-if="candidates.length" class="bp-fields">
                 <span class="bp-fields-label">show fields:</span>
                 <label v-for="key in candidates" :key="key" class="bp-field">

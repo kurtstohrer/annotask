@@ -324,7 +324,7 @@
         <p class="help-intro">Open Settings from the gear icon in the toolbar. Controls for appearance and shell behavior.</p>
 
         <h3 id="settings-themes" class="help-section-title">Themes</h3>
-        <p class="help-text">18 built-in themes (Dark, Light, Monokai, Solarized, Nord, One Dark, Dracula, GitHub, Catppuccin Mocha, Gruvbox, Rosé Pine, Synthwave '84, Cobalt, plus high-contrast and deuteranopia). Create custom themes via Settings → Appearance → "Create Custom Theme" — all 63 CSS variables are exposed with live preview.</p>
+        <p class="help-text">18 built-in themes (Dark, Light, Monokai, Solarized, Nord, One Dark, Dracula, GitHub, Catppuccin Mocha, Gruvbox, Rosé Pine, Synthwave '84, Cobalt, plus high-contrast and deuteranopia). Create custom themes via Settings → Appearance → "Create Custom Theme" — all 62 CSS variables are exposed with live preview.</p>
         <p class="help-text">Enable <strong>System preference</strong> to auto-pair a dark theme with a light theme and follow your OS.</p>
 
         <h3 id="settings-task-options" class="help-section-title">Task Options</h3>

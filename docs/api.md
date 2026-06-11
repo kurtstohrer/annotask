@@ -392,9 +392,9 @@ The live report's `changes[]` union currently includes:
 - `scoped_style_update` experimental
 - `prop_update` experimental
 - `component_insert`
-- `component_move`
+- `component_move` legacy — no longer emitted (the Reposition tool was removed); agents still apply it from older reports
 - `component_delete` experimental
 - `annotation`
-- `section_request`
+- `section_request` legacy — no longer emitted (sections are wireframe sketch material riding `wireframe_apply` add directions)
 
 The canonical definitions live in `src/schema.ts`.

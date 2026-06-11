@@ -178,6 +178,8 @@ describe('computeWireframeDirections', () => {
     })
     expect(dirs[0].measured!.after).toBeDefined()
     // The description quotes only the md's first line + an honest binding summary.
+    expect(dirs[0].description).toContain('drawn section "related planets"')
+    expect(dirs[0].description).not.toContain('keep it visibly a placeholder') // the md spec IS the contract
     expect(dirs[0].description).toContain('first line: "Related planets"')
     expect(dirs[0].description).not.toContain('name and type for each')
     expect(dirs[0].description).toContain('bind to the composable usePlanets → planets[] (show name, type) [shape: api-schema]')

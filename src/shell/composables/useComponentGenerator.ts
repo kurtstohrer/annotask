@@ -145,6 +145,7 @@ export function useComponentGenerator(deps: ComponentGeneratorDeps) {
   async function generate(): Promise<void> {
     const s = session.value
     if (!s || s.generating) return
+    if (deps.wireframe.building.value) { session.value = null; return } // sketch locked mid-session
     s.generating = true
     s.error = null
     try {
@@ -206,9 +207,11 @@ export function useComponentGenerator(deps: ComponentGeneratorDeps) {
   async function placeAt(at: { x: number; y: number }): Promise<string | null> {
     const s = session.value
     if (!s || !s.generated) return null
-    const id = await deps.wireframe.addPaletteBlock(componentRef(s), s.generated, at, s.binding ?? undefined)
+    if (deps.wireframe.building.value) { session.value = null; return null } // sketch locked mid-session
+    // Close the session SYNCHRONOUSLY — addPaletteBlock awaits a network
+    // upload, and a second click during that window must not place twice.
     session.value = null
-    return id
+    return deps.wireframe.addPaletteBlock(componentRef(s), s.generated, at, s.binding ?? undefined)
   }
 
   async function placeAtDropPoint(): Promise<string | null> {
@@ -221,13 +224,17 @@ export function useComponentGenerator(deps: ComponentGeneratorDeps) {
   async function apply(): Promise<void> {
     const s = session.value
     if (!s?.editBlockId) return
+    if (deps.wireframe.building.value) { session.value = null; return }
+    session.value = null // same reentrancy discipline as placeAt
     await deps.wireframe.updatePaletteBlock(s.editBlockId, {
       props: definedEntries(s.propsState),
-      previewProps: s.generatedWith ?? plain({ ...s.previewPropsState, ...definedEntries(s.propsState) }),
+      // previewProps are "what the user saw rendered" — only overwrite them
+      // when a generate actually rendered this session; an apply-without-
+      // generate (binding-only tweak) keeps the block's existing samples.
+      ...(s.generatedWith ? { previewProps: s.generatedWith } : {}),
       data: s.binding,
       ...(s.generated?.dataUrl ? { snapshot: s.generated } : {}),
     })
-    session.value = null
   }
 
   function cancel(): void {

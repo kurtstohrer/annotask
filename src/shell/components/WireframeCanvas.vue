@@ -80,6 +80,7 @@ const isSelected = (id: string) => selectedIds.value.includes(id)
 
 function select(id: string | null, additive = false): void {
   noteEditing.value = false
+  mdEditing.value = false // the editor unmounts with the selection — never leave the flag set (it gates ALL canvas keys)
   if (id === null) {
     selectedIds.value = []
     return
@@ -104,7 +105,12 @@ function selectedBlocks(): WireframeBlock[] {
 // ── Keyboard: delete / duplicate / Escape / arrow nudge ───
 
 function onKeydown(e: KeyboardEvent): void {
-  // Typing/picking — keys belong to the inputs, never to block ops.
+  // Typing/picking — keys belong to the inputs, never to block ops. The
+  // target check covers inputs that bubble from INSIDE the canvas root
+  // (GenerateComponentPanel, its embedded picker) — without it, Backspace in
+  // a prop field deletes the selected block.
+  const tag = (e.target as HTMLElement)?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
   if (noteEditing.value || labelDraft.value !== null || mdEditing.value || dataPickerFor.value !== null) return
   if (e.key === 'Escape' && placing.value) { props.generator?.cancelPlace(); return }
   if (e.key === 'Escape') { select(null); drawMode.value = false; return }
@@ -367,6 +373,9 @@ function onStageUp(): void {
       b.rect.x < marquee.x + marquee.width && b.rect.x + b.rect.width > marquee.x
       && b.rect.y < marquee.y + marquee.height && b.rect.y + b.rect.height > marquee.y,
     ).map((b) => b.id)
+    // Direct selection change — same editor-flag hygiene as select().
+    noteEditing.value = false
+    mdEditing.value = false
     selectedIds.value = marqueeAdditive ? [...new Set([...selectedIds.value, ...hit])] : hit
     if (hit.length) rootRef.value?.focus()
   } else {
@@ -1019,7 +1028,7 @@ function onRecaptureConfirmed(): void {
   padding: 4px 8px;
 }
 
-/* ── Resize handles (DrawnSectionOverlay pattern) ── */
+/* ── Resize handles (8-handle pattern) ── */
 .resize-handle { position: absolute; z-index: 6; }
 .rh-n  { top: -4px; left: 8px; right: 8px; height: 8px; cursor: n-resize; }
 .rh-s  { bottom: -4px; left: 8px; right: 8px; height: 8px; cursor: s-resize; }
