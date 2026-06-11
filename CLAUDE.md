@@ -30,6 +30,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_api_operation` | Fetch one API operation by path |
 | `annotask_resolve_endpoint` | Match a concrete URL to a known API operation |
 | `annotask_get_source_excerpt` | Direct source excerpt by file/line (no task required) |
+| `annotask_get_binding_classification` | Round-trip-honesty classification of one element by file/line[/tag]: per-prop literal/bound/unknown, text kind, enclosing loop |
 | `annotask_get_playbook` | Fetch a task-type companion playbook (A11Y_RULES, THEME_UPDATE, ERROR_FIX, PERF_FIX, WIREFRAME_APPLY) |
 | `annotask_get_agent_directions` | Fetch per-persona project directions from `.annotask/agents.json` |
 | `annotask_conversation_read` | Read a task's conversation thread (optional `after_id` for cheap polling) |
@@ -77,6 +78,7 @@ annotask components [search] # List components (add --mcp for JSON)
 annotask component <Name>    # Show component props
 annotask code-context <id>   # Ground task to current source excerpt
 annotask source-excerpt <file> <line>  # Direct source excerpt by file/line
+annotask binding-classify --file=F --line=N [--tag=T]  # literal/bound/loop honesty classification
 annotask playbook <task-type>  # Print a task-type companion playbook
 annotask agent-directions [persona]  # Per-persona project directions
 annotask component-examples Button # Real in-repo component usage examples
@@ -116,10 +118,12 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `DELETE /__annotask/api/tasks/:id` — Delete a task and its screenshot
 - `GET /__annotask/api/design-spec` — Design spec (tokens, framework, breakpoints)
 - `GET /__annotask/api/components` — Component library catalog
+- `GET /__annotask/api/project-components` — The project's own `src/` components as a "Project" library (pinned first in the palette)
 - `GET /__annotask/api/component-usage` — Project component usage index
 - `GET /__annotask/api/component-examples/:name` — In-repo component usage examples
 - `GET /__annotask/api/code-context/:taskId` — Ground task to current source context
 - `GET /__annotask/api/source-excerpt` — Direct source excerpt by file/line
+- `GET /__annotask/api/binding-classify` — Round-trip honesty classification for one element (`?file&line&tag?`): per-prop literal/bound/unknown, text literal/bound/mixed, enclosing loop — agent grounding before rewriting props/text
 - `GET /__annotask/api/data-context/:taskId` — Stored or resolved task data context
 - `GET /__annotask/api/data-context/probe|resolve|element` — Shell data-context helpers
 - `GET /__annotask/api/data-sources` — Project data-source catalog (add `?include_runtime=true` to append the runtime-observed endpoint catalog)
@@ -135,8 +139,11 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET /__annotask/api/agent-configs` — Per-persona project directions (`{ version, agents: { [personaId]: { projectDirections } } }`)
 - `PATCH /__annotask/api/agent-configs/:id` — Update one persona's `projectDirections`, `providerId`, `model`, or `effort`
 - `GET|PUT /__annotask/api/wireframe` — Multi-route wireframe document (`?route=PATH` slices one route; persists to `.annotask/wireframe.json`)
-- `POST /__annotask/api/wireframe/draft` — Reversible render-in-place draft (opt-in via `ANNOTASK_RENDER_IN_PLACE`; 404 when off)
-- `POST /__annotask/api/wireframe/draft/revert` — Revert a draft by `draftId` (hash-guarded)
+- `GET|PUT|DELETE /__annotask/api/design-session` — Design-session journal (ordered record of design-tool edits; CAS on `rev`, 409 on stale writes; persists to `.annotask/design-session.json`). DELETE = server-owned discard: clears the journal and removes session-created wireframe placements
+- `POST /__annotask/api/design-session/apply` — "Apply now": snapshots the touched files, mints ONE `wireframe_apply` task (placements + design-session edits in `context.session`), stamps statuses; the shell then runs the embedded agent on it. The agent writes source — the tool never does
+- `POST /__annotask/api/design-session/undo-batch` — Restore the newest apply batch's pre-apply bytes (hash-guarded; entries return to pending)
+- `POST /__annotask/api/design-session/detach-file` — Diverged-file resolution: keep the disk bytes, drop the file from the session
+- `GET /__annotask/api/design-session/snapshots` — Snapshot-engine state (touched files, divergence, apply batches) — persists to `.annotask/file-snapshots.json`; rehydrates across restarts (files revert only via explicit undo/discard)
 - `POST /__annotask/api/agent/spawn` — Spawn an allow-listed local CLI as SSE (same-port origin gate; `ANNOTASK_MAX_PERMISSION` ceiling)
 - `DELETE /__annotask/api/agent/spawn/:runId` — Abort a running spawn
 - `GET /__annotask/api/agent/detect` — Detect installed/logged-in local CLIs
@@ -160,7 +167,7 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `POST /__annotask/api/screenshots` — Upload a screenshot
 - `GET /__annotask/screenshots/:filename` — Serve a screenshot
 - `GET /__annotask/api/status` — Health check
-- `ws://localhost:5173/__annotask/ws` — Live WebSocket stream (events include `tasks:updated`, `components:updated`, `init:progress`, `runtime-endpoints:updated`, `wireframe:updated`)
+- `ws://localhost:5173/__annotask/ws` — Live WebSocket stream (events include `tasks:updated`, `components:updated`, `init:progress`, `runtime-endpoints:updated`, `wireframe:updated`, `session:updated`)
 
 Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 
@@ -322,12 +329,12 @@ Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth
 |------|--------|-------------|
 | `annotation` | Pins, arrows, notes, text highlights | User intent described in `description`, optional `action` and `context` |
 | `section_request` | Drawn sections | New content area with `description` and `placement` |
-| `style_update` | Inspector style/class edits | CSS changes in `context.changes` array with `property`, `before`, `after` |
+| `style_update` | Inspector style/class edits | `context.changes` array: CSS changes (`property`, `before`, `after`) and class changes. Legacy `component_prop_update`/`text_update` entries may appear in tasks minted before the snapshot-wireframe pivot — apply them per the SKILL.md rules when present |
 | `theme_update` | Theme page commit | One task per commit. `context.edits[]` — each entry carries `category`, `role`, `cssVar`, `theme_variant`, `theme_selector` (how that variant is activated in the DOM — attribute/class/media/default), `before`, `after`, `sourceFile`, `sourceLine`, `isNew`. `context.specFile` is the relative path to `.annotask/design-spec.json`; the agent patches it after applying CSS edits so the Theme page hot-reloads. |
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
 | `error_fix` | Errors tab "Fix" action | Console error/warning with `level`, `occurrences`, `errorId` in `context` |
 | `perf_fix` | Perf tab "Fix" action | Performance finding with `metric`, `value`, `unit`, `severity`, `category`, `findingId` in `context` |
-| `wireframe_apply` | Wireframe palette ("Build this route") | One task per route. `context.wireframe` = `{ route, instances[] }` — each instance carries an `anchor` (`file`, `line`, `position`, `component`, `targetTag` — the drop target's source location and placement) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). Applied via the `WIREFRAME_APPLY.md` companion playbook. |
+| `wireframe_apply` | Wireframe palette ("Build this route") or design session ("Apply now") | One task per route. `context.wireframe` = `{ route, instances[] }` — each instance carries an `anchor` (`file`, `line`, `position`, `component`, `targetTag` — the drop target's source location and placement) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). An "Apply now" task additionally carries `context.session` = `{ session_id, entries[] }` (design-session edits — style/class/move/insert — with anchors + honesty evidence); the server snapshots the touched files first so undo/discard stays byte-exact, and verifies each entry against source when the task reaches `review`. Applied via the `WIREFRAME_APPLY.md` companion playbook. |
 
 ## Task Lifecycle
 

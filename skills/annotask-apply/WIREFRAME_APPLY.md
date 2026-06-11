@@ -47,6 +47,19 @@ Never edit, rewrite, or "clean up" `wireframe.json` yourself — a manual edit r
 5. Apply props from `inserted.props`, but only primitives that differ from the component's documented defaults. **Never fabricate** event handlers, data bindings, children, or named slots — if a component clearly needs them, note it in the resolution (or use `needs_info`).
 6. After all placements land, set status to `review` with a per-instance resolution (what you inserted, where, and any import you had to guess).
 
+## Design-session edits (`context.session`)
+
+An "Apply now" task additionally carries `context.session` — the user's design-session edits, alongside (or instead of) `context.wireframe`:
+
+- `session_id`: bookkeeping. Like `wireframe.json`, the server owns `.annotask/design-session.json` and `.annotask/file-snapshots.json` — **never edit, rewrite, or clean up those files yourself**. Apply through source code only; the server verifies your work and updates the session when you set `review`.
+- `entries[]`: each is `{ id, change, anchor, evidence?, instance_id? }`.
+  - `change` is one of the structured change types (`component_prop_update`, `text_update`, `style_update`, `class_update`, `component_move`, …) — apply each per the change-type rules in SKILL.md step d.
+  - `anchor` (`{ file, line, targetTag? }`) is where the edit was recorded. Your own earlier edits in the same run shift lines — apply **bottom-up per file** like placements, and re-ground via `annotask_get_source_excerpt` when an anchor doesn't match.
+  - `evidence.classification` (legacy `component_prop_update`/`text_update` entries only) is the round-trip-honesty proof from when the user made the edit: `literal` edits rewrite a plain literal in place; `expression-literal` edits keep the binding syntax (`:count="3"` → `:count="4"`); `bound` edits never appear (the UI refused them). If what you find at the anchor contradicts the evidence, the source drifted — re-anchor or ask via `needs_info`, never rewrite an expression.
+  - When unsure what a field at an anchor is, `GET /__annotask/api/binding-classify?file=…&line=…&tag=…` (MCP: `annotask_get_binding_classification`) re-classifies it against the CURRENT source.
+- Prefer idiomatic placement over literal transcription: if a `style_update` matches a design token (`token_role` present, or an obvious token in `annotask_get_design_spec`), apply the token/class rather than a raw value, and say so in the resolution.
+- After you set `review`, the server re-reads the source per entry and marks each `written` or `failed` — a `failed` badge in the user's panel means your edit wasn't found where expected, so make resolutions specific about what landed where.
+
 ## Edge cases
 
 - If an `anchor.file`/`line` no longer matches the described element (source drifted since the placement), call `annotask_get_code_context` for the task to re-anchor; if you still can't place it, mark that instance and use `needs_info`.
