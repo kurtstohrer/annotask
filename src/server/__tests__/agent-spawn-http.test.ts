@@ -15,6 +15,7 @@ import type { ChildProcessWithoutNullStreams, spawn as nodeSpawn } from 'node:ch
 import { createAPIMiddleware } from '../api.js'
 import { createAgentSpawnHandler } from '../agent-spawn.js'
 import { emptyWireframeDocument, type WireframeDocument } from '../../shared/wireframe-types.js'
+import type { DesignSessionDocument } from '../../shared/design-session-types.js'
 
 const SPAWN_PATH = '/__annotask/api/agent/spawn'
 const MAX_LINE = 1_048_576 // mirrors MAX_BUFFERED_LINE_BYTES in agent-spawn.ts
@@ -155,9 +156,19 @@ describe('agent-spawn over HTTP (real middleware + real spawn handler)', () => {
     setAgentConfig: async () => ({ version: 1 as const, agents: {} }),
     getWireframe: async () => wireframeDoc,
     setWireframe: async (doc: WireframeDocument) => { wireframeDoc = doc; return doc },
-    renderInPlaceEnabled: false,
-    writeDraft: async () => ({ draftId: 'draft-test' }),
-    revertDraft: async () => ({ reverted: true }),
+    getDesignSession: async () => ({ version: '1.0' as const, sessionId: 'ds-test', startedAt: 0, updatedAt: 0, entries: [] }),
+    setDesignSession: async (doc: DesignSessionDocument) => doc,
+    clearDesignSession: async () => ({ version: '1.0' as const, sessionId: 'ds-test', startedAt: 0, updatedAt: 0, entries: [] }),
+    snapshots: {
+      snapshotFiles: async () => undefined,
+      sealBatch: async () => undefined,
+      revertBatch: async () => ({ reverted: [], skipped: [] }),
+      revertAll: async () => ({ reverted: [], skipped: [] }),
+      commit: async () => undefined,
+      detachFile: async () => undefined,
+      state: async () => ({ files: {}, batches: [] }),
+      flush: async () => undefined,
+    },
     usageLedger: {
       append: async (e: { scope: 'task' | 'init' | 'apply' | 'chat' }) => ({ ts: 0, scope: e.scope, inputTokens: 0, outputTokens: 0 }),
       readAll: async () => [],

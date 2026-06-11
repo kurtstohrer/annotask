@@ -6,7 +6,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { createAPIMiddleware } from '../../server/api'
 import { createWireframeStore } from '../../server/wireframe-store'
+import { createSessionStore } from '../../server/session-store'
+import { createSnapshotStore } from '../../server/file-snapshots'
 import type { WireframeDocument, WireframeInstance } from '../../shared/wireframe-types'
+import { emptyDesignSessionDocument, type DesignSessionDocument, type SessionEntry } from '../../shared/design-session-types'
 
 function createTestServer(options: Parameters<typeof createAPIMiddleware>[0]) {
   const middleware = createAPIMiddleware(options)
@@ -53,6 +56,7 @@ describe('API endpoints', () => {
   // store would test nothing.
   let wireframeRoot: string
   let wireframeStore: ReturnType<typeof createWireframeStore>
+  let sessionStore: ReturnType<typeof createSessionStore>
   const options = {
     projectRoot: '/tmp/annotask-test',
     getReport: () => ({ version: '1.0', changes: [] }),
@@ -134,9 +138,15 @@ describe('API endpoints', () => {
     setAgentConfig: async () => ({ version: 1 as const, agents: {} }),
     getWireframe: async () => wireframeStore.get(),
     setWireframe: async (doc: WireframeDocument) => wireframeStore.set(doc),
-    renderInPlaceEnabled: false,
-    writeDraft: async () => ({ draftId: 'draft-test' }),
-    revertDraft: async () => ({ reverted: true }),
+    getDesignSession: async () => sessionStore.get(),
+    setDesignSession: async (doc: DesignSessionDocument) => sessionStore.set(doc),
+    clearDesignSession: async () => {
+      const fresh = emptyDesignSessionDocument(`ds-${Date.now()}`)
+      fresh.startedAt = Date.now()
+      fresh.updatedAt = Date.now()
+      return sessionStore.replace(fresh)
+    },
+    snapshots: undefined as never, // assigned a real store on the temp dir in beforeAll
     usageLedger: {
       append: async (e: { scope: 'task' | 'init' | 'apply' | 'chat' }) => ({ ts: 0, scope: e.scope, inputTokens: 0, outputTokens: 0 }),
       readAll: async () => [],
@@ -159,6 +169,8 @@ describe('API endpoints', () => {
   beforeAll(async () => {
     wireframeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-api-wf-'))
     wireframeStore = createWireframeStore(wireframeRoot)
+    sessionStore = createSessionStore(wireframeRoot)
+    ;(options as { snapshots: unknown }).snapshots = createSnapshotStore(wireframeRoot)
     server = createTestServer(options)
     await new Promise<void>((resolve) => server.listen(0, resolve))
   })
@@ -191,6 +203,14 @@ describe('API endpoints', () => {
     const { status, data } = await request(server, 'GET', '/__annotask/api/tasks')
     expect(status).toBe(200)
     expect(data.tasks).toEqual(tasks)
+  })
+
+  it('GET /api/project-components returns the Project library envelope', async () => {
+    const { status, data } = await request(server, 'GET', '/__annotask/api/project-components')
+    expect(status).toBe(200)
+    expect(data.library.name).toBe('Project')
+    expect(Array.isArray(data.library.components)).toBe(true)
+    expect(typeof data.scannedAt).toBe('number')
   })
 
   it('GET /api/status returns ok', async () => {
@@ -700,13 +720,112 @@ describe('API endpoints', () => {
       const after = await request(server, 'GET', '/__annotask/api/wireframe')
       expect(after.data.rev).toBe(rev + 1)
     })
+  })
 
-    it('draft endpoint 404s when render-in-place is disabled', async () => {
-      const { status, data } = await request(server, 'POST', '/__annotask/api/wireframe/draft', {
-        file: 'X.vue', line: 1, position: 'append', componentName: 'Foo',
+  describe('design-session GET/PUT/DELETE', () => {
+    function sessionEntry(id: string, extra: Partial<SessionEntry> = {}): SessionEntry {
+      return {
+        id,
+        ordinal: 1,
+        ts: 1,
+        route: '/planets',
+        change: {
+          id: `c-${id}`, type: 'style_update', description: 'x', file: 'PlanetsPage.vue',
+          section: 'style', line: 9, element: 'h1', property: 'color', before: 'red', after: 'blue',
+        } as SessionEntry['change'],
+        anchor: { file: 'PlanetsPage.vue', line: 9 },
+        live: { status: 'pending' },
+        ...extra,
+      }
+    }
+
+    it('GET returns an empty document on a fresh project', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/api/design-session')
+      expect(status).toBe(200)
+      expect(data.version).toBe('1.0')
+      expect(data.entries).toEqual([])
+      expect(typeof data.sessionId).toBe('string')
+    })
+
+    it('PUT persists the journal (stamping the first rev) and CAS-rejects a stale rev', async () => {
+      const doc: DesignSessionDocument = {
+        version: '1.0', sessionId: 'ds-test-1', startedAt: 1, updatedAt: 1,
+        entries: [sessionEntry('se-1')],
+      }
+      const put = await request(server, 'PUT', '/__annotask/api/design-session', doc as unknown as Record<string, unknown>)
+      expect(put.status).toBe(200)
+      expect(put.data.rev).toBe(1)
+      expect(put.data.entries).toHaveLength(1)
+
+      const got = await request(server, 'GET', '/__annotask/api/design-session')
+      expect(got.data.entries[0].id).toBe('se-1')
+
+      // Round-tripping the current rev wins; replaying it is the other-tab loss.
+      const ok = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...got.data, updatedAt: Date.now(), entries: [sessionEntry('se-1'), sessionEntry('se-2', { ordinal: 2 })],
       })
-      expect(status).toBe(404)
-      expect(data.error.code).toBe('not_found')
+      expect(ok.status).toBe(200)
+      expect(ok.data.rev).toBe(2)
+
+      const stale = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...got.data, updatedAt: Date.now(),
+      })
+      expect(stale.status).toBe(409)
+      expect(stale.data.error.code).toBe('conflict')
+    })
+
+    it('PUT rejects a non-session body and a document with one malformed entry', async () => {
+      const bad = await request(server, 'PUT', '/__annotask/api/design-session', { nope: true })
+      expect(bad.status).toBe(400)
+      expect(bad.data.error.code).toBe('validation_failed')
+
+      const current = await request(server, 'GET', '/__annotask/api/design-session')
+      const oneBad = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...current.data, entries: [sessionEntry('se-good'), { id: 'se-bad' }],
+      })
+      expect(oneBad.status).toBe(400)
+      expect(oneBad.data.error.code).toBe('validation_failed')
+    })
+
+    it('DELETE discards the session: clears the journal and removes session-created placements', async () => {
+      // Seed the wireframe doc with one session-owned instance and one foreign one.
+      const wf = await request(server, 'GET', '/__annotask/api/wireframe')
+      const seeded = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        version: '1.0', updatedAt: Date.now(), rev: wf.data.rev,
+        routes: [{
+          route: '/planets',
+          instances: [
+            { id: 'wfi-session', kind: 'component', anchor: { file: 'PlanetsPage.vue', line: 12, position: 'append' }, inserted: { tag: 'planetcard', componentName: 'PlanetCard' }, fidelity: 'live', mounted: true, createdAt: 1 },
+            { id: 'wfi-keep', kind: 'component', anchor: { file: 'PlanetsPage.vue', line: 20, position: 'append' }, inserted: { tag: 'tag' }, fidelity: 'live', mounted: true, createdAt: 1 },
+          ],
+        }],
+      })
+      expect(seeded.status).toBe(200)
+
+      // Seed the session journal with a placement cross-ref + an element edit.
+      const current = await request(server, 'GET', '/__annotask/api/design-session')
+      const put = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...current.data, updatedAt: Date.now(),
+        entries: [
+          sessionEntry('se-place', { instanceId: 'wfi-session', change: { id: 'c-place', type: 'component_insert', description: 'place', file: 'PlanetsPage.vue', section: 'template', line: 12, insert_position: 'append', inserted: { tag: 'planetcard' } } as never }),
+          sessionEntry('se-style', { ordinal: 2 }),
+        ],
+      })
+      expect(put.status).toBe(200)
+
+      const del = await request(server, 'DELETE', '/__annotask/api/design-session')
+      expect(del.status).toBe(200)
+      expect(del.data.removedInstances).toBe(1)
+      expect(del.data.revertedFiles).toEqual([])
+
+      const after = await request(server, 'GET', '/__annotask/api/design-session')
+      expect(after.data.entries).toEqual([])
+      expect(after.data.sessionId).not.toBe(put.data.sessionId)
+
+      const wfAfter = await request(server, 'GET', '/__annotask/api/wireframe')
+      const ids = wfAfter.data.routes.flatMap((r: { instances: Array<{ id: string }> }) => r.instances.map((i) => i.id))
+      expect(ids).toContain('wfi-keep')
+      expect(ids).not.toContain('wfi-session')
     })
   })
 

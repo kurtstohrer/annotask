@@ -228,6 +228,8 @@ async function dispatch(): Promise<void> {
     await fetchCodeContext()
   } else if (command === 'source-excerpt') {
     await fetchSourceExcerpt()
+  } else if (command === 'binding-classify') {
+    await fetchBindingClassification()
   } else if (command === 'playbook') {
     fetchPlaybook()
   } else if (command === 'agent-directions') {
@@ -996,6 +998,29 @@ async function fetchSourceExcerpt() {
   }
 }
 
+/** Round-trip-honesty classification of one element against current source —
+ *  same payload as the `annotask_get_binding_classification` MCP tool. */
+async function fetchBindingClassification() {
+  const fileArg = args.find(a => a.startsWith('--file='))?.split('=')[1]
+  const lineArg = args.find(a => a.startsWith('--line='))?.split('=')[1]
+  if (!fileArg || !lineArg) {
+    fail('usage', 'Usage: annotask binding-classify --file=PATH --line=N [--tag=NAME]')
+  }
+  const tagArg = args.find(a => a.startsWith('--tag='))?.split('=')[1]
+  const params = new URLSearchParams()
+  params.set('file', fileArg)
+  params.set('line', lineArg)
+  if (tagArg) params.set('tag', tagArg)
+  try {
+    const res = await fetch(`${apiUrl}/binding-classify?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    fail(errCode(err), `Failed to classify bindings: ${err.message}`)
+  }
+}
+
 // ── Playbook: task-type companion apply instructions ────
 
 /**
@@ -1452,6 +1477,8 @@ function printHelp() {
   code-context    Resolve a task to grounded source context (excerpt, symbol, imports, hash)
   source-excerpt  Ground an arbitrary --file/--line to current source (same payload as
                   code-context, but not task-keyed — for multi-file anchors)
+  binding-classify  Round-trip-honesty classification of one element (--file/--line[/--tag]):
+                  per-prop literal|bound|unknown, text kind, enclosing loop
   playbook        Print the task-type companion playbook (a11y_fix, theme_update,
                   error_fix, perf_fix, wireframe_apply). Reads bundled skill files;
                   no dev server needed.

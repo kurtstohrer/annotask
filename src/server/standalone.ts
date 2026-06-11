@@ -22,6 +22,18 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
   })
 
   const httpServer = http.createServer((req, res) => {
+    // Vite serves /__annotask/preview-module through its on-demand /@fs/
+    // transform pipeline; webpack has no equivalent (a raw .vue/.svelte URL
+    // would be untransformable in the browser). Answer honestly and FAST so
+    // ensureComponentLoaded falls into the labeled 'not-registered'
+    // placeholder — off-route palette mounts are a documented Vite-only
+    // capability; on-route components work the same under both bundlers.
+    if (req.url?.startsWith('/__annotask/preview-module')) {
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'preview-module unavailable under webpack: components must be loaded by a visited route' }))
+      return
+    }
     uiServer.middleware(req, res, () => {
       res.statusCode = 404
       res.end('Not found')

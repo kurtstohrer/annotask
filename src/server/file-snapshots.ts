@@ -1,0 +1,300 @@
+import fsp from 'node:fs/promises'
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { resolveProjectFile } from './path-safety.js'
+import type { ApplyBatch } from '../shared/design-session-types.js'
+
+/**
+ * File-snapshot engine — the safety net under the agent-apply loop.
+ *
+ * The tool NEVER authors application source; the embedded agent does. What the
+ * tool guarantees is byte-exact reversibility: before an apply batch spawns
+ * the agent, every file the batch touches is snapshotted here, so "Undo last
+ * apply" restores that batch's pre-apply bytes and "Discard session" restores
+ * every touched file to its session-base bytes.
+ *
+ * Journal: `.annotask/file-snapshots.json` (atomic tmp+rename, written BEFORE
+ * the agent runs). Restart REHYDRATES the journal — agent-written edits are
+ * intentional user work and survive dev-server restarts; files revert only
+ * via explicit Undo/Discard. (The old render-in-place draft engine auto-
+ * reverted on boot; its legacy journal gets that treatment exactly once.)
+ *
+ * Hash guard: a restore only happens when the file on disk still matches the
+ * hash recorded when its batch sealed. A mismatch means the USER edited the
+ * file since — the file flips to 'diverged', restores skip it, and the only
+ * resolution is detachFile (keep the disk bytes, forget the file). Never
+ * clobber, never rebase silently.
+ */
+
+function sha256(s: string): string {
+  return crypto.createHash('sha256').update(s).digest('hex')
+}
+
+interface SnapshotFileEntry {
+  absPath: string
+  /** Session-base bytes — captured ONCE, the first time any batch touches the file. */
+  base: string
+  baseHash: string
+  /** sha256 of the file when its latest batch sealed; the restore hash-guard. */
+  lastAppliedHash?: string
+  status: 'clean' | 'diverged'
+}
+
+interface SnapshotBatch extends ApplyBatch {
+  /** Pre-batch bytes per file — what "Undo last apply" restores. */
+  before: Record<string, string>
+}
+
+interface SnapshotJournal {
+  version: 1
+  files: Record<string, SnapshotFileEntry>
+  batches: SnapshotBatch[]
+}
+
+export interface SnapshotState {
+  files: Record<string, { baseHash: string; lastAppliedHash?: string; status: 'clean' | 'diverged' }>
+  batches: ApplyBatch[]
+}
+
+export interface SnapshotStore {
+  /** Capture pre-batch bytes for every file (and the session base on first touch).
+   *  Persisted BEFORE returning — the journal must exist before the agent runs. */
+  snapshotFiles(files: string[], batch: { id: string; taskId: string }): Promise<void>
+  /** Record post-apply hashes + finish the batch (the restore hash-guard baseline). */
+  sealBatch(batchId: string, opts?: { failed?: boolean }): Promise<void>
+  /** Restore the batch's pre-apply bytes. LIFO-only: only the newest batch can
+   *  be undone (out-of-order restores would resurrect older bytes). */
+  revertBatch(batchId: string): Promise<{ reverted: string[]; skipped: string[] }>
+  /** Discard: every touched file back to its session-base bytes (hash-guarded). */
+  revertAll(): Promise<{ reverted: string[]; skipped: string[] }>
+  /** Accept path: keep the bytes, drop the journal. */
+  commit(): Promise<void>
+  /** Diverged resolution: keep the disk bytes, forget the file entirely. */
+  detachFile(file: string): Promise<void>
+  /** Journal view with a fresh divergence hash-sweep. */
+  state(): Promise<SnapshotState>
+  flush(): Promise<void>
+}
+
+export function createSnapshotStore(projectRoot: string): SnapshotStore {
+  const journalPath = path.join(projectRoot, '.annotask', 'file-snapshots.json')
+  const legacyDraftJournalPath = path.join(projectRoot, '.annotask', 'draft-edits.json')
+
+  let journal: SnapshotJournal = { version: 1, files: {}, batches: [] }
+  // Serialize every mutation: rapid apply/undo clicks and lifecycle hooks must
+  // never interleave read-modify-write on the journal or the files.
+  let chain: Promise<unknown> = Promise.resolve()
+  function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = chain.then(fn, fn)
+    chain = run.catch(() => { /* keep the chain alive */ })
+    return run
+  }
+
+  function resolveAbs(file: string): string {
+    // Containment: snapshot restores are the only tool-authored source writes,
+    // so targets must resolve inside projectRoot (same discipline as the old
+    // draft engine, via the shared resolveProjectFile guard).
+    if (file.includes('\0')) throw new Error(`Invalid snapshot target: ${file}`)
+    if (path.isAbsolute(file)) {
+      const rootAbs = path.resolve(projectRoot)
+      const abs = path.resolve(file)
+      const rootWithSep = rootAbs.endsWith(path.sep) ? rootAbs : rootAbs + path.sep
+      if (!abs.startsWith(rootWithSep)) {
+        throw new Error(`Snapshot target escapes the project root: ${file}`)
+      }
+      return abs
+    }
+    const resolved = resolveProjectFile(projectRoot, file)
+    if (!resolved) throw new Error(`Snapshot target escapes the project root: ${file}`)
+    return resolved.absolutePath
+  }
+
+  async function persist(): Promise<void> {
+    await fsp.mkdir(path.dirname(journalPath), { recursive: true })
+    const tmp = `${journalPath}.tmp.${process.pid}.${Date.now()}`
+    await fsp.writeFile(tmp, JSON.stringify(journal, null, 2), 'utf-8')
+    await fsp.rename(tmp, journalPath)
+  }
+
+  async function rehydrate(): Promise<void> {
+    try {
+      const raw = JSON.parse(await fsp.readFile(journalPath, 'utf-8'))
+      if (raw && typeof raw === 'object' && raw.version === 1 && raw.files && Array.isArray(raw.batches)) {
+        journal = raw as SnapshotJournal
+      }
+    } catch { /* no journal yet */ }
+    // Legacy v1 render-in-place journal: those drafts were preview artifacts,
+    // not user-intentional applies — give them the old restore-and-clear once.
+    try {
+      const legacy = JSON.parse(await fsp.readFile(legacyDraftJournalPath, 'utf-8')) as Record<string, { absPath: string; original: string; modifiedHash: string }>
+      let restored = 0
+      for (const entry of Object.values(legacy ?? {})) {
+        try {
+          const current = await fsp.readFile(entry.absPath, 'utf-8')
+          if (sha256(current) === entry.modifiedHash) {
+            await fsp.writeFile(entry.absPath, entry.original, 'utf-8')
+            restored++
+          }
+        } catch { /* file gone */ }
+      }
+      await fsp.rm(legacyDraftJournalPath, { force: true })
+      if (restored > 0) console.warn(`[Annotask] restored ${restored} legacy render-in-place draft(s)`)
+    } catch { /* no legacy journal */ }
+  }
+
+  const ready = rehydrate()
+
+  /** Hash-guarded restore of one file. Returns false (and marks diverged) when
+   *  the disk bytes aren't the ones our last sealed batch left behind. */
+  async function restoreFile(relFile: string, bytes: string): Promise<boolean> {
+    const entry = journal.files[relFile]
+    if (!entry) return false
+    let current: string
+    try {
+      current = await fsp.readFile(entry.absPath, 'utf-8')
+    } catch {
+      return false
+    }
+    const expected = entry.lastAppliedHash
+    if (expected !== undefined && sha256(current) !== expected) {
+      entry.status = 'diverged'
+      return false
+    }
+    await fsp.writeFile(entry.absPath, bytes, 'utf-8')
+    entry.lastAppliedHash = sha256(bytes)
+    return true
+  }
+
+  return {
+    snapshotFiles(files, batch) {
+      return enqueue(async () => {
+        await ready
+        const before: Record<string, string> = {}
+        for (const file of files) {
+          const absPath = resolveAbs(file)
+          let bytes = ''
+          try { bytes = await fsp.readFile(absPath, 'utf-8') } catch { bytes = '' }
+          before[file] = bytes
+          if (!journal.files[file]) {
+            // First apply wins: the session base is the pre-SESSION state.
+            journal.files[file] = { absPath, base: bytes, baseHash: sha256(bytes), status: 'clean' }
+          }
+        }
+        journal.batches.push({ id: batch.id, taskId: batch.taskId, files: [...files], startedAt: Date.now(), status: 'running', before })
+        await persist()
+      })
+    },
+
+    sealBatch(batchId, opts) {
+      return enqueue(async () => {
+        await ready
+        const batch = journal.batches.find((b) => b.id === batchId)
+        if (!batch) return
+        for (const file of batch.files) {
+          const entry = journal.files[file]
+          if (!entry) continue
+          try {
+            entry.lastAppliedHash = sha256(await fsp.readFile(entry.absPath, 'utf-8'))
+          } catch { /* file deleted by the agent — restore will recreate it */ }
+        }
+        batch.finishedAt = Date.now()
+        batch.status = opts?.failed ? 'failed' : 'done'
+        await persist()
+      })
+    },
+
+    revertBatch(batchId) {
+      return enqueue(async () => {
+        await ready
+        const last = journal.batches[journal.batches.length - 1]
+        if (!last || last.id !== batchId) {
+          throw new Error('Only the most recent apply batch can be undone')
+        }
+        const reverted: string[] = []
+        const skipped: string[] = []
+        for (const [file, bytes] of Object.entries(last.before)) {
+          if (await restoreFile(file, bytes)) reverted.push(file)
+          else skipped.push(file)
+        }
+        journal.batches.pop()
+        // Files whose only batch was this one and whose bytes are back at the
+        // session base carry no session state — drop them so a fully-undone
+        // session leaves an empty journal.
+        for (const file of Object.keys(last.before)) {
+          const stillReferenced = journal.batches.some((b) => file in b.before)
+          const entry = journal.files[file]
+          if (!stillReferenced && entry && entry.status === 'clean' && entry.lastAppliedHash === entry.baseHash) {
+            delete journal.files[file]
+          }
+        }
+        await persist()
+        return { reverted, skipped }
+      })
+    },
+
+    revertAll() {
+      return enqueue(async () => {
+        await ready
+        const reverted: string[] = []
+        const skipped: string[] = []
+        for (const [file, entry] of Object.entries(journal.files)) {
+          if (await restoreFile(file, entry.base)) {
+            reverted.push(file)
+            delete journal.files[file]
+          } else {
+            skipped.push(file)
+          }
+        }
+        journal.batches = []
+        await persist()
+        return { reverted, skipped }
+      })
+    },
+
+    commit() {
+      return enqueue(async () => {
+        await ready
+        journal = { version: 1, files: {}, batches: [] }
+        try { await fsp.rm(journalPath, { force: true }) } catch { /* ignore */ }
+      })
+    },
+
+    detachFile(file) {
+      return enqueue(async () => {
+        await ready
+        delete journal.files[file]
+        for (const batch of journal.batches) {
+          delete batch.before[file]
+          batch.files = batch.files.filter((f) => f !== file)
+        }
+        journal.batches = journal.batches.filter((b) => b.files.length > 0)
+        await persist()
+      })
+    },
+
+    state() {
+      return enqueue(async () => {
+        await ready
+        // Divergence sweep: cheap (few files per session) and keeps the panel honest.
+        for (const entry of Object.values(journal.files)) {
+          if (entry.lastAppliedHash === undefined || entry.status === 'diverged') continue
+          try {
+            const current = await fsp.readFile(entry.absPath, 'utf-8')
+            if (sha256(current) !== entry.lastAppliedHash) entry.status = 'diverged'
+          } catch { entry.status = 'diverged' }
+        }
+        return {
+          files: Object.fromEntries(Object.entries(journal.files).map(([file, e]) => [
+            file,
+            { baseHash: e.baseHash, ...(e.lastAppliedHash !== undefined ? { lastAppliedHash: e.lastAppliedHash } : {}), status: e.status },
+          ])),
+          batches: journal.batches.map(({ before: _before, ...batch }) => batch),
+        }
+      })
+    },
+
+    flush() {
+      return enqueue(async () => { await ready })
+    },
+  }
+}

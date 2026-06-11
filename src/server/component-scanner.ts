@@ -192,6 +192,57 @@ export function clearComponentCache() {
   cachedManifestAt = 0
   inflightCatalog = null
   refreshing = null
+  cachedProjectLibrary = null
+  cachedProjectLibraryAt = 0
+}
+
+// ── Project components (the user's own src/ components, as a palette group) ──
+
+let cachedProjectLibrary: ScannedLibrary | null = null
+let cachedProjectLibraryAt = 0
+const PROJECT_CACHE_TTL_MS = 60 * 1000
+
+/**
+ * Scan the project's own `src/` components into a `ScannedLibrary` shaped like
+ * a node_modules library — the palette renders it as a pinned "Project" group
+ * with zero new shell types, and the properties panel reads local components'
+ * prop metadata from it. `module` is the `./src/…` project-relative specifier
+ * that `ensureComponentLoaded` already resolves through
+ * `/__annotask/preview-module` (raw /@fs/ import, reload-free).
+ */
+export async function scanProjectComponents(projectRoot: string): Promise<ScannedLibrary> {
+  if (cachedProjectLibrary && (Date.now() - cachedProjectLibraryAt) < PROJECT_CACHE_TTL_MS) {
+    return cachedProjectLibrary
+  }
+  const components: ScannedComponent[] = []
+  const seen = new Set<string>()
+  const srcDir = path.join(projectRoot, 'src')
+  try {
+    const files = await findLocalComponentFilesRecursive(srcDir)
+    for (const filePath of files) {
+      const name = extractComponentName(filePath)
+      // PascalCase only — same rule as generateComponentManifest.
+      if (!name || name[0] !== name[0].toUpperCase() || name[0] === name[0].toLowerCase()) continue
+      if (seen.has(name)) continue
+      seen.add(name)
+      const details = await extractComponentDetails(filePath)
+      const relPath = './' + path.relative(projectRoot, filePath).replace(/\\/g, '/')
+      components.push(makeComponent({
+        name,
+        module: relPath,
+        props: details.props,
+        slots: details.slots,
+        events: details.events,
+        description: details.description,
+        sourceFile: filePath,
+        providerSignals: details.providerSignals,
+      }))
+    }
+  } catch { /* src/ may not exist */ }
+  components.sort((a, b) => a.name.localeCompare(b.name))
+  cachedProjectLibrary = { name: 'Project', version: '', components }
+  cachedProjectLibraryAt = Date.now()
+  return cachedProjectLibrary
 }
 
 /** Build a ScannedComponent with sensible empty defaults for optional enrichment fields. */
@@ -1732,6 +1783,12 @@ async function extractPropsFromVue(vuePath: string): Promise<ScannedProp[]> {
   // Strategy A: defineProps<InterfaceName>() with TypeScript interface
   props = extractPropsFromTsInterface(content)
 
+  // Strategy A2: inline type literal — defineProps<{ planet: Planet; active?: boolean }>()
+  if (props.length === 0) {
+    const inline = content.match(/defineProps\s*<\s*\{([\s\S]*?)\}\s*>\s*\(/)
+    if (inline) props = parseTypeLiteralProps(inline[1])
+  }
+
   // Strategy B: defineProps({ prop: { type: String, ... } }) — object literal
   if (props.length === 0) {
     const definePropsObj = content.match(/defineProps\s*\(\s*\{([\s\S]*?)\}\s*\)/)
@@ -1818,6 +1875,36 @@ async function extractPropsFromSvelte(filePath: string): Promise<ScannedProp[]> 
  * If `interfaceName` is given, look for that specific interface.
  * Otherwise, find the interface referenced by defineProps<X>() or $props<X>().
  */
+/** Parse the members of an inline TS type literal (`planet: Planet; active?: boolean`).
+ *  Splits on `;`/`,` at nesting depth 0 so object/generic/function member types
+ *  survive — single-line literals are the common `defineProps<{ … }>()` form. */
+function parseTypeLiteralProps(body: string): ScannedProp[] {
+  const members: string[] = []
+  let depth = 0
+  let current = ''
+  for (const ch of body) {
+    if (ch === '{' || ch === '(' || ch === '[' || ch === '<') depth++
+    else if (ch === '}' || ch === ')' || ch === ']' || ch === '>') depth--
+    if ((ch === ';' || ch === ',' || ch === '\n') && depth === 0) {
+      members.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  members.push(current)
+
+  const props: ScannedProp[] = []
+  for (const member of members) {
+    const m = /^\s*(\w+)(\??)\s*:\s*([\s\S]+?)\s*$/.exec(member)
+    if (!m) continue
+    let type = m[3].replace(/\/\/.*$/m, '').trim()
+    if (type.length > 400) type = type.slice(0, 397) + '...'
+    props.push({ name: m[1], type: type || null, required: m[2] !== '?', description: null, default: null })
+  }
+  return props
+}
+
 function extractPropsFromTsInterface(content: string, interfaceName?: string): ScannedProp[] {
   // Auto-detect interface name from defineProps<X>() or $props<X>()
   if (!interfaceName) {

@@ -21,7 +21,10 @@ import type { UsageLedger } from './usage-ledger.js'
 import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
 import { isWireframeDocument, type WireframeDocument, type WireframeInstance } from '../shared/wireframe-types.js'
 import { WireframeRevConflictError } from './wireframe-store.js'
-import type { DraftEditRequest } from './draft-edits.js'
+import { isDesignSessionDocument, type DesignSessionDocument } from '../shared/design-session-types.js'
+import { RevConflictError } from './json-cas-store.js'
+import type { SnapshotStore } from './file-snapshots.js'
+import { applyDesignSession, verifyAppliedEntries, revertApplyBatch, releaseApplyTask, acceptApplyTask } from './apply-session.js'
 import { PROVIDER_IDS, EFFORT_LEVELS } from '../embedded/provider-config.js'
 
 export interface APIOptions {
@@ -76,11 +79,14 @@ export interface APIOptions {
   getWireframe: () => Promise<WireframeDocument>
   /** Replaces the wireframe document (whole-document PUT). */
   setWireframe: (doc: WireframeDocument) => Promise<WireframeDocument>
-  /** Render-in-place draft capability (P1.3). OFF unless ANNOTASK_RENDER_IN_PLACE
-   *  is set — the draft endpoints 404 when disabled. */
-  renderInPlaceEnabled: boolean
-  writeDraft: (req: DraftEditRequest) => Promise<{ draftId: string }>
-  revertDraft: (draftId: string) => Promise<{ reverted: boolean }>
+  /** Reads the persisted design-session journal. */
+  getDesignSession: () => Promise<DesignSessionDocument>
+  /** Replaces the design-session journal (CAS on rev). */
+  setDesignSession: (doc: DesignSessionDocument) => Promise<DesignSessionDocument>
+  /** Server-owned reset to a fresh empty session (discard). */
+  clearDesignSession: () => Promise<DesignSessionDocument>
+  /** File-snapshot engine — byte-exact undo/discard under the agent-apply loop. */
+  snapshots: SnapshotStore
   /** Append-only token-usage ledger across init / task / apply runs. */
   usageLedger: UsageLedger
 }
@@ -135,9 +141,10 @@ function sendError(res: ServerResponse, status: number, message: string, code: A
 }
 
 import { isAllowedHost, isLocalOrigin, originMatchesPort } from './origin.js'
-import { scanComponentLibraries } from './component-scanner.js'
+import { scanComponentLibraries, scanProjectComponents } from './component-scanner.js'
 import { filterTasksByMfe } from '../shared/task-summary.js'
 import { getCodeContext } from './code-context.js'
+import { classifyBindings } from './binding-classify.js'
 import { getComponentExamples } from './component-examples.js'
 import { scanComponentUsage } from './component-usage.js'
 import { probeDataContext, resolveDataContext, resolveElementDataContext } from './data-context.js'
@@ -591,39 +598,140 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
-    // ── Render-in-place draft (P1.3, opt-in via ANNOTASK_RENDER_IN_PLACE) ──
-    // Writes a reversible component-usage draft at an anchor so Vite HMR
-    // re-renders it in real context. 404 when the feature flag is off — this is
-    // the only path that mutates real project source, so it stays opt-in.
-    if (path === 'wireframe/draft' && req.method === 'POST') {
-      if (!options.renderInPlaceEnabled) return sendError(res, 404, 'render-in-place is disabled', 'not_found')
+    // ── Design-session journal (.annotask/design-session.json) ──
+    // The ordered record of what the user did in the design tool. The shell
+    // owns the in-memory journal and PUTs the whole document (CAS on rev, like
+    // the wireframe doc). DELETE is the server-owned "discard session": it also
+    // removes the session's wireframe placements so a discard from any tab —
+    // even a fresh one after a crash — fully unwinds the session.
+    if (path === 'design-session' && req.method === 'GET') {
+      const doc = await options.getDesignSession()
+      res.end(JSON.stringify(doc, null, 2))
+      return
+    }
+
+    if (path === 'design-session' && req.method === 'PUT') {
       let raw: string
       try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
       if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
-      const b = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data as Record<string, unknown> : null
-      if (!b || typeof b.file !== 'string' || typeof b.line !== 'number' || typeof b.position !== 'string' || typeof b.componentName !== 'string') {
-        return sendError(res, 400, 'Body must include file, line, position, componentName', 'invalid_body')
+      if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
+        return sendError(res, 400, 'Request body must be a JSON object', 'body_not_object')
+      }
+      if (!isDesignSessionDocument(parsed.data)) {
+        return sendError(res, 400, 'Body must be a design-session document { version: "1.0", sessionId, startedAt, updatedAt, entries[] } with well-formed entries', 'validation_failed')
       }
       try {
-        const result = await options.writeDraft(b as unknown as DraftEditRequest)
-        res.end(JSON.stringify(result, null, 2))
+        const saved = await options.setDesignSession(parsed.data)
+        res.end(JSON.stringify(saved, null, 2))
       } catch (err) {
-        return sendError(res, 500, `Draft write failed: ${(err as Error).message}`, 'validation_failed')
+        if (err instanceof RevConflictError) {
+          return sendError(res, 409, err.message, 'conflict')
+        }
+        throw err
       }
       return
     }
 
-    if (path === 'wireframe/draft/revert' && req.method === 'POST') {
-      if (!options.renderInPlaceEnabled) return sendError(res, 404, 'render-in-place is disabled', 'not_found')
+    if (path === 'design-session' && req.method === 'DELETE') {
+      const doc = await options.getDesignSession()
+      const instanceIds = new Set(doc.entries.map((e) => e.instanceId).filter((id): id is string => typeof id === 'string'))
+      let removedInstances = 0
+      if (instanceIds.size > 0) {
+        // Remove the session's placements from wireframe.json — same retry
+        // discipline as closeWireframeLifecycle (best-effort, CAS-retried).
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const wf = await options.getWireframe()
+          let touched = false
+          let removed = 0
+          const routes = wf.routes.map((route) => {
+            if (!route.instances.some((i) => instanceIds.has(i.id))) return route
+            touched = true
+            const instances = route.instances.filter((i) => {
+              if (instanceIds.has(i.id)) { removed++; return false }
+              return true
+            })
+            return { ...route, instances, updatedAt: Date.now() }
+          })
+          if (!touched) break
+          try {
+            await options.setWireframe({ ...wf, routes, updatedAt: Date.now() })
+            removedInstances = removed
+            break
+          } catch (err) {
+            if (!(err instanceof WireframeRevConflictError)) {
+              console.warn('[Annotask] design-session discard: wireframe cleanup failed:', err)
+              break
+            }
+          }
+        }
+      }
+      // Restore every snapshot-tracked file to its session-base bytes
+      // (hash-guarded — files the user edited outside Annotask are skipped
+      // and reported, never clobbered).
+      let revertedFiles: string[] = []
+      let failedFiles: string[] = []
+      try {
+        const result = await options.snapshots.revertAll()
+        revertedFiles = result.reverted
+        failedFiles = result.skipped
+      } catch (err) {
+        console.warn('[Annotask] design-session discard: snapshot restore failed:', err)
+      }
+      await options.clearDesignSession()
+      res.end(JSON.stringify({ revertedFiles, failedFiles, removedInstances }, null, 2))
+      return
+    }
+
+    // ── Agent-apply loop ──
+    // "Apply now": snapshot the touched files, create ONE wireframe_apply task
+    // (context.wireframe placements + context.session panel edits), stamp
+    // statuses. The shell then drives the embedded agent on the returned task
+    // through the existing spawn pipeline; the PATCH→review hook below runs
+    // the verification pass and seals the batch.
+    if (path === 'design-session/apply' && req.method === 'POST') {
       let raw: string
       try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
       if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
       const b = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data as Record<string, unknown> : null
-      if (!b || typeof b.draftId !== 'string') return sendError(res, 400, 'Body must include draftId', 'invalid_body')
-      const result = await options.revertDraft(b.draftId)
+      if (!b || typeof b.route !== 'string') return sendError(res, 400, 'Body must include route', 'invalid_body')
+      const result = await applyDesignSession(options, b.route)
+      if ('error' in result) return sendError(res, 400, result.error, 'invalid_body')
       res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    if (path === 'design-session/undo-batch' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      const b = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data as Record<string, unknown> : null
+      if (!b || typeof b.batchId !== 'string') return sendError(res, 400, 'Body must include batchId', 'invalid_body')
+      try {
+        const result = await revertApplyBatch(options, b.batchId)
+        res.end(JSON.stringify(result, null, 2))
+      } catch (err) {
+        return sendError(res, 409, (err as Error).message, 'conflict')
+      }
+      return
+    }
+
+    if (path === 'design-session/detach-file' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      const b = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data as Record<string, unknown> : null
+      if (!b || typeof b.file !== 'string') return sendError(res, 400, 'Body must include file', 'invalid_body')
+      await options.snapshots.detachFile(b.file)
+      res.end(JSON.stringify(await options.snapshots.state(), null, 2))
+      return
+    }
+
+    if (path === 'design-session/snapshots' && req.method === 'GET') {
+      res.end(JSON.stringify(await options.snapshots.state(), null, 2))
       return
     }
 
@@ -720,9 +828,22 @@ export function createAPIMiddleware(options: APIOptions) {
         return sendError(res, 400, updated.reason ?? 'Invalid state transition', 'invalid_transition')
       }
       // Lifecycle closure: accepting a wireframe_apply task retires its
-      // placements so they never re-mount beside the now-real component.
+      // placements so they never re-mount beside the now-real component, and
+      // commits the apply batch (bytes are the new baseline — snapshots drop,
+      // session entries clear, an emptied session rotates to a fresh id).
       if (updates.status === 'accepted' && taskBefore?.type === 'wireframe_apply') {
         await closeWireframeLifecycle(options, id, 'remove')
+        try {
+          const { rotated } = await acceptApplyTask(options, id)
+          if (rotated) await options.clearDesignSession()
+        } catch (err) { console.warn('[Annotask] apply accept closure failed:', err) }
+      }
+      // Agent-apply verification: the agent finished (review) — re-read the
+      // source per session entry, flip written|failed, seal the batch's
+      // post-apply hashes. Best-effort: the task mutation already committed.
+      if (updates.status === 'review' && taskBefore?.type === 'wireframe_apply') {
+        try { await verifyAppliedEntries(options, id) }
+        catch (err) { console.warn('[Annotask] apply verification failed:', err) }
       }
       res.end(JSON.stringify(updated, null, 2))
       return
@@ -737,9 +858,13 @@ export function createAPIMiddleware(options: APIOptions) {
         return sendError(res, 404, 'Task not found', 'not_found')
       }
       // Lifecycle closure: deleting a wireframe_apply task abandons the batch —
-      // revert its placements to 'placed' so the user can rebuild them.
+      // revert its placements to 'placed' so the user can rebuild them, and
+      // return its session entries to 'pending' (the snapshot batch stays
+      // revertible — the agent may have half-written before the delete).
       if (taskBefore?.type === 'wireframe_apply') {
         await closeWireframeLifecycle(options, id, 'revert')
+        try { await releaseApplyTask(options, id) }
+        catch (err) { console.warn('[Annotask] apply release failed:', err) }
       }
       res.end(JSON.stringify(deleted, null, 2))
       return
@@ -942,6 +1067,15 @@ export function createAPIMiddleware(options: APIOptions) {
       return
     }
 
+    // The project's own src/ components as a ScannedLibrary — the palette's
+    // pinned "Project" group, and the prop-metadata source for local
+    // components in the properties panel.
+    if (path === 'project-components' && req.method === 'GET') {
+      const library = await scanProjectComponents(options.projectRoot)
+      res.end(JSON.stringify({ library, scannedAt: Date.now() }, null, 2))
+      return
+    }
+
     if (path === 'component-usage' && req.method === 'GET') {
       const result = await scanComponentUsage(options.projectRoot)
       res.end(JSON.stringify(result, null, 2))
@@ -1047,6 +1181,23 @@ export function createAPIMiddleware(options: APIOptions) {
       const contextLines = Number.isFinite(ctxLinesArg) ? Math.max(0, Math.min(200, ctxLinesArg)) : 15
       const workspaceRoot = await getWorkspaceRoot(options.projectRoot)
       const result = await getCodeContext(options.projectRoot, file, line, contextLines, workspaceRoot)
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    // Round-trip honesty classification for one element — drives the
+    // properties panel's editable/read-only gating. file+line come from the
+    // element's data-annotask-* attrs; tag narrows when several elements share
+    // a line.
+    if (path === 'binding-classify' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const file = urlObj.searchParams.get('file') || ''
+      const lineArg = Number(urlObj.searchParams.get('line') || '0')
+      if (!file) return sendError(res, 400, 'Missing file')
+      if (!Number.isFinite(lineArg) || lineArg < 1) return sendError(res, 400, 'Missing or invalid line')
+      const tag = urlObj.searchParams.get('tag') || undefined
+      const workspaceRoot = await getWorkspaceRoot(options.projectRoot)
+      const result = await classifyBindings(options.projectRoot, file, lineArg, { tag, workspaceRoot })
       res.end(JSON.stringify(result, null, 2))
       return
     }

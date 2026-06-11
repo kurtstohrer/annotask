@@ -11,7 +11,7 @@ import { createAgentSpawnHandler } from './agent-spawn.js'
 import { createAgentDetector } from './agent-detect.js'
 import { createInitRunner } from './init.js'
 import { createUsageLedger } from './usage-ledger.js'
-import { createDraftStore } from './draft-edits.js'
+import { createSnapshotStore } from './file-snapshots.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -129,9 +129,11 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
   })
   onSpecCleared = () => { initRunner.reset() }
 
-  // Render-in-place draft store (P1.3). Self-contained: OFF unless the
-  // ANNOTASK_RENDER_IN_PLACE flag is set. The only source-writing capability.
-  const draftStore = createDraftStore(options.projectRoot)
+  // File-snapshot engine — the agent-apply safety net. The tool never authors
+  // application source (the embedded agent does); snapshots make "Undo last
+  // apply" and "Discard session" byte-exact. Always on: every write it ever
+  // performs is an explicit, user-initiated restore.
+  const snapshotStore = createSnapshotStore(options.projectRoot)
 
   const apiMiddleware = createAPIMiddleware({
     projectRoot: options.projectRoot,
@@ -162,9 +164,10 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     setAgentConfig: (id, entry) => state.setAgentConfig(id, entry),
     getWireframe: () => state.getWireframe(),
     setWireframe: (doc) => state.setWireframe(doc),
-    renderInPlaceEnabled: draftStore.enabled,
-    writeDraft: (req) => draftStore.write(req),
-    revertDraft: (id) => draftStore.revert(id),
+    getDesignSession: () => state.getDesignSession(),
+    setDesignSession: (doc) => state.setDesignSession(doc),
+    clearDesignSession: () => state.clearDesignSession(),
+    snapshots: snapshotStore,
     usageLedger,
   })
 
@@ -218,7 +221,9 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     broadcast: (event, data) => wsServer.broadcast(event, data),
     getReport: () => wsServer.getReport(),
     flush: () => state.flush(),
-    dispose: () => { void draftStore.revertAll(); agentSpawn.registry.killAll(); offCatalog(); state.dispose(); wsServer.dispose() },
+    // flush, never revert: a live session is intentional user work and must
+    // survive dev-server restarts (rehydrate); discard is user-initiated only.
+    dispose: () => { void snapshotStore.flush(); agentSpawn.registry.killAll(); offCatalog(); state.dispose(); wsServer.dispose() },
   }
 }
 

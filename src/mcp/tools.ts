@@ -11,6 +11,7 @@ import { scanComponentLibraries } from '../server/component-scanner.js'
 import { buildTaskSummary, filterTasksByMfe, stripTaskVisual, stripTaskForList, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
 import { isSafeScreenshot } from '../server/validation.js'
 import { getCodeContext } from '../server/code-context.js'
+import { classifyBindings } from '../server/binding-classify.js'
 import { createAgentConfigStore } from '../server/agent-configs.js'
 import { loadSkill, TASK_TYPE_COMPANIONS } from '../skills/loader.js'
 import { getComponentExamples } from '../server/component-examples.js'
@@ -70,6 +71,12 @@ const McpGetSourceExcerptArgs = z.object({
   file: SafeSourceFile,
   line: z.number().int().min(1, 'line must be >= 1'),
   context_lines: z.number().int().min(0).max(200).optional(),
+})
+
+const McpGetBindingClassificationArgs = z.object({
+  file: SafeSourceFile,
+  line: z.number().int().min(1, 'line must be >= 1'),
+  tag: z.string().max(200).optional(),
 })
 
 const taskTypeValues = [...TASK_TYPES] as [typeof TASK_TYPES[number], ...typeof TASK_TYPES[number][]]
@@ -356,6 +363,22 @@ export const MCP_TOOLS: ToolDef[] = [
         file: { type: 'string', description: 'Project-relative source file path (e.g. "src/pages/Home.vue")' },
         line: { type: 'number', description: '1-based line number to center the excerpt on' },
         context_lines: { type: 'number', description: 'Lines of context on each side. Default 15, max 200.' },
+      },
+      required: ['file', 'line'],
+    },
+  },
+  {
+    name: 'annotask_get_binding_classification',
+    description:
+      'Round-trip-honesty classification of one element against CURRENT source: every attribute/prop at the usage site classified literal | bound | unknown (with the expression text), the text content classified literal | bound | mixed, and any enclosing loop (v-for / .map() / {#each}). ' +
+      'Use this before rewriting a prop or text from a design-session edit when the anchor may have drifted, or to confirm a value is a plain literal (safe to rewrite) vs a bound expression (never rewrite). ' +
+      '`tag` narrows the match when several elements share a line. Parse failures and ambiguous lines return an `error` field with everything read-only — treat that as "do not edit here without re-anchoring".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Project-relative source file path (e.g. "src/pages/Home.vue")' },
+        line: { type: 'number', description: '1-based line of the element\'s opening tag' },
+        tag: { type: 'string', description: 'Tag/component name to disambiguate (e.g. "PlanetCard", "h1")' },
       },
       required: ['file', 'line'],
     },
@@ -857,6 +880,15 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       // reading outside the workspace.
       const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
       const result = await getCodeContext(deps.projectRoot, file, line, contextLines ?? 15, workspaceRoot)
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_binding_classification': {
+      const parsed = parseWith(McpGetBindingClassificationArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { file, line, tag } = parsed.data
+      const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
+      const result = await classifyBindings(deps.projectRoot, file, line, { tag, workspaceRoot })
       return { content: [{ type: 'text', text: compact(result) }] }
     }
 

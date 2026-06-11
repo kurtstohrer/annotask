@@ -6,8 +6,10 @@ import { createRuntimeEndpointStore, type RuntimeEndpointStore } from './runtime
 import { createAgentConfigStore } from './agent-configs.js'
 import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
 import { createWireframeStore } from './wireframe-store.js'
+import { createSessionStore } from './session-store.js'
 import type { NetworkCall, RuntimeEndpointCatalog, TokenUsage } from '../schema.js'
 import type { WireframeDocument } from '../shared/wireframe-types.js'
+import { emptyDesignSessionDocument, type DesignSessionDocument } from '../shared/design-session-types.js'
 
 const DEFAULT_DESIGN_SPEC = {
   initialized: false,
@@ -120,6 +122,12 @@ export interface ProjectState {
   getWireframe: () => Promise<WireframeDocument>
   /** Replace the wireframe document, persist atomically, broadcast, and return it. */
   setWireframe: (doc: WireframeDocument) => Promise<WireframeDocument>
+  /** Read the persisted design-session journal (`.annotask/design-session.json`). */
+  getDesignSession: () => Promise<DesignSessionDocument>
+  /** Replace the design-session journal (CAS on rev), broadcast, and return it. */
+  setDesignSession: (doc: DesignSessionDocument) => Promise<DesignSessionDocument>
+  /** Server-owned reset to an empty session (discard / accept-all) — not CAS-gated. */
+  clearDesignSession: () => Promise<DesignSessionDocument>
   /** Wait for any pending writes to complete. Use before process shutdown. */
   flush: () => Promise<void>
   dispose: () => void
@@ -384,6 +392,10 @@ export function createProjectState(
             if (Date.now() < wireframeSelfWriteUntil) return
             broadcast('wireframe:updated', null)
           }
+          if (filename === 'design-session.json') {
+            if (Date.now() < sessionSelfWriteUntil) return
+            broadcast('session:updated', null)
+          }
         })
       } catch { cachedDesignSpec = null }
     }
@@ -435,14 +447,17 @@ export function createProjectState(
       }
       const flushed = queueFlushTasks(data)
       // Unlink after the write succeeds so the screenshot isn't deleted if
-      // the write fails. Chained off the flush, but not awaited — response
-      // goes out as soon as the in-memory state is consistent.
-      if (screenshotToUnlink) void flushed.then(() => unlinkScreenshot(screenshotToUnlink))
-      if (sidecarsToClean) {
-        void flushed.then(() => {
-          void cleanTaskSidecars(sidecarsToClean!)
-          options.onTaskRemoved?.(sidecarsToClean!)
-        })
+      // the write fails. Appended to the flush chain (not awaited here) — the
+      // response goes out as soon as the in-memory state is consistent, but
+      // flush() still covers the cleanup's disk work.
+      if (screenshotToUnlink || sidecarsToClean) {
+        taskFlushChain = flushed.then(async () => {
+          if (screenshotToUnlink) await unlinkScreenshot(screenshotToUnlink)
+          if (sidecarsToClean) {
+            await cleanTaskSidecars(sidecarsToClean)
+            options.onTaskRemoved?.(sidecarsToClean)
+          }
+        }).catch(() => { /* cleanup is best-effort */ })
       }
       broadcast('tasks:updated', data)
       return task
@@ -486,11 +501,11 @@ export function createProjectState(
       const screenshotToUnlink = task.screenshot
       data.tasks = data.tasks.filter((t: any) => t.id !== id)
       const flushed = queueFlushTasks(data)
-      if (screenshotToUnlink) void flushed.then(() => unlinkScreenshot(screenshotToUnlink))
-      void flushed.then(() => {
-        void cleanTaskSidecars(id)
+      taskFlushChain = flushed.then(async () => {
+        if (screenshotToUnlink) await unlinkScreenshot(screenshotToUnlink)
+        await cleanTaskSidecars(id)
         options.onTaskRemoved?.(id)
-      })
+      }).catch(() => { /* cleanup is best-effort */ })
       broadcast('tasks:updated', data)
       return { deleted: id }
     })
@@ -527,6 +542,30 @@ export function createProjectState(
     wireframeSelfWriteUntil = Date.now() + 500
     // Notify live listeners (other shells/tabs) so they re-load without polling.
     broadcast('wireframe:updated', saved)
+    return saved
+  }
+
+  // ── Design-session journal (.annotask/design-session.json) ──
+  const sessionStore = createSessionStore(projectRoot)
+  let sessionSelfWriteUntil = 0
+
+  async function setDesignSession(doc: DesignSessionDocument): Promise<DesignSessionDocument> {
+    sessionSelfWriteUntil = Date.now() + 500
+    const saved = await sessionStore.set(doc)
+    sessionSelfWriteUntil = Date.now() + 500
+    broadcast('session:updated', saved)
+    return saved
+  }
+
+  async function clearDesignSession(): Promise<DesignSessionDocument> {
+    sessionSelfWriteUntil = Date.now() + 500
+    const fresh = emptyDesignSessionDocument(`ds-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`)
+    fresh.startedAt = Date.now()
+    fresh.updatedAt = Date.now()
+    // Server-owned reset — bypasses CAS so discard works from any tab state.
+    const saved = await sessionStore.replace(fresh)
+    sessionSelfWriteUntil = Date.now() + 500
+    broadcast('session:updated', saved)
     return saved
   }
 
@@ -578,6 +617,9 @@ export function createProjectState(
     setAgentConfig: agentConfigStore.set,
     getWireframe: wireframeStore.get,
     setWireframe,
+    getDesignSession: sessionStore.get,
+    setDesignSession,
+    clearDesignSession,
     flush,
     dispose,
   }

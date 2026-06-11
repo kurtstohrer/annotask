@@ -64,7 +64,8 @@ export type AnnotaskChange =
   | StyleUpdateChange
   | ClassUpdateChange
   | ScopedStyleUpdateChange
-  | PropUpdateChange
+  | ComponentPropUpdateChange
+  | TextUpdateChange
   | ComponentInsertChange
   | ComponentMoveChange
   | ComponentDeleteChange
@@ -107,12 +108,40 @@ export interface ScopedStyleUpdateChange extends BaseChange {
   after: Record<string, string>
 }
 
-/** @experimental Not yet emitted at runtime. Component prop value changes */
-export interface PropUpdateChange extends BaseChange {
-  type: 'prop_update'
-  component: string
-  before: Record<string, unknown>
-  after: Record<string, unknown>
+/**
+ * One component-prop value change at a usage site (from the properties panel).
+ * Per-prop (not a before/after dict) so edits collapse by (file, line, prop),
+ * undo one field at a time, and read unambiguously for the agent.
+ */
+export interface ComponentPropUpdateChange extends BaseChange {
+  type: 'component_prop_update'
+  /** Component tag as written at the usage site (e.g. 'Button', 'PlanetCard'). */
+  element: string
+  prop: string
+  /** Undefined when the prop wasn't set at the usage site (binding: 'new'). */
+  before: unknown
+  after: unknown
+  /**
+   * Honesty proof carried to the agent:
+   *  'literal'            — plain attribute (label="Reset"); rewrite the attribute value
+   *  'expression-literal' — literal through binding syntax (:count="3", count={3}); keep the syntax
+   *  'new'                — prop not present at the usage site; add it
+   * Bound expressions never appear here — the shell refuses to edit them.
+   */
+  binding: 'literal' | 'expression-literal' | 'new'
+  /** Scanned type string ('boolean', "'small' | 'large'") — serialization hint. */
+  prop_type?: string
+}
+
+/** Literal text-content change on an element (from the properties panel).
+ *  Only emitted when the source content is a single literal text run —
+ *  bound/mixed content is refused at the UI layer. */
+export interface TextUpdateChange extends BaseChange {
+  type: 'text_update'
+  /** DOM tag of the element (e.g. 'h1'). */
+  element: string
+  before: string
+  after: string
 }
 
 /** Insert a new element/component */
