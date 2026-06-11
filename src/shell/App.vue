@@ -828,6 +828,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           @recapture="wireframeMode.recapture()"
           @implement="onImplementWireframe"
           @undo-implementation="wireframeMode.undoImplementation()"
+          @explode-block="wireframeMode.explodeBlock"
           @update-rect="wireframeMode.updateBlockRect"
           @bring-to-front="wireframeMode.bringToFront"
           @delete-block="wireframeMode.deleteBlock"

@@ -2,6 +2,7 @@
 import { ref, computed, nextTick } from 'vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import Icon from './Icon.vue'
+import { computeSnap, type SnapGuide } from '../utils/wireframeSnap'
 import type { WireframeBlock, WireframeCanvasState } from '../../shared/wireframe-types'
 import type { WireframeCaptureProgress } from '../../shared/bridge-types'
 
@@ -23,6 +24,7 @@ const emit = defineEmits<{
   recapture: []
   implement: []
   'undo-implementation': []
+  'explode-block': [id: string]
   'update-rect': [id: string, rect: { x: number; y: number; width: number; height: number }]
   'bring-to-front': [id: string]
   'delete-block': [id: string]
@@ -35,7 +37,6 @@ const emit = defineEmits<{
 
 const rootRef = ref<HTMLElement | null>(null)
 const stageRef = ref<HTMLElement | null>(null)
-const selectedId = ref<string | null>(null)
 const confirmRecapture = ref(false)
 const showDeleted = ref(false)
 
@@ -45,9 +46,6 @@ const visibleBlocks = computed(() =>
     .slice()
     .sort((a, b) => a.z - b.z),
 )
-
-const selectedBlock = computed(() =>
-  props.canvas?.blocks.find((b) => b.id === selectedId.value && !b.deleted) ?? null)
 
 function blockLabel(b: WireframeBlock): string {
   if (b.kind === 'placeholder') return b.label ?? 'placeholder'
@@ -61,51 +59,92 @@ function anchorChip(b: WireframeBlock): string | null {
   return `${b.anchor.file}:${b.anchor.line}`
 }
 
-// ── Selection + keyboard ──────────────────────────────────
+// ── Selection (multi via shift-click / marquee) ───────────
 
-function select(id: string | null): void {
-  selectedId.value = id
+const selectedIds = ref<string[]>([])
+const primaryBlock = computed(() => {
+  const id = selectedIds.value[selectedIds.value.length - 1]
+  return props.canvas?.blocks.find((b) => b.id === id && !b.deleted) ?? null
+})
+const isSelected = (id: string) => selectedIds.value.includes(id)
+
+function select(id: string | null, additive = false): void {
   noteEditing.value = false
-  if (id) rootRef.value?.focus()
+  if (id === null) {
+    selectedIds.value = []
+    return
+  }
+  if (additive) {
+    selectedIds.value = isSelected(id)
+      ? selectedIds.value.filter((x) => x !== id)
+      : [...selectedIds.value, id]
+  } else if (!isSelected(id)) {
+    selectedIds.value = [id]
+  } else {
+    // Re-click inside a multi-selection keeps the group; promote to primary.
+    selectedIds.value = [...selectedIds.value.filter((x) => x !== id), id]
+  }
+  rootRef.value?.focus()
 }
+
+function selectedBlocks(): WireframeBlock[] {
+  return (props.canvas?.blocks ?? []).filter((b) => isSelected(b.id) && !b.deleted)
+}
+
+// ── Keyboard: delete / duplicate / Escape / arrow nudge ───
 
 function onKeydown(e: KeyboardEvent): void {
   if (noteEditing.value || labelDraft.value !== null) return // typing — keys belong to the inputs
   if (e.key === 'Escape') { select(null); drawMode.value = false; return }
   if (props.building) return // sketch is locked while the agent implements it
-  const sel = selectedBlock.value
-  if (!sel) return
+  const blocks = selectedBlocks()
+  if (blocks.length === 0) return
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault()
-    emit('delete-block', sel.id)
+    for (const b of blocks) emit('delete-block', b.id)
     select(null)
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
     e.preventDefault()
-    emit('duplicate-block', sel.id)
+    for (const b of blocks) emit('duplicate-block', b.id)
+  } else if (e.key.startsWith('Arrow')) {
+    e.preventDefault()
+    const step = e.shiftKey ? 10 : 1
+    const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
+    const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
+    for (const b of blocks) {
+      emit('update-rect', b.id, {
+        x: Math.max(0, b.rect.x + dx), y: Math.max(0, b.rect.y + dy),
+        width: b.rect.width, height: b.rect.height,
+      })
+    }
   }
 }
 
-// ── Move / resize (DrawnSectionOverlay pattern: window-level listeners) ──
+// ── Move / resize (window-level listeners) + snap guides ──
 
+const snapGuides = ref<SnapGuide[]>([])
 const dragState = ref<{
-  id: string
   mode: 'move' | 'resize'
   handle?: string
   startX: number; startY: number
-  origX: number; origY: number; origW: number; origH: number
+  grabbedId: string
+  items: Array<{ id: string; origX: number; origY: number; origW: number; origH: number }>
   moved: boolean
 } | null>(null)
 
 function beginDrag(e: PointerEvent, b: WireframeBlock, mode: 'move' | 'resize', handle?: string): void {
   e.preventDefault()
   e.stopPropagation()
-  select(b.id)
+  select(b.id, e.shiftKey)
   if (props.building) return // selection only — the sketch is locked
+  if (e.shiftKey) return // shift-click is selection surgery, never a drag
   if (mode === 'move') emit('bring-to-front', b.id)
+  const group = mode === 'move' ? selectedBlocks() : [b]
   dragState.value = {
-    id: b.id, mode, handle,
+    mode, handle,
     startX: e.clientX, startY: e.clientY,
-    origX: b.rect.x, origY: b.rect.y, origW: b.rect.width, origH: b.rect.height,
+    grabbedId: b.id,
+    items: group.map((g) => ({ id: g.id, origX: g.rect.x, origY: g.rect.y, origW: g.rect.width, origH: g.rect.height })),
     moved: false,
   }
   window.addEventListener('pointermove', onDragMove)
@@ -115,33 +154,58 @@ function beginDrag(e: PointerEvent, b: WireframeBlock, mode: 'move' | 'resize', 
 function onDragMove(e: PointerEvent): void {
   const d = dragState.value
   if (!d) return
-  const dx = e.clientX - d.startX
-  const dy = e.clientY - d.startY
+  let dx = e.clientX - d.startX
+  let dy = e.clientY - d.startY
   // 3px threshold separates click-to-select from an actual drag.
   if (!d.moved && Math.abs(dx) + Math.abs(dy) < 3) return
   d.moved = true
 
   if (d.mode === 'move') {
-    emit('update-rect', d.id, {
-      x: Math.max(0, d.origX + dx), y: Math.max(0, d.origY + dy),
-      width: d.origW, height: d.origH,
-    })
+    // Snap by the GRABBED block against everything outside the moving group
+    // (Alt disables); the whole group follows the adjusted delta.
+    const grabbed = d.items.find((i) => i.id === d.grabbedId)!
+    const proposed = { x: grabbed.origX + dx, y: grabbed.origY + dy, width: grabbed.origW, height: grabbed.origH }
+    if (!e.altKey) {
+      const groupIds = new Set(d.items.map((i) => i.id))
+      const others = visibleBlocks.value.filter((b) => !groupIds.has(b.id)).map((b) => b.rect)
+      const snapped = computeSnap(proposed, others)
+      dx += snapped.x - proposed.x
+      dy += snapped.y - proposed.y
+      snapGuides.value = snapped.guides
+    } else {
+      snapGuides.value = []
+    }
+    for (const item of d.items) {
+      emit('update-rect', item.id, {
+        x: Math.max(0, item.origX + dx), y: Math.max(0, item.origY + dy),
+        width: item.origW, height: item.origH,
+      })
+    }
     return
   }
 
-  let x = d.origX, y = d.origY, w = d.origW, h = d.origH
+  const item = d.items[0]
+  let x = item.origX, y = item.origY, w = item.origW, h = item.origH
   const handle = d.handle || ''
-  if (handle.includes('e')) w = Math.max(24, d.origW + dx)
-  if (handle.includes('s')) h = Math.max(24, d.origH + dy)
-  if (handle.includes('w')) { w = Math.max(24, d.origW - dx); x = d.origX + d.origW - w }
-  if (handle.includes('n')) { h = Math.max(24, d.origH - dy); y = d.origY + d.origH - h }
-  emit('update-rect', d.id, { x: Math.max(0, x), y: Math.max(0, y), width: w, height: h })
+  if (handle.includes('e')) w = Math.max(24, item.origW + dx)
+  if (handle.includes('s')) h = Math.max(24, item.origH + dy)
+  if (handle.includes('w')) { w = Math.max(24, item.origW - dx); x = item.origX + item.origW - w }
+  if (handle.includes('n')) { h = Math.max(24, item.origH - dy); y = item.origY + item.origH - h }
+  emit('update-rect', item.id, { x: Math.max(0, x), y: Math.max(0, y), width: w, height: h })
 }
 
 function onDragUp(): void {
   dragState.value = null
+  snapGuides.value = []
   window.removeEventListener('pointermove', onDragMove)
   window.removeEventListener('pointerup', onDragUp)
+}
+
+// ── Explode (double-click a captured block one level deeper) ──
+
+function onBlockDblClick(b: WireframeBlock): void {
+  if (props.building || b.kind !== 'captured') return
+  emit('explode-block', b.id)
 }
 
 // ── Notes ─────────────────────────────────────────────────
@@ -151,27 +215,30 @@ const noteDraft = ref('')
 const noteInputRef = ref<HTMLTextAreaElement | null>(null)
 
 function openNote(): void {
-  if (!selectedBlock.value) return
-  noteDraft.value = selectedBlock.value.note ?? ''
+  if (!primaryBlock.value) return
+  noteDraft.value = primaryBlock.value.note ?? ''
   noteEditing.value = true
   void nextTick(() => noteInputRef.value?.focus())
 }
 
 function commitNote(): void {
-  if (!noteEditing.value || !selectedBlock.value) return
-  emit('set-note', selectedBlock.value.id, noteDraft.value)
+  if (!noteEditing.value || !primaryBlock.value) return
+  emit('set-note', primaryBlock.value.id, noteDraft.value)
   noteEditing.value = false
 }
 
-// ── Placeholder draw tool ─────────────────────────────────
+// ── Placeholder draw tool + marquee selection ─────────────
 
 const drawMode = ref(false)
 const drawRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
+const marqueeRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
 /** Non-null while the just-drawn placeholder waits for its label. */
 const labelDraft = ref<string | null>(null)
 const labelRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
 const labelInputRef = ref<HTMLInputElement | null>(null)
-let drawStart: { x: number; y: number } | null = null
+let stageStart: { x: number; y: number } | null = null
+let stageGesture: 'draw' | 'marquee' | null = null
+let marqueeAdditive = false
 
 function stagePoint(e: PointerEvent | DragEvent): { x: number; y: number } {
   const stage = stageRef.value
@@ -181,35 +248,63 @@ function stagePoint(e: PointerEvent | DragEvent): { x: number; y: number } {
 }
 
 function onStagePointerDown(e: PointerEvent): void {
-  if (!drawMode.value) { select(null); return }
-  drawStart = stagePoint(e)
-  drawRect.value = { ...drawStart, width: 0, height: 0 }
-  window.addEventListener('pointermove', onDrawMove)
-  window.addEventListener('pointerup', onDrawUp)
-}
-
-function onDrawMove(e: PointerEvent): void {
-  if (!drawStart) return
-  const p = stagePoint(e)
-  drawRect.value = {
-    x: Math.min(drawStart.x, p.x),
-    y: Math.min(drawStart.y, p.y),
-    width: Math.abs(p.x - drawStart.x),
-    height: Math.abs(p.y - drawStart.y),
+  stageStart = stagePoint(e)
+  if (drawMode.value) {
+    stageGesture = 'draw'
+    drawRect.value = { ...stageStart, width: 0, height: 0 }
+  } else {
+    stageGesture = 'marquee'
+    marqueeAdditive = e.shiftKey
+    marqueeRect.value = { ...stageStart, width: 0, height: 0 }
   }
+  window.addEventListener('pointermove', onStageMove)
+  window.addEventListener('pointerup', onStageUp)
 }
 
-function onDrawUp(): void {
-  window.removeEventListener('pointermove', onDrawMove)
-  window.removeEventListener('pointerup', onDrawUp)
-  const r = drawRect.value
-  drawStart = null
+function onStageMove(e: PointerEvent): void {
+  if (!stageStart) return
+  const p = stagePoint(e)
+  const rect = {
+    x: Math.min(stageStart.x, p.x),
+    y: Math.min(stageStart.y, p.y),
+    width: Math.abs(p.x - stageStart.x),
+    height: Math.abs(p.y - stageStart.y),
+  }
+  if (stageGesture === 'draw') drawRect.value = rect
+  else marqueeRect.value = rect
+}
+
+function onStageUp(): void {
+  window.removeEventListener('pointermove', onStageMove)
+  window.removeEventListener('pointerup', onStageUp)
+  const gesture = stageGesture
+  const draw = drawRect.value
+  const marquee = marqueeRect.value
+  stageStart = null
+  stageGesture = null
   drawRect.value = null
-  drawMode.value = false
-  if (r && r.width >= 24 && r.height >= 24) {
-    labelRect.value = r
-    labelDraft.value = ''
-    void nextTick(() => labelInputRef.value?.focus())
+  marqueeRect.value = null
+
+  if (gesture === 'draw') {
+    drawMode.value = false
+    if (draw && draw.width >= 24 && draw.height >= 24) {
+      labelRect.value = draw
+      labelDraft.value = ''
+      void nextTick(() => labelInputRef.value?.focus())
+    }
+    return
+  }
+
+  // Marquee: a real sweep selects every intersecting block; a click clears.
+  if (marquee && marquee.width + marquee.height > 6) {
+    const hit = visibleBlocks.value.filter((b) =>
+      b.rect.x < marquee.x + marquee.width && b.rect.x + b.rect.width > marquee.x
+      && b.rect.y < marquee.y + marquee.height && b.rect.y + b.rect.height > marquee.y,
+    ).map((b) => b.id)
+    selectedIds.value = marqueeAdditive ? [...new Set([...selectedIds.value, ...hit])] : hit
+    if (hit.length) rootRef.value?.focus()
+  } else {
+    select(null)
   }
 }
 
@@ -248,6 +343,8 @@ function onRecaptureConfirmed(): void {
         Wireframe
         <span class="wf-subtitle">sketch — rearranged images, not the live app</span>
       </span>
+      <span v-if="canvas" class="wf-viewport" data-testid="wf-viewport"
+        title="Captured at this viewport — pick a device preset before capturing to wireframe mobile">{{ canvas.viewport.width }}×{{ canvas.viewport.height }} @{{ canvas.viewport.scale }}x</span>
       <span v-if="capturing" class="wf-progress" data-testid="wf-progress">
         Capturing{{ progress ? ` ${progress.index + 1}/${progress.total} — ${progress.label}` : '…' }}
       </span>
@@ -306,10 +403,11 @@ function onRecaptureConfirmed(): void {
         @pointerdown.self="onStagePointerDown">
         <div v-for="b in visibleBlocks" :key="b.id"
           class="wf-block"
-          :class="{ selected: selectedId === b.id, failed: !imageSrc(b) && b.kind === 'captured', placeholder: b.kind === 'placeholder', dragging: dragState?.id === b.id && dragState?.moved }"
+          :class="{ selected: isSelected(b.id), failed: !imageSrc(b) && b.kind === 'captured', placeholder: b.kind === 'placeholder', dragging: dragState?.moved && dragState.items.some((i) => i.id === b.id) }"
           :data-block-id="b.id"
           :style="{ left: b.rect.x + 'px', top: b.rect.y + 'px', width: b.rect.width + 'px', height: b.rect.height + 'px', zIndex: b.z }"
-          @pointerdown.stop="beginDrag($event, b, 'move')">
+          @pointerdown.stop="beginDrag($event, b, 'move')"
+          @dblclick.stop="onBlockDblClick(b)">
           <img v-if="imageSrc(b)" :src="imageSrc(b)!" :alt="blockLabel(b)" draggable="false" />
           <div v-else-if="b.kind === 'placeholder'" class="wf-placeholder-body">
             <span class="wf-placeholder-label">{{ b.label }}</span>
@@ -320,18 +418,21 @@ function onRecaptureConfirmed(): void {
             <span class="wf-failed-label">{{ blockLabel(b) }}</span>
           </div>
           <div v-if="b.clipped" class="wf-clipped-note" title="Block was taller than the capture cap — only the top is shown">clipped</div>
-          <div v-if="b.note && selectedId !== b.id" class="wf-note-chip" :title="b.note">
+          <div v-if="b.note && primaryBlock?.id !== b.id" class="wf-note-chip" :title="b.note">
             <Icon name="pencil" :size="9" /> note
           </div>
           <div v-if="b.kind === 'palette' && b.fidelity && b.fidelity !== 'live'" class="wf-fidelity-pill" :class="b.fidelity">
             {{ b.fidelity === 'isolated-preview' ? 'isolated preview' : 'placeholder render' }}
           </div>
 
-          <template v-if="selectedId === b.id">
+          <template v-if="primaryBlock?.id === b.id && selectedIds.length === 1">
             <div class="wf-block-header" @pointerdown.stop="beginDrag($event, b, 'move')">
               <span class="wf-block-name">{{ blockLabel(b) }}</span>
               <code v-if="anchorChip(b)" class="wf-anchor-chip" data-testid="wf-anchor-chip">{{ anchorChip(b) }}</code>
               <span class="wf-header-spacer" />
+              <button v-if="b.kind === 'captured'" class="wf-hbtn" data-testid="wf-explode-btn" @pointerdown.stop @click.stop="onBlockDblClick(b)" title="Explode into child blocks (double-click)">
+                <Icon name="maximize-2" :size="10" />
+              </button>
               <button class="wf-hbtn" data-testid="wf-note-btn" @pointerdown.stop @click.stop="openNote()" :title="b.note ? `Note: ${b.note}` : 'Add a note for the agent'">
                 <Icon name="pencil" :size="10" />
               </button>
@@ -357,6 +458,16 @@ function onRecaptureConfirmed(): void {
             <div class="resize-handle rh-sw" @pointerdown.stop="beginDrag($event, b, 'resize', 'sw')" />
           </template>
         </div>
+
+        <!-- Snap/align guide lines (visible mid-drag while a snap is active) -->
+        <template v-for="(g, i) in snapGuides" :key="`g${i}`">
+          <div v-if="g.axis === 'x'" class="wf-guide wf-guide-v" :style="{ left: g.at + 'px' }" />
+          <div v-else class="wf-guide wf-guide-h" :style="{ top: g.at + 'px' }" />
+        </template>
+
+        <!-- Marquee selection preview -->
+        <div v-if="marqueeRect && marqueeRect.width + marqueeRect.height > 6" class="wf-marquee"
+          :style="{ left: marqueeRect.x + 'px', top: marqueeRect.y + 'px', width: marqueeRect.width + 'px', height: marqueeRect.height + 'px' }" />
 
         <!-- Placeholder drawing preview + label input -->
         <div v-if="drawRect && drawRect.width > 4 && drawRect.height > 4" class="wf-draw-preview"
@@ -407,6 +518,14 @@ function onRecaptureConfirmed(): void {
   color: var(--text);
 }
 .wf-subtitle { color: var(--text-muted); font-weight: 400; }
+.wf-viewport {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
 .wf-progress { color: var(--info); }
 .wf-error { color: var(--danger); }
 .wf-warn { color: var(--warning); }
@@ -488,7 +607,6 @@ function onRecaptureConfirmed(): void {
 .wf-block.dragging { cursor: grabbing; opacity: 0.92; }
 .wf-block:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .wf-block.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); overflow: visible; }
-.wf-block.selected img { outline: none; }
 .wf-block img {
   display: block;
   width: 100%;
@@ -627,6 +745,24 @@ function onRecaptureConfirmed(): void {
   font-size: 11px;
   padding: 6px 8px;
   resize: vertical;
+}
+
+.wf-guide {
+  position: absolute;
+  background: var(--accent);
+  opacity: 0.7;
+  pointer-events: none;
+  z-index: 9999;
+}
+.wf-guide-v { top: 0; bottom: 0; width: 1px; }
+.wf-guide-h { left: 0; right: 0; height: 1px; }
+
+.wf-marquee {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  pointer-events: none;
+  z-index: 9999;
 }
 
 .wf-draw-preview {

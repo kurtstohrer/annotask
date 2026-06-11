@@ -1,8 +1,12 @@
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { resolveProjectFile } from './path-safety.js'
 import type { ApplyBatch } from '../shared/design-session-types.js'
+
+const execFileAsync = promisify(execFile)
 
 /**
  * File-snapshot engine — the safety net under the agent-apply loop.
@@ -43,6 +47,12 @@ interface SnapshotFileEntry {
 interface SnapshotBatch extends ApplyBatch {
   /** Pre-batch bytes per file — what "Undo last apply" restores. */
   before: Record<string, string>
+  /** Untracked files at snapshot time (git projects only) — the baseline the
+   *  seal diffs against to net agent-CREATED files into undo. */
+  untrackedBefore?: string[]
+  /** Files the agent created during this batch (rel path → sha256 at seal).
+   *  Undo deletes them hash-guarded; a user-edited created file is kept. */
+  created?: Record<string, string>
 }
 
 interface SnapshotJournal {
@@ -53,7 +63,7 @@ interface SnapshotJournal {
 
 export interface SnapshotState {
   files: Record<string, { baseHash: string; lastAppliedHash?: string; status: 'clean' | 'diverged' }>
-  batches: ApplyBatch[]
+  batches: Array<ApplyBatch & { created?: string[] }>
 }
 
 export interface SnapshotStore {
@@ -144,6 +154,26 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
 
   const ready = rehydrate()
 
+  /** Untracked files per `git status --porcelain -uall` (gitignore-aware), or
+   *  null when this isn't a usable git project — the created-files net is then
+   *  silently off (snapshotted files still restore byte-exact). */
+  async function gitUntracked(): Promise<string[] | null> {
+    try {
+      const { stdout } = await execFileAsync(
+        'git', ['status', '--porcelain', '-uall', '--no-renames'],
+        { cwd: projectRoot, maxBuffer: 10 * 1024 * 1024 },
+      )
+      return stdout.split('\n')
+        .filter((l) => l.startsWith('?? '))
+        .map((l) => l.slice(3).trim())
+        // git quotes paths with special chars — those stay un-netted rather
+        // than risking a wrong unlink target.
+        .filter((f) => f && !f.startsWith('"') && !f.startsWith('.annotask/'))
+    } catch {
+      return null
+    }
+  }
+
   /** Hash-guarded restore of one file. Returns false (and marks diverged) when
    *  the disk bytes aren't the ones our last sealed batch left behind. */
   async function restoreFile(relFile: string, bytes: string): Promise<boolean> {
@@ -180,7 +210,11 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
             journal.files[file] = { absPath, base: bytes, baseHash: sha256(bytes), status: 'clean' }
           }
         }
-        journal.batches.push({ id: batch.id, taskId: batch.taskId, files: [...files], startedAt: Date.now(), status: 'running', before })
+        const untrackedBefore = await gitUntracked()
+        journal.batches.push({
+          id: batch.id, taskId: batch.taskId, files: [...files], startedAt: Date.now(), status: 'running', before,
+          ...(untrackedBefore !== null ? { untrackedBefore } : {}),
+        })
         await persist()
       })
     },
@@ -196,6 +230,25 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
           try {
             entry.lastAppliedHash = sha256(await fsp.readFile(entry.absPath, 'utf-8'))
           } catch { /* file deleted by the agent — restore will recreate it */ }
+        }
+        // Net agent-CREATED files into the batch: anything newly untracked
+        // since the snapshot baseline (and not already a snapshotted target)
+        // belongs to this apply, hashed so undo only deletes pristine copies.
+        if (batch.untrackedBefore) {
+          const after = await gitUntracked()
+          if (after) {
+            const baseline = new Set(batch.untrackedBefore)
+            const snapshotted = new Set(batch.files)
+            const created: Record<string, string> = {}
+            for (const file of after) {
+              if (baseline.has(file) || snapshotted.has(file)) continue
+              try {
+                const abs = resolveAbs(file)
+                created[file] = sha256(await fsp.readFile(abs, 'utf-8'))
+              } catch { /* unreadable/escaping — leave it alone */ }
+            }
+            if (Object.keys(created).length > 0) batch.created = created
+          }
         }
         batch.finishedAt = Date.now()
         batch.status = opts?.failed ? 'failed' : 'done'
@@ -215,6 +268,19 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
         for (const [file, bytes] of Object.entries(last.before)) {
           if (await restoreFile(file, bytes)) reverted.push(file)
           else skipped.push(file)
+        }
+        // Agent-created files: delete only pristine copies (seal-time hash).
+        // A user-edited created file is THEIR work now — keep it, report it.
+        for (const [file, hash] of Object.entries(last.created ?? {})) {
+          try {
+            const abs = resolveAbs(file)
+            if (sha256(await fsp.readFile(abs, 'utf-8')) === hash) {
+              await fsp.unlink(abs)
+              reverted.push(file)
+            } else {
+              skipped.push(file)
+            }
+          } catch { /* already gone — nothing to undo */ }
         }
         journal.batches.pop()
         // Files whose only batch was this one and whose bytes are back at the
@@ -243,6 +309,25 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
             delete journal.files[file]
           } else {
             skipped.push(file)
+          }
+        }
+        // Discard removes every batch's pristine agent-created files too —
+        // newest batch first, so a file created then edited by a LATER batch
+        // is judged against the hash that sealed last.
+        const seen = new Set<string>()
+        for (const batch of [...journal.batches].reverse()) {
+          for (const [file, hash] of Object.entries(batch.created ?? {})) {
+            if (seen.has(file)) continue
+            seen.add(file)
+            try {
+              const abs = resolveAbs(file)
+              if (sha256(await fsp.readFile(abs, 'utf-8')) === hash) {
+                await fsp.unlink(abs)
+                reverted.push(file)
+              } else {
+                skipped.push(file)
+              }
+            } catch { /* already gone */ }
           }
         }
         journal.batches = []
@@ -288,7 +373,10 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
             file,
             { baseHash: e.baseHash, ...(e.lastAppliedHash !== undefined ? { lastAppliedHash: e.lastAppliedHash } : {}), status: e.status },
           ])),
-          batches: journal.batches.map(({ before: _before, ...batch }) => batch),
+          batches: journal.batches.map(({ before: _before, untrackedBefore: _ub, created, ...batch }) => ({
+            ...batch,
+            ...(created && Object.keys(created).length > 0 ? { created: Object.keys(created) } : {}),
+          })),
         }
       })
     },

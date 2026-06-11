@@ -18,6 +18,8 @@ export interface WireframeModeIframe {
   captureWireframe: (opts?: WireframeCapturePayload) => Promise<WireframeCaptureResult>
   /** Offscreen component mount → honest snapshot (palette drops). */
   previewComponent: (componentName: string, props?: Record<string, unknown>, module?: string, width?: number) => Promise<{ mounted: boolean; fidelity?: string | null; dataUrl?: string; width?: number; height?: number; error?: string }>
+  /** Durable-anchor → live eids re-resolution (explode targets). */
+  findTemplateGroup: (file: string, line: string, tagName: string) => Promise<{ eids: string[] }>
   // `any` matches the bridge event registry's signature (iframeBridge.on).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onBridgeEvent: (type: string, handler: (payload: any) => void) => void
@@ -418,6 +420,100 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     return id
   }
 
+  /**
+   * Explode (W4): re-capture one captured block a level deeper — the block is
+   * replaced by per-child blocks, each carrying its own source anchor. The
+   * children rasterize from the LIVE page (the only honest pixel source) and
+   * are translated by the block's canvas delta so they land inside the box
+   * the user sees, even after a move.
+   */
+  async function explodeBlock(id: string): Promise<boolean> {
+    const c = canvas.value
+    const parent = findBlock(id)
+    if (!c || !parent || parent.kind !== 'captured' || parent.deleted || capturing.value) return false
+    if (!parent.anchor?.file || !parent.originalRect) return false
+    error.value = null
+
+    // Re-resolve the live element from the durable anchor (eids are volatile).
+    const group = await iframe.findTemplateGroup(parent.anchor.file, String(parent.anchor.line), parent.anchor.tag ?? '')
+    const rootEid = group.eids[0]
+    if (!rootEid) {
+      error.value = 'Could not find this block in the live page — the source may have changed. Recapture instead.'
+      return false
+    }
+
+    capturing.value = true
+    try {
+      const res = await iframe.captureWireframe({ rootEid })
+      if (res.error || !res.blocks?.length) {
+        error.value = res.error ?? 'nothing to explode'
+        return false
+      }
+      // One block back = no finer granularity available.
+      if (res.blocks.length === 1 && res.blocks[0].eid === rootEid) {
+        error.value = 'This block has no separable children.'
+        return false
+      }
+
+      const dx = parent.rect.x - parent.originalRect.x
+      const dy = parent.rect.y - parent.originalRect.y
+      // Children stack above everything: reusing the parent's z could collide
+      // with unrelated blocks and leave render order to DOM-order luck.
+      const baseZ = maxZ() + 1
+      const uploads: Array<{ id: string; dataUrl: string }> = []
+      const nextImages = { ...liveImages.value }
+      const children: WireframeBlock[] = res.blocks.map((b, i) => {
+        const childId = mintBlockId()
+        const rect = { x: b.rect.x + dx, y: b.rect.y + dy, width: b.rect.width, height: b.rect.height }
+        if (b.dataUrl) {
+          nextImages[childId] = b.dataUrl
+          uploads.push({ id: childId, dataUrl: b.dataUrl })
+        }
+        return {
+          id: childId,
+          kind: 'captured',
+          rect,
+          // The diff baseline is the LIVE position (un-translated): a child of
+          // a moved parent is already "moved" relative to the real page.
+          originalRect: { x: b.rect.x, y: b.rect.y, width: b.rect.width, height: b.rect.height },
+          z: baseZ + i,
+          createdAt: Date.now(),
+          anchor: {
+            file: b.file,
+            line: parseInt(b.line, 10) || 0,
+            ...(b.component ? { component: b.component } : {}),
+            ...(b.source_tag ? { sourceTag: b.source_tag } : {}),
+            ...(b.cls ? { cssClass: b.cls } : {}),
+            tag: b.tag,
+            role: b.role,
+          },
+          ...(b.error ? { captureError: b.error } : {}),
+          ...(b.clipped ? { clipped: true } : {}),
+        }
+      })
+
+      liveImages.value = nextImages
+      // Replace the parent wholesale; drop its image file unless shared.
+      const parentImage = parent.image
+      c.blocks = c.blocks.filter((b) => b.id !== id)
+      c.blocks.push(...children)
+      if (parentImage && !c.blocks.some((b) => b.image === parentImage)) {
+        void deleteSnapshot(parentImage)
+      }
+
+      const byId = new Map(children.map((b) => [b.id, b]))
+      await Promise.all(uploads.map(async ({ id: childId, dataUrl }) => {
+        const filename = await uploadSnapshot(childId, dataUrl)
+        if (filename) byId.get(childId)!.image = filename
+      }))
+      await wireframeDoc.saveCanvas(activeRoute(), c)
+      return true
+    } finally {
+      capturing.value = false
+      progress.value = null
+    }
+  }
+
   // ── Implement this wireframe (W3 directions + agent apply) ─────────────
 
   /** Locked while a wireframe_apply task implements this sketch. */
@@ -599,6 +695,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     duplicateBlock,
     dropPaletteItem,
     addPlaceholderBlock,
+    explodeBlock,
     // implement (W3)
     building,
     implementing,

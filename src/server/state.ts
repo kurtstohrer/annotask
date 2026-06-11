@@ -8,7 +8,7 @@ import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
 import { createWireframeStore } from './wireframe-store.js'
 import { createSessionStore } from './session-store.js'
 import type { NetworkCall, RuntimeEndpointCatalog, TokenUsage } from '../schema.js'
-import type { WireframeDocument } from '../shared/wireframe-types.js'
+import { isWireframeDocument, type WireframeDocument } from '../shared/wireframe-types.js'
 import { emptyDesignSessionDocument, type DesignSessionDocument } from '../shared/design-session-types.js'
 
 const DEFAULT_DESIGN_SPEC = {
@@ -535,6 +535,49 @@ export function createProjectState(
   const wireframeStore = createWireframeStore(projectRoot)
   // Watcher fires on our own rename; skip events within this window after a self-write.
   let wireframeSelfWriteUntil = 0
+
+  // Boot-time GC for canvas snapshot PNGs: failed uploads, crashed sessions,
+  // and recapture races strand files no doc references. Boot is the only safe
+  // moment (no in-flight upload can race a fresh process); the mtime guard
+  // keeps anything recent enough to plausibly belong to a just-written doc.
+  void (async () => {
+    const dir = path.join(projectRoot, '.annotask', 'wireframe-snapshots')
+    let names: string[]
+    try { names = await fsp.readdir(dir) } catch { return }
+    if (names.length === 0) return
+    // Read the doc RAW: the store's get() falls back to an EMPTY document on
+    // a malformed file, and "empty references" would let the sweep nuke every
+    // legitimately-referenced PNG. A doc that exists but doesn't validate
+    // aborts the GC; a doc that doesn't exist leaves only true orphans.
+    const referenced = new Set<string>()
+    try {
+      const raw = await fsp.readFile(path.join(projectRoot, '.annotask', 'wireframe.json'), 'utf-8')
+      let doc: unknown
+      try { doc = JSON.parse(raw) } catch { return }
+      if (!isWireframeDocument(doc)) return
+      for (const route of doc.routes) {
+        if (!route.canvas) continue
+        for (const b of route.canvas.blocks) if (b.image) referenced.add(b.image)
+        if (route.canvas.fullImage) referenced.add(route.canvas.fullImage)
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return
+      // No doc at all → every PNG is an orphan; the mtime guard still applies.
+    }
+    const cutoff = Date.now() - 60 * 60 * 1000
+    let removed = 0
+    for (const name of names) {
+      if (referenced.has(name) || !name.endsWith('.png')) continue
+      const p = path.join(dir, name)
+      try {
+        const st = await fsp.stat(p)
+        if (st.mtimeMs >= cutoff) continue
+        await fsp.unlink(p)
+        removed++
+      } catch { /* best effort */ }
+    }
+    if (removed > 0) console.warn(`[Annotask] wireframe-snapshot GC removed ${removed} orphaned file(s)`)
+  })()
 
   async function setWireframe(doc: WireframeDocument): Promise<WireframeDocument> {
     wireframeSelfWriteUntil = Date.now() + 500

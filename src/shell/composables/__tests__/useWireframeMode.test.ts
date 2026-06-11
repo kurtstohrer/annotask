@@ -40,6 +40,7 @@ function makeIframe(result: WireframeCaptureResult = CAPTURE_OK): WireframeModeI
     bridgeReady: ref(true),
     captureWireframe: vi.fn(async () => result),
     previewComponent: vi.fn(async () => ({ mounted: true, fidelity: 'isolated-preview', dataUrl: 'data:image/png;base64,P', width: 320, height: 140 })),
+    findTemplateGroup: vi.fn(async () => ({ eids: ['live-1'] })),
     onBridgeEvent: vi.fn(),
   } as never
 }
@@ -258,6 +259,79 @@ describe('useWireframeMode', () => {
       const ph = mode.canvas.value!.blocks.filter((b) => b.kind === 'placeholder')
       expect(ph).toHaveLength(1)
       expect(ph[0].label).toBe('flex row')
+    })
+  })
+
+  describe('explode (W4)', () => {
+    const CHILD_CAPTURE: WireframeCaptureResult = {
+      viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+      blocks: [
+        {
+          eid: 'c1', file: 'src/pages/PlanetsPage.vue', line: '31', component: 'PlanetsPage',
+          source_tag: 'div', tag: 'div', cls: 'search-row', role: 'content',
+          rect: { x: 0, y: 90, width: 600, height: 40 }, dataUrl: 'data:image/png;base64,C1',
+        },
+        {
+          eid: 'c2', file: 'src/pages/PlanetsPage.vue', line: '35', component: 'PlanetsPage',
+          source_tag: 'div', tag: 'div', cls: 'sort-row', role: 'content',
+          rect: { x: 620, y: 90, width: 600, height: 40 }, dataUrl: 'data:image/png;base64,C2',
+        },
+      ],
+    }
+
+    it('replaces the block with translated children anchored at their own sources', async () => {
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[1] // div.toolbar, y 80
+      const parentImage = parent.image
+      // The user moved the parent +0/+30 before exploding — children follow.
+      mode.updateBlockRect(parent.id, { ...parent.rect, y: parent.rect.y + 30 })
+
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce(CHILD_CAPTURE)
+      const ok = await mode.explodeBlock(parent.id)
+      expect(ok).toBe(true)
+      expect(iframe.findTemplateGroup).toHaveBeenCalledWith('src/pages/PlanetsPage.vue', '30', 'div')
+      expect(iframe.captureWireframe).toHaveBeenLastCalledWith({ rootEid: 'live-1' })
+
+      const blocks = mode.canvas.value!.blocks
+      expect(blocks.find((b) => b.id === parent.id)).toBeUndefined()
+      const children = blocks.filter((b) => b.anchor?.cssClass === 'search-row' || b.anchor?.cssClass === 'sort-row')
+      expect(children).toHaveLength(2)
+      // Canvas rects ride the parent's move delta; the diff baseline stays live.
+      expect(children[0].rect.y).toBe(120)
+      expect(children[0].originalRect!.y).toBe(90)
+      expect(children[0].anchor).toMatchObject({ file: 'src/pages/PlanetsPage.vue', line: 31 })
+      expect(children[0].image).toMatch(/\.png$/)
+      // The parent's snapshot file was dropped (nothing references it).
+      const deletes = fetchMock.mock.calls.filter((c) => String(c[0]).includes(`wireframe-snapshots/${parentImage}`) && (c[1] as RequestInit)?.method === 'DELETE')
+      expect(deletes).toHaveLength(1)
+    })
+
+    it('an unresolvable anchor keeps the block and surfaces an error', async () => {
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      vi.mocked(iframe.findTemplateGroup).mockResolvedValueOnce({ eids: [] })
+      const parent = mode.canvas.value!.blocks[0]
+      expect(await mode.explodeBlock(parent.id)).toBe(false)
+      expect(mode.error.value).toContain('Could not find this block')
+      expect(mode.canvas.value!.blocks.find((b) => b.id === parent.id)).toBeDefined()
+    })
+
+    it('a block with no separable children stays intact', async () => {
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce({
+        viewport: CAPTURE_OK.viewport,
+        blocks: [{
+          eid: 'live-1', file: 'src/pages/PlanetsPage.vue', line: '12', component: 'PlanetsPage',
+          source_tag: 'header', tag: 'header', cls: 'page-header', role: 'header',
+          rect: { x: 0, y: 0, width: 1280, height: 80 }, dataUrl: 'data:image/png;base64,A',
+        }],
+      })
+      expect(await mode.explodeBlock(parent.id)).toBe(false)
+      expect(mode.error.value).toContain('no separable children')
+      expect(mode.canvas.value!.blocks.find((b) => b.id === parent.id)).toBeDefined()
     })
   })
 

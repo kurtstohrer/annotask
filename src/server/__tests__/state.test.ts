@@ -405,3 +405,69 @@ describe('ensureAnnotaskIgnored', () => {
     state.dispose()
   })
 })
+
+describe('wireframe-snapshot GC (boot sweep)', () => {
+  let root: string
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-wfgc-'))
+  })
+
+  afterEach(async () => {
+    await fsp.rm(root, { recursive: true, force: true })
+  })
+
+  it('removes stale orphaned PNGs; keeps referenced and recent files', async () => {
+    const dir = path.join(root, '.annotask', 'wireframe-snapshots')
+    await fsp.mkdir(dir, { recursive: true })
+    await fsp.writeFile(path.join(root, '.annotask', 'wireframe.json'), JSON.stringify({
+      version: '1.0', updatedAt: 1, rev: 1,
+      routes: [{
+        route: '/planets', instances: [],
+        canvas: {
+          capturedAt: 1,
+          viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+          fullImage: 'wf-full-1.png',
+          blocks: [{
+            id: 'wfb-1', kind: 'captured', rect: { x: 0, y: 0, width: 100, height: 50 }, z: 1, createdAt: 1,
+            anchor: { file: 'a.vue', line: 1 }, originalRect: { x: 0, y: 0, width: 100, height: 50 },
+            image: 'wfb-1.png',
+          }],
+        },
+      }],
+    }))
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+    for (const name of ['wfb-1.png', 'wf-full-1.png', 'orphan-old.png', 'orphan-fresh.png']) {
+      await fsp.writeFile(path.join(dir, name), png)
+    }
+    await fsp.utimes(path.join(dir, 'orphan-old.png'), old, old)
+    // Referenced files keep their (old) mtime too — reference beats age.
+    await fsp.utimes(path.join(dir, 'wfb-1.png'), old, old)
+
+    const state = createProjectState(root, noopBroadcast)
+    // The sweep is fire-and-forget — give it a few ticks to finish.
+    await new Promise((r) => setTimeout(r, 250))
+    state.dispose()
+
+    expect(fs.existsSync(path.join(dir, 'wfb-1.png')), 'referenced block image kept').toBe(true)
+    expect(fs.existsSync(path.join(dir, 'wf-full-1.png')), 'referenced full image kept').toBe(true)
+    expect(fs.existsSync(path.join(dir, 'orphan-fresh.png')), 'recent orphan kept (mtime guard)').toBe(true)
+    expect(fs.existsSync(path.join(dir, 'orphan-old.png')), 'stale orphan removed').toBe(false)
+  })
+
+  it('aborts entirely on a malformed wireframe.json — an unreadable doc must never read as "no references"', async () => {
+    const dir = path.join(root, '.annotask', 'wireframe-snapshots')
+    await fsp.mkdir(dir, { recursive: true })
+    await fsp.writeFile(path.join(root, '.annotask', 'wireframe.json'), '{ truncated json')
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    await fsp.writeFile(path.join(dir, 'maybe-referenced.png'), Buffer.from([0x89]))
+    await fsp.utimes(path.join(dir, 'maybe-referenced.png'), old, old)
+
+    const state = createProjectState(root, noopBroadcast)
+    await new Promise((r) => setTimeout(r, 250))
+    state.dispose()
+
+    expect(fs.existsSync(path.join(dir, 'maybe-referenced.png'))).toBe(true)
+  })
+})

@@ -1219,6 +1219,9 @@ export function bridgeMessages(): string {
             });
         }
         function wfCaptureFull() {
+          // Explode captures (rootEid) refine an existing canvas — the
+          // original full-page "before" stays the honest baseline; skip.
+          if (payload && payload.rootEid) { wfFinish(null); return; }
           sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
           // Scale 1: the full page only feeds the before/after composite, and
           // a retina full-document PNG would blow the 4MB upload cap.

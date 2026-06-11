@@ -42,7 +42,7 @@ Before rewriting any expression or bound markup you encounter mid-edit, re-class
 
 ### Verification & status
 
-Directions are spatial — the server does NOT verify them against source. When you set `review`, direction entries flip `written` on trust; **your resolution is the only record of what actually landed**, so make it specific and honest per direction: which file(s), what structural change, any file you created (name new files explicitly — they sit outside the snapshot/undo net). `blocked_reason` when a direction is impossible; `needs_info` for ambiguity; denied → read `feedback` and re-apply the same task.
+Directions are spatial — the server does NOT verify them against source. When you set `review`, direction entries flip `written` on trust; **your resolution is the only record of what actually landed**, so make it specific and honest per direction: which file(s), what structural change, any file you created (name new files explicitly — in git projects the server nets newly-created files into the undo batch, but your resolution is still the human-readable record). `blocked_reason` when a direction is impossible; `needs_info` for ambiguity; denied → read `feedback` and re-apply the same task.
 
 ## Placements (`context.wireframe`)
 

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { createSnapshotStore } from '../file-snapshots'
 
 const ORIGINAL = `<template>
@@ -168,5 +169,81 @@ describe('file-snapshots', () => {
     await expect(store.snapshotFiles(['../outside.vue'], { id: 'ab-1', taskId: 't1' })).rejects.toThrow(/escapes/)
     const outsideAbs = path.join(os.tmpdir(), 'annotask-outside.vue')
     await expect(store.snapshotFiles([outsideAbs], { id: 'ab-2', taskId: 't2' })).rejects.toThrow(/escapes/)
+  })
+
+  describe('agent-created files (W4 netting — git projects)', () => {
+    function gitInit(): void {
+      const git = (args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+      git(['init', '-q'])
+      git(['add', '-A'])
+      git(['-c', 'user.email=ci@annotask.test', '-c', 'user.name=annotask-ci', 'commit', '-q', '-m', 'baseline'])
+    }
+
+    it('seal nets new untracked files into the batch; undo deletes pristine copies', async () => {
+      gitInit()
+      const store = createSnapshotStore(root)
+      // A pre-existing untracked file is the user's — never netted.
+      await write('src/UserDraft.vue', '<template>mine</template>')
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+
+      // The agent edits the snapshotted file AND creates a new component.
+      await write(file, ORIGINAL.replace('Planets', 'Worlds'))
+      await write('src/Pagination.vue', '<template><nav class="placeholder">pagination here</nav></template>')
+      await store.sealBatch('ab-1')
+
+      const state = await store.state()
+      expect(state.batches[0].created).toEqual(['src/Pagination.vue'])
+
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted.sort()).toEqual([file, 'src/Pagination.vue'].sort())
+      expect(result.skipped).toEqual([])
+      expect(await read(file)).toBe(ORIGINAL)
+      expect(fs.existsSync(path.join(root, 'src/Pagination.vue'))).toBe(false)
+      // The user's untracked draft was never touched.
+      expect(await read('src/UserDraft.vue')).toBe('<template>mine</template>')
+    })
+
+    it('a user-edited created file is kept (and reported skipped) on undo', async () => {
+      gitInit()
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write('src/New.vue', '<template>agent</template>')
+      await store.sealBatch('ab-1')
+
+      await write('src/New.vue', '<template>agent + my edits</template>')
+      const result = await store.revertBatch('ab-1')
+      expect(result.skipped).toEqual(['src/New.vue'])
+      expect(await read('src/New.vue')).toBe('<template>agent + my edits</template>')
+    })
+
+    it('revertAll (discard) deletes pristine created files across batches', async () => {
+      gitInit()
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write('src/A.vue', 'a')
+      await store.sealBatch('ab-1')
+      await store.snapshotFiles([file], { id: 'ab-2', taskId: 'task-2' })
+      await write('src/B.vue', 'b')
+      await store.sealBatch('ab-2')
+
+      const result = await store.revertAll()
+      expect(result.reverted).toContain('src/A.vue')
+      expect(result.reverted).toContain('src/B.vue')
+      expect(fs.existsSync(path.join(root, 'src/A.vue'))).toBe(false)
+      expect(fs.existsSync(path.join(root, 'src/B.vue'))).toBe(false)
+    })
+
+    it('non-git projects skip the net silently (snapshotted files still restore)', async () => {
+      const store = createSnapshotStore(root) // no git init
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write(file, 'changed')
+      await write('src/New.vue', 'agent file survives undo without git')
+      await store.sealBatch('ab-1')
+      const state = await store.state()
+      expect(state.batches[0].created).toBeUndefined()
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted).toEqual([file])
+      expect(fs.existsSync(path.join(root, 'src/New.vue'))).toBe(true)
+    })
   })
 })
