@@ -308,6 +308,28 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     persistSoon()
   }
 
+  /** USER-WRITTEN markdown for a drawn section — travels verbatim. */
+  function setBlockMd(id: string, md: string): void {
+    const b = findBlock(id)
+    if (!b) return
+    const trimmed = md.trim()
+    if (trimmed) b.md = trimmed
+    else delete b.md
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  /** Attach/clear a data-source binding. The picker emits a reactive proxy —
+   *  JSON-clone before it lands in the persisted doc. */
+  function setBlockData(id: string, data: WireframeDataBinding | null): void {
+    const b = findBlock(id)
+    if (!b) return
+    if (data) b.data = JSON.parse(JSON.stringify(data)) as WireframeDataBinding
+    else delete b.data
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
   /** Captured blocks soft-delete (the apply diff needs deletion as a fact);
    *  palette/placeholder blocks are sketch material — remove outright, and
    *  drop the snapshot file unless another block (duplicate) still shares it. */
@@ -781,6 +803,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     updateBlockRect,
     bringToFront,
     setNote,
+    setBlockMd,
+    setBlockData,
     deleteBlock,
     undeleteBlock,
     deletedBlocks,

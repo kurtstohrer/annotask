@@ -49,7 +49,7 @@ Accept or deny changes
 
 Annotask has three user-facing surfaces.
 
-- **Annotate**: pins, arrows, drawn sections, text highlights, screenshots, route-aware tasks, viewport capture.
+- **Annotate**: pins, arrows, text highlights, screenshots, route-aware tasks, viewport capture. (Sections are wireframe sketch material — draw them on the wireframe canvas.)
 - **Design**: tokens, live inspector, layout overlay, detected component catalogs, in-repo component examples.
 - **Audit**: accessibility, data sources, API schemas, detected data/state libraries, performance findings, console errors.
 

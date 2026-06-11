@@ -215,6 +215,10 @@ export interface WireframeBlock {
   fidelity?: WireframeFidelity
   // placeholder blocks
   label?: string
+  /** USER-WRITTEN markdown spec for a drawn section — verbatim, never blended
+   *  with tool-measured facts. A placeholder with `md` (or `data`) renders
+   *  with the "section" affordance; the body rides `added.md` verbatim. */
+  md?: string
   /** Data-source binding (any kind — palette components and drawn sections).
    *  REAL catalog identity; carried into the add direction's `added.data`. */
   data?: WireframeDataBinding
@@ -317,6 +321,7 @@ export function isWireframeBlock(value: unknown): value is WireframeBlock {
   if (value.deleted !== undefined && typeof value.deleted !== 'boolean') return false
   if (value.shell !== undefined && typeof value.shell !== 'boolean') return false
   if (value.duplicateOf !== undefined && typeof value.duplicateOf !== 'string') return false
+  if (value.md !== undefined && typeof value.md !== 'string') return false
   if (value.data !== undefined && !isWireframeDataBinding(value.data)) return false
   if (value.kind === 'captured') {
     const anchor = value.anchor as Record<string, unknown> | undefined

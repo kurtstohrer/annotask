@@ -486,7 +486,7 @@ export interface KeyDownEvent {
 
 // ── Mode ────────────────────────────────────────────────
 
-export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight'
+export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'highlight'
 
 export interface ModeSetPayload {
   mode: InteractionMode

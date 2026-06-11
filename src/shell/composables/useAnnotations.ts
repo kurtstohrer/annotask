@@ -53,23 +53,6 @@ export interface Arrow {
   timestamp: number
 }
 
-export interface DrawnSection {
-  id: string
-  number: number
-  x: number
-  y: number
-  width: number
-  height: number
-  prompt: string
-  nearEid?: string
-  nearFile?: string
-  nearLine?: number
-  nearComponent?: string
-  placement?: 'above' | 'below' | 'left' | 'right'
-  route: string
-  timestamp: number
-}
-
 export interface TextHighlight {
   id: string
   number: number
@@ -90,7 +73,6 @@ export interface TextHighlight {
 const pins = ref<Pin[]>([])
 const stickyNotes = ref<StickyNote[]>([])
 const arrows = ref<Arrow[]>([])
-const drawnSections = ref<DrawnSection[]>([])
 const highlights = ref<TextHighlight[]>([])
 const activeRoute = ref('/')
 
@@ -103,7 +85,6 @@ function normalizeRoute(path: string): string {
 const selectedPinId = ref<string | null>(null)
 const selectedStickyId = ref<string | null>(null)
 const selectedArrowId = ref<string | null>(null)
-const selectedSectionId = ref<string | null>(null)
 let counter = 0
 
 export function useAnnotations() {
@@ -112,7 +93,6 @@ export function useAnnotations() {
   // Route-filtered views
   const routePins = computed(() => pins.value.filter(p => normalizeRoute(p.route) === activeRoute.value))
   const routeArrows = computed(() => arrows.value.filter(a => normalizeRoute(a.route) === activeRoute.value))
-  const routeSections = computed(() => drawnSections.value.filter(s => normalizeRoute(s.route) === activeRoute.value))
   const routeHighlights = computed(() => highlights.value.filter(h => normalizeRoute(h.route) === activeRoute.value))
 
   // ── Pins ──
@@ -209,29 +189,6 @@ export function useAnnotations() {
     if (arrow) Object.assign(arrow, updates)
   }
 
-  // ── Drawn Sections ──
-  function addDrawnSection(x: number, y: number, width: number, height: number): DrawnSection {
-    counter++
-    const section: DrawnSection = {
-      id: `section-${counter}`, number: counter,
-      x, y, width, height,
-      prompt: '', route: activeRoute.value, timestamp: Date.now(),
-    }
-    drawnSections.value.push(section)
-    selectedSectionId.value = section.id
-    return section
-  }
-
-  function removeDrawnSection(id: string) {
-    drawnSections.value = drawnSections.value.filter(s => s.id !== id)
-    if (selectedSectionId.value === id) selectedSectionId.value = null
-  }
-
-  function updateDrawnSection(id: string, updates: Partial<DrawnSection>) {
-    const section = drawnSections.value.find(s => s.id === id)
-    if (section) Object.assign(section, updates)
-  }
-
   // ── Text Highlights ──
   const selectedHighlightId = ref<string | null>(null)
 
@@ -272,26 +229,23 @@ export function useAnnotations() {
     pins.value = []
     stickyNotes.value = []
     arrows.value = []
-    drawnSections.value = []
     highlights.value = []
     selectedPinId.value = null
     selectedStickyId.value = null
     selectedArrowId.value = null
-    selectedSectionId.value = null
     selectedHighlightId.value = null
   }
 
   return {
-    pins, stickyNotes, arrows, drawnSections, highlights,
-    routePins, routeArrows, routeSections, routeHighlights,
+    pins, stickyNotes, arrows, highlights,
+    routePins, routeArrows, routeHighlights,
     activeRoute, setRoute,
-    selectedPinId, selectedStickyId, selectedArrowId, selectedSectionId, selectedHighlightId,
+    selectedPinId, selectedStickyId, selectedArrowId, selectedHighlightId,
     selectedPin,
     reclaimLastCounter,
     addPin, removePin, updatePinNote, setPinAction, getPinsForElement,
     addStickyNote, removeStickyNote, updateStickyNote,
     addArrow, removeArrow, updateArrow,
-    addDrawnSection, removeDrawnSection, updateDrawnSection,
     addHighlight, removeHighlight, updateHighlight,
     clearAll,
   }

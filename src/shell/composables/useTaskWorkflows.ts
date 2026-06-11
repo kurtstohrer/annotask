@@ -56,11 +56,9 @@ export function useTaskWorkflows(deps: {
   const detailTaskId = ref<string | null>(null)
   const confirmDeleteTaskId = ref<string | null>(null)
   const detailTask = computed(() => detailTaskId.value ? deps.taskSystem.tasks.value.find(t => t.id === detailTaskId.value) ?? null : null)
-  const sectionTaskMap = ref<Record<string, string>>({})
   const arrowDragTargetRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
   let arrowDragResolveTimer: ReturnType<typeof setTimeout> | null = null
   const arrowTaskIds = new Set<string>()
-  const sectionSubmitInFlight = new Set<string>()
   const restoredTaskIds = new Set<string>()
   const componentContextCapture = useComponentContextCapture(deps.iframe)
 
@@ -79,12 +77,6 @@ export function useTaskWorkflows(deps: {
           Math.abs(a.fromX - v.fromX) < 5 && Math.abs(a.fromY - v.fromY) < 5
         )
         if (arrow) deps.annotations.removeArrow(arrow.id)
-      } else if (v.kind === 'section') {
-        if (v.annotationId) deps.annotations.removeDrawnSection(v.annotationId)
-        const section = deps.annotations.drawnSections.value.find((s: any) =>
-          Math.abs(s.x - v.x) < 5 && Math.abs(s.y - v.y) < 5
-        )
-        if (section) deps.annotations.removeDrawnSection(section.id)
       } else if (v.kind === 'highlight') {
         if (v.annotationId) deps.annotations.removeHighlight(v.annotationId)
         const ctx = task.context || {}
@@ -306,39 +298,6 @@ export function useTaskWorkflows(deps: {
     return task
   }
 
-  async function onSectionSubmit(id: string) {
-    if (sectionSubmitInFlight.has(id)) return
-    const section = deps.annotations.drawnSections.value.find(s => s.id === id)
-    if (!section || !section.prompt.trim()) return
-    sectionSubmitInFlight.add(id)
-    try {
-      const existingTaskId = sectionTaskMap.value[id]
-      if (existingTaskId) {
-        await deps.taskSystem.updateTask(existingTaskId, { description: section.prompt.trim() })
-        return
-      }
-      deps.styleEditor.recordAnnotation({
-        file: section.nearFile || '',
-        line: String(section.nearLine || 0),
-        component: section.nearComponent || '',
-        intent: section.prompt.trim(),
-        action: 'section_request',
-      })
-      const task = await createRouteTask({
-        type: 'section_request',
-        description: section.prompt.trim(),
-        file: section.nearFile || undefined,
-        line: section.nearLine || undefined,
-        component: section.nearComponent || undefined,
-        placement: section.placement || undefined,
-        visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height), nearEid: section.nearEid },
-      })
-      if (task) sectionTaskMap.value = { ...sectionTaskMap.value, [id]: task.id }
-    } finally {
-      sectionSubmitInFlight.delete(id)
-    }
-  }
-
   function onArrowDragMove(x: number, y: number) {
     if (arrowDragResolveTimer) clearTimeout(arrowDragResolveTimer)
     arrowDragResolveTimer = setTimeout(async () => {
@@ -400,13 +359,10 @@ export function useTaskWorkflows(deps: {
     return `<${tag}>${label}`
   }
 
-  /** Remove any uncommitted annotation (pending pin/arrow/highlight or orphan section). */
+  /** Remove any uncommitted annotation (pending pin/arrow/highlight). */
   function discardUncommittedAnnotations() {
     if (pendingTaskCreation.value && pendingTaskCreation.value.kind !== 'select') {
       cancelPendingTask()
-    }
-    for (const s of [...deps.annotations.drawnSections.value]) {
-      if (!sectionTaskMap.value[s.id]) deps.annotations.removeDrawnSection(s.id)
     }
   }
 
@@ -694,16 +650,6 @@ export function useTaskWorkflows(deps: {
           ...(toEl.file ? { toFile: toEl.file as string } : {}),
           ...(toEl.line ? { toLine: toEl.line as number } : {}),
         })
-      } else if (v.kind === 'section') {
-        const section = deps.annotations.addDrawnSection(v.x, v.y, v.width, v.height)
-        section.route = taskRoute
-        if ((task as any).prompt || task.description) {
-          deps.annotations.updateDrawnSection(section.id, {
-            prompt: (task as any).prompt || task.description,
-            nearFile: task.file, nearLine: task.line,
-          })
-        }
-        sectionTaskMap.value = { ...sectionTaskMap.value, [section.id]: task.id }
       } else if (v.kind === 'highlight') {
         const ctx = (task as any).context || {}
         const hl = deps.annotations.addHighlight(
@@ -727,9 +673,6 @@ export function useTaskWorkflows(deps: {
     for (const a of deps.annotations.arrows.value) {
       if (!a.fromEid && a.fromFile && a.fromLine) return true
       if (!a.toEid && a.toFile && a.toLine) return true
-    }
-    for (const s of deps.annotations.drawnSections.value) {
-      if (!s.nearEid && s.nearFile && s.nearLine) return true
     }
     for (const h of deps.annotations.highlights.value) {
       if (!h.eid && h.file && h.line) return true
@@ -774,16 +717,6 @@ export function useTaskWorkflows(deps: {
             toEid: g.eids[0],
             ...(rect ? { toRect: rect as BridgeRect } : {}),
           })
-        }
-      }
-    }
-
-    // Restored drawn sections
-    for (const section of deps.annotations.drawnSections.value) {
-      if (!section.nearEid && section.nearFile && section.nearLine) {
-        const g = await deps.iframe.findTemplateGroup(section.nearFile, String(section.nearLine), '')
-        if (g.eids.length > 0) {
-          deps.annotations.updateDrawnSection(section.id, { nearEid: g.eids[0] })
         }
       }
     }
@@ -848,13 +781,12 @@ export function useTaskWorkflows(deps: {
     denyingTaskId, denyFeedbackText,
     detailTaskId, detailTask,
     confirmDeleteTaskId,
-    sectionTaskMap, arrowDragTargetRect,
+    arrowDragTargetRect,
     restoredTaskIds,
     discardUncommittedAnnotations,
     removeTaskAnnotations, executeDeleteTask,
     acceptTask, submitDeny, submitNewTask,
     createRouteTask,
-    onSectionSubmit,
     onArrowDragMove, onArrowDragEnd,
     describeElement, onArrowCreated,
     submitPendingTask, cancelPendingTask,

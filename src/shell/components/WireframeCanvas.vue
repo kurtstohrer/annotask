@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import ConfirmDialog from './ConfirmDialog.vue'
+import DataBindingPicker from './DataBindingPicker.vue'
 import GenerateComponentPanel from './GenerateComponentPanel.vue'
 import Icon from './Icon.vue'
 import { computeSnap, type SnapGuide } from '../utils/wireframeSnap'
+import { safeMd } from '../utils/safeMd'
 import type { useComponentGenerator } from '../composables/useComponentGenerator'
-import type { WireframeBlock, WireframeCanvasState } from '../../shared/wireframe-types'
+import type { WireframeBlock, WireframeCanvasState, WireframeDataBinding } from '../../shared/wireframe-types'
 import type { WireframeCaptureProgress } from '../../shared/bridge-types'
 
 const props = defineProps<{
@@ -36,6 +38,8 @@ const emit = defineEmits<{
   'undelete-block': [id: string]
   'duplicate-block': [id: string]
   'set-note': [id: string, note: string]
+  'set-md': [id: string, md: string]
+  'set-data': [id: string, data: WireframeDataBinding | null]
   'configure-block': [id: string]
   'palette-drop': [at: { x: number; y: number }]
   'add-placeholder': [rect: { x: number; y: number; width: number; height: number }, label: string]
@@ -100,7 +104,8 @@ function selectedBlocks(): WireframeBlock[] {
 // ── Keyboard: delete / duplicate / Escape / arrow nudge ───
 
 function onKeydown(e: KeyboardEvent): void {
-  if (noteEditing.value || labelDraft.value !== null) return // typing — keys belong to the inputs
+  // Typing/picking — keys belong to the inputs, never to block ops.
+  if (noteEditing.value || labelDraft.value !== null || mdEditing.value || dataPickerFor.value !== null) return
   if (e.key === 'Escape' && placing.value) { props.generator?.cancelPlace(); return }
   if (e.key === 'Escape') { select(null); drawMode.value = false; return }
   if (props.building) return // sketch is locked while the agent implements it
@@ -236,6 +241,56 @@ function commitNote(): void {
   emit('set-note', primaryBlock.value.id, noteDraft.value)
   noteEditing.value = false
 }
+
+// ── Section markdown + data binding (drawn sections) ─────
+
+const mdEditing = ref(false)
+const mdDraft = ref('')
+const mdPreview = ref(false)
+const mdInputRef = ref<HTMLTextAreaElement | null>(null)
+/** Block id the binding picker is open for (null = closed). */
+const dataPickerFor = ref<string | null>(null)
+
+/** A placeholder with a markdown body or a binding IS a section — derived
+ *  affordance, not a new block kind. */
+function isSection(b: WireframeBlock): boolean {
+  return b.kind === 'placeholder' && (!!b.md || !!b.data)
+}
+
+function openMd(): void {
+  if (!primaryBlock.value) return
+  mdDraft.value = primaryBlock.value.md ?? ''
+  mdPreview.value = false
+  mdEditing.value = true
+  void nextTick(() => mdInputRef.value?.focus())
+}
+
+function commitMd(): void {
+  if (!mdEditing.value || !primaryBlock.value) return
+  emit('set-md', primaryBlock.value.id, mdDraft.value)
+  mdEditing.value = false
+}
+
+function cancelMd(): void {
+  mdEditing.value = false
+}
+
+function openDataPicker(id: string): void {
+  dataPickerFor.value = id
+}
+
+function onBindingSelect(binding: WireframeDataBinding): void {
+  if (dataPickerFor.value) emit('set-data', dataPickerFor.value, binding)
+  dataPickerFor.value = null
+}
+
+function onBindingClear(): void {
+  if (dataPickerFor.value) emit('set-data', dataPickerFor.value, null)
+  dataPickerFor.value = null
+}
+
+const pickerInitial = computed(() =>
+  dataPickerFor.value ? props.canvas?.blocks.find((b) => b.id === dataPickerFor.value)?.data ?? null : null)
 
 // ── Placeholder draw tool + marquee selection ─────────────
 
@@ -388,8 +443,8 @@ function onRecaptureConfirmed(): void {
         <Icon name="wand" :size="12" /> {{ implementing ? 'Implementing…' : 'Implement this wireframe' }}
       </button>
       <button v-if="!building" :class="['wf-btn', { 'wf-btn-active': drawMode }]" data-testid="wf-draw-placeholder" :disabled="capturing"
-        @click="drawMode = !drawMode" title="Draw a labeled placeholder box">
-        <Icon name="square-plus" :size="12" /> Placeholder
+        @click="drawMode = !drawMode" title="Draw a section — a labeled box, optionally with a markdown spec and a data binding">
+        <Icon name="square-plus" :size="12" /> Section
       </button>
       <div v-if="deletedBlocks.length" class="wf-deleted-wrap">
         <button class="wf-btn" data-testid="wf-deleted-toggle" @click="showDeleted = !showDeleted"
@@ -431,9 +486,12 @@ function onRecaptureConfirmed(): void {
           @pointerdown.stop="beginDrag($event, b, 'move')"
           @dblclick.stop="onBlockDblClick(b)">
           <img v-if="imageSrc(b)" :src="imageSrc(b)!" :alt="blockLabel(b)" draggable="false" />
-          <div v-else-if="b.kind === 'placeholder'" class="wf-placeholder-body">
+          <div v-else-if="b.kind === 'placeholder'" class="wf-placeholder-body" :class="{ section: isSection(b) }">
             <span class="wf-placeholder-label">{{ b.label }}</span>
-            <span class="wf-placeholder-tag">placeholder</span>
+            <span class="wf-placeholder-tag">{{ isSection(b) ? 'section' : 'placeholder' }}</span>
+            <!-- Sanitized markdown hint (clipped, non-interactive) — the
+                 verbatim body rides added.md; this is just the sketch view. -->
+            <div v-if="b.md" class="wf-md-hint" v-html="safeMd(b.md)" />
           </div>
           <div v-else class="wf-block-failed">
             <span>{{ b.captureError ? 'capture failed' : 'image missing' }}</span>
@@ -464,6 +522,12 @@ function onRecaptureConfirmed(): void {
               <button v-if="b.kind === 'palette' && generator" class="wf-hbtn" data-testid="wf-configure-btn" @pointerdown.stop @click.stop="emit('configure-block', b.id)" title="Reconfigure — props, data binding, regenerate">
                 <Icon name="settings" :size="10" />
               </button>
+              <button v-if="b.kind === 'placeholder'" class="wf-hbtn" data-testid="wf-md-btn" @pointerdown.stop @click.stop="openMd()" :title="b.md ? 'Edit the section\'s markdown spec' : 'Write a markdown spec for this section'">
+                <Icon name="file-text" :size="10" />
+              </button>
+              <button v-if="b.kind === 'placeholder'" class="wf-hbtn" data-testid="wf-data-btn" @pointerdown.stop @click.stop="openDataPicker(b.id)" :title="b.data ? `Bound to ${b.data.name} — change or clear` : 'Bind a data source'">
+                <Icon name="database" :size="10" />
+              </button>
               <button class="wf-hbtn" data-testid="wf-duplicate-btn" @pointerdown.stop @click.stop="emit('duplicate-block', b.id)" title="Duplicate (Ctrl+D)">
                 <Icon name="copy" :size="10" />
               </button>
@@ -475,6 +539,20 @@ function onRecaptureConfirmed(): void {
               <textarea ref="noteInputRef" v-model="noteDraft" rows="2" data-testid="wf-note-input"
                 placeholder="Tell the agent about this block… (e.g. make this a carousel)"
                 @blur="commitNote" @keydown.enter.exact.prevent="commitNote" @keydown.escape.stop="noteEditing = false" />
+            </div>
+            <div v-if="mdEditing" class="wf-md-editor" @pointerdown.stop @click.stop>
+              <div class="wf-md-toolbar">
+                <button :class="['wf-md-tab', { active: !mdPreview }]" @click="mdPreview = false">Write</button>
+                <button :class="['wf-md-tab', { active: mdPreview }]" data-testid="wf-md-preview-toggle" @click="mdPreview = true">Preview</button>
+                <span class="wf-md-spacer" />
+                <button class="wf-md-tab" @click="cancelMd">Cancel</button>
+                <button class="wf-md-tab primary" data-testid="wf-md-save" @click="commitMd">Save</button>
+              </div>
+              <!-- Plain Enter = newline (multi-line markdown); Ctrl/Cmd+Enter commits. -->
+              <textarea v-if="!mdPreview" ref="mdInputRef" v-model="mdDraft" rows="7" data-testid="wf-md-input"
+                placeholder="Describe what you want here, in markdown… (## heading, - bullets)"
+                @keydown.enter.ctrl.prevent="commitMd" @keydown.enter.meta.prevent="commitMd" @keydown.escape.stop="cancelMd" />
+              <div v-else class="wf-md-preview" data-testid="wf-md-rendered" v-html="safeMd(mdDraft)" />
             </div>
             <div class="resize-handle rh-n" @pointerdown.stop="beginDrag($event, b, 'resize', 'n')" />
             <div class="resize-handle rh-s" @pointerdown.stop="beginDrag($event, b, 'resize', 's')" />
@@ -517,6 +595,10 @@ function onRecaptureConfirmed(): void {
     </div>
 
     <GenerateComponentPanel v-if="generator?.session.value" :generator="generator" />
+
+    <div v-if="dataPickerFor" class="wf-picker-overlay" @pointerdown.self="dataPickerFor = null">
+      <DataBindingPicker :initial="pickerInitial" @select="onBindingSelect" @clear="onBindingClear" @cancel="dataPickerFor = null" />
+    </div>
 
     <ConfirmDialog v-if="confirmRecapture"
       message="Discard this sketch and re-capture the live route? Your rearrangement on this canvas will be lost."
@@ -689,6 +771,22 @@ function onRecaptureConfirmed(): void {
   letter-spacing: 0.08em;
   color: var(--text-muted);
 }
+/* Section affordance: a placeholder carrying a markdown spec or a binding. */
+.wf-placeholder-body.section { justify-content: flex-start; padding: 8px 10px 18px; align-items: flex-start; }
+.wf-placeholder-body.section .wf-placeholder-tag { color: var(--accent); }
+.wf-md-hint {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: left;
+}
+.wf-md-hint :deep(h1), .wf-md-hint :deep(h2), .wf-md-hint :deep(h3) { font-size: 11px; margin: 2px 0; color: var(--text); }
+.wf-md-hint :deep(p), .wf-md-hint :deep(ul) { margin: 2px 0; }
+.wf-md-hint :deep(ul) { padding-left: 14px; }
 
 .wf-clipped-note {
   position: absolute;
@@ -812,6 +910,72 @@ function onRecaptureConfirmed(): void {
   font-size: 11px;
   padding: 6px 8px;
   resize: vertical;
+}
+
+/* Section markdown editor — same anchored-popover pattern as the note
+   editor but wider and multi-line, with a Write/Preview toggle. */
+.wf-md-editor {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: min(440px, 90vw);
+  z-index: 6;
+  background: var(--surface-elevated);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px var(--shadow);
+  overflow: hidden;
+}
+.wf-md-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.wf-md-spacer { flex: 1; }
+.wf-md-tab {
+  padding: 2px 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.wf-md-tab:hover { color: var(--text); }
+.wf-md-tab.active { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+.wf-md-tab.primary { background: var(--accent); color: var(--text-on-accent); }
+.wf-md-editor textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: none;
+  color: var(--text);
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  padding: 8px;
+  resize: vertical;
+  outline: none;
+}
+.wf-md-preview {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text);
+  max-height: 220px;
+  overflow-y: auto;
+  cursor: text;
+}
+
+.wf-picker-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay);
+  z-index: 90;
 }
 
 .wf-guide {

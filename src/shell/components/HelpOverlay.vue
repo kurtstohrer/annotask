@@ -45,7 +45,6 @@
             <div class="shortcut-row"><kbd>V</kbd><span>Select</span></div>
             <div class="shortcut-row"><kbd>P</kbd><span>Pin</span></div>
             <div class="shortcut-row"><kbd>A</kbd><span>Arrow</span></div>
-            <div class="shortcut-row"><kbd>D</kbd><span>Draw Section</span></div>
             <div class="shortcut-row"><kbd>H</kbd><span>Highlight Text</span></div>
             <div class="shortcut-row"><kbd>I</kbd><span>Interact Mode</span></div>
           </div>
@@ -68,7 +67,7 @@
       <!-- Annotate -->
       <div v-else-if="helpSection === 'annotate'" class="help-page">
         <h2 class="help-page-title">Annotate</h2>
-        <p class="help-intro">The <strong>Annotate</strong> tab is where you mark up your running app. Drop pins, draw arrows, outline new sections, highlight text — every annotation becomes a task for your AI agent with element metadata, source location, and optional screenshots.</p>
+        <p class="help-intro">The <strong>Annotate</strong> tab is where you mark up your running app. Drop pins, draw arrows, highlight text — every annotation becomes a task for your AI agent with element metadata, source location, and optional screenshots. (Sections are wireframe sketch material now — draw them on the wireframe canvas in the Design tab.)</p>
 
         <h3 id="annotate-tools" class="help-section-title">Tools</h3>
         <div class="help-feature-list">
@@ -83,10 +82,6 @@
           <div class="help-feature">
             <div class="help-feature-header"><kbd>A</kbd> Arrow</div>
             <p>Draw arrows between elements to show relationships or flow. Arrows snap to element edges with bezier curves. Drag endpoints to reposition. Six color presets available.</p>
-          </div>
-          <div class="help-feature">
-            <div class="help-feature-header"><kbd>D</kbd> Draw Section</div>
-            <p>Draw a rectangular area to describe a new content section. Includes a markdown editor for detailed descriptions. Sections are movable and resizable.</p>
           </div>
           <div class="help-feature">
             <div class="help-feature-header"><kbd>H</kbd> Highlight Text</div>
@@ -183,7 +178,7 @@
         <h3 id="tasks-types" class="help-section-title">Task Types</h3>
         <p class="help-text">
           <strong>annotation</strong> (pins, arrows, notes, highlights),
-          <strong>section_request</strong> (drawn sections),
+          <strong>section_request</strong> (legacy — sections are wireframe sketch material now),
           <strong>style_update</strong> (inspector edits — CSS changes),
           <strong>theme_update</strong> (design token edits),
           <strong>a11y_fix</strong> (WCAG violation fix),

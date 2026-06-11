@@ -27,7 +27,6 @@ export function useCanvasDrawing(
     fromTag?: string; fromComponent?: string
     toTag?: string; toComponent?: string
   } | null>(null)
-  const drawingRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
   const hoverElement = ref<HoverElement>(null)
   let drawStart: { x: number; y: number } | null = null
 
@@ -52,9 +51,6 @@ export function useCanvasDrawing(
           fromRect: fromCtx.rect, fromTag: fromCtx.tag, fromComponent: fromCtx.component,
         }
       }
-    } else if (mode === 'draw') {
-      drawStart = { x: e.clientX, y: e.clientY }
-      drawingRect.value = { x: e.clientX, y: e.clientY, width: 0, height: 0 }
     }
   }
 
@@ -91,12 +87,6 @@ export function useCanvasDrawing(
           }
         }
       }, 50)
-    } else if (mode === 'draw' && drawingRect.value) {
-      const x = Math.min(drawStart.x, e.clientX)
-      const y = Math.min(drawStart.y, e.clientY)
-      const w = Math.abs(e.clientX - drawStart.x)
-      const h = Math.abs(e.clientY - drawStart.y)
-      drawingRect.value = { x, y, width: w, height: h }
     }
   }
 
@@ -127,31 +117,12 @@ export function useCanvasDrawing(
         onArrowCreated?.(arrow.id, fromCtx, toCtx)
       }
       drawingArrow.value = null
-    } else if (mode === 'draw' && drawingRect.value) {
-      const r = drawingRect.value
-      if (r.width > 30 && r.height > 30) {
-        onBeforeAnnotation?.()
-        const nearCtx = await resolveElementAt(r.x + r.width / 2, r.y)
-        const section = annotations.addDrawnSection(r.x, r.y, r.width, r.height)
-        if (nearCtx) {
-          const placement = r.y > (drawStart?.y || 0) ? 'below' : 'above'
-          annotations.updateDrawnSection(section.id, {
-            nearEid: nearCtx.eid,
-            nearFile: nearCtx.file,
-            nearLine: parseInt(nearCtx.line) || 0,
-            nearComponent: nearCtx.component,
-            placement: placement as 'above' | 'below',
-          })
-        }
-      }
-      drawingRect.value = null
     }
     drawStart = null
   }
 
   return {
     drawingArrow,
-    drawingRect,
     hoverElement,
     onCanvasPointerDown,
     onCanvasPointerMove,

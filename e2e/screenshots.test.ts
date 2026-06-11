@@ -104,30 +104,6 @@ test.describe('Marketing screenshots', () => {
     await saveShot(page, 'annotate-arrows.png')
   })
 
-  test('annotate-sections', async ({ page }) => {
-    await waitForShell(page)
-
-    await page.locator('[data-testid="tab-annotate"]').click()
-    // Switch to draw mode
-    await page.locator('[data-testid="tool-draw"]').click()
-
-    // Draw a section by dragging on the iframe area
-    const iframe = page.locator('.app-iframe')
-    const box = await iframe.boundingBox()
-    if (box) {
-      const startX = box.x + box.width * 0.1
-      const startY = box.y + box.height * 0.15
-      const endX = box.x + box.width * 0.6
-      const endY = box.y + box.height * 0.5
-      await page.mouse.move(startX, startY)
-      await page.mouse.down()
-      await page.mouse.move(endX, endY, { steps: 10 })
-      await page.mouse.up()
-    }
-    await page.waitForTimeout(500)
-    await saveShot(page, 'annotate-sections.png')
-  })
-
   test('annotate-highlights', async ({ page }) => {
     const frame = await waitForShell(page)
 

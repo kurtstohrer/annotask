@@ -20,7 +20,6 @@ import type { A11yViolation } from './composables/useA11yScanner'
 // Annotation overlays (still used inline in canvas area)
 import PinOverlay from './components/PinOverlay.vue'
 import ArrowOverlay from './components/ArrowOverlay.vue'
-import DrawnSectionOverlay from './components/DrawnSectionOverlay.vue'
 import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
 import WireframeCanvas from './components/WireframeCanvas.vue'
@@ -125,13 +124,13 @@ watch(iframe.colorScheme, (cs) => setActiveColorScheme(cs), { immediate: true })
 const arrowColor = useLocalStorageRef('annotask:arrowColor', '#ef4444')
 const highlightColor = useLocalStorageRef('annotask:highlightColor', '#f59e0b')
 const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value, () => discardUncommittedAnnotations())
-const { drawingArrow, drawingRect, hoverElement: arrowHoverElement, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
+const { drawingArrow, hoverElement: arrowHoverElement, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
 const showWarning = ref(false)
 const showReportPanel = ref(false)
 const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
 // Markup visibility toggles
-const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
+const showMarkup = ref({ pins: true, arrows: true, highlights: true, inspector: true })
 const includeHistory = useLocalStorageBool('annotask:includeHistory', false)
 // Intentionally non-persistent: every session starts with rendered HTML off so
 // tasks don't accidentally carry a large outerHTML blob from a prior opt-in.
@@ -577,12 +576,11 @@ const {
   denyingTaskId, denyFeedbackText,
   detailTaskId, detailTask,
   confirmDeleteTaskId,
-  sectionTaskMap, arrowDragTargetRect,
+  arrowDragTargetRect,
   restoredTaskIds,
   discardUncommittedAnnotations, removeTaskAnnotations, executeDeleteTask,
   acceptTask, submitDeny, submitNewTask,
   createRouteTask,
-  onSectionSubmit,
   onArrowDragMove, onArrowDragEnd,
   describeElement, onArrowCreated,
   submitPendingTask, cancelPendingTask,
@@ -851,6 +849,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           @undelete-block="wireframeMode.undeleteBlock"
           @duplicate-block="wireframeMode.duplicateBlock"
           @set-note="wireframeMode.setNote"
+          @set-md="wireframeMode.setBlockMd"
+          @set-data="wireframeMode.setBlockData"
           @configure-block="onWireframeConfigureBlock"
           @add-placeholder="wireframeMode.addPlaceholderBlock"
           @palette-drop="onWireframePaletteDrop" />
@@ -927,7 +927,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
 
         <!-- Editor-only overlays -->
         <template v-if="shellView === 'editor'">
-          <div v-if="interactionMode === 'arrow' || interactionMode === 'draw'" class="drawing-shield" :class="interactionMode" />
+          <div v-if="interactionMode === 'arrow'" class="drawing-shield" :class="interactionMode" />
           <template v-if="interactionMode !== 'interact'">
             <div v-for="te in taskElementRects" :key="'te-' + te.taskId" class="highlight task-element"
               :style="{ left: te.rect.x + 'px', top: te.rect.y + 'px', width: te.rect.width + 'px', height: te.rect.height + 'px' }" />
@@ -950,17 +950,6 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
               @update-arrow="(id, updates) => annotations.updateArrow(id, updates)"
               @drag-move="onArrowDragMove"
               @drag-end="onArrowDragEnd"
-            />
-            <DrawnSectionOverlay v-if="showMarkup.sections"
-              :sections="annotations.routeSections.value"
-              :selectedId="annotations.selectedSectionId.value"
-              :drawingRect="drawingRect"
-              :sectionTaskMap="sectionTaskMap"
-              @select="annotations.selectedSectionId.value = $event"
-              @remove="annotations.removeDrawnSection"
-              @update-prompt="(id, prompt) => annotations.updateDrawnSection(id, { prompt })"
-              @update-rect="(id, rect) => annotations.updateDrawnSection(id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height })"
-              @submit="onSectionSubmit"
             />
             <TextHighlightOverlay v-if="showMarkup.highlights"
               :highlights="annotations.routeHighlights.value"
@@ -1214,7 +1203,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   /* Severity */
   --severity-critical: #ef4444; --severity-serious: #ef4444; --severity-moderate: #f59e0b; --severity-minor: #71717a;
   /* Modes */
-  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-draw: #71717a; --mode-highlight: #f59e0b;
+  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-highlight: #f59e0b;
   /* Layout viz */
   --layout-flex: #a855f7; --layout-grid: #22c55e;
   /* Roles */
@@ -1242,7 +1231,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   --status-pending: #6b7280; --status-in-progress: #2563eb; --status-review: #d97706;
   --status-denied: #dc2626; --status-accepted: #16a34a; --status-needs-info: #9333ea; --status-blocked: #ea580c;
   --severity-critical: #dc2626; --severity-serious: #dc2626; --severity-moderate: #d97706; --severity-minor: #6b7280;
-  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-draw: #6b7280; --mode-highlight: #d97706;
+  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-highlight: #d97706;
   --layout-flex: #9333ea; --layout-grid: #16a34a;
   --role-container: #16a34a; --role-content: #2563eb; --role-component: #9333ea;
   --syntax-property: #0369a1; --syntax-string: #15803d; --syntax-number: #b45309;

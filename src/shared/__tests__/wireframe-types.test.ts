@@ -83,10 +83,17 @@ describe('isWireframeDataBinding', () => {
   })
 })
 
-describe('WireframeBlock.data validation', () => {
+describe('WireframeBlock.data + .md validation', () => {
   it('accepts bindings on palette AND placeholder blocks (kind-agnostic)', () => {
     expect(isWireframeBlock(paletteBlock({ data: binding() }))).toBe(true)
     expect(isWireframeBlock(placeholderBlock({ data: binding({ shape_source: 'source-details' }) }))).toBe(true)
+  })
+
+  it('accepts a markdown body on a drawn section and rejects non-strings', () => {
+    expect(isWireframeBlock(placeholderBlock({ md: '## Related planets\n- name and type' }))).toBe(true)
+    expect(isWireframeBlock(placeholderBlock({ md: 42 as never }))).toBe(false)
+    // md + data round-trip through the document validator together.
+    expect(isWireframeDocument(docWith([placeholderBlock({ md: 'spec', data: binding() })]))).toBe(true)
   })
 
   it('accepts legacy blocks without data', () => {

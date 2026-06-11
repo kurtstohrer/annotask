@@ -60,7 +60,6 @@ export interface ShellThemeColors {
   // ── Interaction modes ──
   'mode-interact': string
   'mode-arrow': string
-  'mode-draw': string
   'mode-highlight': string
 
   // ── Layout visualization ──
@@ -118,7 +117,7 @@ export const THEME_COLOR_KEYS: (keyof ShellThemeColors)[] = [
   'status-pending', 'status-in-progress', 'status-review', 'status-denied',
   'status-accepted', 'status-needs-info', 'status-blocked',
   'severity-critical', 'severity-serious', 'severity-moderate', 'severity-minor',
-  'mode-interact', 'mode-arrow', 'mode-draw', 'mode-highlight',
+  'mode-interact', 'mode-arrow', 'mode-highlight',
   'layout-flex', 'layout-grid',
   'role-container', 'role-content', 'role-component',
   'syntax-property', 'syntax-string', 'syntax-number', 'syntax-boolean',

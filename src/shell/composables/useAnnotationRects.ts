@@ -38,9 +38,6 @@ export function useAnnotationRects(deps: {
       for (const h of annotations.highlights.value) {
         if (h.eid) addEid(h.eid, { type: 'highlight', id: h.id, field: 'rect' })
       }
-      for (const s of annotations.drawnSections.value) {
-        if (s.nearEid) addEid(s.nearEid, { type: 'section', id: s.id, field: 'near' })
-      }
       const currentRoute = annotations.activeRoute.value
       for (const t of taskSystem.tasks.value) {
         const v = t.visual as any
@@ -151,16 +148,6 @@ export function useAnnotationRects(deps: {
             } else {
               hl.rect = rect
             }
-          } else if (entry.type === 'section') {
-            const section = annotations.drawnSections.value.find(s => s.id === entry.id)
-            if (!section) continue
-            const prevRect = (section as any)._nearRect as typeof rect | undefined
-            if (prevRect) {
-              const dx = rect.x - prevRect.x, dy = rect.y - prevRect.y
-              if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-                section.x += dx; section.y += dy; (section as any)._nearRect = rect
-              }
-            } else { (section as any)._nearRect = rect }
           } else if (entry.type === 'task') {
             newTaskRects.push({ taskId: entry.id, rect })
           }
@@ -178,7 +165,6 @@ export function useAnnotationRects(deps: {
     function tick() {
       const hasWork = annotations.arrows.value.some(a => a.fromEid || a.toEid)
         || annotations.highlights.value.some(h => h.eid)
-        || annotations.drawnSections.value.some(s => s.nearEid)
         || taskSystem.tasks.value.some(t => { const v = t.visual as any; return v?.kind === 'select' && (v.eids?.length || v.eid) && t.status !== 'accepted' })
       if (!hasWork) { loopRunning = false; return }
       // Skip work while the tab is hidden — the browser still fires rAF at reduced rate,
@@ -194,7 +180,7 @@ export function useAnnotationRects(deps: {
   }
 
   // Start annotation loop when annotations or tasks exist
-  watch([annotations.arrows, annotations.highlights, annotations.drawnSections, taskSystem.tasks], () => {
+  watch([annotations.arrows, annotations.highlights, taskSystem.tasks], () => {
     startAnnotationLoop()
   }, { deep: true })
 

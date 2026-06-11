@@ -89,7 +89,7 @@ const COLOR_GROUPS = [
   { label: 'Palette', keys: ['purple', 'orange', 'cyan', 'indigo'] },
   { label: 'Status', keys: ['status-pending', 'status-in-progress', 'status-review', 'status-denied', 'status-accepted', 'status-needs-info', 'status-blocked'] },
   { label: 'Severity', keys: ['severity-critical', 'severity-serious', 'severity-moderate', 'severity-minor'] },
-  { label: 'Modes', keys: ['mode-interact', 'mode-arrow', 'mode-draw', 'mode-highlight'] },
+  { label: 'Modes', keys: ['mode-interact', 'mode-arrow', 'mode-highlight'] },
   { label: 'Layout', keys: ['layout-flex', 'layout-grid'] },
   { label: 'Roles', keys: ['role-container', 'role-content', 'role-component'] },
   { label: 'Syntax', keys: ['syntax-property', 'syntax-string', 'syntax-number', 'syntax-boolean', 'syntax-null', 'syntax-operator', 'syntax-punctuation'] },

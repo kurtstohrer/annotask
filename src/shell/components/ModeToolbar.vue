@@ -21,9 +21,6 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
     <button data-testid="tool-arrow" :class="['mode-btn arrow', { active: modelValue === 'arrow' }]" @click="emit('update:modelValue', 'arrow')" title="Arrow (A)">
       <Icon name="arrow-right" :stroke-width="2.5" />
     </button>
-    <button data-testid="tool-draw" :class="['mode-btn draw', { active: modelValue === 'draw' }]" @click="emit('update:modelValue', 'draw')" title="Draw Section (D)">
-      <Icon name="square-plus" />
-    </button>
     <button data-testid="tool-highlight" :class="['mode-btn mode-highlight', { active: modelValue === 'highlight' }]" @click="emit('update:modelValue', 'highlight')" title="Highlight Text (H)">
       <Icon name="highlighter" />
     </button>
@@ -47,7 +44,6 @@ const emit = defineEmits<{ 'update:modelValue': [mode: InteractionMode] }>()
 .mode-btn.active { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); }
 .mode-btn.mode-pin.active { background: var(--pin-color); border-color: var(--pin-color); color: white; }
 .mode-btn.arrow.active { background: var(--mode-arrow); border-color: var(--mode-arrow); }
-.mode-btn.draw.active { background: var(--mode-draw); border-color: var(--mode-draw); }
 .mode-btn.mode-highlight.active { background: var(--mode-highlight); border-color: var(--mode-highlight); }
 .mode-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; align-self: center; }
 </style>

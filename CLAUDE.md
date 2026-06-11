@@ -205,7 +205,7 @@ The "Audit" tab uses internal id `develop` (the label was renamed but the id was
 `App.vue` is the shell orchestrator — it wires composables together and handles bridge events. **Do not add business logic directly to App.vue.** Extract new concerns into composables under `src/shell/composables/`.
 
 Key composables:
-- `useShellTheme` — Theme system: 63 CSS variables, 18 built-in themes, custom theme CRUD, system preference, localStorage persistence
+- `useShellTheme` — Theme system: 62 CSS variables, 18 built-in themes, custom theme CRUD, system preference, localStorage persistence
 - `useSelectionModel` — Element selection state, rect tracking, hover, live styles, style/class change handlers
 - `useTaskWorkflows` — Task creation flows (pin, arrow, highlight, section → task), pending task panel, accept/deny, annotation restoration, auto-opens task panel on create
 - `useAnnotationRects` — rAF loop keeping annotation overlays positioned during scroll/resize
@@ -219,20 +219,20 @@ When adding new shell features, create a new composable that accepts its depende
 
 ## Shell Theme System
 
-The shell has a VS Code-style theme system with 18 built-in themes and custom theme support. Themes control every color in the UI via 63 CSS custom properties.
+The shell has a VS Code-style theme system with 18 built-in themes and custom theme support. Themes control every color in the UI via 62 CSS custom properties.
 
 ### Architecture
 
-- `src/shell/themes/types.ts` — `ShellThemeColors` (63 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
+- `src/shell/themes/types.ts` — `ShellThemeColors` (62 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
 - `src/shell/themes/builtin.ts` — 18 built-in theme definitions with `deriveDefaults()` helper
 - `src/shell/composables/useShellTheme.ts` — Core composable: applies themes at runtime via `style.setProperty()`, handles localStorage persistence, system preference detection, custom theme CRUD, and a one-shot migration from the legacy `annotask:themeMode` key
 - `src/shell/components/ShellThemeEditor.vue` — Full-screen custom theme creator with grouped color pickers and live preview
 
 ### How themes are applied
 
-Themes are applied at runtime via `document.documentElement.style.setProperty()` for each of the 63 CSS variables. The `:root` block in App.vue provides dark fallback values, and `:root.light` provides light fallback values — these are safety nets for first paint before JS runs. Once `useShellTheme` initializes, it overrides all variables via inline styles.
+Themes are applied at runtime via `document.documentElement.style.setProperty()` for each of the 62 CSS variables. The `:root` block in App.vue provides dark fallback values, and `:root.light` provides light fallback values — these are safety nets for first paint before JS runs. Once `useShellTheme` initializes, it overrides all variables via inline styles.
 
-### CSS variable categories (63 total)
+### CSS variable categories (62 total)
 
 | Category | Variables | Purpose |
 |----------|-----------|---------|
@@ -245,7 +245,7 @@ Themes are applied at runtime via `document.documentElement.style.setProperty()`
 | Utility (2) | `--overlay`, `--shadow` | Overlays and shadows |
 | Status (7) | `--status-pending`, `--status-in-progress`, `--status-review`, `--status-denied`, `--status-accepted`, `--status-needs-info`, `--status-blocked` | Task lifecycle |
 | Severity (4) | `--severity-critical`, `--severity-serious`, `--severity-moderate`, `--severity-minor` | A11y/perf findings |
-| Modes (4) | `--mode-interact`, `--mode-arrow`, `--mode-draw`, `--mode-highlight` | Tool button active states |
+| Modes (3) | `--mode-interact`, `--mode-arrow`, `--mode-highlight` | Tool button active states |
 | Layout (2) | `--layout-flex`, `--layout-grid` | Layout visualization |
 | Roles (3) | `--role-container`, `--role-content`, `--role-component` | Element classification |
 | Syntax (7) | `--syntax-property`, `--syntax-string`, `--syntax-number`, `--syntax-boolean`, `--syntax-null`, `--syntax-operator`, `--syntax-punctuation` | Code highlighting |
@@ -317,7 +317,6 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 - **Async I/O** — In-memory task cache with atomic file writes (no race conditions)
 - **Inspector highlights** — Selection/hover overlays that track scroll and resize via rAF loop
 - **Arrow tool** — Multi-color arrows with element outlines, edge-to-edge bezier paths, draggable endpoints, element-aware re-resolution on move, scroll/resize tracking via rAF
-- **Section tool** — Markdown editor (edit/preview toggle), dark theme, movable/resizable sections with drag handles, explicit "Add Task" / "Update Task" button
 - **Text highlights** — Multi-color highlights with visual overlay on selected text, sidebar task creation with preloaded text
 - **Scroll/resize tracking** — All annotations (arrows, highlights, sections) follow elements during scroll and window resize via rAF loop, same pattern as inspector selections
 - **Route persistence** — Iframe route saved to localStorage, restored on page reload
@@ -332,7 +331,7 @@ Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth
 | Type | Source | Description |
 |------|--------|-------------|
 | `annotation` | Pins, arrows, notes, text highlights | User intent described in `description`, optional `action` and `context` |
-| `section_request` | Drawn sections | New content area with `description` and `placement` |
+| `section_request` | Legacy — the Annotate tab no longer emits these (sections are wireframe sketch material riding `wireframe_apply` add directions); apply per SKILL.md when present in older task files | New content area with `description` and `placement` |
 | `style_update` | Inspector style/class edits | `context.changes` array: CSS changes (`property`, `before`, `after`) and class changes. Legacy `component_prop_update`/`text_update` entries may appear in tasks minted before the snapshot-wireframe pivot — apply them per the SKILL.md rules when present |
 | `theme_update` | Theme page commit | One task per commit. `context.edits[]` — each entry carries `category`, `role`, `cssVar`, `theme_variant`, `theme_selector` (how that variant is activated in the DOM — attribute/class/media/default), `before`, `after`, `sourceFile`, `sourceLine`, `isNew`. `context.specFile` is the relative path to `.annotask/design-spec.json`; the agent patches it after applying CSS edits so the Theme page hot-reloads. |
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |

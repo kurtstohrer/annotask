@@ -36,9 +36,6 @@
   cursor: crosshair;
 }
 
-.drawing-shield.draw {
-  cursor: crosshair;
-}
 
 /* Wireframe palette: transparent catcher over the iframe so native drag events
    reach the shell. Always present but inert (pointer-events:none) until a drag
