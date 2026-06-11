@@ -180,11 +180,19 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         : kind === 'duplicate'
           ? `a duplicate of the ${label(original!)} block's markup`
           : `placeholder "${ownLabel}" (user-sketched box ${rectStr(b.rect)}; keep it visibly a placeholder)`
+      // Honest summaries only: the FULL md body rides added.md verbatim (the
+      // description quotes its first line); the binding summary names the
+      // real source + the shape_source honesty tag.
+      const mdFirstLine = b.md ? b.md.split('\n')[0].replace(/^#+\s*/, '').slice(0, 120) : ''
+      const mdNote = b.md ? `; user wrote a markdown spec (rides added.md verbatim) — first line: "${mdFirstLine}"` : ''
+      const dataNote = b.data
+        ? `; bind to the ${b.data.kind} ${b.data.name}${b.data.path ? ` → ${b.data.path}` : ''}${b.data.fields?.length ? ` (show ${b.data.fields.join(', ')})` : ''} [shape: ${b.data.shape_source}]`
+        : ''
       directions.push({
         id: `wd-${b.id}-add`,
         type: 'wireframe_direction',
         op: 'add',
-        description: `ADD ${what} ${where}${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `ADD ${what} ${where}${mdNote}${dataNote}${b.note ? ` — user said: "${b.note}"` : ''}`,
         file: neighbor?.anchor?.file ?? '',
         section: 'template',
         line: neighbor?.anchor?.line ?? 0,
@@ -199,6 +207,8 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
           ...(b.component?.props ? { props: b.component.props } : {}),
           ...(b.component?.previewProps ? { previewProps: b.component.previewProps } : {}),
           ...(kind === 'placeholder' ? { label: ownLabel } : {}),
+          ...(b.md ? { md: b.md } : {}),
+          ...(b.data ? { data: JSON.parse(JSON.stringify(b.data)) as typeof b.data } : {}),
           position,
         },
         ...(b.note ? { note: b.note } : {}),

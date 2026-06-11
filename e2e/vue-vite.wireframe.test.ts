@@ -471,4 +471,99 @@ test.describe('Vue + Vite wireframe implement (W3 UI)', () => {
     await expect.poll(async () => (await getCanvas()).status ?? 'sketch', { timeout: 5_000 }).toBe('sketch')
     await expect(page.locator('[data-testid="wf-implement"]')).toBeVisible({ timeout: 10_000 })
   })
+
+  // D6: a drawn SECTION (md spec + data binding) survives F5 and rides the
+  // implement task's add direction with VERBATIM added.md/.data.
+  test('a section with md + binding implements into ONE task carrying both verbatim', async ({ page, request }) => {
+    test.setTimeout(120_000)
+    await bootDesignShell(page)
+    const frame = page.frameLocator('.app-iframe')
+    await expect(frame.locator('h1.title')).toHaveText('Planets', { timeout: 30_000 })
+    await enterWireframeMode(page)
+
+    type Blk = { id: string; kind: string; label?: string; md?: string; data?: Record<string, unknown> }
+    async function getCanvas(): Promise<{ blocks: Blk[] }> {
+      const wf = await (await request.get('/__annotask/api/wireframe')).json()
+      return wf.routes.find((r: { route: string }) => r.route === '/planets')!.canvas
+    }
+
+    // Draw the section in free space below the content.
+    const stage = (await page.locator('.wf-stage').boundingBox())!
+    await page.locator('[data-testid="wf-draw-placeholder"]').click()
+    await page.evaluate(({ sx, sy }) => {
+      const stageEl = document.querySelector('.wf-stage') as HTMLElement
+      const ev = (type: string, x: number, y: number) =>
+        new PointerEvent(type, { bubbles: true, clientX: sx + x, clientY: sy + y })
+      stageEl.dispatchEvent(ev('pointerdown', 60, 460))
+      window.dispatchEvent(ev('pointermove', 420, 580))
+      window.dispatchEvent(ev('pointerup', 420, 580))
+    }, { sx: stage.x, sy: stage.y })
+    await page.locator('[data-testid="wf-placeholder-label"]').fill('related planets')
+    await page.locator('[data-testid="wf-placeholder-label"]').press('Enter')
+    let secId = ''
+    await expect.poll(async () => {
+      const ph = (await getCanvas()).blocks.find((b) => b.kind === 'placeholder')
+      secId = ph?.id ?? ''
+      return ph?.label
+    }, { timeout: 5_000 }).toBe('related planets')
+
+    // Markdown spec.
+    const md = '## Related planets\n- name and type for each'
+    await page.locator(`[data-block-id="${secId}"]`).click({ position: { x: 8, y: 8 } })
+    await page.locator('[data-testid="wf-md-btn"]').click()
+    await page.locator('[data-testid="wf-md-input"]').fill(md)
+    await page.locator('[data-testid="wf-md-save"]').click()
+
+    // Binding through the picker's REAL shape tree (the playground's OpenAPI
+    // file resolves usePlanets to 'api-schema' without the FastAPI running).
+    await page.locator(`[data-block-id="${secId}"]`).click({ position: { x: 8, y: 8 } })
+    await page.locator('[data-testid="wf-data-btn"]').click()
+    await page.locator('[data-testid="binding-row-usePlanets"]').click()
+    await page.locator('[data-testid="binding-shape-tree"]').waitFor({ state: 'visible', timeout: 15_000 })
+    await page.locator('.bp-tree-row .bp-twisty').first().click()
+    await page.locator('.bp-tree-row', { hasText: 'planets' }).click()
+    await page.locator('[data-testid="binding-field-name"]').check()
+    await page.locator('[data-testid="binding-field-type"]').check()
+    await page.locator('[data-testid="binding-confirm"]').click()
+    await expect.poll(async () => (await getCanvas()).blocks.find((b) => b.id === secId)?.data?.name,
+      { timeout: 5_000 }).toBe('usePlanets')
+
+    // F5 — md + binding restore before implementing.
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await page.locator('[data-testid="wireframe-canvas"]').waitFor({ state: 'visible', timeout: 15_000 })
+    await page.waitForTimeout(1_000)
+    const restored = (await getCanvas()).blocks.find((b) => b.id === secId)!
+    expect(restored.md).toBe(md)
+    expect(restored.data).toMatchObject({ name: 'usePlanets', path: 'planets[]', shape_source: 'api-schema' })
+
+    // IMPLEMENT — ONE task; the add direction carries md + data VERBATIM.
+    await page.locator('[data-testid="wf-implement"]').click()
+    await expect(page.locator('[data-testid="wf-building"]')).toBeVisible({ timeout: 30_000 })
+
+    const session = await getDesignSession(request)
+    type AddChange = { type: string; op?: string; description?: string; added?: { md?: string; data?: Record<string, unknown> } }
+    const add = session.entries.find((e) => {
+      const c = e.change as AddChange
+      return c.type === 'wireframe_direction' && c.op === 'add'
+    })!
+    const change = add.change as AddChange
+    expect(change.added!.md).toBe(md)
+    expect(change.added!.data).toMatchObject({
+      kind: 'composable',
+      name: 'usePlanets',
+      path: 'planets[]',
+      fields: ['name', 'type'],
+      shape_source: 'api-schema',
+    })
+    expect(String(change.description)).toContain('first line: "Related planets"')
+    expect(String(change.description)).toContain('bind to the composable usePlanets')
+
+    const tasks = (await (await request.get('/__annotask/api/tasks')).json()).tasks as Array<Record<string, unknown>>
+    const wireframeTasks = tasks.filter((t) => t.type === 'wireframe_apply')
+    expect(wireframeTasks).toHaveLength(1)
+
+    // No agent in e2e: delete to unlock (the live loop is the matrix test's job).
+    await request.delete(`/__annotask/api/tasks/${wireframeTasks[0].id}`, { headers: { Origin: ORIGIN } })
+    await expect(page.locator('[data-testid="wf-implement"]')).toBeVisible({ timeout: 10_000 })
+  })
 })

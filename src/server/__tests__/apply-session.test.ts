@@ -261,6 +261,27 @@ describe('apply-session', () => {
       expect(wfAfter.routes[0].canvas).toMatchObject({ status: 'building', taskId: result.taskId })
     })
 
+    it('an add direction with md + data rides into the task context VERBATIM (entryForTask passes change whole)', async () => {
+      const md = '## Related planets\n- name and type for each'
+      const data = {
+        kind: 'composable', name: 'usePlanets', module: 'src/composables/usePlanets.ts',
+        path: 'planets[]', fields: ['name', 'type'], shape_source: 'api-schema',
+      }
+      const entry = directionEntry('wd-sec', '/planets', 1)
+      const change = entry.change as unknown as Record<string, unknown>
+      change.op = 'add'
+      change.added = { kind: 'placeholder', label: 'related planets', md, data, position: 'after' }
+      await seedSession([entry])
+
+      const result = await applyDesignSession(options, '/planets')
+      if ('error' in result) throw new Error(result.error)
+
+      const ctx = tasks[0].context as { session: { entries: Array<{ change: { added?: { md?: string; data?: unknown } } }> } }
+      expect(ctx.session.entries).toHaveLength(1)
+      expect(ctx.session.entries[0].change.added!.md).toBe(md)
+      expect(ctx.session.entries[0].change.added!.data).toEqual(data)
+    })
+
     it('verify trusts directions with NO source read — the anchor file may be gone entirely', async () => {
       await seedSession([directionEntry('wd-1')])
       const result = await applyDesignSession(options, '/planets')

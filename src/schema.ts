@@ -1,3 +1,6 @@
+// Type-only — wireframe-types.ts has no runtime imports, so no cycle.
+import type { WireframeDataBinding } from './shared/wireframe-types'
+
 export interface ViewportInfo {
   width: number | null
   height: number | null
@@ -256,6 +259,13 @@ export interface WireframeDirectionChange extends BaseChange {
     previewProps?: Record<string, unknown>
     /** placeholder: the user's label, verbatim. Stays visibly a placeholder. */
     label?: string
+    /** USER-WRITTEN markdown spec (drawn sections). Travels VERBATIM — never
+     *  blended with measured geometry; the description quotes only its first
+     *  line. */
+    md?: string
+    /** Wire THIS real catalog data source. The agent re-grounds it before
+     *  use and never invents fields — see WIREFRAME_APPLY.md. */
+    data?: WireframeDataBinding
     /** Where it goes relative to the anchored neighbor (file/line above). */
     position: 'before' | 'after' | 'append' | 'prepend'
   }

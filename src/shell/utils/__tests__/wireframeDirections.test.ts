@@ -134,8 +134,75 @@ describe('computeWireframeDirections', () => {
     const dirs = computeWireframeDirections(canvasWith(blocks))
     expect(dirs).toHaveLength(1)
     expect(dirs[0].added).toMatchObject({ kind: 'placeholder', label: 'pagination here', position: 'after' })
+    // Regression lock: a BARE placeholder's payload and description stay
+    // byte-stable — md/data must not leak empty fields or new phrasing in.
+    expect(dirs[0].added!.md).toBeUndefined()
+    expect(dirs[0].added!.data).toBeUndefined()
     expect(dirs[0].description).toContain('placeholder "pagination here"')
     expect(dirs[0].description).toContain('keep it visibly a placeholder')
+    expect(dirs[0].description).not.toContain('markdown spec')
+    expect(dirs[0].description).not.toContain('bind to the')
+  })
+
+  it('a section (md + binding) rides added.md/.data verbatim; the description summarizes honestly', () => {
+    const blocks = planetsBlocks()
+    const md = '## Related planets\n- name and type for each'
+    blocks.push({
+      id: 'sec-1',
+      kind: 'placeholder',
+      rect: { x: 60, y: 790, width: 360, height: 120 },
+      z: 9,
+      createdAt: 2,
+      label: 'related planets',
+      md,
+      data: {
+        kind: 'composable',
+        name: 'usePlanets',
+        module: 'src/composables/usePlanets.ts',
+        path: 'planets[]',
+        fields: ['name', 'type'],
+        shape_source: 'api-schema',
+      },
+    })
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect(dirs).toHaveLength(1)
+    // Verbatim channels — never paraphrased, never blended with geometry.
+    expect(dirs[0].added!.md).toBe(md)
+    expect(dirs[0].added!.data).toEqual({
+      kind: 'composable',
+      name: 'usePlanets',
+      module: 'src/composables/usePlanets.ts',
+      path: 'planets[]',
+      fields: ['name', 'type'],
+      shape_source: 'api-schema',
+    })
+    expect(dirs[0].measured!.after).toBeDefined()
+    // The description quotes only the md's first line + an honest binding summary.
+    expect(dirs[0].description).toContain('first line: "Related planets"')
+    expect(dirs[0].description).not.toContain('name and type for each')
+    expect(dirs[0].description).toContain('bind to the composable usePlanets → planets[] (show name, type) [shape: api-schema]')
+  })
+
+  it('a bound palette component carries added.data too', () => {
+    const blocks = planetsBlocks()
+    blocks.push({
+      id: 'pal-2',
+      kind: 'palette',
+      rect: { x: 60, y: 790, width: 320, height: 100 },
+      z: 9,
+      createdAt: 2,
+      component: { tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue' },
+      fidelity: 'isolated-preview',
+      data: { kind: 'composable', name: 'usePlanets', path: 'planets[]', shape_source: 'api-schema' },
+    })
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0].added).toMatchObject({
+      kind: 'component',
+      componentName: 'PlanetCard',
+      data: { name: 'usePlanets', path: 'planets[]' },
+    })
+    expect(dirs[0].description).toContain('bind to the composable usePlanets')
   })
 
   it('a note on an otherwise-unchanged block emits op note with the verbatim text', () => {

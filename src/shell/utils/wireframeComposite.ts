@@ -117,6 +117,7 @@ async function composeAt(opts: ComposeWireframeDiffOptions, scaleDown: number): 
       ctx.drawImage(img, x, y, w, h)
     } else {
       // Placeholder / failed capture: dashed labeled box — never fake pixels.
+      const isSection = b.kind === 'placeholder' && (!!b.md || !!b.data)
       ctx.save()
       ctx.strokeStyle = b.kind === 'placeholder' ? '#7c6ff0' : '#9a9aa2'
       ctx.setLineDash([6, 4])
@@ -126,8 +127,25 @@ async function composeAt(opts: ComposeWireframeDiffOptions, scaleDown: number): 
       ctx.font = `500 ${Math.max(10, Math.round(12 * scaleDown))}px system-ui, sans-serif`
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'center'
-      const text = b.kind === 'placeholder' ? `${b.label ?? 'placeholder'} (placeholder)` : 'capture failed'
-      ctx.fillText(text, x + w / 2, y + h / 2, Math.max(w - 8, 8))
+      const tag = b.kind !== 'placeholder' ? '' : isSection ? ' (section — user spec attached)' : ' (placeholder)'
+      const text = b.kind === 'placeholder' ? `${b.label ?? 'placeholder'}${tag}` : 'capture failed'
+      const lineH = Math.max(12, Math.round(14 * scaleDown))
+      const extraLines = (isSection ? 1 : 0) + (b.data ? 1 : 0)
+      const baseY = y + h / 2 - (extraLines * lineH) / 2
+      ctx.fillText(text, x + w / 2, baseY, Math.max(w - 8, 8))
+      // Honest summaries beneath the label — first md line + binding identity.
+      // The FULL spec rides the direction payload; pixels never fabricate UI.
+      ctx.font = `400 ${Math.max(9, Math.round(10 * scaleDown))}px system-ui, sans-serif`
+      ctx.fillStyle = '#7a7a82'
+      let lineY = baseY + lineH
+      if (b.md) {
+        const firstLine = b.md.split('\n')[0].replace(/^#+\s*/, '').slice(0, 120)
+        ctx.fillText(firstLine, x + w / 2, lineY, Math.max(w - 8, 8))
+        lineY += lineH
+      }
+      if (b.data) {
+        ctx.fillText(`data: ${b.data.name}${b.data.path ? ` → ${b.data.path}` : ''}`, x + w / 2, lineY, Math.max(w - 8, 8))
+      }
       ctx.restore()
     }
   }

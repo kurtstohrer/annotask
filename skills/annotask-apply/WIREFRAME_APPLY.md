@@ -17,7 +17,7 @@ The user rearranged a SKETCH — images of the rendered page, not the live app. 
 - `block`: `{ label, component?, tag? }` — the block's identity as captured. Tool-derived, never invented.
 - `file`/`line` (top level): the block's captured source anchor — or, for `add`, the nearest anchored NEIGHBOR block (see `added.position`).
 - `measured`: TOOL-MEASURED geometry. `before`/`after` rects, `dx`/`dy`, `wPct`/`hPct` (percent of original), and `relations[]` — order-flip / full-width / alignment facts computed from box geometry (e.g. `"now above the filters (was below)"`).
-- `added` (op `add` only): `kind` `component` (a real palette component — `componentName`/`library`/`module`/`props` are REAL scanner output) | `placeholder` (a user-drawn labeled box) | `duplicate` (another copy of a captured block's markup). `position` (`before`/`after`/`append`) is relative to the anchored neighbor.
+- `added` (op `add` only): `kind` `component` (a real palette component — `componentName`/`library`/`module`/`props` are REAL scanner output) | `placeholder` (a user-drawn labeled box) | `duplicate` (another copy of a captured block's markup). `position` (`before`/`after`/`append`) is relative to the anchored neighbor. May carry `md` (the user's VERBATIM markdown spec for a drawn section) and/or `data` (a binding to a REAL catalog data source — see *Data bindings on adds* below).
 - `note`: the user's VERBATIM words for that block. `measured` is what the tool measured; `note` is what the user said — never conflate them, and never present a measured relation as a user request.
 
 ### Intent over pixels
@@ -33,16 +33,29 @@ The task screenshot (`annotask_get_screenshot`) is a labeled composite: **left =
 - **move** — relocate the block's anchored markup to satisfy the relations. Apply per-file edits bottom-up (descending line); re-ground drifted anchors with `annotask_get_source_excerpt`. A loop-rendered block moves as the loop, not one iteration. An exploded container appears as both a container block and separate child blocks (each with finer anchors): directions on children mean restructuring INSIDE the container; a direction on the container means moving the whole thing, children included.
 - **resize** — prefer tokens/utility classes/grid-template changes over raw px. Say in the resolution what you chose and why.
 - **delete** — remove the anchored markup. Remove now-dead local bindings only when provably unused; never delete shared code.
-- **add / component** — resolve the real import via `annotask_get_component_examples` (proven specifier + export kind). No in-repo examples → fall back to `library`/`module` and say so. Apply `added.props` primitives only; never fabricate handlers, bindings, or children.
-- **add / placeholder** — emit a *visibly labeled* placeholder element (e.g. `<div class="placeholder">pagination here</div>` styled per project conventions) or the minimal honest scaffold the label names. **Never fabricate data or content.**
+- **add / component** — resolve the real import via `annotask_get_component_examples` (proven specifier + export kind). No in-repo examples → fall back to `library`/`module` and say so. Apply `added.props` primitives only; never fabricate handlers, bindings, or children. When `added.data` is present, wire the REAL source per *Data bindings on adds* below — never sample data.
+- **add / placeholder** (bare — no `md`) — emit a *visibly labeled* placeholder element (e.g. `<div class="placeholder">pagination here</div>` styled per project conventions) or the minimal honest scaffold the label names. **Never fabricate data or content.**
+- **add / placeholder with `added.md` (a drawn SECTION)** — the markdown is the user's verbatim spec for the region: build what it describes per project conventions (component-library-first — run the SKILL.md step-c lookups before writing custom HTML; design tokens for styling). Use `added.data` for any data the section shows. Data-driven content with NO binding → visible placeholder slots or `needs_info` — **never fabricate data or fields.**
 - **add / duplicate** — duplicate the anchored block's markup. If it's loop-rendered, the user probably wants another ITEM or a second instance of the section — read the note/screenshot, ask via `needs_info` when ambiguous.
 - **note** — implement the user's verbatim ask. Ambiguous → `needs_info`, never guess silently.
 
 Before rewriting any expression or bound markup you encounter mid-edit, re-classify it against CURRENT source: `annotask_get_binding_classification` (CLI: `annotask binding-classify`). Never rewrite an expression that references variables.
 
+### Data bindings on adds (`added.data`)
+
+`added.data` means "wire THIS source" — it is REAL scanner-catalog identity, never invented:
+
+- `kind`/`name`/`module`/`endpoint`: the source as the project defines it (`module` is its defining file). `path` drills into the response shape (`planets[]` = the list; `data.user` = an object); `fields` are the keys the element should display.
+- `shape_source` is the honesty tag for where the drill-down shape came from:
+  - `api-schema` — a real API contract matched the source's endpoint; the path/fields were picked off the actual response schema. Trust the shape; `annotask_get_api_operation` returns the full operation when you need more.
+  - `source-details` — regex-inferred return-type hints only (confidence attached at pick time). Re-verify against the real definition before relying on field names.
+  - `none` — the user typed the path/fields blind. Ground them yourself before wiring.
+- **Re-grounding protocol (always):** call `annotask_get_data_source_details` for the definition and `annotask_get_data_source_examples` for the proven import + call pattern — wire the source the way the project already wires it (same import specifier, same destructuring, loops/`v-for` over the `path` collection, render the `fields`).
+- The binding contradicts current source (source renamed, field gone, shape changed)? → `needs_info` with what you found. **Never invent fields**; runtime endpoints carry no response shapes — don't pretend otherwise.
+
 ### Verification & status
 
-Directions are spatial — the server does NOT verify them against source. When you set `review`, direction entries flip `written` on trust; **your resolution is the only record of what actually landed**, so make it specific and honest per direction: which file(s), what structural change, any file you created (name new files explicitly — in git projects the server nets newly-created files into the undo batch, but your resolution is still the human-readable record). `blocked_reason` when a direction is impossible; `needs_info` for ambiguity; denied → read `feedback` and re-apply the same task.
+Directions are spatial — the server does NOT verify them against source. When you set `review`, direction entries flip `written` on trust (bindings included — their wiring rides the trusted resolution); **your resolution is the only record of what actually landed**, so make it specific and honest per direction: which file(s), what structural change, for bindings the imported source + call site + rendered fields, any file you created (name new files explicitly — in git projects the server nets newly-created files into the undo batch, but your resolution is still the human-readable record). `blocked_reason` when a direction is impossible; `needs_info` for ambiguity; denied → read `feedback` and re-apply the same task.
 
 ## Placements (`context.wireframe`)
 
