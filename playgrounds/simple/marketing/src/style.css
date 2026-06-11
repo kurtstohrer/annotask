@@ -90,6 +90,13 @@ header nav a:hover { color: var(--fg); text-decoration: none; }
 .btn.ghost { background: transparent; color: var(--fg); }
 .btn.ghost:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
 
+/* ── Live stats strip ──────────────────────────────────────────── */
+.stats-strip { display: inline-flex; gap: 0; margin-top: 36px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.stat { display: flex; flex-direction: column; gap: 2px; padding: 14px 28px; }
+.stat + .stat { border-left: 1px solid var(--border); }
+.stat-value { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--muted); }
+
 /* ── Hero screenshot ───────────────────────────────────────────── */
 .hero-shot { margin: 48px auto 0; max-width: 1040px; }
 .hero-shot img { width: 100%; border-radius: 14px; border: 1px solid var(--border); box-shadow: 0 30px 80px -20px var(--shadow); }
