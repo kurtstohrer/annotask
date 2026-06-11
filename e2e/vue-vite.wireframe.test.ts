@@ -34,7 +34,7 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
     const reloads = trackReloads(page)
     await enterWireframeMode(page)
 
-    // ≥3 image blocks (header / toolbar / grid on /planets).
+    // ≥3 image blocks (app header / page header / planets-content on /planets).
     const imgs = page.locator('.wf-block img')
     expect(await imgs.count()).toBeGreaterThanOrEqual(3)
     // The PNGs actually decoded — not broken sources.
@@ -99,12 +99,12 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
     }
 
     // Content blocks anchored in PlanetsPage.vue, in original top-down order:
-    // page header, filters toolbar, planet grid.
+    // page header, then the planets-content wrapper (layout + controls rail).
     const initial = await getCanvas()
     const content = initial.blocks
       .filter((b) => b.anchor?.file.includes('PlanetsPage.vue'))
       .sort((a, b) => (a.originalRect?.y ?? 0) - (b.originalRect?.y ?? 0))
-    expect(content.length).toBeGreaterThanOrEqual(3)
+    expect(content.length).toBeGreaterThanOrEqual(2)
     const toolbarBlk = content[content.length - 2]
     const gridBlk = content[content.length - 1]
 
@@ -330,10 +330,10 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
       .filter((b) => b.anchor?.file.includes('PlanetsPage.vue'))
       .sort((a, b) => (a.originalRect?.y ?? 0) - (b.originalRect?.y ?? 0))
     const headerBlk = content[0]
-    const toolbarBlk = content[content.length - 2]
     const gridBlk = content[content.length - 1]
 
-    // MARQUEE over the page header + toolbar (synthetic events skip hit-testing).
+    // MARQUEE over the page header + content wrapper (synthetic events skip
+    // hit-testing).
     await page.evaluate(({ x1, y1, x2, y2 }) => {
       const stageEl = document.querySelector('.wf-stage') as HTMLElement
       const r = stageEl.getBoundingClientRect()
@@ -342,7 +342,7 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
       stageEl.dispatchEvent(ev('pointerdown', x1, y1))
       window.dispatchEvent(ev('pointermove', x2, y2))
       window.dispatchEvent(ev('pointerup', x2, y2))
-    }, { x1: 2, y1: headerBlk.rect.y + 2, x2: headerBlk.rect.x + headerBlk.rect.width - 2, y2: toolbarBlk.rect.y + toolbarBlk.rect.height - 2 })
+    }, { x1: 2, y1: headerBlk.rect.y + 2, x2: headerBlk.rect.x + headerBlk.rect.width - 2, y2: gridBlk.rect.y + gridBlk.rect.height - 2 })
     const selected = await page.locator('.wf-block.selected').count()
     expect(selected).toBeGreaterThanOrEqual(2)
 
@@ -352,9 +352,9 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
       const blocks = await getBlocks()
       return {
         header: blocks.find((b) => b.id === headerBlk.id)!.rect.y,
-        toolbar: blocks.find((b) => b.id === toolbarBlk.id)!.rect.y,
+        grid: blocks.find((b) => b.id === gridBlk.id)!.rect.y,
       }
-    }, { timeout: 5_000 }).toEqual({ header: headerBlk.rect.y + 10, toolbar: toolbarBlk.rect.y + 10 })
+    }, { timeout: 5_000 }).toEqual({ header: headerBlk.rect.y + 10, grid: gridBlk.rect.y + 10 })
 
     // EXPLODE: double-click the grid block → per-child blocks with their own
     // anchors, while the grid itself stays as the container-shell backdrop
@@ -415,7 +415,7 @@ test.describe('Vue + Vite wireframe implement (W3 UI)', () => {
     const content = initial.blocks
       .filter((b) => b.anchor?.file.includes('PlanetsPage.vue'))
       .sort((a, b) => (a.originalRect?.y ?? 0) - (b.originalRect?.y ?? 0))
-    expect(content.length).toBeGreaterThanOrEqual(3)
+    expect(content.length).toBeGreaterThanOrEqual(2)
     const toolbarBlk = content[content.length - 2]
     const gridBlk = content[content.length - 1]
 

@@ -34,6 +34,10 @@ watch(theme, applyTheme)
 function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark'
 }
+
+function scrollTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
 </script>
 
 <template>
@@ -43,6 +47,11 @@ function toggleTheme() {
     <main class="content">
       <router-view />
     </main>
+
+    <!-- Deliberately a SIBLING of <main> that is not semantic chrome — the
+         canonical fixture for the wireframe capture's straggler pass
+         (e2e W1 asserts a captured block with anchor.tag === 'button'). -->
+    <button class="back-to-top" @click="scrollTop">↑ Back to top</button>
   </div>
 </template>
 
@@ -79,6 +88,19 @@ body {
 }
 
 .app { min-height: 100vh; }
+
+.back-to-top {
+  display: block;
+  margin: 0 auto 20px;
+  padding: 8px 14px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.back-to-top:hover { color: var(--text); }
 
 .content {
   max-width: 1200px;
