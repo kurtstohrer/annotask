@@ -114,6 +114,7 @@ export function bridgeHelpers(): string {
     if (reason === 'rendered-empty') return 'rendered empty';
     if (reason === 'no-runtime') return 'no runtime';
     if (reason === 'async-pending') return 'pending';
+    if (reason === 'needs-children') return 'needs child content';
     return reason || '';
   }
 
@@ -140,17 +141,23 @@ export function bridgeHelpers(): string {
   }
 
   // A small corner pill marking a non-live fidelity (isolated preview) so the
-  // user knows the render is detached from the app's real provider tree.
+  // user knows the render is detached from the app's real provider tree. A
+  // slot-sample mount gets its own amber pill even at 'live' fidelity — the
+  // child content is OURS, and that must never be a silent fake.
   function renderFidelityPill(el, fidelity) {
-    if (fidelity === 'live') return;
+    var slotSample = el.hasAttribute && el.hasAttribute('data-annotask-slot-sample');
+    if (fidelity === 'live' && !slotSample) return;
     try {
       var cs = window.getComputedStyle(el);
       if (cs.position === 'static') el.style.position = 'relative';
     } catch(e) {}
     var pill = document.createElement('span');
     pill.setAttribute('data-annotask-fidelity-pill', 'true');
-    var color = fidelity === 'isolated-preview' ? '#f59e0b' : '#9ca3af';
-    pill.textContent = fidelity === 'isolated-preview' ? 'preview' : 'placeholder';
+    var color, text;
+    if (slotSample) { color = '#f59e0b'; text = 'sample slot'; }
+    else if (fidelity === 'isolated-preview') { color = '#f59e0b'; text = 'preview'; }
+    else { color = '#9ca3af'; text = 'placeholder'; }
+    pill.textContent = text;
     pill.style.cssText = 'position:absolute;top:2px;right:2px;z-index:2;font-size:9px;font-weight:600;line-height:1;padding:2px 5px;border-radius:6px;color:#fff;background:' + color + ';pointer-events:none;opacity:0.85;';
     el.appendChild(pill);
   }
@@ -243,32 +250,64 @@ export function bridgeHelpers(): string {
       if (!annotaskVue || !annotaskVue.createApp || !annotaskVue.h) return mountResult(false, 'no-runtime', 'placeholder');
       var component = vueApp._context.components[componentName] || (window.__ANNOTASK_COMPONENTS__ && window.__ANNOTASK_COMPONENTS__[componentName]);
       if (!component) return mountResult(false, 'not-registered', 'placeholder');
-      var mountPoint = document.createElement('div');
-      container.appendChild(mountPoint);
-      var caught = null;
-      var miniApp = annotaskVue.createApp({
-        render: function() { return annotaskVue.h(component, props || {}); }
-      });
-      // Share the parent app's provides, components, directives, and config
-      // (by reference) so the dropped component renders in real app context.
-      var parentCtx = vueApp._context;
-      miniApp._context.components = parentCtx.components;
-      miniApp._context.directives = parentCtx.directives;
-      miniApp._context.provides = parentCtx.provides;
-      miniApp._context.config.globalProperties = parentCtx.config.globalProperties;
-      // Capture render errors (instead of the old no-op handlers) so we can
-      // report an honest 'threw' reason. warnHandler stays silent.
-      miniApp.config.errorHandler = function(err) { caught = err; };
-      miniApp.config.warnHandler = function() {};
-      miniApp.mount(mountPoint);
-      if (caught || isEmptyMount(mountPoint)) {
-        try { miniApp.unmount(); } catch(e) {}
-        try { mountPoint.remove(); } catch(e) {}
-        return mountResult(false, caught ? 'threw' : 'rendered-empty', 'placeholder', caught ? errMsg(caught) : null);
+      // One mount attempt; withSlot fills the default slot with an honestly
+      // labeled sample so compound components (Accordion, TabView) can render
+      // their real chrome instead of throwing / rendering empty.
+      var attempt = function(withSlot) {
+        var mountPoint = document.createElement('div');
+        container.appendChild(mountPoint);
+        var caught = null;
+        var miniApp = annotaskVue.createApp({
+          render: function() {
+            var p = props || {};
+            if (withSlot) {
+              return annotaskVue.h(component, p, {
+                default: function() { return annotaskVue.h('div', { style: 'padding:8px;font-size:12px;opacity:.7;' }, 'Sample content'); }
+              });
+            }
+            return annotaskVue.h(component, p);
+          }
+        });
+        // Share the parent app's provides, components, directives, and config
+        // (by reference) so the dropped component renders in real app context.
+        var parentCtx = vueApp._context;
+        miniApp._context.components = parentCtx.components;
+        miniApp._context.directives = parentCtx.directives;
+        miniApp._context.provides = parentCtx.provides;
+        miniApp._context.config.globalProperties = parentCtx.config.globalProperties;
+        // Capture render errors (instead of the old no-op handlers) so we can
+        // report an honest 'threw' reason. warnHandler stays silent.
+        miniApp.config.errorHandler = function(err) { caught = err; };
+        miniApp.config.warnHandler = function() {};
+        miniApp.mount(mountPoint);
+        if (caught || isEmptyMount(mountPoint)) {
+          try { miniApp.unmount(); } catch(e) {}
+          try { mountPoint.remove(); } catch(e) {}
+          return { ok: false, caught: caught };
+        }
+        return { ok: true, miniApp: miniApp };
+      };
+
+      var finish = function(r) {
+        container.setAttribute('data-annotask-mounted', 'true');
+        container.__annotask_unmount = function() { try { r.miniApp.unmount(); } catch(e) {} };
+        return mountResult(true, null, 'live');
+      };
+
+      var first = attempt(false);
+      if (first.ok) return finish(first);
+      // Slot-retry, ONCE: a slot error or an empty render is the compound-
+      // component signature. The sample child is ours — the slot-sample
+      // attribute drives an amber "sample slot" pill, and the retry never
+      // writes into the persisted instance (codegen never fabricates children).
+      if (!first.caught || /slot/i.test(errMsg(first.caught))) {
+        var second = attempt(true);
+        if (second.ok) {
+          container.setAttribute('data-annotask-slot-sample', 'true');
+          return finish(second);
+        }
       }
-      container.setAttribute('data-annotask-mounted', 'true');
-      container.__annotask_unmount = function() { try { miniApp.unmount(); } catch(e) {} };
-      return mountResult(true, null, 'live');
+      return mountResult(false, first.caught ? 'threw' : 'rendered-empty', 'placeholder', first.caught ? errMsg(first.caught) : null);
     } catch(e) { return mountResult(false, 'threw', 'placeholder', errMsg(e)); }
   }
 
@@ -320,27 +359,50 @@ export function bridgeHelpers(): string {
       container.appendChild(mountPoint);
       // Re-wrap the component in the app's discovered providers when reachable so
       // it renders 'live'; fall back to a bare detached root ('isolated-preview').
-      var element = annotaskReact.createElement(component, props || {});
       var fidelity = 'isolated-preview';
       var providers = collectReactProviders();
-      if (providers && providers.length) {
-        try {
-          for (var pi = providers.length - 1; pi >= 0; pi--) {
-            var Provider = providers[pi].context.Provider || providers[pi].context;
-            element = annotaskReact.createElement(Provider, { value: providers[pi].value }, element);
-          }
-          fidelity = 'live';
-        } catch(e) {
-          element = annotaskReact.createElement(component, props || {});
-          fidelity = 'isolated-preview';
+      var buildElement = function(p) {
+        var el = annotaskReact.createElement(component, p || {});
+        if (providers && providers.length) {
+          try {
+            for (var pi = providers.length - 1; pi >= 0; pi--) {
+              var Provider = providers[pi].context.Provider || providers[pi].context;
+              el = annotaskReact.createElement(Provider, { value: providers[pi].value }, el);
+            }
+          } catch(e) { return annotaskReact.createElement(component, p || {}); }
         }
+        return el;
+      };
+      var element;
+      if (providers && providers.length) {
+        try { element = buildElement(props); fidelity = 'live'; }
+        catch(e) { element = annotaskReact.createElement(component, props || {}); fidelity = 'isolated-preview'; }
+      } else {
+        element = buildElement(props);
       }
       var root = annotaskReact.createRoot(mountPoint);
       root.render(element);
       container.setAttribute('data-annotask-mounted', 'true');
       container.__annotask_unmount = function() { try { root.unmount(); } catch(e) {} };
-      // Confirm it actually rendered on the next frame (may flip to placeholder).
-      scheduleEmptyCheck(container, mountPoint, componentName);
+      // Confirm it actually rendered (async) — but first try ONE slot-retry
+      // with a labeled sample child, the compound-component signature. If the
+      // retry renders, the slot-sample attribute marks the children as ours;
+      // if it stays empty, the final check flips to the honest placeholder.
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          if (!isEmptyMount(mountPoint)) return;
+          try {
+            container.setAttribute('data-annotask-slot-sample', 'true');
+            var sampleChild = annotaskReact.createElement('div', { style: { padding: '8px', fontSize: '12px', opacity: 0.7 } }, 'Sample content');
+            var withChildren = annotaskReact.createElement(component, Object.assign({}, props || {}), sampleChild);
+            root.render(withChildren);
+            scheduleEmptyCheck(container, mountPoint, componentName);
+          } catch(e) {
+            container.removeAttribute('data-annotask-slot-sample');
+            scheduleEmptyCheck(container, mountPoint, componentName);
+          }
+        });
+      });
       return mountResult(true, null, fidelity);
     } catch(e) { return mountResult(false, 'threw', 'placeholder', errMsg(e)); }
   }

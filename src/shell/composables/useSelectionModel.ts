@@ -14,6 +14,10 @@ export interface SelectionData {
   parentComponent?: string
   /** Visible label text, used for agent disambiguation in task context. */
   text?: string
+  /** Set when the selection is an annotask-mounted wireframe placement — the
+   *  eid is the placement container's; file/line are empty (no source exists
+   *  yet) and template-group/source-anchored flows must not run. */
+  instanceId?: string
 }
 
 /**
@@ -103,6 +107,9 @@ export function useSelectionModel(
 
   async function refreshElementRole() {
     if (!primarySelection.value) { selectedElementRole.value = null; return }
+    // Placements have a fixed identity — classification by DOM shape would
+    // mislabel the container div as 'container'/'content'.
+    if (primarySelection.value.instanceId) { selectedElementRole.value = 'placement'; return }
     const classification = await iframe.classifyElement(primarySelection.value.eid)
     selectedElementRole.value = classification?.role || null
   }

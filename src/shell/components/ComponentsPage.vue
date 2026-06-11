@@ -9,6 +9,7 @@ import type { PreviewComponentResult } from '../../shared/bridge-types'
 import type { WireframeInstance, WireframeInstanceStatus } from '../../shared/wireframe-types'
 import Icon from './Icon.vue'
 import MfeFilterDropdown from './MfeFilterDropdown.vue'
+import DesignSessionPanel from './DesignSessionPanel.vue'
 
 const props = defineProps<{
   iframe: ReturnType<typeof useIframeManager>
@@ -25,7 +26,7 @@ const props = defineProps<{
   failedIds?: string[]
 }>()
 
-const emit = defineEmits<{ build: []; deletePlacement: [id: string] }>()
+const emit = defineEmits<{ build: []; deletePlacement: [id: string]; runAgent: [taskId: string] }>()
 
 // ── Placements panel (current route's wireframe instances) ──
 function placementStatus(i: WireframeInstance): WireframeInstanceStatus {
@@ -303,6 +304,9 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
         </button>
       </div>
     </div>
+
+    <!-- Design session: pending/applied panel edits + apply/undo/discard. -->
+    <DesignSessionPanel @run-agent="emit('runAgent', $event)" />
 
     <div class="components-split">
       <!-- LIST view — visible when no component is selected. -->

@@ -182,6 +182,25 @@ export function bridgeMessages(): string {
         respond(id, null);
         return;
       }
+      // A point inside an annotask-mounted placement resolves to the PLACEMENT,
+      // never to the mounted component's internals — their data-annotask-*
+      // attrs describe the component's own source (e.g. PlanetCard.vue), which
+      // is the wrong identity for selection and a wrong anchor for drops.
+      var rapInst = el.closest ? el.closest('[data-annotask-instance]') : null;
+      if (rapInst) {
+        respond(id, {
+          eid: getEid(rapInst),
+          instance_id: rapInst.getAttribute('data-annotask-instance'),
+          file: '',
+          line: '',
+          component: rapInst.getAttribute('data-annotask-component-name') || '',
+          tag: rapInst.tagName.toLowerCase(),
+          rect: getRect(rapInst),
+          classes: typeof rapInst.className === 'string' ? rapInst.className : '',
+          text: getVisibleText(rapInst, 200)
+        });
+        return;
+      }
       var src = findSourceElement(el);
       var srcData = getSourceData(src.sourceEl);
       respond(id, {
@@ -1289,6 +1308,9 @@ export function bridgeMessages(): string {
       // Repositionable: tag the container with its wireframe instance id so the
       // Reposition tool can tell which placement a grabbed node belongs to.
       if (payload.instanceId) vcContainer.setAttribute('data-annotask-instance', payload.instanceId);
+      // Placement identity: the click handler reads this for the selection's
+      // component field (placements select as placements, not their internals).
+      vcContainer.setAttribute('data-annotask-component-name', payload.componentName);
       switch (payload.position) {
         case 'before': vcTarget.parentElement && vcTarget.parentElement.insertBefore(vcContainer, vcTarget); break;
         case 'after': vcTarget.parentElement && vcTarget.parentElement.insertBefore(vcContainer, vcTarget.nextSibling); break;

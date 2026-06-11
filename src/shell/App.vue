@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useStyleEditor } from './composables/useStyleEditor'
+import { useDesignSession } from './composables/useDesignSession'
 import { useInteractionMode } from './composables/useInteractionMode'
 import { useDesignSpec, setActiveColorScheme } from './composables/useDesignSpec'
 import { useLayoutOverlay } from './composables/useLayoutOverlay'
@@ -597,6 +598,11 @@ const {
   buildWireframeRoute, deletePlacement,
 } = useWireframeCanvas({ iframe, interactionMode, styleEditor, createRouteTask })
 
+// Keep the design-session journal stamped with the current iframe route so
+// entries recorded by the style-editor façade carry the route they happened on.
+const designSession = useDesignSession()
+watch(iframe.currentRoute, (r) => { designSession.sessionRoute.value = normalizeRoute(r) }, { immediate: true })
+
 // Auto-mode runs silently: no modal hijack, no forced switch to the
 // Conversation tab. The dedicated driver claims queued ids and runs the
 // embedded agent headlessly; the task card surfaces status (in_progress)
@@ -618,6 +624,19 @@ const canBatchRunAgent = computed(
     && providerSettings.settings.value.agentMode !== 'off'
     && pendingTasksCount.value > 0,
 )
+// "Apply now" minted a wireframe_apply task — run the embedded agent on it
+// when a provider is configured; otherwise it waits in Tasks for an external
+// agent (same contract as Build).
+function onApplyRunAgent(taskId: string) {
+  if (
+    providerSettings.settings.value.embeddedAgentEnabled === true
+    && providerSettings.ready.value
+    && providerSettings.settings.value.agentMode !== 'off'
+  ) {
+    agentMode.requestAutoRun(taskId)
+  }
+}
+
 function runPendingAgentBatch() {
   if (!canBatchRunAgent.value) return
   for (const t of routeTasks.value) {
@@ -639,6 +658,7 @@ const { selectionChanges, doUndo, doClearChanges, commitChangesAsTask } = useCha
   shellView,
   readLiveStyles,
   createRouteTask,
+  deletePlacement,
 })
 
 // ── Bridge event handlers (needs doUndo from useChangeHistory) ──
@@ -999,6 +1019,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :failed-ids="wireframeDoc.failedIds.value"
         @build="buildWireframeRoute"
         @delete-placement="deletePlacement"
+        @run-agent="onApplyRunAgent"
       />
 
       <!-- Audit > A11y panel -->

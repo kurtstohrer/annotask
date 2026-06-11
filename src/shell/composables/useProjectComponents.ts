@@ -132,11 +132,18 @@ async function load(iframe?: ReturnType<typeof useIframeManager>): Promise<void>
   isLoading.value = true
   loadError.value = null
   try {
-    const [catalog, usage] = await Promise.all([
+    const [catalog, projectLib, usage] = await Promise.all([
       fetchJson<LibraryComponentsIndex>('components'),
+      fetchJson<{ library: LibraryCatalog }>('project-components'),
       fetchJson<{ usage: Record<string, string[]>; imports?: Record<string, Record<string, string[]>> }>('component-usage'),
     ])
-    libraries.value = catalog?.libraries ?? []
+    // The user's own components come first — a design tool designs with the
+    // project's components, and same-named project components shadow library
+    // exports in metadata lookups.
+    const project = projectLib?.library
+    libraries.value = project && project.components.length > 0
+      ? [project, ...(catalog?.libraries ?? [])]
+      : (catalog?.libraries ?? [])
     const map = new Map<string, string[]>()
     for (const [name, files] of Object.entries(usage?.usage ?? {})) {
       map.set(name, files)
@@ -185,8 +192,13 @@ async function refreshRenderedFiles(iframe: ReturnType<typeof useIframeManager>)
 /** Does an import specifier (`from '…'`) belong to this library? Matches the
  *  package name exactly or as a subpath prefix so `@mantine/core` attributes
  *  imports from `@mantine/core/Button`, `primevue` attributes
- *  `primevue/button`, etc. */
+ *  `primevue/button`, etc. The synthetic "Project" library owns relative
+ *  imports (`./components/PlanetCard.vue`, `../ui/Button`) and `@/…`/`~/…`
+ *  src aliases — the project's own components are imported that way. */
 function fromMatchesLibrary(from: string, libName: string): boolean {
+  if (libName === 'Project') {
+    return from.startsWith('./') || from.startsWith('../') || from.startsWith('@/') || from.startsWith('~/')
+  }
   return from === libName || from.startsWith(libName + '/')
 }
 

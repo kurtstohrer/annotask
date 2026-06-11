@@ -23,6 +23,9 @@ export function useChangeHistory(deps: {
   shellView: Ref<ShellView>
   readLiveStyles: () => Promise<void>
   createRouteTask: (data: Record<string, unknown>) => Promise<unknown>
+  /** Wireframe deletePlacement (useWireframeCanvas) — executes undo of a
+   *  placement-create journal entry. Optional so older wiring keeps compiling. */
+  deletePlacement?: (instanceId: string) => Promise<void> | void
 }) {
   const { styleEditor, iframe, primarySelection, selectedEids, templateGroupEids, selectedElementRole, shellView, readLiveStyles, createRouteTask } = deps
   const { changes } = styleEditor
@@ -44,6 +47,9 @@ export function useChangeHistory(deps: {
       await iframe.undoClass(undoInfo.eid, undoInfo.classes || '')
     } else if (undoInfo.type === 'insert_remove' && undoInfo.eid) {
       await iframe.removePlaceholder(undoInfo.eid)
+    } else if (undoInfo.type === 'placement_delete' && undoInfo.instanceId) {
+      // Undo of a wireframe placement-create: remove the instance (doc + live node).
+      await deps.deletePlacement?.(undoInfo.instanceId)
     }
     await readLiveStyles()
   }

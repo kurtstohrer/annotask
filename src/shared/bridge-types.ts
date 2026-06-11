@@ -67,6 +67,11 @@ export interface ResolvedElement {
   classes: string
   /** Visible label text (aria-label/title/textContent, normalized, <=200 chars). */
   text?: string
+  /** Set when the point sits inside an annotask-mounted wireframe placement
+   *  ([data-annotask-instance]). The eid is the placement CONTAINER's eid and
+   *  any file/line describe the mounted component's internals — selection must
+   *  treat this as "the placement", not a source element. */
+  instance_id?: string
 }
 
 export interface ResolveTemplateGroupPayload {
@@ -414,6 +419,9 @@ export interface ClickElementEvent {
   clientY: number
   /** Visible label text (aria-label/title/textContent, normalized, <=200 chars). */
   text?: string
+  /** Set when the click landed inside an annotask-mounted wireframe placement —
+   *  see ResolvedElement.instance_id. The eid is the placement container's eid. */
+  instance_id?: string
 }
 
 export interface RouteChangedEvent {

@@ -165,6 +165,29 @@ export function bridgeEvents(): string {
     var el = e.target;
     if (!el) return;
 
+    // Clicks inside an annotask-mounted placement select the PLACEMENT — the
+    // mounted component's own data-annotask-* attrs point at its internals
+    // (e.g. PlanetCard.vue), which is the wrong identity for editing.
+    var instEl = el.closest ? el.closest('[data-annotask-instance]') : null;
+    if (instEl) {
+      sendToShell('click:element', {
+        eid: getEid(instEl),
+        sourceEid: getEid(instEl),
+        instance_id: instEl.getAttribute('data-annotask-instance'),
+        file: '',
+        line: '',
+        component: instEl.getAttribute('data-annotask-component-name') || '',
+        tag: instEl.tagName.toLowerCase(),
+        classes: typeof instEl.className === 'string' ? instEl.className : '',
+        rect: getRect(instEl),
+        shiftKey: e.shiftKey,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        text: getVisibleText(instEl, 200)
+      });
+      return;
+    }
+
     var source = findSourceElement(el);
     var data = getSourceData(source.sourceEl);
     var targetEl = source.targetEl;

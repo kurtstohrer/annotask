@@ -1,10 +1,11 @@
-import { ref, computed, watch } from 'vue'
+import { computed, watch } from 'vue'
 import type { CatalogItem } from '../types'
 import type { AnnotaskReport } from '../../schema'
 import { useDesignSpec } from './useDesignSpec'
 import { useViewportPreview } from './useViewportPreview'
 import { useInteractionHistory } from './useInteractionHistory'
 import { send as wsSend } from '../services/wsClient'
+import { useDesignSession, type ShellSessionEntry } from './useDesignSession'
 
 export interface StyleChangeRecord {
   id: string
@@ -99,20 +100,39 @@ export interface ClassChangeRecord {
 
 export type ChangeRecord = StyleChangeRecord | ClassChangeRecord | InsertChangeRecord | MoveChangeRecord | AnnotationChangeRecord
 
-const changes = ref<ChangeRecord[]>([])
 let changeCounter = 0
-
-// Map change id → eid for undo/collapse tracking
-const eidRefs = new Map<string, string>()
 
 function broadcast(event: string, data: unknown) {
   wsSend(event, data)
 }
 
+/** Entries the change buffer / report should surface: pending work only.
+ *  'written' edits are in source (re-committing would double-apply),
+ *  'applying' ones are riding an in-flight apply batch, and placement
+ *  entries (instanceId) belong to the wireframe lifecycle — they surface in
+ *  the placements/session panels, never in the Annotate report (placements
+ *  were never report changes before the session existed either). */
+function isReportable(e: ShellSessionEntry): boolean {
+  return (e.live.status === 'pending' || e.live.status === 'failed') && !e.instanceId
+}
+
+/**
+ * The style editor — now a façade over the design-session journal
+ * (useDesignSession). The journal is ordered (append-or-amend: a continuous
+ * gesture amends its entry; a non-adjacent re-edit appends) so session-wide
+ * undo works across styles, classes, and placements. This façade's contract
+ * is FROZEN: the public API, the collapsed `changes` view, the `report`
+ * shape, and the `report:updated`/`changes:cleared` broadcasts feed the
+ * Annotate tab, GET /api/report, and `annotask watch` — its test suite must
+ * pass unmodified.
+ */
 export function useStyleEditor() {
+  const session = useDesignSession()
+
   /**
    * Record a style change. The actual DOM mutation is done by the bridge.
-   * Collapses changes so only one record per eid+property exists.
+   * Collapses changes so only one record per eid+property exists (projection;
+   * the journal keeps gesture-grained entries for ordered undo).
    *
    * If `meta.tokenRole` is set, the change was picked from a design token
    * (e.g. 'primary') and the description/commit message references the
@@ -126,27 +146,19 @@ export function useStyleEditor() {
     meta: { file: string; line: string; component: string; mfe?: string; tokenRole?: string }
   ) {
     const displayValue = meta.tokenRole ? `${meta.tokenRole} (${value})` : value
+    const line = parseInt(meta.line) || 0
+    const description = `Set ${property} to ${displayValue}`
+    const gestureKey = `style|${meta.file}|${line}|${property}|${session.activeBreakpointId.value ?? ''}`
 
-    // Find existing change for this eid + property + source location
-    const existing = changes.value.find(
-      c => c.type === 'style_update' && c.file === meta.file && c.line === (parseInt(meta.line) || 0)
-        && c.property === property && eidRefs.get(c.id) === eid
-    ) as StyleChangeRecord | undefined
-
-    if (existing) {
-      existing.after = value
-      existing.tokenRole = meta.tokenRole
-      existing.description = `Set ${property} to ${displayValue}`
-    } else {
-      changeCounter++
-      const id = `s${changeCounter}`
-      changes.value.push({
-        id,
+    changeCounter++
+    session.record({
+      change: {
+        id: `s${changeCounter}`,
         type: 'style_update',
-        description: `Set ${property} to ${displayValue}`,
+        description,
         file: meta.file,
         section: 'style',
-        line: parseInt(meta.line) || 0,
+        line,
         component: meta.component,
         ...(meta.mfe ? { mfe: meta.mfe } : {}),
         element: 'element', // tag not available here, fine for report
@@ -154,15 +166,25 @@ export function useStyleEditor() {
         before,
         after: value,
         ...(meta.tokenRole ? { tokenRole: meta.tokenRole } : {}),
-      })
-      eidRefs.set(id, eid)
-    }
+      },
+      anchor: { file: meta.file, line, component: meta.component, ...(meta.mfe ? { mfe: meta.mfe } : {}) },
+      eid,
+      amendKey: `${gestureKey}|${eid}`,
+      gestureKey,
+      amendTop: (top) => {
+        if (top.type !== 'style_update') return
+        top.after = value
+        top.tokenRole = meta.tokenRole
+        top.description = description
+      },
+    })
   }
 
   function recordInsert(target: { file: string; line: string; component: string; position: string }, item: CatalogItem): string {
     changeCounter++
     const id = `ci${changeCounter}`
     const isInside = target.position === 'append' || target.position === 'prepend'
+    const line = parseInt(target.line) || 0
 
     const record: InsertChangeRecord = {
       id,
@@ -170,7 +192,7 @@ export function useStyleEditor() {
       description: `Insert <${item.tag}> ${target.position} in ${target.component}`,
       file: target.file,
       section: 'template',
-      line: parseInt(target.line) || 0,
+      line,
       component: target.component,
       insert_inside: isInside ? {
         component: target.component,
@@ -185,7 +207,10 @@ export function useStyleEditor() {
       },
     }
 
-    changes.value.push(record)
+    session.record({
+      change: record,
+      anchor: { file: target.file, line, component: target.component, position: target.position as InsertChangeRecord['insert_position'] },
+    })
     return id
   }
 
@@ -210,7 +235,10 @@ export function useStyleEditor() {
       from_line: from.line,
       move_to: to,
     }
-    changes.value.push(record)
+    session.record({
+      change: record,
+      anchor: { file: to.target_file, line: to.target_line, targetTag: from.tag, component: from.component, position: to.position },
+    })
     return id
   }
 
@@ -221,13 +249,14 @@ export function useStyleEditor() {
   }): string {
     changeCounter++
     const id = `an${changeCounter}`
+    const line = parseInt(meta.line) || 0
     const record: AnnotationChangeRecord = {
       id,
       type: 'annotation',
       description: meta.intent,
       file: meta.file,
       section: 'template',
-      line: parseInt(meta.line) || 0,
+      line,
       component: meta.component,
       ...(meta.mfe ? { mfe: meta.mfe } : {}),
       intent: meta.intent,
@@ -240,7 +269,10 @@ export function useStyleEditor() {
       },
       pinId: meta.pinId,
     }
-    changes.value.push(record)
+    session.record({
+      change: record,
+      anchor: { file: meta.file, line, targetTag: meta.elementTag, component: meta.component, ...(meta.mfe ? { mfe: meta.mfe } : {}) },
+    })
     return id
   }
 
@@ -251,61 +283,59 @@ export function useStyleEditor() {
     meta: { file: string; line: string; component: string; mfe?: string }
   ): string {
     const lineNum = parseInt(meta.line) || 0
-    const existing = changes.value.find(c => {
-      if (c.type !== 'class_update') return false
-      if (c.file !== meta.file || c.line !== lineNum) return false
-      return eidRefs.get(c.id) === eid
-    }) as ClassChangeRecord | undefined
-
-    if (existing) {
-      existing.after = { classes: afterClasses }
-      existing.description = `Update classes`
-      return existing.id
-    }
+    const gestureKey = `class|${meta.file}|${lineNum}|${session.activeBreakpointId.value ?? ''}`
 
     changeCounter++
-    const id = `cl${changeCounter}`
-    changes.value.push({
-      id,
-      type: 'class_update',
-      description: `Update classes`,
-      file: meta.file,
-      section: 'template',
-      line: lineNum,
-      component: meta.component,
-      ...(meta.mfe ? { mfe: meta.mfe } : {}),
-      element: 'element',
-      before: { classes: beforeClasses },
-      after: { classes: afterClasses },
+    const entry = session.record({
+      change: {
+        id: `cl${changeCounter}`,
+        type: 'class_update',
+        description: `Update classes`,
+        file: meta.file,
+        section: 'template',
+        line: lineNum,
+        component: meta.component,
+        ...(meta.mfe ? { mfe: meta.mfe } : {}),
+        element: 'element',
+        before: { classes: beforeClasses },
+        after: { classes: afterClasses },
+      },
+      anchor: { file: meta.file, line: lineNum, component: meta.component, ...(meta.mfe ? { mfe: meta.mfe } : {}) },
+      eid,
+      amendKey: `${gestureKey}|${eid}`,
+      gestureKey,
+      amendTop: (top) => {
+        if (top.type !== 'class_update') return
+        top.after = { classes: afterClasses }
+        top.description = `Update classes`
+      },
     })
-    eidRefs.set(id, eid)
-    return id
+    return entry.change.id
   }
 
   /**
-   * Undo the last change. Returns undo info so the caller can
-   * delegate the actual DOM revert to the bridge.
+   * Undo the last change (the session journal tail). Returns undo info so the
+   * caller can delegate the actual revert to the bridge — or, for a placement
+   * entry, to the wireframe deletePlacement pipeline.
    */
-  function undo(): { type: string; eid?: string; property?: string; value?: string; classes?: string } | null {
-    if (changes.value.length === 0) return null
+  function undo(): { type: string; eid?: string; property?: string; value?: string; classes?: string; instanceId?: string } | null {
+    const popped = session.popForUndo()
+    if (!popped) return null
+    const c = popped.change
 
-    const last = changes.value.pop()!
-
-    if (last.type === 'style_update') {
-      const eid = eidRefs.get(last.id)
-      eidRefs.delete(last.id)
+    if (c.type === 'style_update') {
       broadcast('report:updated', report.value)
-      return { type: 'style', eid, property: last.property, value: last.before }
-    } else if (last.type === 'class_update') {
-      const eid = eidRefs.get(last.id)
-      eidRefs.delete(last.id)
+      return { type: 'style', eid: popped.eid, property: c.property, value: c.before }
+    } else if (c.type === 'class_update') {
       broadcast('report:updated', report.value)
-      return { type: 'class', eid, classes: last.before.classes }
-    } else if (last.type === 'component_insert') {
-      const eid = eidRefs.get(last.id)
-      eidRefs.delete(last.id)
+      return { type: 'class', eid: popped.eid, classes: c.before.classes }
+    } else if (c.type === 'component_insert') {
       broadcast('report:updated', report.value)
-      return { type: 'insert_remove', eid }
+      if (popped.instanceId) {
+        // Wireframe placement — caller deletes the instance (doc + live node).
+        return { type: 'placement_delete', instanceId: popped.instanceId }
+      }
+      return { type: 'insert_remove', eid: popped.eid }
     }
 
     broadcast('report:updated', report.value)
@@ -313,53 +343,49 @@ export function useStyleEditor() {
   }
 
   function removeChange(id: string) {
-    changes.value = changes.value.filter(c => c.id !== id)
-    eidRefs.delete(id)
+    const entry = session.findByChangeId(id)
+    if (!entry) return
+    // A collapsed projection record stands for its whole amend-group — remove
+    // every entry sharing the key, exactly like removing the single collapsed
+    // record before the journal existed.
+    if (entry.amendKey) {
+      session.removeWhere((e) => e.amendKey === entry.amendKey)
+    } else {
+      session.removeWhere((e) => e.id === entry.id)
+    }
   }
 
   /**
    * Remove all changes for a specific file:line (element).
    * Returns placeholder eids that need to be removed via bridge.
+   * Placement entries are NOT touched — placements belong to the wireframe
+   * lifecycle (deletePlacement / Build / discard), not the change buffer.
    */
   function removeChangesFor(file: string, line: number): string[] {
+    const removed = session.removeWhere((e) => !e.instanceId && e.change.file === file && e.change.line === line)
     const placeholderEids: string[] = []
-    const removed: string[] = []
-    changes.value = changes.value.filter(c => {
-      if (c.file === file && c.line === line) {
-        removed.push(c.id)
-        if (c.type === 'component_insert') {
-          const eid = eidRefs.get(c.id)
-          if (eid) placeholderEids.push(eid)
-        }
-        return false
-      }
-      return true
-    })
-    for (const id of removed) eidRefs.delete(id)
+    for (const e of removed) {
+      if (e.change.type === 'component_insert' && e.eid) placeholderEids.push(e.eid)
+    }
     broadcast('report:updated', report.value)
     return placeholderEids
   }
 
   function removeAnnotationsByFile(file: string, line: number) {
-    changes.value = changes.value.filter(c => {
-      if (c.type !== 'annotation') return true
-      return !(c.file === file && c.line === line)
-    })
+    session.removeWhere((e) => e.change.type === 'annotation' && e.change.file === file && e.change.line === line)
   }
 
   /**
    * Clear all changes. Returns eids of placeholders that need to be removed via bridge.
+   * Placement entries survive (see removeChangesFor) — discarding placements is
+   * the session discard's job.
    */
   function clearChanges(): string[] {
+    const removed = session.removeWhere((e) => !e.instanceId)
     const placeholderEids: string[] = []
-    for (const c of changes.value) {
-      if (c.type === 'component_insert') {
-        const eid = eidRefs.get(c.id)
-        if (eid) placeholderEids.push(eid)
-      }
+    for (const e of removed) {
+      if (e.change.type === 'component_insert' && e.eid) placeholderEids.push(e.eid)
     }
-    changes.value = []
-    eidRefs.clear()
     broadcast('changes:cleared', {})
     return placeholderEids
   }
@@ -402,6 +428,40 @@ export function useStyleEditor() {
         return null
     }
   }
+
+  /**
+   * Collapsed pending-change view — one record per amend-group, ordered by
+   * first occurrence, `before` from first touch + `after` from the latest.
+   * This is the projection the Annotate tab, the inspector's selection list,
+   * and commit-as-task consume; the underlying journal stays gesture-grained
+   * for ordered undo.
+   */
+  const changes = computed<ChangeRecord[]>(() => {
+    const visible = session.entries.value.filter(isReportable)
+    const byKey = new Map<string, ShellSessionEntry[]>()
+    const order: string[] = []
+    for (const e of visible) {
+      const key = e.amendKey ?? `solo:${e.id}`
+      const group = byKey.get(key)
+      if (group) {
+        group.push(e)
+      } else {
+        byKey.set(key, [e])
+        order.push(key)
+      }
+    }
+    return order.map((key) => {
+      const group = byKey.get(key)!
+      if (group.length === 1) return group[0].change
+      const first = group[0].change
+      const last = group[group.length - 1].change
+      const collapsed = { ...last } as ChangeRecord
+      if ('before' in collapsed && 'before' in first) {
+        ;(collapsed as { before: unknown }).before = (first as { before: unknown }).before
+      }
+      return collapsed
+    })
+  })
 
   // Collapsed report — no duplicates, only final values
   const report = computed(() => {

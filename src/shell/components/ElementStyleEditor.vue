@@ -31,10 +31,11 @@ const emit = defineEmits<{
 
 const activeTab = ref<'layout' | 'spacing' | 'size' | 'style' | 'classes'>('layout')
 
-type StyleOrClassChange = StyleChangeRecord | ClassChangeRecord
+type PendingChange = StyleChangeRecord | ClassChangeRecord
 
-const styleClassChanges = computed<StyleOrClassChange[]>(() =>
-  props.changes.filter((c): c is StyleOrClassChange => c.type === 'style_update' || c.type === 'class_update')
+const styleClassChanges = computed<PendingChange[]>(() =>
+  props.changes.filter((c): c is PendingChange =>
+    c.type === 'style_update' || c.type === 'class_update')
 )
 
 function onStyleChange(property: string, value: string, tokenRole?: string) {
@@ -72,24 +73,31 @@ const localApplyToGroup = computed({
       </label>
     </div>
 
-    <div class="panel-tabs">
-      <button :class="['tab', { active: activeTab === 'layout' }]" @click="activeTab = 'layout'" title="Edit display, flex, and grid properties">Layout</button>
-      <button :class="['tab', { active: activeTab === 'spacing' }]" @click="activeTab = 'spacing'" title="Edit padding and margin">Spacing</button>
-      <button :class="['tab', { active: activeTab === 'size' }]" @click="activeTab = 'size'" title="Edit width, height, and constraints">Size</button>
-      <button :class="['tab', { active: activeTab === 'style' }]" @click="activeTab = 'style'" title="Edit colors, typography, and appearance">Style</button>
-      <button :class="['tab', { active: activeTab === 'classes' }]" @click="activeTab = 'classes'" title="Edit CSS classes directly">Classes</button>
+    <!-- A wireframe placement has no source anchor yet — a style edit here
+         would journal an entry the apply loop can't snapshot or verify. -->
+    <div v-if="selectedElementRole === 'placement'" class="placement-note">
+      Wireframe placement — edit it via the palette and placements panel.
     </div>
-
-    <div class="tab-content">
-      <LayoutControls v-if="activeTab === 'layout'" :computedStyles="liveStyles" @change="onStyleChange" />
-      <SpacingControls v-if="activeTab === 'spacing'" :computedStyles="liveStyles" @change="onStyleChange" />
-      <SizeControls v-if="activeTab === 'size'" :computedStyles="liveStyles" @change="onStyleChange" />
-      <AppearanceControls v-if="activeTab === 'style'" :computedStyles="liveStyles" @change="onStyleChange" />
-      <div v-if="activeTab === 'classes'" class="classes-tab">
-        <textarea v-model="localClasses" class="class-editor" rows="4" @blur="onClassBlur" @keydown.enter.ctrl="onClassBlur" placeholder="Edit CSS classes..." />
-        <p class="hint">Ctrl+Enter or blur to apply</p>
+    <template v-else>
+      <div class="panel-tabs">
+        <button :class="['tab', { active: activeTab === 'layout' }]" @click="activeTab = 'layout'" title="Edit display, flex, and grid properties">Layout</button>
+        <button :class="['tab', { active: activeTab === 'spacing' }]" @click="activeTab = 'spacing'" title="Edit padding and margin">Spacing</button>
+        <button :class="['tab', { active: activeTab === 'size' }]" @click="activeTab = 'size'" title="Edit width, height, and constraints">Size</button>
+        <button :class="['tab', { active: activeTab === 'style' }]" @click="activeTab = 'style'" title="Edit colors, typography, and appearance">Style</button>
+        <button :class="['tab', { active: activeTab === 'classes' }]" @click="activeTab = 'classes'" title="Edit CSS classes directly">Classes</button>
       </div>
-    </div>
+
+      <div class="tab-content">
+        <LayoutControls v-if="activeTab === 'layout'" :computedStyles="liveStyles" @change="onStyleChange" />
+        <SpacingControls v-if="activeTab === 'spacing'" :computedStyles="liveStyles" @change="onStyleChange" />
+        <SizeControls v-if="activeTab === 'size'" :computedStyles="liveStyles" @change="onStyleChange" />
+        <AppearanceControls v-if="activeTab === 'style'" :computedStyles="liveStyles" @change="onStyleChange" />
+        <div v-if="activeTab === 'classes'" class="classes-tab">
+          <textarea v-model="localClasses" class="class-editor" rows="4" @blur="onClassBlur" @keydown.enter.ctrl="onClassBlur" placeholder="Edit CSS classes..." />
+          <p class="hint">Ctrl+Enter or blur to apply</p>
+        </div>
+      </div>
+    </template>
 
     <div v-if="styleClassChanges.length" class="changes-footer">
       <div class="changes-list">
@@ -126,6 +134,12 @@ const localApplyToGroup = computed({
 .tab-content {
   flex: 1;
   overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.placement-note {
+  font-size: 11px;
+  color: var(--text-muted);
   padding: 8px 12px;
 }
 </style>
