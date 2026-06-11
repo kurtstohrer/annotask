@@ -153,6 +153,10 @@ export interface WireframeBlock {
   deleted?: boolean
   captureError?: string
   clipped?: boolean
+  /** Exploded container: this block is now the SHELL backdrop (its image has
+   *  the children hidden); its children exist as separate blocks. Not
+   *  explodable again. */
+  shell?: boolean
   /** Set on duplicates; the original block's id (image file is shared). */
   duplicateOf?: string
   // palette blocks
@@ -257,6 +261,7 @@ export function isWireframeBlock(value: unknown): value is WireframeBlock {
   if (value.note !== undefined && typeof value.note !== 'string') return false
   if (value.image !== undefined && !WIREFRAME_SNAPSHOT_FILENAME_RE.test(value.image as string)) return false
   if (value.deleted !== undefined && typeof value.deleted !== 'boolean') return false
+  if (value.shell !== undefined && typeof value.shell !== 'boolean') return false
   if (value.duplicateOf !== undefined && typeof value.duplicateOf !== 'string') return false
   if (value.kind === 'captured') {
     const anchor = value.anchor as Record<string, unknown> | undefined

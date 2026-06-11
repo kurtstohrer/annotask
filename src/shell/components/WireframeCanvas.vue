@@ -204,7 +204,7 @@ function onDragUp(): void {
 // ── Explode (double-click a captured block one level deeper) ──
 
 function onBlockDblClick(b: WireframeBlock): void {
-  if (props.building || b.kind !== 'captured') return
+  if (props.building || b.kind !== 'captured' || b.shell) return
   emit('explode-block', b.id)
 }
 
@@ -430,7 +430,7 @@ function onRecaptureConfirmed(): void {
               <span class="wf-block-name">{{ blockLabel(b) }}</span>
               <code v-if="anchorChip(b)" class="wf-anchor-chip" data-testid="wf-anchor-chip">{{ anchorChip(b) }}</code>
               <span class="wf-header-spacer" />
-              <button v-if="b.kind === 'captured'" class="wf-hbtn" data-testid="wf-explode-btn" @pointerdown.stop @click.stop="onBlockDblClick(b)" title="Explode into child blocks (double-click)">
+              <button v-if="b.kind === 'captured' && !b.shell" class="wf-hbtn" data-testid="wf-explode-btn" @pointerdown.stop @click.stop="onBlockDblClick(b)" title="Explode into child blocks (double-click)">
                 <Icon name="maximize-2" :size="10" />
               </button>
               <button class="wf-hbtn" data-testid="wf-note-btn" @pointerdown.stop @click.stop="openNote()" :title="b.note ? `Note: ${b.note}` : 'Add a note for the agent'">

@@ -265,6 +265,7 @@ describe('useWireframeMode', () => {
   describe('explode (W4)', () => {
     const CHILD_CAPTURE: WireframeCaptureResult = {
       viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+      shellDataUrl: 'data:image/png;base64,SHELL',
       blocks: [
         {
           eid: 'c1', file: 'src/pages/PlanetsPage.vue', line: '31', component: 'PlanetsPage',
@@ -279,7 +280,7 @@ describe('useWireframeMode', () => {
       ],
     }
 
-    it('replaces the block with translated children anchored at their own sources', async () => {
+    it('keeps the parent as a SHELL backdrop and adds translated children with their own anchors', async () => {
       const { mode, iframe } = makeMode()
       await mode.enter()
       const parent = mode.canvas.value!.blocks[1] // div.toolbar, y 80
@@ -294,7 +295,17 @@ describe('useWireframeMode', () => {
       expect(iframe.captureWireframe).toHaveBeenLastCalledWith({ rootEid: 'live-1' })
 
       const blocks = mode.canvas.value!.blocks
-      expect(blocks.find((b) => b.id === parent.id)).toBeUndefined()
+      // The parent survives as the container shell — its surface styling stays
+      // visible under the children (this was the "double-click removes the
+      // styling" bug).
+      const shell = blocks.find((b) => b.id === parent.id)!
+      expect(shell.shell).toBe(true)
+      expect(shell.image).toBe(`${parent.id}-shell.png`)
+      expect(mode.imageSrc(shell)).toBe('data:image/png;base64,SHELL')
+      // A second explode of the shell is refused.
+      expect(await mode.explodeBlock(parent.id)).toBe(false)
+      expect(mode.error.value).toContain('Already exploded')
+
       const children = blocks.filter((b) => b.anchor?.cssClass === 'search-row' || b.anchor?.cssClass === 'sort-row')
       expect(children).toHaveLength(2)
       // Canvas rects ride the parent's move delta; the diff baseline stays live.
@@ -302,9 +313,20 @@ describe('useWireframeMode', () => {
       expect(children[0].originalRect!.y).toBe(90)
       expect(children[0].anchor).toMatchObject({ file: 'src/pages/PlanetsPage.vue', line: 31 })
       expect(children[0].image).toMatch(/\.png$/)
-      // The parent's snapshot file was dropped (nothing references it).
+      // Children stack above the shell.
+      expect(Math.min(...children.map((b) => b.z))).toBeGreaterThan(shell.z)
+      // The parent's ORIGINAL snapshot file was dropped (nothing references it).
       const deletes = fetchMock.mock.calls.filter((c) => String(c[0]).includes(`wireframe-snapshots/${parentImage}`) && (c[1] as RequestInit)?.method === 'DELETE')
       expect(deletes).toHaveLength(1)
+    })
+
+    it('falls back to removing the parent when no shell could be captured (a stale image would ghost the children)', async () => {
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[1]
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce({ ...CHILD_CAPTURE, shellDataUrl: undefined })
+      expect(await mode.explodeBlock(parent.id)).toBe(true)
+      expect(mode.canvas.value!.blocks.find((b) => b.id === parent.id)).toBeUndefined()
     })
 
     it('an unresolvable anchor keeps the block and surfaces an error', async () => {

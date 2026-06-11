@@ -1220,16 +1220,40 @@ export function bridgeMessages(): string {
         }
         function wfCaptureFull() {
           // Explode captures (rootEid) refine an existing canvas — the
-          // original full-page "before" stays the honest baseline; skip.
-          if (payload && payload.rootEid) { wfFinish(null); return; }
+          // original full-page "before" stays the honest baseline. Instead,
+          // capture the root's SHELL: its own pixels (background, padding,
+          // the surface between children) with the captured child blocks
+          // visibility-hidden in the clone — the container's styling without
+          // ghost children burned in.
+          if (payload && payload.rootEid) {
+            var shellRoot = getEl(payload.rootEid);
+            if (!shellRoot) { wfFinish(null, null); return; }
+            sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'container shell' });
+            for (var smi = 0; smi < wfAll.length; smi++) wfAll[smi].setAttribute('data-annotask-wf-hide', '1');
+            var shellCleanup = function() {
+              for (var sci = 0; sci < wfAll.length; sci++) wfAll[sci].removeAttribute('data-annotask-wf-hide');
+            };
+            var shellRect = shellRoot.getBoundingClientRect();
+            h2c(document.body, {
+              useCORS: true, allowTaint: true, logging: false, scale: wfScale,
+              x: shellRect.x + (window.scrollX || 0), y: shellRect.y + (window.scrollY || 0),
+              width: shellRect.width, height: Math.min(shellRect.height, 4000),
+              onclone: function(docClone) {
+                var hidden = docClone.querySelectorAll('[data-annotask-wf-hide]');
+                for (var shi = 0; shi < hidden.length; shi++) hidden[shi].style.visibility = 'hidden';
+              }
+            }).then(function(canvas) { shellCleanup(); wfFinish(null, canvas.toDataURL('image/png')); })
+              .catch(function() { shellCleanup(); wfFinish(null, null); });
+            return;
+          }
           sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
           // Scale 1: the full page only feeds the before/after composite, and
           // a retina full-document PNG would blow the 4MB upload cap.
           h2c(document.body, { useCORS: true, allowTaint: true, logging: false, scale: 1 })
-            .then(function(canvas) { wfFinish(canvas.toDataURL('image/png')); })
-            .catch(function() { wfFinish(null); });
+            .then(function(canvas) { wfFinish(canvas.toDataURL('image/png'), null); })
+            .catch(function() { wfFinish(null, null); });
         }
-        function wfFinish(fullDataUrl) {
+        function wfFinish(fullDataUrl, shellDataUrl) {
           window.scrollTo(wfSavedX, wfSavedY);
           var result = {
             viewport: {
@@ -1242,6 +1266,7 @@ export function bridgeMessages(): string {
           };
           if (wfTruncated) result.truncated = true;
           if (fullDataUrl) result.fullDataUrl = fullDataUrl;
+          if (shellDataUrl) result.shellDataUrl = shellDataUrl;
           respond(id, result);
         }
         wfCaptureNext();

@@ -432,6 +432,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     const parent = findBlock(id)
     if (!c || !parent || parent.kind !== 'captured' || parent.deleted || capturing.value) return false
     if (!parent.anchor?.file || !parent.originalRect) return false
+    if (parent.shell) {
+      error.value = 'Already exploded — its children are separate blocks.'
+      return false
+    }
     error.value = null
 
     // Re-resolve the live element from the durable anchor (eids are volatile).
@@ -493,12 +497,26 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       })
 
       liveImages.value = nextImages
-      // Replace the parent wholesale; drop its image file unless shared.
-      const parentImage = parent.image
-      c.blocks = c.blocks.filter((b) => b.id !== id)
+      const oldParentImage = parent.image
+      if (res.shellDataUrl) {
+        // The parent stays as the SHELL backdrop: the container's background/
+        // padding/inter-child surface, captured with the children hidden so
+        // moving a child never reveals a ghost copy of itself. New file id —
+        // duplicates of the parent keep referencing the original pixels.
+        liveImages.value = { ...nextImages, [parent.id]: res.shellDataUrl }
+        parent.shell = true
+        parent.updatedAt = Date.now()
+        delete parent.image
+        const shellFilename = await uploadSnapshot(`${parent.id}-shell`, res.shellDataUrl)
+        if (shellFilename) parent.image = shellFilename
+      } else {
+        // No honest shell to show — keeping the old image would ghost the
+        // children, so the parent goes and the children stand alone.
+        c.blocks = c.blocks.filter((b) => b.id !== id)
+      }
       c.blocks.push(...children)
-      if (parentImage && !c.blocks.some((b) => b.image === parentImage)) {
-        void deleteSnapshot(parentImage)
+      if (oldParentImage && !c.blocks.some((b) => b.image === oldParentImage)) {
+        void deleteSnapshot(oldParentImage)
       }
 
       const byId = new Map(children.map((b) => [b.id, b]))

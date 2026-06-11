@@ -30,7 +30,7 @@ The task screenshot (`annotask_get_screenshot`) is a labeled composite: **left =
 
 ### Per-op rules
 
-- **move** — relocate the block's anchored markup to satisfy the relations. Apply per-file edits bottom-up (descending line); re-ground drifted anchors with `annotask_get_source_excerpt`. A loop-rendered block moves as the loop, not one iteration.
+- **move** — relocate the block's anchored markup to satisfy the relations. Apply per-file edits bottom-up (descending line); re-ground drifted anchors with `annotask_get_source_excerpt`. A loop-rendered block moves as the loop, not one iteration. An exploded container appears as both a container block and separate child blocks (each with finer anchors): directions on children mean restructuring INSIDE the container; a direction on the container means moving the whole thing, children included.
 - **resize** — prefer tokens/utility classes/grid-template changes over raw px. Say in the resolution what you chose and why.
 - **delete** — remove the anchored markup. Remove now-dead local bindings only when provably unused; never delete shared code.
 - **add / component** — resolve the real import via `annotask_get_component_examples` (proven specifier + export kind). No in-repo examples → fall back to `library`/`module` and say so. Apply `added.props` primitives only; never fabricate handlers, bindings, or children.

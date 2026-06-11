@@ -384,6 +384,9 @@ export interface WireframeCaptureResult {
   truncated?: boolean
   /** Full-document capture at scale 1 — the "before" composite source. */
   fullDataUrl?: string
+  /** Explode (rootEid) only: the root's own pixels with the captured child
+   *  blocks hidden — the container's surface, no ghost children. */
+  shellDataUrl?: string
   blocks?: WireframeCaptureBlock[]
   error?: string
 }
