@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { useStyleEditor } from './composables/useStyleEditor'
 import { useDesignSession } from './composables/useDesignSession'
 import { useInteractionMode } from './composables/useInteractionMode'
+import { useWireframeMode } from './composables/useWireframeMode'
 import { useDesignSpec, setActiveColorScheme } from './composables/useDesignSpec'
 import { useLayoutOverlay } from './composables/useLayoutOverlay'
 import { useAnnotations } from './composables/useAnnotations'
@@ -21,6 +22,7 @@ import ArrowOverlay from './components/ArrowOverlay.vue'
 import DrawnSectionOverlay from './components/DrawnSectionOverlay.vue'
 import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
+import WireframeCanvas from './components/WireframeCanvas.vue'
 // Panels + Overlays + Modals (extracted components)
 import AppToolbar from './components/AppToolbar.vue'
 import AppBanners from './components/AppBanners.vue'
@@ -603,6 +605,9 @@ const {
 const designSession = useDesignSession()
 watch(iframe.currentRoute, (r) => { designSession.sessionRoute.value = normalizeRoute(r) }, { immediate: true })
 
+// ── Wireframe mode (snapshot canvas over the live iframe) ──
+const wireframeMode = useWireframeMode({ iframe, interactionMode, shellView })
+
 // Auto-mode runs silently: no modal hijack, no forced switch to the
 // Conversation tab. The dedicated driver claims queued ids and runs the
 // embedded agent headlessly; the task card surfaces status (in_progress)
@@ -729,6 +734,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       :develop-section="developSection"
       :current-route="currentRoute"
       :layout-overlay-active="layoutOverlay.showOverlay.value"
+      :wireframe-active="wireframeMode.active.value"
+      :wireframe-capturing="wireframeMode.capturing.value"
       :a11y-loading="a11yLoading"
       :a11y-violations-count="a11yViolations.length"
       :tab-order-enabled="tabOrder.enabled.value"
@@ -750,6 +757,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       @switch-design-section="designSection = $event; activePanel = 'inspector'"
       @switch-develop-section="developSection = $event; activePanel = 'inspector'"
       @toggle-layout-overlay="layoutOverlay.toggle()"
+      @toggle-wireframe="wireframeMode.active.value ? wireframeMode.exit() : wireframeMode.enter()"
       @scan-a11y="activePanel = 'inspector'; scanA11y('page')"
       @toggle-tab-order="tabOrder.toggle()"
       @start-perf-recording="startPerfRecording"
@@ -783,11 +791,23 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
              (toggling a class avoids a mid-drag mount race; v-if would miss the
              first dragover). dragover MUST preventDefault or drop never fires;
              resolveElementAt still hit-tests through it. -->
-        <div class="palette-drop-shield" :class="{ active: !!paletteDrag.draggingItem.value }"
+        <div class="palette-drop-shield" :class="{ active: !!paletteDrag.draggingItem.value && !wireframeMode.active.value }"
           @dragenter.prevent
           @dragover.prevent="onPaletteDragOver"
           @drop.prevent="onPaletteDrop"
           @dragleave="onPaletteDragLeave" />
+
+        <!-- Wireframe mode: an opaque sketch canvas OVER the live iframe. The
+             iframe stays mounted (bridge alive for component snapshots), so
+             exiting is lossless — remove the overlay, the app is still there. -->
+        <WireframeCanvas v-if="wireframeMode.active.value || wireframeMode.capturing.value"
+          :canvas="wireframeMode.canvas.value"
+          :capturing="wireframeMode.capturing.value"
+          :progress="wireframeMode.progress.value"
+          :error="wireframeMode.error.value"
+          :image-src="wireframeMode.imageSrc"
+          @exit="wireframeMode.exit()"
+          @recapture="wireframeMode.recapture()" />
 
         <!-- Reposition capture shield. Rendered only while the Reposition tool is
              active: it sits above the iframe so the app's own click/drag behavior

@@ -137,6 +137,14 @@ export const UploadScreenshotBody = z.object({
   data: z.string().regex(/^data:image\/png;base64,/, 'Invalid PNG data URL'),
 })
 
+// ── HTTP: POST /wireframe-snapshots ──────────────────────
+
+export const UploadWireframeSnapshotBody = z.object({
+  /** Shell-minted block id — becomes the filename ({id}.png). */
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/, 'Invalid snapshot id'),
+  data: z.string().regex(/^data:image\/png;base64,/, 'Invalid PNG data URL'),
+})
+
 // ── HTTP: POST /performance ──────────────────────────────
 
 export const PerformanceSnapshotBody = z.unknown() // shape owned by the shell; validated there

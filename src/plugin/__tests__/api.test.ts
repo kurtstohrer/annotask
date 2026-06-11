@@ -914,4 +914,64 @@ describe('API endpoints', () => {
       expect(after.data.rev).toBe(before.data.rev)
     })
   })
+
+  describe('wireframe-snapshots upload/serve/delete', () => {
+    // 1x1 transparent PNG
+    const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const dataUrl = `data:image/png;base64,${PNG_B64}`
+
+    afterAll(async () => {
+      await fsp.rm(path.join(options.projectRoot, '.annotask', 'wireframe-snapshots'), { recursive: true, force: true })
+    })
+
+    it('uploads under the shell-minted id, serves it back as PNG, deletes it', async () => {
+      const up = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-1', data: dataUrl })
+      expect(up.status).toBe(200)
+      expect(up.data.filename).toBe('wfb-test-1.png')
+
+      const served = await request(server, 'GET', '/__annotask/wireframe-snapshots/wfb-test-1.png')
+      expect(served.status).toBe(200)
+      expect(served.raw.length).toBeGreaterThan(0)
+
+      const del = await request(server, 'DELETE', '/__annotask/api/wireframe-snapshots/wfb-test-1.png')
+      expect(del.status).toBe(200)
+      expect(del.data.deleted).toBe('wfb-test-1.png')
+
+      const gone = await request(server, 'GET', '/__annotask/wireframe-snapshots/wfb-test-1.png')
+      expect(gone.status).toBe(404)
+    })
+
+    it('re-upload under the same id overwrites (recapture semantics)', async () => {
+      await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-2', data: dataUrl })
+      const again = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-2', data: dataUrl })
+      expect(again.status).toBe(200)
+      expect(again.data.filename).toBe('wfb-test-2.png')
+    })
+
+    it('rejects ids that are not shell-mintable (traversal/case/format)', async () => {
+      for (const id of ['../escape', 'a/b', 'UPPER', 'wfb_underscore', '', '-leading']) {
+        const res = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id, data: dataUrl })
+        expect(res.status, `id ${JSON.stringify(id)} must be rejected`).toBe(400)
+      }
+    })
+
+    it('rejects non-PNG payloads and oversized bodies', async () => {
+      const badType = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-3', data: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' })
+      expect(badType.status).toBe(400)
+      // The global 4MB body cap fires while the client is still streaming —
+      // readBody destroys the socket (ECONNRESET) or answers 413 by timing.
+      const big = `data:image/png;base64,${Buffer.alloc(4 * 1024 * 1024 + 16).toString('base64')}`
+      const result = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-4', data: big })
+        .then((r) => r.status as number | string)
+        .catch(() => 'connection-destroyed')
+      expect([413, 'connection-destroyed']).toContain(result)
+      expect(fs.existsSync(path.join(options.projectRoot, '.annotask', 'wireframe-snapshots', 'wfb-test-4.png'))).toBe(false)
+    })
+
+    it('serve and delete refuse filenames outside the minted-id shape', async () => {
+      expect((await request(server, 'GET', '/__annotask/wireframe-snapshots/..%2Fescape.png')).status).toBe(400)
+      expect((await request(server, 'GET', '/__annotask/wireframe-snapshots/NOPE.PNG')).status).toBe(400)
+      expect((await request(server, 'DELETE', '/__annotask/api/wireframe-snapshots/..%2Fescape.png')).status).toBe(400)
+    })
+  })
 })

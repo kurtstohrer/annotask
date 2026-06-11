@@ -7,6 +7,7 @@ import {
   CreateTaskBody,
   UpdateTaskBody,
   UploadScreenshotBody,
+  UploadWireframeSnapshotBody,
   parseWith,
   assertTransition,
 } from './schemas.js'
@@ -19,7 +20,7 @@ import type { AgentDetector } from './agent-detect.js'
 import type { InitRunner, ScanOptions } from './init.js'
 import type { UsageLedger } from './usage-ledger.js'
 import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
-import { isWireframeDocument, type WireframeDocument, type WireframeInstance } from '../shared/wireframe-types.js'
+import { isWireframeDocument, WIREFRAME_SNAPSHOT_FILENAME_RE, type WireframeDocument, type WireframeInstance } from '../shared/wireframe-types.js'
 import { WireframeRevConflictError } from './wireframe-store.js'
 import { isDesignSessionDocument, type DesignSessionDocument } from '../shared/design-session-types.js'
 import { RevConflictError } from './json-cas-store.js'
@@ -279,6 +280,31 @@ export function createAPIMiddleware(options: APIOptions) {
       const screenshotsDir = nodePath.resolve(options.projectRoot, '.annotask', 'screenshots')
       const filePath = nodePath.resolve(screenshotsDir, filename)
       if (!filePath.startsWith(screenshotsDir + nodePath.sep)) {
+        res.statusCode = 403; res.end('Forbidden'); return
+      }
+      try {
+        const data = await fsp.readFile(filePath)
+        res.setHeader('Content-Type', 'image/png')
+        res.setHeader('Cache-Control', 'private, max-age=3600')
+        const corsOrigin = getCorsOrigin(req)
+        if (corsOrigin) res.setHeader('Access-Control-Allow-Origin', corsOrigin)
+        res.end(data)
+      } catch {
+        res.statusCode = 404; res.end('Not found')
+      }
+      return
+    }
+
+    // Serve wireframe canvas snapshots (outside /api/ path) — same containment
+    // discipline as screenshots; filenames are shell-minted ids, never paths.
+    if (req.url?.startsWith('/__annotask/wireframe-snapshots/') && req.method === 'GET') {
+      const filename = (req.url.replace('/__annotask/wireframe-snapshots/', '')).replace(/\?.*$/, '')
+      if (!WIREFRAME_SNAPSHOT_FILENAME_RE.test(filename)) {
+        res.statusCode = 400; res.end('Invalid filename'); return
+      }
+      const snapshotsDir = nodePath.resolve(options.projectRoot, '.annotask', 'wireframe-snapshots')
+      const filePath = nodePath.resolve(snapshotsDir, filename)
+      if (!filePath.startsWith(snapshotsDir + nodePath.sep)) {
         res.statusCode = 403; res.end('Forbidden'); return
       }
       try {
@@ -779,6 +805,39 @@ export function createAPIMiddleware(options: APIOptions) {
       await fsp.mkdir(dir, { recursive: true })
       await fsp.writeFile(nodePath.join(dir, filename), buffer)
       res.end(JSON.stringify({ filename }))
+      return
+    }
+
+    // Wireframe canvas snapshot PNGs. Upload is id-addressed (the shell mints
+    // block ids and re-uploads under the same id on recapture); delete is
+    // best-effort cleanup when a palette/placeholder block is removed.
+    if (path === 'wireframe-snapshots' && req.method === 'POST') {
+      let raw: string
+      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      const parsed = parseJSON(raw)
+      if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
+      const bodyResult = parseWith(UploadWireframeSnapshotBody, parsed.data)
+      if (!bodyResult.ok) return sendError(res, 400, bodyResult.error)
+      const match = bodyResult.data.data.match(/^data:image\/png;base64,(.+)$/)
+      if (!match) return sendError(res, 400, 'Invalid PNG data URL')
+      const buffer = Buffer.from(match[1], 'base64')
+      if (buffer.length > 4 * 1024 * 1024) return sendError(res, 413, 'Snapshot too large (max 4MB)')
+      const filename = `${bodyResult.data.id}.png`
+      const dir = nodePath.join(options.projectRoot, '.annotask', 'wireframe-snapshots')
+      await fsp.mkdir(dir, { recursive: true })
+      await fsp.writeFile(nodePath.join(dir, filename), buffer)
+      res.end(JSON.stringify({ filename }))
+      return
+    }
+
+    if (path.startsWith('wireframe-snapshots/') && req.method === 'DELETE') {
+      const filename = decodeURIComponent(path.replace('wireframe-snapshots/', ''))
+      if (!WIREFRAME_SNAPSHOT_FILENAME_RE.test(filename)) return sendError(res, 400, 'Invalid filename')
+      const dir = nodePath.resolve(options.projectRoot, '.annotask', 'wireframe-snapshots')
+      const filePath = nodePath.resolve(dir, filename)
+      if (!filePath.startsWith(dir + nodePath.sep)) return sendError(res, 403, 'Forbidden')
+      try { await fsp.unlink(filePath) } catch { /* already gone */ }
+      res.end(JSON.stringify({ deleted: filename }))
       return
     }
 

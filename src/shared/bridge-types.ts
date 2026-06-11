@@ -348,6 +348,51 @@ export interface ClassUndoPayload {
   classes: string
 }
 
+// ── Wireframe Capture ────────────────────────────────────
+
+export interface WireframeCapturePayload {
+  /** Capture children of this element instead of the page (W4 explode). */
+  rootEid?: string
+  /** Rasterization scale; default min(devicePixelRatio, 2), capped at 3. */
+  scale?: number
+}
+
+export interface WireframeCaptureBlock {
+  eid: string
+  /** Source anchor from data-annotask-* — '' when unstamped (honest no-chip). */
+  file: string
+  line: string
+  component: string
+  source_tag: string
+  tag: string
+  /** 'header' | 'nav' | 'footer' | 'aside' | 'content' from block discovery. */
+  role: string
+  /** Document CSS px (captured at scroll 0,0). */
+  rect: BridgeRect
+  /** PNG dataUrl at `scale`x; null when this block's capture failed. */
+  dataUrl: string | null
+  error?: string
+  /** Block was taller than the 4000px cap — only the top is in the image. */
+  clipped?: boolean
+}
+
+export interface WireframeCaptureResult {
+  viewport?: { width: number; height: number; docWidth: number; docHeight: number; scale: number }
+  /** Block discovery hit the 24-block cap. */
+  truncated?: boolean
+  /** Full-document capture at scale 1 — the "before" composite source. */
+  fullDataUrl?: string
+  blocks?: WireframeCaptureBlock[]
+  error?: string
+}
+
+/** Pushed per block during a capture (then once for the full-page pass). */
+export interface WireframeCaptureProgress {
+  index: number
+  total: number
+  label: string
+}
+
 // ── Layout ──────────────────────────────────────────────
 
 export interface LayoutContainerData {

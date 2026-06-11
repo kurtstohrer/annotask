@@ -12,6 +12,7 @@ import type {
   ResolveBySelectorsResult, ResolveBySelectorsMatch,
   ComputeAccessibilityInfoResult, AccessibilityInfo,
   ComputeTabOrderResult, TabOrderEntry,
+  WireframeCapturePayload, WireframeCaptureResult,
 } from '../../shared/bridge-types'
 import type { DesignSpecThemeSelector } from '../../schema'
 
@@ -533,6 +534,16 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     } catch { return { error: 'timeout' } }
   }
 
+  /** Rasterize the current route into per-block images (wireframe mode).
+   *  Rects come back in iframe-document coordinates — deliberately NOT
+   *  converted to shell coords; the canvas renders in capture space. Progress
+   *  arrives via 'wireframe:capture-progress' bridge events. */
+  async function captureWireframe(opts?: WireframeCapturePayload): Promise<WireframeCaptureResult> {
+    try {
+      return await bridge.request<WireframeCaptureResult>('wireframe:capture', opts ?? {}, 60000)
+    } catch { return { error: 'capture timed out' } }
+  }
+
   async function scanA11y(eid?: string): Promise<{ violations: any[]; error?: string }> {
     try {
       return await bridge.request('a11y:scan', { eid }, 30000) // longer timeout for axe load
@@ -643,6 +654,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     classifyElement,
     getComponentChain,
     captureScreenshot,
+    captureWireframe,
     scanA11y,
     scrollIntoView,
     resolveBySelectors,

@@ -36,12 +36,19 @@
             <Icon name="search" />
           </button>
           <button data-testid="tool-reposition" :class="['mode-btn mode-reposition', { active: interactionMode === 'reposition' }]"
+            :disabled="wireframeActive"
             @click="$emit('update:interactionMode', 'reposition')" title="Reposition (R)">
             <Icon name="move" />
           </button>
+          <button data-testid="tool-wireframe" :class="['mode-btn mode-wireframe', { active: wireframeActive }]"
+            :disabled="wireframeCapturing"
+            @click="$emit('toggle-wireframe')" title="Wireframe — freeze the route into a manipulable sketch">
+            <Icon name="frame" />
+          </button>
         </div>
         <button v-if="designSection !== 'components'"
-          :class="['tool-btn', { active: layoutOverlayActive }]" @click="$emit('toggle-layout-overlay')" title="Show Layout (L)">
+          :class="['tool-btn', { active: layoutOverlayActive }]" :disabled="wireframeActive"
+          @click="$emit('toggle-layout-overlay')" title="Show Layout (L)">
           <Icon name="layout-dashboard" />
         </button>
       </template>
@@ -197,6 +204,8 @@ interface Props {
   developSection: DevelopSection
   currentRoute: string
   layoutOverlayActive: boolean
+  wireframeActive: boolean
+  wireframeCapturing: boolean
   a11yLoading: boolean
   a11yViolationsCount: number
   tabOrderEnabled: boolean
@@ -222,6 +231,7 @@ const emit = defineEmits<{
   (e: 'switch-design-section', value: DesignSection): void
   (e: 'switch-develop-section', value: DevelopSection): void
   (e: 'toggle-layout-overlay'): void
+  (e: 'toggle-wireframe'): void
   (e: 'scan-a11y'): void
   (e: 'toggle-tab-order'): void
   (e: 'start-perf-recording'): void

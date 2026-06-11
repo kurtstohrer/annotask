@@ -88,9 +88,96 @@ export interface WireframeInstance {
   updatedAt?: number
 }
 
+// ── Snapshot-wireframe canvas ────────────────────────────
+// The frozen-image canvas behind Wireframe mode: per-block html2canvas
+// captures of the live route, manipulated as positioned images. Block PNGs
+// live on disk (.annotask/wireframe-snapshots/) — the doc stores FILENAMES,
+// never dataUrls, so the CAS round-trip stays small.
+
+/** 'captured' — rasterized from the live route (carries a source anchor).
+ *  'palette'  — a component snapshot dropped from the palette.
+ *  'placeholder' — a user-drawn labeled box; stays visibly a placeholder. */
+export type WireframeBlockKind = 'captured' | 'palette' | 'placeholder'
+
+/** Iframe-document CSS px at capture time — the canvas coordinate space. */
+export interface WireframeBlockRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Source identity of a captured block (data-annotask-* at capture time).
+ *  `file` may be '' when the element carried no stamp — honest, no chip. */
+export interface WireframeBlockAnchor {
+  file: string
+  line: number
+  component?: string
+  sourceTag?: string
+  tag?: string
+  /** 'header' | 'nav' | 'footer' | 'aside' | 'content' from block discovery. */
+  role?: string
+}
+
+/** What a palette block stands for — REAL scanner names, mirrors
+ *  WireframeInserted so apply-time codegen can lift it directly. */
+export interface WireframePaletteRef {
+  tag: string
+  componentName?: string
+  library?: string
+  module?: string
+  props?: Record<string, unknown>
+  previewProps?: Record<string, unknown>
+}
+
+export interface WireframeBlock {
+  id: string
+  kind: WireframeBlockKind
+  /** Current rect on the canvas (the user's transform). */
+  rect: WireframeBlockRect
+  z: number
+  /** USER-SAID, verbatim — never mixed with tool-measured facts. */
+  note?: string
+  /** Snapshot filename under .annotask/wireframe-snapshots/. */
+  image?: string
+  createdAt: number
+  updatedAt?: number
+  // captured blocks
+  anchor?: WireframeBlockAnchor
+  /** Rect as captured — the diff baseline for move/resize directions. */
+  originalRect?: WireframeBlockRect
+  /** Soft delete: hidden on the canvas but kept so the diff sees it. */
+  deleted?: boolean
+  captureError?: string
+  clipped?: boolean
+  /** Set on duplicates; the original block's id (image file is shared). */
+  duplicateOf?: string
+  // palette blocks
+  component?: WireframePaletteRef
+  fidelity?: WireframeFidelity
+  // placeholder blocks
+  label?: string
+}
+
+export interface WireframeCanvasState {
+  capturedAt: number
+  viewport: { width: number; height: number; docWidth: number; docHeight: number; scale: number }
+  /** Full-document capture filename — the honest "before" for composites. */
+  fullImage?: string
+  /** Block discovery hit the cap; some page regions have no block. */
+  truncated?: boolean
+  blocks: WireframeBlock[]
+  /** Apply lifecycle, mirroring WireframeInstanceStatus semantics:
+   *  absent/'sketch' = editable; 'building' = batched into a task in flight. */
+  status?: 'sketch' | 'building'
+  taskId?: string
+}
+
 export interface WireframeRoute {
   route: string
   instances: WireframeInstance[]
+  /** Snapshot-wireframe canvas for this route (absent until first capture). */
+  canvas?: WireframeCanvasState
   updatedAt?: number
 }
 
@@ -110,6 +197,12 @@ export const WIREFRAME_DOC_VERSION = '1.0' as const
 const WIREFRAME_KINDS: readonly string[] = ['component', 'html', 'layout-preset']
 const WIREFRAME_POSITIONS: readonly string[] = ['before', 'after', 'append', 'prepend']
 const WIREFRAME_STATUSES: readonly string[] = ['placed', 'building', 'applied']
+const BLOCK_KINDS: readonly string[] = ['captured', 'palette', 'placeholder']
+const CANVAS_STATUSES: readonly string[] = ['sketch', 'building']
+/** Snapshot filenames are shell-minted ids + .png — reject anything else at
+ *  the PUT boundary so a poisoned doc can't traverse on the serve path. The
+ *  server's upload/serve/delete routes enforce the same shape. */
+export const WIREFRAME_SNAPSHOT_FILENAME_RE = /^[a-z0-9][a-z0-9-]{0,63}\.png$/
 
 export function emptyWireframeDocument(): WireframeDocument {
   return { version: WIREFRAME_DOC_VERSION, updatedAt: 0, routes: [] }
@@ -141,9 +234,60 @@ export function isWireframeInstance(value: unknown): value is WireframeInstance 
   return true
 }
 
+function isBlockRect(value: unknown): value is WireframeBlockRect {
+  if (!isPlainObject(value)) return false
+  return typeof value.x === 'number' && typeof value.y === 'number'
+    && typeof value.width === 'number' && typeof value.height === 'number'
+}
+
+/** Block-depth shape guard with per-kind requirements: a captured block must
+ *  carry its anchor + original rect (the diff baseline), a palette block its
+ *  component ref, a placeholder its label — a block missing its kind's
+ *  substance could only fabricate. */
+export function isWireframeBlock(value: unknown): value is WireframeBlock {
+  if (!isPlainObject(value)) return false
+  if (typeof value.id !== 'string' || !value.id) return false
+  if (!BLOCK_KINDS.includes(value.kind as string)) return false
+  if (!isBlockRect(value.rect)) return false
+  if (typeof value.z !== 'number') return false
+  if (typeof value.createdAt !== 'number') return false
+  if (value.note !== undefined && typeof value.note !== 'string') return false
+  if (value.image !== undefined && !WIREFRAME_SNAPSHOT_FILENAME_RE.test(value.image as string)) return false
+  if (value.deleted !== undefined && typeof value.deleted !== 'boolean') return false
+  if (value.duplicateOf !== undefined && typeof value.duplicateOf !== 'string') return false
+  if (value.kind === 'captured') {
+    const anchor = value.anchor as Record<string, unknown> | undefined
+    if (!isPlainObject(anchor) || typeof anchor.file !== 'string' || typeof anchor.line !== 'number') return false
+    if (!isBlockRect(value.originalRect)) return false
+  }
+  if (value.kind === 'palette') {
+    const component = value.component as Record<string, unknown> | undefined
+    if (!isPlainObject(component) || typeof component.tag !== 'string' || !component.tag) return false
+  }
+  if (value.kind === 'placeholder') {
+    if (typeof value.label !== 'string' || !value.label) return false
+  }
+  return true
+}
+
+export function isWireframeCanvasState(value: unknown): value is WireframeCanvasState {
+  if (!isPlainObject(value)) return false
+  if (typeof value.capturedAt !== 'number') return false
+  const vp = value.viewport as Record<string, unknown> | undefined
+  if (!isPlainObject(vp)) return false
+  for (const k of ['width', 'height', 'docWidth', 'docHeight', 'scale']) {
+    if (typeof vp[k] !== 'number') return false
+  }
+  if (value.fullImage !== undefined && !WIREFRAME_SNAPSHOT_FILENAME_RE.test(value.fullImage as string)) return false
+  if (value.status !== undefined && !CANVAS_STATUSES.includes(value.status as string)) return false
+  if (value.taskId !== undefined && typeof value.taskId !== 'string') return false
+  if (!Array.isArray(value.blocks)) return false
+  return (value.blocks as unknown[]).every(isWireframeBlock)
+}
+
 /** Structural validation for the GET/PUT boundary. Mirrors the agent-configs
  *  PATCH validation discipline: shape-guard before persisting. Validates down
- *  to instance depth so one bad instance can't be persisted. */
+ *  to instance/block depth so one bad instance or block can't be persisted. */
 export function isWireframeDocument(value: unknown): value is WireframeDocument {
   if (!isPlainObject(value)) return false
   const doc = value as Record<string, unknown>
@@ -155,6 +299,7 @@ export function isWireframeDocument(value: unknown): value is WireframeDocument 
     if (!isPlainObject(r)) return false
     const route = r as Record<string, unknown>
     if (typeof route.route !== 'string' || !Array.isArray(route.instances)) return false
+    if (route.canvas !== undefined && !isWireframeCanvasState(route.canvas)) return false
     return (route.instances as unknown[]).every(isWireframeInstance)
   })
 }

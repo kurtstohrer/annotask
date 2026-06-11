@@ -225,4 +225,54 @@ describe('useWireframeDoc', () => {
       expect(wf.failedIds.value).toEqual([])
     })
   })
+
+  describe('snapshot-wireframe canvas', () => {
+    const canvas = {
+      capturedAt: 9,
+      viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+      blocks: [{
+        id: 'wfb-1', kind: 'captured' as const,
+        rect: { x: 0, y: 80, width: 800, height: 240 }, z: 1, createdAt: 1,
+        anchor: { file: 'src/pages/PlanetsPage.vue', line: 12 },
+        originalRect: { x: 0, y: 80, width: 800, height: 240 },
+        image: 'wfb-1.png',
+      }],
+    }
+
+    it('saveCanvas creates the route entry when absent and persists once', async () => {
+      wf.doc.value = { version: '1.0', updatedAt: 0, rev: 1, routes: [] }
+      // Echo the PUT body back like the real server (rev stamped).
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'PUT') return jsonResponse({ ...JSON.parse(init.body as string), rev: 2 })
+        return jsonResponse(docWith([]))
+      })
+      await wf.saveCanvas('/planets', canvas)
+      expect(wf.canvasForRoute('/planets')?.blocks).toHaveLength(1)
+      const puts = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'PUT')
+      expect(puts).toHaveLength(1)
+      const sent = JSON.parse(puts[0][1].body as string)
+      expect(sent.routes[0].canvas.blocks[0].id).toBe('wfb-1')
+    })
+
+    it('canvasForRoute returns null when the route has no canvas', () => {
+      wf.doc.value = docWith([instance('wfi-1')])
+      expect(wf.canvasForRoute('/r')).toBeNull()
+      expect(wf.canvasForRoute('/elsewhere')).toBeNull()
+    })
+
+    it('clearCanvas removes the canvas and persists; no-ops without one', async () => {
+      wf.doc.value = { version: '1.0', updatedAt: 0, rev: 1, routes: [{ route: '/planets', instances: [], canvas }] }
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'PUT') return jsonResponse({ ...JSON.parse(init.body as string), rev: 2 })
+        return jsonResponse(docWith([]))
+      })
+      await wf.clearCanvas('/planets')
+      expect(wf.canvasForRoute('/planets')).toBeNull()
+      const putsAfterClear = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'PUT').length
+      expect(putsAfterClear).toBe(1)
+      await wf.clearCanvas('/planets') // already gone — must not PUT again
+      const putsAfterNoop = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'PUT').length
+      expect(putsAfterNoop).toBe(1)
+    })
+  })
 })

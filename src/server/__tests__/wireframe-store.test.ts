@@ -160,3 +160,94 @@ describe('isWireframeDocument instance-depth validation', () => {
     expect(isWireframeDocument(docWith([instance('wfi-good'), { id: 'wfi-bad' }]))).toBe(false)
   })
 })
+
+describe('isWireframeDocument canvas-depth validation', () => {
+  const rect = { x: 0, y: 80, width: 800, height: 240 }
+
+  function block(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id, kind: 'captured', rect, z: 1, createdAt: 1,
+      anchor: { file: 'src/pages/PlanetsPage.vue', line: 12, component: 'PlanetsPage', tag: 'div' },
+      originalRect: rect,
+      image: 'wfb-abc12-1.png',
+      ...extra,
+    }
+  }
+
+  function docWithCanvas(canvas: unknown): unknown {
+    return { version: '1.0', updatedAt: 1, routes: [{ route: '/planets', instances: [], canvas }] }
+  }
+
+  function canvasWith(blocks: unknown[], extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      capturedAt: 1,
+      viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+      blocks,
+      ...extra,
+    }
+  }
+
+  it('accepts a route without a canvas (legacy docs) and a well-formed canvas', () => {
+    expect(isWireframeDocument({ version: '1.0', updatedAt: 1, routes: [{ route: '/', instances: [] }] })).toBe(true)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([
+      block('wfb-1', { note: 'make this a carousel', deleted: true }),
+      { id: 'wfb-2', kind: 'palette', rect, z: 2, createdAt: 1, image: 'wfb-abc12-2.png', component: { tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue' }, fidelity: 'isolated-preview' },
+      { id: 'wfb-3', kind: 'placeholder', rect, z: 3, createdAt: 1, label: 'pagination here' },
+      block('wfb-4', { duplicateOf: 'wfb-1' }),
+    ], { fullImage: 'wf-full-1.png', status: 'building', taskId: 'task-1', truncated: true })))).toBe(true)
+  })
+
+  it('enforces per-kind substance: captured needs anchor+originalRect, palette needs component.tag, placeholder needs label', () => {
+    expect(isWireframeDocument(docWithCanvas(canvasWith([block('wfb-1', { anchor: undefined })])))).toBe(false)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([block('wfb-1', { originalRect: undefined })])))).toBe(false)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([{ id: 'wfb-2', kind: 'palette', rect, z: 1, createdAt: 1, component: { componentName: 'X' } }])))).toBe(false)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([{ id: 'wfb-3', kind: 'placeholder', rect, z: 1, createdAt: 1, label: '' }])))).toBe(false)
+  })
+
+  it('rejects snapshot filenames that are not server-minted ids (traversal guard at the PUT boundary)', () => {
+    expect(isWireframeDocument(docWithCanvas(canvasWith([block('wfb-1', { image: '../escape.png' })])))).toBe(false)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([block('wfb-1', { image: 'a/b.png' })])))).toBe(false)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([block('wfb-1')], { fullImage: 'NOPE.PNG' })))).toBe(false)
+  })
+
+  it('rejects a malformed viewport, status, or rect', () => {
+    expect(isWireframeDocument(docWithCanvas(canvasWith([], { viewport: { width: 1280 } })))).toBe(false)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([], { status: 'applied' })))).toBe(false)
+    expect(isWireframeDocument(docWithCanvas(canvasWith([block('wfb-1', { rect: { x: 0, y: 0, width: '800', height: 1 } })])))).toBe(false)
+  })
+
+  it('one bad block rejects the whole document', () => {
+    expect(isWireframeDocument(docWithCanvas(canvasWith([block('wfb-good'), { id: 'wfb-bad', kind: 'captured' }])))).toBe(false)
+  })
+
+  it('round-trips a canvas through the store', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-wfc-'))
+    try {
+      const store = createWireframeStore(root)
+      const doc: WireframeDocument = {
+        version: '1.0', updatedAt: 1,
+        routes: [{
+          route: '/planets',
+          instances: [],
+          canvas: {
+            capturedAt: 9,
+            viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+            fullImage: 'wf-full-1.png',
+            blocks: [{
+              id: 'wfb-1', kind: 'captured',
+              rect: { x: 0, y: 80, width: 800, height: 240 }, z: 1, createdAt: 1,
+              anchor: { file: 'src/pages/PlanetsPage.vue', line: 12 },
+              originalRect: { x: 0, y: 80, width: 800, height: 240 },
+              image: 'wfb-abc12-1.png',
+            }],
+          },
+        }],
+      }
+      const saved = await store.set(doc)
+      expect(saved.routes[0].canvas?.blocks).toHaveLength(1)
+      expect(await createWireframeStore(root).get()).toEqual({ ...doc, rev: 1 })
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true })
+    }
+  })
+})

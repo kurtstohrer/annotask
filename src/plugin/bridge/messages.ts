@@ -1068,6 +1068,208 @@ export function bridgeMessages(): string {
       return;
     }
 
+    if (type === 'wireframe:capture') {
+      // Rasterize the current route into per-block images for the snapshot
+      // wireframe canvas. Sequential captures (html2canvas costs 100-500ms per
+      // block) with progress pushes; one full-document pass at the end is the
+      // honest "before" the apply composite needs. Rects are document CSS px:
+      // we capture at scroll (0,0) so viewport rects equal document rects and
+      // fixed/sticky elements can't mis-crop.
+      var wfScale = Math.min(window.devicePixelRatio || 1, 2);
+      if (payload && typeof payload.scale === 'number' && payload.scale > 0) wfScale = Math.min(payload.scale, 3);
+      var wfSavedX = window.scrollX || 0;
+      var wfSavedY = window.scrollY || 0;
+
+      function wfQualifies(el) {
+        if (!el || el.nodeType !== 1) return false;
+        var t = el.tagName;
+        if (t === 'SCRIPT' || t === 'STYLE' || t === 'LINK' || t === 'TEMPLATE' || t === 'NOSCRIPT') return false;
+        if (el.hasAttribute('data-annotask-instance') || el.hasAttribute('data-annotask-preview')) return false;
+        var cs = window.getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        var r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      }
+
+      function wfChildren(el) {
+        var out = [];
+        for (var i = 0; i < el.children.length; i++) {
+          if (wfQualifies(el.children[i])) out.push(el.children[i]);
+        }
+        return out;
+      }
+
+      function wfArea(el) { var r = el.getBoundingClientRect(); return r.width * r.height; }
+
+      // Content root: start at the semantic main when present, then unwrap
+      // single-child wrappers while the lone child covers most of its parent.
+      // The unwrap applies to main too — a router outlet usually renders ONE
+      // page wrapper inside it, and the page's sections are what the user
+      // wants as blocks, not one all-page rectangle.
+      function wfContentRoot(root) {
+        var main = root.querySelector('main, [role="main"]');
+        var cur = (main && wfQualifies(main)) ? main : root;
+        for (var depth = 0; depth < 6; depth++) {
+          var kids = wfChildren(cur);
+          if (kids.length === 1 && wfArea(cur) > 0 && wfArea(kids[0]) >= wfArea(cur) * 0.8) { cur = kids[0]; continue; }
+          break;
+        }
+        return cur;
+      }
+
+      function wfFinishError(message) {
+        window.scrollTo(wfSavedX, wfSavedY);
+        respond(id, { error: message });
+      }
+
+      window.scrollTo(0, 0);
+
+      var wfRoot = payload && payload.rootEid ? getEl(payload.rootEid) : document.body;
+      if (!wfRoot) { wfFinishError('root element not found'); return; }
+      var wfContent = wfContentRoot(wfRoot);
+
+      // Chrome pass: page furniture outside the content root, outermost only.
+      var wfChrome = [];
+      var wfChromeCandidates = wfRoot.querySelectorAll('header, nav, footer, aside');
+      for (var wci = 0; wci < wfChromeCandidates.length; wci++) {
+        var wcEl = wfChromeCandidates[wci];
+        if (!wfQualifies(wcEl)) continue;
+        if (wfContent !== wfRoot && wfContent.contains(wcEl) && wfContent !== wcEl) continue;
+        var wcContained = false;
+        for (var wcj = 0; wcj < wfChrome.length; wcj++) {
+          if (wfChrome[wcj].contains(wcEl)) { wcContained = true; break; }
+        }
+        if (!wcContained) wfChrome.push(wcEl);
+      }
+
+      // Content pass: direct qualifying children of the content root with a
+      // minimum footprint; when a level has only one (undersized) child,
+      // descend and retry so thin wrappers don't yield a single page block.
+      var wfContentKids = [];
+      var wfCursor = wfContent;
+      for (var wfDepth = 0; wfDepth < 5; wfDepth++) {
+        var wfRaw = wfChildren(wfCursor);
+        wfContentKids = [];
+        for (var wki = 0; wki < wfRaw.length; wki++) {
+          var wkr = wfRaw[wki].getBoundingClientRect();
+          if (wkr.width >= 48 && wkr.height >= 24) wfContentKids.push(wfRaw[wki]);
+        }
+        if (wfContentKids.length === 0 && wfRaw.length === 1) { wfCursor = wfRaw[0]; continue; }
+        break;
+      }
+      if (wfContentKids.length === 0) {
+        // Fall back to one block = the content root itself (still anchored).
+        if (wfQualifies(wfCursor)) wfContentKids = [wfCursor];
+        else if (wfChrome.length === 0) { wfFinishError('nothing to capture'); return; }
+      }
+
+      var wfAll = [];
+      for (var wai = 0; wai < wfChrome.length; wai++) wfAll.push(wfChrome[wai]);
+      for (var waj = 0; waj < wfContentKids.length; waj++) {
+        if (wfAll.indexOf(wfContentKids[waj]) === -1) wfAll.push(wfContentKids[waj]);
+      }
+      wfAll.sort(function(a, b) {
+        var pos = a.compareDocumentPosition(b);
+        if (pos & 4) return -1; // a precedes b
+        if (pos & 2) return 1;
+        return 0;
+      });
+      var wfTruncated = false;
+      if (wfAll.length > 24) { wfAll = wfAll.slice(0, 24); wfTruncated = true; }
+
+      var wfMetas = [];
+      for (var wmi = 0; wmi < wfAll.length; wmi++) {
+        var wmEl = wfAll[wmi];
+        var wmSrc = findSourceElement(wmEl);
+        var wmData = getSourceData(wmSrc.sourceEl);
+        var wmRect = wmEl.getBoundingClientRect();
+        var wmTag = wmEl.tagName.toLowerCase();
+        wfMetas.push({
+          eid: getEid(wmEl),
+          file: wmData.file, line: wmData.line, component: wmData.component,
+          source_tag: wmData.source_tag, tag: wmTag,
+          role: (wmTag === 'header' || wmTag === 'nav' || wmTag === 'footer' || wmTag === 'aside') ? wmTag : 'content',
+          rect: { x: wmRect.x + (window.scrollX || 0), y: wmRect.y + (window.scrollY || 0), width: wmRect.width, height: wmRect.height },
+          dataUrl: null
+        });
+      }
+
+      function wfRun(h2c) {
+        var wfIdx = 0;
+        function wfCaptureNext() {
+          if (wfIdx >= wfMetas.length) { wfCaptureFull(); return; }
+          var meta = wfMetas[wfIdx];
+          sendToShell('wireframe:capture-progress', { index: wfIdx, total: wfMetas.length + 1, label: meta.component || meta.source_tag || meta.tag });
+          var capH = Math.min(meta.rect.height, 4000);
+          h2c(document.body, { useCORS: true, allowTaint: true, logging: false, scale: wfScale, x: meta.rect.x, y: meta.rect.y, width: meta.rect.width, height: capH })
+            .then(function(canvas) {
+              meta.dataUrl = canvas.toDataURL('image/png');
+              if (capH < meta.rect.height) meta.clipped = true;
+              wfIdx++; wfCaptureNext();
+            })
+            .catch(function(err) {
+              meta.dataUrl = null;
+              meta.error = (err && err.message) || 'capture failed';
+              wfIdx++; wfCaptureNext();
+            });
+        }
+        function wfCaptureFull() {
+          sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
+          // Scale 1: the full page only feeds the before/after composite, and
+          // a retina full-document PNG would blow the 4MB upload cap.
+          h2c(document.body, { useCORS: true, allowTaint: true, logging: false, scale: 1 })
+            .then(function(canvas) { wfFinish(canvas.toDataURL('image/png')); })
+            .catch(function() { wfFinish(null); });
+        }
+        function wfFinish(fullDataUrl) {
+          window.scrollTo(wfSavedX, wfSavedY);
+          var result = {
+            viewport: {
+              width: window.innerWidth, height: window.innerHeight,
+              docWidth: document.documentElement.scrollWidth,
+              docHeight: document.documentElement.scrollHeight,
+              scale: wfScale
+            },
+            blocks: wfMetas
+          };
+          if (wfTruncated) result.truncated = true;
+          if (fullDataUrl) result.fullDataUrl = fullDataUrl;
+          respond(id, result);
+        }
+        wfCaptureNext();
+      }
+
+      function wfResolveH2c() {
+        var h2c = window.html2canvas;
+        if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
+        return (typeof h2c === 'function') ? h2c : null;
+      }
+
+      if (wfResolveH2c()) {
+        wfRun(wfResolveH2c());
+      } else {
+        var wfScript = document.createElement('script');
+        wfScript.src = '/__annotask/vendor/html2canvas.min.js';
+        var wfSavedDefine;
+        if (typeof window.define === 'function' && window.define.amd) {
+          wfSavedDefine = window.define;
+          window.define = undefined;
+        }
+        wfScript.onload = function() {
+          if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
+          var h2c = wfResolveH2c();
+          if (h2c) wfRun(h2c);
+          else wfFinishError('html2canvas not loaded');
+        };
+        wfScript.onerror = function() {
+          if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
+          wfFinishError('failed to load html2canvas — check that /__annotask/ routes are accessible from the app origin');
+        };
+        document.head.appendChild(wfScript);
+      }
+      return;
+    }
+
     if (type === 'preview:component') {
       // Render a real component instance OFFSCREEN in the iframe (so it gets
       // the app's true styles + provider context), snapshot it with

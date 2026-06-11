@@ -4,6 +4,7 @@ import {
   emptyWireframeDocument,
   type WireframeDocument,
   type WireframeInstance,
+  type WireframeCanvasState,
 } from '../../shared/wireframe-types'
 
 /** The subset of the iframe manager that re-applying instances needs. */
@@ -239,6 +240,33 @@ function resetApplied(): void {
   appliedIds.clear()
 }
 
+// ── Snapshot-wireframe canvas ─────────────────────────────
+
+function canvasForRoute(route: string): WireframeCanvasState | null {
+  return doc.value.routes.find((r) => r.route === route)?.canvas ?? null
+}
+
+/** Replace the route's canvas wholesale and persist. The canvas is one
+ *  editing surface — block-level patch methods would re-implement the doc. */
+async function saveCanvas(route: string, canvas: WireframeCanvasState): Promise<void> {
+  let entry = doc.value.routes.find((r) => r.route === route)
+  if (!entry) {
+    entry = { route, instances: [] }
+    doc.value.routes.push(entry)
+  }
+  entry.canvas = canvas
+  entry.updatedAt = Date.now()
+  await persist()
+}
+
+async function clearCanvas(route: string): Promise<void> {
+  const entry = doc.value.routes.find((r) => r.route === route)
+  if (!entry?.canvas) return
+  delete entry.canvas
+  entry.updatedAt = Date.now()
+  await persist()
+}
+
 export function useWireframeDoc() {
   if (!initialized) {
     initialized = true
@@ -261,5 +289,8 @@ export function useWireframeDoc() {
     deleteInstance,
     reapply,
     resetApplied,
+    canvasForRoute,
+    saveCanvas,
+    clearCanvas,
   }
 }

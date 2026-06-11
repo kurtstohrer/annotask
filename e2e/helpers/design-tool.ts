@@ -88,11 +88,20 @@ export async function resetWorkspaceState(request: APIRequestContext, origin: st
   } catch { /* best effort */ }
   try {
     const wf = await (await request.get('/__annotask/api/wireframe')).json()
-    if (Array.isArray(wf.routes) && wf.routes.some((r: { instances: unknown[] }) => r.instances.length > 0)) {
+    if (Array.isArray(wf.routes) && wf.routes.some((r: { instances: unknown[]; canvas?: unknown }) => r.instances.length > 0 || r.canvas)) {
       await request.put('/__annotask/api/wireframe', {
         headers: { Origin: origin, 'Content-Type': 'application/json' },
         data: { version: '1.0', updatedAt: Date.now(), ...(wf.rev !== undefined ? { rev: wf.rev } : {}), routes: [] },
       })
     }
   } catch { /* best effort */ }
+}
+
+/** Toggle Wireframe mode on and wait for the capture to finish rendering
+ *  image blocks. Capture is sequential html2canvas work — give it time. */
+export async function enterWireframeMode(page: Page): Promise<void> {
+  await page.locator('[data-testid="tool-wireframe"]').click()
+  await page.locator('[data-testid="wireframe-canvas"]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.locator('.wf-block').first().waitFor({ state: 'visible', timeout: 30_000 })
+  await page.waitForTimeout(500)
 }
