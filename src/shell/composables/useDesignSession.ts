@@ -441,7 +441,7 @@ export function useDesignSession() {
    * edits). The caller hands the returned taskId to the embedded-agent
    * auto-run (or leaves it for an external agent).
    */
-  async function applyNow(): Promise<{ taskId: string; batchId: string } | null> {
+  async function applyNow(opts?: { route?: string; screenshot?: string }): Promise<{ taskId: string; batchId: string } | null> {
     lastError.value = null
     applying.value = true
     try {
@@ -449,7 +449,10 @@ export function useDesignSession() {
       const res = await fetch('/__annotask/api/design-session/apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ route: sessionRoute.value || '/' }),
+        body: JSON.stringify({
+          route: opts?.route ?? (sessionRoute.value || '/'),
+          ...(opts?.screenshot ? { screenshot: opts.screenshot } : {}),
+        }),
       })
       const body = await res.json().catch(() => null) as { taskId?: string; batchId?: string; error?: { message?: string } } | null
       if (!res.ok || !body?.taskId || !body?.batchId) {

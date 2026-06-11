@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import Icon from './Icon.vue'
 import type { WireframeBlock, WireframeCanvasState } from '../../shared/wireframe-types'
@@ -12,15 +12,32 @@ const props = defineProps<{
   error: string | null
   /** Resolves a block's image (session dataUrl → sidecar file → null). */
   imageSrc: (block: WireframeBlock) => string | null
+  deletedBlocks: WireframeBlock[]
+  /** Locked: a wireframe_apply task is implementing this sketch right now. */
+  building: boolean
+  implementing: boolean
 }>()
 
 const emit = defineEmits<{
   exit: []
   recapture: []
+  implement: []
+  'undo-implementation': []
+  'update-rect': [id: string, rect: { x: number; y: number; width: number; height: number }]
+  'bring-to-front': [id: string]
+  'delete-block': [id: string]
+  'undelete-block': [id: string]
+  'duplicate-block': [id: string]
+  'set-note': [id: string, note: string]
+  'palette-drop': [at: { x: number; y: number }]
+  'add-placeholder': [rect: { x: number; y: number; width: number; height: number }, label: string]
 }>()
 
+const rootRef = ref<HTMLElement | null>(null)
+const stageRef = ref<HTMLElement | null>(null)
 const selectedId = ref<string | null>(null)
 const confirmRecapture = ref(false)
+const showDeleted = ref(false)
 
 const visibleBlocks = computed(() =>
   (props.canvas?.blocks ?? [])
@@ -29,10 +46,14 @@ const visibleBlocks = computed(() =>
     .sort((a, b) => a.z - b.z),
 )
 
+const selectedBlock = computed(() =>
+  props.canvas?.blocks.find((b) => b.id === selectedId.value && !b.deleted) ?? null)
+
 function blockLabel(b: WireframeBlock): string {
   if (b.kind === 'placeholder') return b.label ?? 'placeholder'
   if (b.kind === 'palette') return b.component?.componentName ?? b.component?.tag ?? 'component'
-  return b.anchor?.component || b.anchor?.sourceTag || b.anchor?.tag || 'block'
+  // Same priority as direction labels: class beats the shared page component.
+  return b.anchor?.cssClass || b.anchor?.sourceTag || b.anchor?.tag || b.anchor?.component || 'block'
 }
 
 function anchorChip(b: WireframeBlock): string | null {
@@ -40,12 +61,177 @@ function anchorChip(b: WireframeBlock): string | null {
   return `${b.anchor.file}:${b.anchor.line}`
 }
 
-function onStageClick(): void {
-  selectedId.value = null
+// ── Selection + keyboard ──────────────────────────────────
+
+function select(id: string | null): void {
+  selectedId.value = id
+  noteEditing.value = false
+  if (id) rootRef.value?.focus()
 }
 
-function onBlockClick(b: WireframeBlock): void {
-  selectedId.value = b.id
+function onKeydown(e: KeyboardEvent): void {
+  if (noteEditing.value || labelDraft.value !== null) return // typing — keys belong to the inputs
+  if (e.key === 'Escape') { select(null); drawMode.value = false; return }
+  if (props.building) return // sketch is locked while the agent implements it
+  const sel = selectedBlock.value
+  if (!sel) return
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault()
+    emit('delete-block', sel.id)
+    select(null)
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+    e.preventDefault()
+    emit('duplicate-block', sel.id)
+  }
+}
+
+// ── Move / resize (DrawnSectionOverlay pattern: window-level listeners) ──
+
+const dragState = ref<{
+  id: string
+  mode: 'move' | 'resize'
+  handle?: string
+  startX: number; startY: number
+  origX: number; origY: number; origW: number; origH: number
+  moved: boolean
+} | null>(null)
+
+function beginDrag(e: PointerEvent, b: WireframeBlock, mode: 'move' | 'resize', handle?: string): void {
+  e.preventDefault()
+  e.stopPropagation()
+  select(b.id)
+  if (props.building) return // selection only — the sketch is locked
+  if (mode === 'move') emit('bring-to-front', b.id)
+  dragState.value = {
+    id: b.id, mode, handle,
+    startX: e.clientX, startY: e.clientY,
+    origX: b.rect.x, origY: b.rect.y, origW: b.rect.width, origH: b.rect.height,
+    moved: false,
+  }
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragUp)
+}
+
+function onDragMove(e: PointerEvent): void {
+  const d = dragState.value
+  if (!d) return
+  const dx = e.clientX - d.startX
+  const dy = e.clientY - d.startY
+  // 3px threshold separates click-to-select from an actual drag.
+  if (!d.moved && Math.abs(dx) + Math.abs(dy) < 3) return
+  d.moved = true
+
+  if (d.mode === 'move') {
+    emit('update-rect', d.id, {
+      x: Math.max(0, d.origX + dx), y: Math.max(0, d.origY + dy),
+      width: d.origW, height: d.origH,
+    })
+    return
+  }
+
+  let x = d.origX, y = d.origY, w = d.origW, h = d.origH
+  const handle = d.handle || ''
+  if (handle.includes('e')) w = Math.max(24, d.origW + dx)
+  if (handle.includes('s')) h = Math.max(24, d.origH + dy)
+  if (handle.includes('w')) { w = Math.max(24, d.origW - dx); x = d.origX + d.origW - w }
+  if (handle.includes('n')) { h = Math.max(24, d.origH - dy); y = d.origY + d.origH - h }
+  emit('update-rect', d.id, { x: Math.max(0, x), y: Math.max(0, y), width: w, height: h })
+}
+
+function onDragUp(): void {
+  dragState.value = null
+  window.removeEventListener('pointermove', onDragMove)
+  window.removeEventListener('pointerup', onDragUp)
+}
+
+// ── Notes ─────────────────────────────────────────────────
+
+const noteEditing = ref(false)
+const noteDraft = ref('')
+const noteInputRef = ref<HTMLTextAreaElement | null>(null)
+
+function openNote(): void {
+  if (!selectedBlock.value) return
+  noteDraft.value = selectedBlock.value.note ?? ''
+  noteEditing.value = true
+  void nextTick(() => noteInputRef.value?.focus())
+}
+
+function commitNote(): void {
+  if (!noteEditing.value || !selectedBlock.value) return
+  emit('set-note', selectedBlock.value.id, noteDraft.value)
+  noteEditing.value = false
+}
+
+// ── Placeholder draw tool ─────────────────────────────────
+
+const drawMode = ref(false)
+const drawRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
+/** Non-null while the just-drawn placeholder waits for its label. */
+const labelDraft = ref<string | null>(null)
+const labelRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
+const labelInputRef = ref<HTMLInputElement | null>(null)
+let drawStart: { x: number; y: number } | null = null
+
+function stagePoint(e: PointerEvent | DragEvent): { x: number; y: number } {
+  const stage = stageRef.value
+  if (!stage) return { x: 0, y: 0 }
+  const r = stage.getBoundingClientRect()
+  return { x: e.clientX - r.left, y: e.clientY - r.top }
+}
+
+function onStagePointerDown(e: PointerEvent): void {
+  if (!drawMode.value) { select(null); return }
+  drawStart = stagePoint(e)
+  drawRect.value = { ...drawStart, width: 0, height: 0 }
+  window.addEventListener('pointermove', onDrawMove)
+  window.addEventListener('pointerup', onDrawUp)
+}
+
+function onDrawMove(e: PointerEvent): void {
+  if (!drawStart) return
+  const p = stagePoint(e)
+  drawRect.value = {
+    x: Math.min(drawStart.x, p.x),
+    y: Math.min(drawStart.y, p.y),
+    width: Math.abs(p.x - drawStart.x),
+    height: Math.abs(p.y - drawStart.y),
+  }
+}
+
+function onDrawUp(): void {
+  window.removeEventListener('pointermove', onDrawMove)
+  window.removeEventListener('pointerup', onDrawUp)
+  const r = drawRect.value
+  drawStart = null
+  drawRect.value = null
+  drawMode.value = false
+  if (r && r.width >= 24 && r.height >= 24) {
+    labelRect.value = r
+    labelDraft.value = ''
+    void nextTick(() => labelInputRef.value?.focus())
+  }
+}
+
+function commitPlaceholder(): void {
+  if (labelDraft.value === null || !labelRect.value) return
+  const label = labelDraft.value.trim()
+  if (label) emit('add-placeholder', labelRect.value, label)
+  labelDraft.value = null
+  labelRect.value = null
+}
+
+function cancelPlaceholder(): void {
+  labelDraft.value = null
+  labelRect.value = null
+}
+
+// ── Palette drop (native HTML5 drag — no shield needed over the canvas) ──
+
+function onCanvasDrop(e: DragEvent): void {
+  e.preventDefault()
+  if (props.building) return
+  emit('palette-drop', stagePoint(e))
 }
 
 function onRecaptureConfirmed(): void {
@@ -55,7 +241,7 @@ function onRecaptureConfirmed(): void {
 </script>
 
 <template>
-  <div class="wireframe-canvas" data-testid="wireframe-canvas" @keydown.escape="selectedId = null" tabindex="-1">
+  <div ref="rootRef" class="wireframe-canvas" data-testid="wireframe-canvas" tabindex="-1" @keydown="onKeydown">
     <div class="wf-chrome">
       <span class="wf-title">
         <Icon name="frame" :size="12" />
@@ -69,8 +255,37 @@ function onRecaptureConfirmed(): void {
       <span v-else-if="canvas?.truncated" class="wf-warn" title="Block discovery hit the 24-block cap — some page regions have no block">
         capture truncated
       </span>
+      <span v-if="building" class="wf-building" data-testid="wf-building">
+        Agent implementing — review the task in the Tasks panel
+      </span>
       <span class="wf-spacer" />
-      <button class="wf-btn" data-testid="wf-recapture" :disabled="capturing" @click="confirmRecapture = true"
+      <template v-if="building">
+        <button class="wf-btn" data-testid="wf-undo-implementation" @click="emit('undo-implementation')"
+          title="Delete the task and restore the pre-apply bytes — the sketch unlocks for editing">
+          <Icon name="rotate-ccw" :size="12" /> Undo this implementation
+        </button>
+      </template>
+      <button v-else class="wf-btn wf-implement" data-testid="wf-implement" :disabled="capturing || implementing"
+        @click="emit('implement')" title="Generate anchored directions + before/after screenshot and run the agent">
+        <Icon name="wand" :size="12" /> {{ implementing ? 'Implementing…' : 'Implement this wireframe' }}
+      </button>
+      <button v-if="!building" :class="['wf-btn', { 'wf-btn-active': drawMode }]" data-testid="wf-draw-placeholder" :disabled="capturing"
+        @click="drawMode = !drawMode" title="Draw a labeled placeholder box">
+        <Icon name="square-plus" :size="12" /> Placeholder
+      </button>
+      <div v-if="deletedBlocks.length" class="wf-deleted-wrap">
+        <button class="wf-btn" data-testid="wf-deleted-toggle" @click="showDeleted = !showDeleted"
+          :title="`${deletedBlocks.length} deleted block(s) — click to restore`">
+          <Icon name="trash" :size="12" /> {{ deletedBlocks.length }} deleted
+        </button>
+        <div v-if="showDeleted" class="wf-deleted-pop">
+          <div v-for="b in deletedBlocks" :key="b.id" class="wf-deleted-row">
+            <span>{{ blockLabel(b) }}</span>
+            <button class="wf-btn" :data-testid="`wf-undelete-${b.id}`" @click="emit('undelete-block', b.id)">restore</button>
+          </div>
+        </div>
+      </div>
+      <button class="wf-btn" data-testid="wf-recapture" :disabled="capturing || building" @click="confirmRecapture = true"
         title="Discard this sketch and re-capture the live route">
         <Icon name="refresh-cw" :size="12" /> Recapture
       </button>
@@ -82,24 +297,75 @@ function onRecaptureConfirmed(): void {
 
     <div v-if="capturing && !canvas" class="wf-empty">Capturing the page…</div>
 
-    <div v-else-if="canvas" class="wf-scroll" @pointerdown.self="onStageClick">
-      <div class="wf-stage" :style="{ width: canvas.viewport.docWidth + 'px', height: canvas.viewport.docHeight + 'px' }"
-        @pointerdown.self="onStageClick">
+    <div v-else-if="canvas" class="wf-scroll"
+      @dragenter.prevent
+      @dragover.prevent
+      @drop="onCanvasDrop">
+      <div ref="stageRef" class="wf-stage" :class="{ drawing: drawMode }"
+        :style="{ width: canvas.viewport.docWidth + 'px', height: canvas.viewport.docHeight + 'px' }"
+        @pointerdown.self="onStagePointerDown">
         <div v-for="b in visibleBlocks" :key="b.id"
-          class="wf-block" :class="{ selected: selectedId === b.id, failed: !imageSrc(b) && b.kind === 'captured' }"
+          class="wf-block"
+          :class="{ selected: selectedId === b.id, failed: !imageSrc(b) && b.kind === 'captured', placeholder: b.kind === 'placeholder', dragging: dragState?.id === b.id && dragState?.moved }"
           :data-block-id="b.id"
           :style="{ left: b.rect.x + 'px', top: b.rect.y + 'px', width: b.rect.width + 'px', height: b.rect.height + 'px', zIndex: b.z }"
-          @pointerdown.stop="onBlockClick(b)">
+          @pointerdown.stop="beginDrag($event, b, 'move')">
           <img v-if="imageSrc(b)" :src="imageSrc(b)!" :alt="blockLabel(b)" draggable="false" />
+          <div v-else-if="b.kind === 'placeholder'" class="wf-placeholder-body">
+            <span class="wf-placeholder-label">{{ b.label }}</span>
+            <span class="wf-placeholder-tag">placeholder</span>
+          </div>
           <div v-else class="wf-block-failed">
             <span>{{ b.captureError ? 'capture failed' : 'image missing' }}</span>
             <span class="wf-failed-label">{{ blockLabel(b) }}</span>
           </div>
           <div v-if="b.clipped" class="wf-clipped-note" title="Block was taller than the capture cap — only the top is shown">clipped</div>
-          <div v-if="selectedId === b.id" class="wf-block-header">
-            <span class="wf-block-name">{{ blockLabel(b) }}</span>
-            <code v-if="anchorChip(b)" class="wf-anchor-chip" data-testid="wf-anchor-chip">{{ anchorChip(b) }}</code>
+          <div v-if="b.note && selectedId !== b.id" class="wf-note-chip" :title="b.note">
+            <Icon name="pencil" :size="9" /> note
           </div>
+          <div v-if="b.kind === 'palette' && b.fidelity && b.fidelity !== 'live'" class="wf-fidelity-pill" :class="b.fidelity">
+            {{ b.fidelity === 'isolated-preview' ? 'isolated preview' : 'placeholder render' }}
+          </div>
+
+          <template v-if="selectedId === b.id">
+            <div class="wf-block-header" @pointerdown.stop="beginDrag($event, b, 'move')">
+              <span class="wf-block-name">{{ blockLabel(b) }}</span>
+              <code v-if="anchorChip(b)" class="wf-anchor-chip" data-testid="wf-anchor-chip">{{ anchorChip(b) }}</code>
+              <span class="wf-header-spacer" />
+              <button class="wf-hbtn" data-testid="wf-note-btn" @pointerdown.stop @click.stop="openNote()" :title="b.note ? `Note: ${b.note}` : 'Add a note for the agent'">
+                <Icon name="pencil" :size="10" />
+              </button>
+              <button class="wf-hbtn" data-testid="wf-duplicate-btn" @pointerdown.stop @click.stop="emit('duplicate-block', b.id)" title="Duplicate (Ctrl+D)">
+                <Icon name="copy" :size="10" />
+              </button>
+              <button class="wf-hbtn wf-hbtn-danger" data-testid="wf-delete-btn" @pointerdown.stop @click.stop="emit('delete-block', b.id); select(null)" title="Delete (Del)">
+                <Icon name="trash" :size="10" />
+              </button>
+            </div>
+            <div v-if="noteEditing" class="wf-note-editor" @pointerdown.stop>
+              <textarea ref="noteInputRef" v-model="noteDraft" rows="2" data-testid="wf-note-input"
+                placeholder="Tell the agent about this block… (e.g. make this a carousel)"
+                @blur="commitNote" @keydown.enter.exact.prevent="commitNote" @keydown.escape.stop="noteEditing = false" />
+            </div>
+            <div class="resize-handle rh-n" @pointerdown.stop="beginDrag($event, b, 'resize', 'n')" />
+            <div class="resize-handle rh-s" @pointerdown.stop="beginDrag($event, b, 'resize', 's')" />
+            <div class="resize-handle rh-e" @pointerdown.stop="beginDrag($event, b, 'resize', 'e')" />
+            <div class="resize-handle rh-w" @pointerdown.stop="beginDrag($event, b, 'resize', 'w')" />
+            <div class="resize-handle rh-ne" @pointerdown.stop="beginDrag($event, b, 'resize', 'ne')" />
+            <div class="resize-handle rh-nw" @pointerdown.stop="beginDrag($event, b, 'resize', 'nw')" />
+            <div class="resize-handle rh-se" data-testid="wf-resize-se" @pointerdown.stop="beginDrag($event, b, 'resize', 'se')" />
+            <div class="resize-handle rh-sw" @pointerdown.stop="beginDrag($event, b, 'resize', 'sw')" />
+          </template>
+        </div>
+
+        <!-- Placeholder drawing preview + label input -->
+        <div v-if="drawRect && drawRect.width > 4 && drawRect.height > 4" class="wf-draw-preview"
+          :style="{ left: drawRect.x + 'px', top: drawRect.y + 'px', width: drawRect.width + 'px', height: drawRect.height + 'px' }" />
+        <div v-if="labelDraft !== null && labelRect" class="wf-label-input"
+          :style="{ left: labelRect.x + 'px', top: labelRect.y + 'px', width: labelRect.width + 'px', height: labelRect.height + 'px' }">
+          <input ref="labelInputRef" v-model="labelDraft" data-testid="wf-placeholder-label"
+            placeholder="Label this placeholder… (e.g. pagination here)"
+            @keydown.enter.prevent="commitPlaceholder" @keydown.escape="cancelPlaceholder" @blur="commitPlaceholder" />
         </div>
       </div>
     </div>
@@ -144,6 +410,13 @@ function onRecaptureConfirmed(): void {
 .wf-progress { color: var(--info); }
 .wf-error { color: var(--danger); }
 .wf-warn { color: var(--warning); }
+.wf-building { color: var(--status-in-progress, var(--info)); font-weight: 600; }
+.wf-implement {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+}
+.wf-implement:hover:not(:disabled) { background: var(--accent-hover); }
 .wf-spacer { flex: 1; }
 .wf-btn {
   display: inline-flex;
@@ -159,7 +432,31 @@ function onRecaptureConfirmed(): void {
 }
 .wf-btn:hover { border-color: var(--border-strong); }
 .wf-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.wf-btn-active { border-color: var(--accent); color: var(--accent); }
 .wf-exit { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+.wf-deleted-wrap { position: relative; }
+.wf-deleted-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  min-width: 180px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  box-shadow: 0 4px 16px var(--shadow);
+}
+.wf-deleted-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+  font-size: 11px;
+  color: var(--text);
+}
 
 .wf-empty {
   flex: 1;
@@ -178,6 +475,7 @@ function onRecaptureConfirmed(): void {
     repeating-linear-gradient(0deg, transparent 0 23px, color-mix(in srgb, var(--border) 35%, transparent) 23px 24px),
     repeating-linear-gradient(90deg, transparent 0 23px, color-mix(in srgb, var(--border) 35%, transparent) 23px 24px);
 }
+.wf-stage.drawing { cursor: crosshair; }
 
 .wf-block {
   position: absolute;
@@ -185,10 +483,12 @@ function onRecaptureConfirmed(): void {
   border: 1px solid transparent;
   background: var(--surface);
   overflow: hidden;
-  cursor: default;
+  cursor: grab;
 }
+.wf-block.dragging { cursor: grabbing; opacity: 0.92; }
 .wf-block:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
-.wf-block.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.wf-block.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); overflow: visible; }
+.wf-block.selected img { outline: none; }
 .wf-block img {
   display: block;
   width: 100%;
@@ -196,6 +496,7 @@ function onRecaptureConfirmed(): void {
   object-fit: fill;
   user-select: none;
   -webkit-user-drag: none;
+  pointer-events: none;
 }
 
 .wf-block.failed {
@@ -214,6 +515,26 @@ function onRecaptureConfirmed(): void {
 }
 .wf-failed-label { font-size: 10px; opacity: 0.8; }
 
+.wf-block.placeholder {
+  border: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  background: repeating-linear-gradient(45deg, transparent 0 10px, color-mix(in srgb, var(--accent) 8%, transparent) 10px 20px);
+}
+.wf-placeholder-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 4px;
+}
+.wf-placeholder-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.wf-placeholder-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
 .wf-clipped-note {
   position: absolute;
   bottom: 2px;
@@ -225,18 +546,49 @@ function onRecaptureConfirmed(): void {
   border-radius: 3px;
 }
 
+.wf-note-chip {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warning) 25%, var(--bg));
+  color: var(--text);
+  pointer-events: none;
+}
+
+.wf-fidelity-pill {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warning) 30%, var(--bg));
+  color: var(--text);
+  pointer-events: none;
+}
+
 .wf-block-header {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: -22px;
+  left: -1px;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 2px 6px;
+  height: 18px;
   font-size: 10px;
-  background: color-mix(in srgb, var(--accent) 85%, black);
+  white-space: nowrap;
+  background: var(--accent);
   color: var(--text-on-accent);
+  border-radius: 4px 4px 0 0;
+  cursor: grab;
+  user-select: none;
 }
 .wf-block-name { font-weight: 600; }
 .wf-anchor-chip {
@@ -244,4 +596,75 @@ function onRecaptureConfirmed(): void {
   font-size: 9px;
   opacity: 0.9;
 }
+.wf-header-spacer { width: 6px; }
+.wf-hbtn {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-on-accent);
+  cursor: pointer;
+  padding: 1px 2px;
+  opacity: 0.85;
+}
+.wf-hbtn:hover { opacity: 1; }
+.wf-hbtn-danger:hover { color: var(--danger); }
+
+.wf-note-editor {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: min(280px, 100%);
+  z-index: 5;
+}
+.wf-note-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface-elevated);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.wf-draw-preview {
+  position: absolute;
+  border: 2px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  pointer-events: none;
+}
+.wf-label-input {
+  position: absolute;
+  border: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wf-label-input input {
+  width: 90%;
+  background: var(--surface-elevated);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+/* ── Resize handles (DrawnSectionOverlay pattern) ── */
+.resize-handle { position: absolute; z-index: 6; }
+.rh-n  { top: -4px; left: 8px; right: 8px; height: 8px; cursor: n-resize; }
+.rh-s  { bottom: -4px; left: 8px; right: 8px; height: 8px; cursor: s-resize; }
+.rh-e  { right: -4px; top: 8px; bottom: 8px; width: 8px; cursor: e-resize; }
+.rh-w  { left: -4px; top: 8px; bottom: 8px; width: 8px; cursor: w-resize; }
+.rh-nw, .rh-ne, .rh-sw, .rh-se {
+  width: 10px; height: 10px;
+  background: var(--accent); border: 1.5px solid var(--text-on-accent);
+  border-radius: 2px;
+}
+.rh-nw { top: -5px; left: -5px; cursor: nw-resize; }
+.rh-ne { top: -5px; right: -5px; cursor: ne-resize; }
+.rh-sw { bottom: -5px; left: -5px; cursor: sw-resize; }
+.rh-se { bottom: -5px; right: -5px; cursor: se-resize; }
 </style>

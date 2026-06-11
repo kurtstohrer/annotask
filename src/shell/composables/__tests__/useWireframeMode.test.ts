@@ -19,16 +19,16 @@ const CAPTURE_OK: WireframeCaptureResult = {
   blocks: [
     {
       eid: 'e1', file: 'src/pages/PlanetsPage.vue', line: '12', component: 'PlanetsPage',
-      source_tag: 'header', tag: 'header', role: 'header',
+      source_tag: 'header', tag: 'header', cls: 'page-header', role: 'header',
       rect: { x: 0, y: 0, width: 1280, height: 80 }, dataUrl: 'data:image/png;base64,A',
     },
     {
       eid: 'e2', file: 'src/pages/PlanetsPage.vue', line: '30', component: 'PlanetsPage',
-      source_tag: 'div', tag: 'div', role: 'content',
+      source_tag: 'div', tag: 'div', cls: 'toolbar', role: 'content',
       rect: { x: 0, y: 80, width: 1280, height: 600 }, dataUrl: 'data:image/png;base64,B',
     },
     {
-      eid: 'e3', file: '', line: '', component: '', source_tag: '', tag: 'section', role: 'content',
+      eid: 'e3', file: '', line: '', component: '', source_tag: '', tag: 'section', cls: '', role: 'content',
       rect: { x: 0, y: 680, width: 1280, height: 200 }, dataUrl: null, error: 'capture failed',
     },
   ],
@@ -39,6 +39,7 @@ function makeIframe(result: WireframeCaptureResult = CAPTURE_OK): WireframeModeI
     currentRoute: ref('/planets'),
     bridgeReady: ref(true),
     captureWireframe: vi.fn(async () => result),
+    previewComponent: vi.fn(async () => ({ mounted: true, fidelity: 'isolated-preview', dataUrl: 'data:image/png;base64,P', width: 320, height: 140 })),
     onBridgeEvent: vi.fn(),
   } as never
 }
@@ -173,6 +174,91 @@ describe('useWireframeMode', () => {
     expect(mode.canvas.value!.blocks[0].id).not.toBe(oldFirstId)
     const deletes = fetchMock.mock.calls.filter((c) => String(c[0]).includes('wireframe-snapshots/') && (c[1] as RequestInit)?.method === 'DELETE')
     expect(deletes.length).toBeGreaterThanOrEqual(3) // 2 block files + full page
+  })
+
+  describe('block operations (W2)', () => {
+    it('updateBlockRect / bringToFront / setNote mutate the working canvas', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const [a, b] = mode.canvas.value!.blocks
+      mode.updateBlockRect(a.id, { x: 10, y: 20, width: 300, height: 150 })
+      expect(a.rect).toEqual({ x: 10, y: 20, width: 300, height: 150 })
+      expect(a.originalRect).toEqual({ x: 0, y: 0, width: 1280, height: 80 }) // diff baseline untouched
+
+      mode.bringToFront(a.id)
+      expect(a.z).toBeGreaterThan(b.z)
+
+      mode.setNote(a.id, '  make this a carousel  ')
+      expect(a.note).toBe('make this a carousel')
+      mode.setNote(a.id, '   ')
+      expect(a.note).toBeUndefined()
+    })
+
+    it('captured blocks soft-delete (diff fact) and can be restored; sketch blocks remove outright', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const captured = mode.canvas.value!.blocks[0]
+      mode.deleteBlock(captured.id)
+      expect(captured.deleted).toBe(true)
+      expect(mode.canvas.value!.blocks).toHaveLength(3) // still in the doc
+      expect(mode.deletedBlocks.value.map((b) => b.id)).toEqual([captured.id])
+      mode.undeleteBlock(captured.id)
+      expect(captured.deleted).toBeUndefined()
+
+      const phId = mode.addPlaceholderBlock({ x: 5, y: 5, width: 100, height: 50 }, 'pagination here')!
+      mode.deleteBlock(phId)
+      expect(mode.canvas.value!.blocks.find((b) => b.id === phId)).toBeUndefined()
+    })
+
+    it('duplicateBlock offsets +16/+16, tops z, shares the image, and roots duplicateOf', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const src = mode.canvas.value!.blocks[0]
+      const copyId = mode.duplicateBlock(src.id)!
+      const copy = mode.canvas.value!.blocks.find((b) => b.id === copyId)!
+      expect(copy.rect.x).toBe(src.rect.x + 16)
+      expect(copy.rect.y).toBe(src.rect.y + 16)
+      expect(copy.z).toBeGreaterThan(src.z)
+      expect(copy.duplicateOf).toBe(src.id)
+      expect(copy.image).toBe(src.image)
+      // The session dataUrl resolves through the duplicate chain.
+      expect(mode.imageSrc(copy)).toBe('data:image/png;base64,A')
+      // A duplicate of the duplicate still roots at the original.
+      const grandId = mode.duplicateBlock(copyId)!
+      expect(mode.canvas.value!.blocks.find((b) => b.id === grandId)!.duplicateOf).toBe(src.id)
+    })
+
+    it('deleting one of two blocks sharing an image keeps the file; the last one drops it', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      // Palette block (hard-delete path) + its duplicate share one file.
+      await mode.dropPaletteItem({ kind: 'component', tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue' }, { x: 40, y: 40 })
+      const palette = mode.canvas.value!.blocks.find((b) => b.kind === 'palette')!
+      const dupId = mode.duplicateBlock(palette.id)!
+      const fileDeletes = () => fetchMock.mock.calls.filter((c) => String(c[0]).includes(`wireframe-snapshots/${palette.image}`) && (c[1] as RequestInit)?.method === 'DELETE').length
+
+      mode.deleteBlock(palette.id)
+      expect(fileDeletes()).toBe(0) // duplicate still references the file
+      mode.deleteBlock(dupId)
+      expect(fileDeletes()).toBe(1)
+    })
+
+    it('dropPaletteItem: components snapshot honestly; catalog items become placeholders', async () => {
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      await mode.dropPaletteItem({ kind: 'component', tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue', props: { real: true } }, { x: 100, y: 200 })
+      const palette = mode.canvas.value!.blocks.find((b) => b.kind === 'palette')!
+      expect(iframe.previewComponent).toHaveBeenCalledWith('PlanetCard', { real: true }, './components/PlanetCard.vue', 320)
+      expect(palette.rect).toMatchObject({ x: 100, y: 200, width: 320, height: 140 })
+      expect(palette.fidelity).toBe('isolated-preview')
+      expect(palette.component).toMatchObject({ componentName: 'PlanetCard', props: { real: true } })
+      expect(palette.image).toMatch(/\.png$/)
+
+      await mode.dropPaletteItem({ kind: 'layout-preset', tag: 'div', category: 'flex row' }, { x: 0, y: 0 })
+      const ph = mode.canvas.value!.blocks.filter((b) => b.kind === 'placeholder')
+      expect(ph).toHaveLength(1)
+      expect(ph[0].label).toBe('flex row')
+    })
   })
 
   it('boot restore re-enters only with both the flag and a persisted canvas', async () => {

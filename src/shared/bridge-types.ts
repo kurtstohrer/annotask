@@ -365,6 +365,8 @@ export interface WireframeCaptureBlock {
   component: string
   source_tag: string
   tag: string
+  /** First class name — the human-distinct label ('toolbar', 'layout'). */
+  cls: string
   /** 'header' | 'nav' | 'footer' | 'aside' | 'content' from block discovery. */
   role: string
   /** Document CSS px (captured at scroll 0,0). */

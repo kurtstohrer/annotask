@@ -71,6 +71,7 @@ export type AnnotaskChange =
   | ComponentDeleteChange
   | AnnotationChange
   | SectionRequestChange
+  | WireframeDirectionChange
 
 interface BaseChange {
   id: string
@@ -205,6 +206,61 @@ export interface SectionRequestChange extends BaseChange {
     height: string
   }
   prompt: string
+}
+
+/** Document CSS px in the wireframe canvas's capture coordinate space. */
+export interface WireframeRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * One snapshot-wireframe direction — what the user's sketch encodes for ONE
+ * canvas block, computed by diffing the original capture against the current
+ * canvas at "Implement this wireframe" time. `file`/`line` (BaseChange) anchor
+ * at the block's captured source, or for adds at the nearest anchored
+ * neighbor block. Pixel geometry is a HINT; relational facts are the
+ * contract — agents implement the intent with idiomatic layout, not absolute
+ * positioning. `measured` is tool-derived geometry and `note` is the user's
+ * verbatim words: never conflate the two channels.
+ */
+export interface WireframeDirectionChange extends BaseChange {
+  type: 'wireframe_direction'
+  op: 'move' | 'resize' | 'delete' | 'add' | 'note'
+  /** The block's identity as captured/created — tool-derived, never invented. */
+  block: { label: string; component?: string; tag?: string }
+  /** TOOL-MEASURED spatial facts. Never user-authored. */
+  measured?: {
+    before?: WireframeRect
+    after?: WireframeRect
+    dx?: number
+    dy?: number
+    /** Resize as % of original (wPct: 150 = +50% wider). */
+    wPct?: number
+    hPct?: number
+    /** Relational facts computed from box geometry, highest-value first —
+     *  e.g. "now above the filters toolbar (was below)". Max 3. */
+    relations?: string[]
+  }
+  /** op 'add' only. Component names/modules are REAL scanner output.
+   *  'duplicate' = another copy of a captured block's anchored markup. */
+  added?: {
+    kind: 'component' | 'placeholder' | 'duplicate'
+    componentName?: string
+    library?: string
+    module?: string
+    props?: Record<string, unknown>
+    previewProps?: Record<string, unknown>
+    /** placeholder: the user's label, verbatim. Stays visibly a placeholder. */
+    label?: string
+    /** Where it goes relative to the anchored neighbor (file/line above). */
+    position: 'before' | 'after' | 'append' | 'prepend'
+  }
+  /** USER-SAID, verbatim (the block's canvas note). Rides any op; op 'note'
+   *  when the note is the only change on the block. */
+  note?: string
 }
 
 /**

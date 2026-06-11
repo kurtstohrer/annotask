@@ -53,6 +53,25 @@ function instance(id: string): WireframeInstance {
   }
 }
 
+function directionEntry(id: string, route = '/planets', ordinal = 1): SessionEntry {
+  return {
+    id, ordinal, ts: ordinal, route,
+    change: {
+      id: `c-${id}`, type: 'wireframe_direction', op: 'move',
+      description: 'MOVE the grid (src/Page.vue:2): now above the filters (was below)',
+      file: 'src/Page.vue', section: 'template', line: 2,
+      block: { label: 'grid', tag: 'div' },
+      measured: {
+        before: { x: 0, y: 180, width: 800, height: 600 },
+        after: { x: 0, y: 90, width: 800, height: 600 },
+        dx: 0, dy: -90, relations: ['now above the filters (was below)'],
+      },
+    } as SessionEntry['change'],
+    anchor: { file: 'src/Page.vue', line: 2, targetTag: 'div' },
+    live: { status: 'pending' },
+  }
+}
+
 describe('apply-session', () => {
   let root: string
   let options: ApplySessionOptions
@@ -202,5 +221,87 @@ describe('apply-session', () => {
 
     const snap = await options.snapshots.state()
     expect(snap.batches).toHaveLength(1)
+  })
+
+  describe('wireframe directions (W3)', () => {
+    it('apply is route-scoped for directions, session-wide for legacy entries, and stamps the screenshot + canvas', async () => {
+      await seedSession([
+        directionEntry('wd-here', '/planets', 1),
+        directionEntry('wd-elsewhere', '/moons', 2),
+        textEntry('se-style'), // legacy entries stay session-wide
+      ])
+      const wf = await options.getWireframe()
+      await options.setWireframe({
+        ...wf, updatedAt: 1,
+        routes: [{
+          route: '/planets', instances: [],
+          canvas: {
+            capturedAt: 1,
+            viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+            blocks: [],
+          },
+        }],
+      })
+
+      const result = await applyDesignSession(options, '/planets', { screenshot: 'screenshot-1-abc.png' })
+      expect('error' in result).toBe(false)
+      if ('error' in result) return
+
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0].screenshot).toBe('screenshot-1-abc.png')
+      expect(String(tasks[0].description)).toContain('Implement the wireframe sketch on /planets')
+      expect(String(tasks[0].description)).toContain('Pixel positions are hints')
+      const ctx = tasks[0].context as { session: { entries: Array<{ id: string }> } }
+      expect(ctx.session.entries.map((e) => e.id).sort()).toEqual(['se-style', 'wd-here'])
+
+      // The other route's direction stays pending; the canvas locks to the task.
+      const session = await options.getDesignSession()
+      expect(session.entries.find((e) => e.id === 'wd-elsewhere')!.live.status).toBe('pending')
+      const wfAfter = await options.getWireframe()
+      expect(wfAfter.routes[0].canvas).toMatchObject({ status: 'building', taskId: result.taskId })
+    })
+
+    it('verify trusts directions with NO source read — the anchor file may be gone entirely', async () => {
+      await seedSession([directionEntry('wd-1')])
+      const result = await applyDesignSession(options, '/planets')
+      if ('error' in result) throw new Error(result.error)
+
+      // The agent legitimately restructured: the anchored file no longer exists.
+      await fsp.rm(path.join(root, 'src/Page.vue'))
+
+      await verifyAppliedEntries(options, result.taskId)
+      const session = await options.getDesignSession()
+      expect(session.entries[0].live.status).toBe('written')
+      const snap = await options.snapshots.state()
+      expect(snap.batches[0].status).toBe('done') // sealed
+    })
+
+    it('undo-batch returns direction entries to pending with the taskId cleared', async () => {
+      await seedSession([directionEntry('wd-1')])
+      const before = await fsp.readFile(path.join(root, 'src/Page.vue'), 'utf-8')
+      const result = await applyDesignSession(options, '/planets')
+      if ('error' in result) throw new Error(result.error)
+
+      await fsp.writeFile(path.join(root, 'src/Page.vue'), '<template><p>agent rewrote</p></template>', 'utf-8')
+      const reverted = await revertApplyBatch(options, result.batchId)
+      expect(reverted.reverted).toEqual(['src/Page.vue'])
+      expect(await fsp.readFile(path.join(root, 'src/Page.vue'), 'utf-8')).toBe(before)
+
+      const session = await options.getDesignSession()
+      expect(session.entries[0].live.status).toBe('pending')
+      expect(session.entries[0].taskId).toBeUndefined()
+    })
+
+    it('accept clears direction entries and rotates an emptied session', async () => {
+      await seedSession([directionEntry('wd-1')])
+      const result = await applyDesignSession(options, '/planets')
+      if ('error' in result) throw new Error(result.error)
+      await verifyAppliedEntries(options, result.taskId)
+
+      const { rotated } = await acceptApplyTask(options, result.taskId)
+      expect(rotated).toBe(true)
+      expect((await options.getDesignSession()).entries).toEqual([])
+      expect((await options.snapshots.state()).batches).toEqual([])
+    })
   })
 })

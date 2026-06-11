@@ -608,6 +608,21 @@ watch(iframe.currentRoute, (r) => { designSession.sessionRoute.value = normalize
 // ── Wireframe mode (snapshot canvas over the live iframe) ──
 const wireframeMode = useWireframeMode({ iframe, interactionMode, shellView })
 
+// Palette drops land on the canvas natively (no iframe shield in the way);
+// the drag item rides usePaletteDrag, not the DataTransfer.
+function onWireframePaletteDrop(at: { x: number; y: number }) {
+  const item = paletteDrag.draggingItem.value
+  paletteDrag.endDrag()
+  if (item) void wireframeMode.dropPaletteItem(item, at)
+}
+
+// "Implement this wireframe" mints the task through the existing apply loop,
+// then rides the same auto-run path as Apply now / Build.
+async function onImplementWireframe() {
+  const result = await wireframeMode.implementWireframe()
+  if (result?.taskId) onApplyRunAgent(result.taskId)
+}
+
 // Auto-mode runs silently: no modal hijack, no forced switch to the
 // Conversation tab. The dedicated driver claims queued ids and runs the
 // embedded agent headlessly; the task card surfaces status (in_progress)
@@ -806,8 +821,21 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           :progress="wireframeMode.progress.value"
           :error="wireframeMode.error.value"
           :image-src="wireframeMode.imageSrc"
+          :deleted-blocks="wireframeMode.deletedBlocks.value"
+          :building="wireframeMode.building.value"
+          :implementing="wireframeMode.implementing.value"
           @exit="wireframeMode.exit()"
-          @recapture="wireframeMode.recapture()" />
+          @recapture="wireframeMode.recapture()"
+          @implement="onImplementWireframe"
+          @undo-implementation="wireframeMode.undoImplementation()"
+          @update-rect="wireframeMode.updateBlockRect"
+          @bring-to-front="wireframeMode.bringToFront"
+          @delete-block="wireframeMode.deleteBlock"
+          @undelete-block="wireframeMode.undeleteBlock"
+          @duplicate-block="wireframeMode.duplicateBlock"
+          @set-note="wireframeMode.setNote"
+          @add-placeholder="wireframeMode.addPlaceholderBlock"
+          @palette-drop="onWireframePaletteDrop" />
 
         <!-- Reposition capture shield. Rendered only while the Reposition tool is
              active: it sits above the iframe so the app's own click/drag behavior

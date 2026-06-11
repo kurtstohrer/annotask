@@ -1099,19 +1099,21 @@ export function bridgeMessages(): string {
         return out;
       }
 
-      function wfArea(el) { var r = el.getBoundingClientRect(); return r.width * r.height; }
+      function wfHeight(el) { return el.getBoundingClientRect().height; }
 
       // Content root: start at the semantic main when present, then unwrap
-      // single-child wrappers while the lone child covers most of its parent.
-      // The unwrap applies to main too — a router outlet usually renders ONE
-      // page wrapper inside it, and the page's sections are what the user
-      // wants as blocks, not one all-page rectangle.
+      // single-child wrappers while the lone child covers most of its parent's
+      // HEIGHT. Height, not area: a centered max-width page column at a wide
+      // viewport is exactly the wrapper that must unwrap, and its horizontal
+      // margins would fail an area test. The unwrap applies to main too — a
+      // router outlet usually renders ONE page wrapper inside it, and the
+      // page's sections are what the user wants as blocks.
       function wfContentRoot(root) {
         var main = root.querySelector('main, [role="main"]');
         var cur = (main && wfQualifies(main)) ? main : root;
         for (var depth = 0; depth < 6; depth++) {
           var kids = wfChildren(cur);
-          if (kids.length === 1 && wfArea(cur) > 0 && wfArea(kids[0]) >= wfArea(cur) * 0.8) { cur = kids[0]; continue; }
+          if (kids.length === 1 && wfHeight(cur) > 0 && wfHeight(kids[0]) >= wfHeight(cur) * 0.8) { cur = kids[0]; continue; }
           break;
         }
         return cur;
@@ -1188,6 +1190,9 @@ export function bridgeMessages(): string {
           eid: getEid(wmEl),
           file: wmData.file, line: wmData.line, component: wmData.component,
           source_tag: wmData.source_tag, tag: wmTag,
+          // First class name — the human-distinct identity for direction
+          // labels ('toolbar', 'layout'); component names repeat per page.
+          cls: (wmEl.classList && wmEl.classList[0]) || '',
           role: (wmTag === 'header' || wmTag === 'nav' || wmTag === 'footer' || wmTag === 'aside') ? wmTag : 'content',
           rect: { x: wmRect.x + (window.scrollX || 0), y: wmRect.y + (window.scrollY || 0), width: wmRect.width, height: wmRect.height },
           dataUrl: null

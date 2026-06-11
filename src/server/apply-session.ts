@@ -74,16 +74,21 @@ function entryForTask(e: SessionEntry): Record<string, unknown> {
 export async function applyDesignSession(
   options: ApplySessionOptions,
   route: string,
+  extras?: { screenshot?: string },
 ): Promise<{ taskId: string; batchId: string; entryIds: string[]; instanceIds: string[] } | { error: string }> {
   const session = await options.getDesignSession()
   const wireframe = await options.getWireframe()
 
   // Element edits are session-wide (files aren't route-owned); placements are
-  // per-route, matching Build's contract.
-  const entries = session.entries.filter((e) => isPendingEntry(e) && !e.instanceId)
+  // per-route, matching Build's contract. Wireframe directions are a per-route
+  // sketch diff — only the applied route's directions ride this task.
+  const entries = session.entries.filter((e) =>
+    isPendingEntry(e) && !e.instanceId
+    && (e.change.type !== 'wireframe_direction' || e.route === route))
   const instances = (wireframe.routes.find((r) => r.route === route)?.instances ?? [])
     .filter((i) => (i.status ?? 'placed') === 'placed')
   if (entries.length === 0 && instances.length === 0) return { error: 'nothing to apply' }
+  const hasDirections = entries.some((e) => e.change.type === 'wireframe_direction')
 
   // Dominant anchor file → the task-level anchor (buildWireframeRoute precedent).
   const fileCounts = new Map<string, number>()
@@ -97,9 +102,13 @@ export async function applyDesignSession(
 
   const summaryLines = [
     ...instances.map((i) => `- place <${i.inserted.componentName ?? i.inserted.tag}> ${i.anchor.position} ${i.anchor.component || i.anchor.targetTag || 'target'}`),
-    ...entries.map((e) => `- ${e.change.description}`),
+    ...entries.map((e, idx) => `${hasDirections ? `${instances.length + idx + 1}. ` : '- '}${e.change.description}`),
   ]
-  const description = `Apply ${summaryLines.length} design-session edit${summaryLines.length === 1 ? '' : 's'} on ${route}:\n${summaryLines.join('\n')}`
+  // Directions get the intent frame: the numbered list maps 1:1 to the badges
+  // burned into the before/after composite, and pixels are hints by contract.
+  const description = hasDirections
+    ? `Implement the wireframe sketch on ${route}. The task screenshot is a labeled before/after composite (left: captured render; right: the user's sketch — rearranged images, not real UI). Numbered badges on the right pane match the directions below. Pixel positions are hints — implement the INTENT with idiomatic layout.\n${summaryLines.join('\n')}`
+    : `Apply ${summaryLines.length} design-session edit${summaryLines.length === 1 ? '' : 's'} on ${route}:\n${summaryLines.join('\n')}`
 
   const task = await options.addTask({
     type: 'wireframe_apply',
@@ -107,6 +116,7 @@ export async function applyDesignSession(
     file: domFile,
     line: domLine,
     route,
+    ...(extras?.screenshot ? { screenshot: extras.screenshot } : {}),
     context: {
       ...(instances.length > 0 ? { wireframe: { route, instances } } : {}),
       session: { session_id: session.sessionId, entries: entries.map(entryForTask) },
@@ -121,20 +131,30 @@ export async function applyDesignSession(
   await options.snapshots.snapshotFiles(files, { id: batchId, taskId })
 
   // Stamp instances 'building' (the existing Build semantics: a second apply
-  // won't collect them, and reapply won't re-mount them during review).
-  if (instances.length > 0) {
+  // won't collect them, and reapply won't re-mount them during review). A
+  // directions apply also locks the route's canvas sketch to the task —
+  // editing a sketch the agent is mid-implementing would lie about state.
+  if (instances.length > 0 || hasDirections) {
     const ids = new Set(instances.map((i) => i.id))
     for (let attempt = 0; attempt < 3; attempt++) {
       const wf = await options.getWireframe()
       let touched = false
       const routes = wf.routes.map((r) => {
         if (r.route !== route) return r
+        let routeTouched = false
         const next = r.instances.map((i) => {
           if (!ids.has(i.id)) return i
-          touched = true
+          routeTouched = true
           return { ...i, status: 'building' as const, taskId, updatedAt: Date.now() }
         })
-        return touched ? { ...r, instances: next, updatedAt: Date.now() } : r
+        let canvas = r.canvas
+        if (hasDirections && r.canvas && (r.canvas.status ?? 'sketch') === 'sketch') {
+          routeTouched = true
+          canvas = { ...r.canvas, status: 'building' as const, taskId }
+        }
+        if (!routeTouched) return r
+        touched = true
+        return { ...r, instances: next, canvas, updatedAt: Date.now() }
       })
       if (!touched) break
       try {
@@ -211,6 +231,14 @@ export async function verifyAppliedEntries(
   const verdicts = new Map<string, { ok: boolean; error?: string }>()
   for (const e of toVerify) {
     const c = e.change as unknown as Record<string, unknown>
+    // Spatial outcomes aren't literally verifiable in source — a direction
+    // flips on task review (trust the agent's resolution; the user verifies
+    // visually). Decided BEFORE any file read: the agent may legitimately
+    // have renamed/split the anchor file while implementing the sketch.
+    if (c.type === 'wireframe_direction') {
+      verdicts.set(e.id, { ok: true })
+      continue
+    }
     let ok = false
     try {
       if (c.type === 'component_prop_update' || c.type === 'text_update') {

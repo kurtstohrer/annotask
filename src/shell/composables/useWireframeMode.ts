@@ -1,5 +1,8 @@
-import { ref, watch, type Ref } from 'vue'
+import { ref, computed, watch, type Ref } from 'vue'
 import { useWireframeDoc } from './useWireframeDoc'
+import { useDesignSession } from './useDesignSession'
+import { computeWireframeDirections } from '../utils/wireframeDirections'
+import { composeWireframeDiff } from '../utils/wireframeComposite'
 import { normalizeRoute } from '../utils/routes'
 import type { WireframeBlock, WireframeCanvasState } from '../../shared/wireframe-types'
 import type { WireframeCapturePayload, WireframeCaptureResult, WireframeCaptureProgress } from '../../shared/bridge-types'
@@ -13,9 +16,25 @@ export interface WireframeModeIframe {
   currentRoute: Ref<string>
   bridgeReady: Ref<boolean>
   captureWireframe: (opts?: WireframeCapturePayload) => Promise<WireframeCaptureResult>
+  /** Offscreen component mount → honest snapshot (palette drops). */
+  previewComponent: (componentName: string, props?: Record<string, unknown>, module?: string, width?: number) => Promise<{ mounted: boolean; fidelity?: string | null; dataUrl?: string; width?: number; height?: number; error?: string }>
   // `any` matches the bridge event registry's signature (iframeBridge.on).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onBridgeEvent: (type: string, handler: (payload: any) => void) => void
+}
+
+/** What the palette hands a canvas drop — mirrors usePaletteDrag's item. */
+export interface WireframeDropItem {
+  kind: 'component' | 'html' | 'layout-preset'
+  tag: string
+  componentName?: string
+  library?: string
+  module?: string
+  props?: Record<string, unknown>
+  previewProps?: Record<string, unknown>
+  classes?: string
+  textContent?: string
+  category?: string
 }
 
 export interface WireframeModeDeps {
@@ -43,6 +62,7 @@ function mintBlockId(): string {
 export function useWireframeMode(deps: WireframeModeDeps) {
   const { iframe, interactionMode, shellView } = deps
   const wireframeDoc = useWireframeDoc()
+  const session = useDesignSession()
 
   const active = ref(false)
   const capturing = ref(false)
@@ -131,6 +151,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
             line: parseInt(b.line, 10) || 0,
             ...(b.component ? { component: b.component } : {}),
             ...(b.source_tag ? { sourceTag: b.source_tag } : {}),
+            ...(b.cls ? { cssClass: b.cls } : {}),
             tag: b.tag,
             role: b.role,
           },
@@ -225,8 +246,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     setFlag(true)
   }
 
-  // Persist canvas mutations (W2: drag/resize/notes) with a trailing debounce
-  // so pointer-up bursts don't stack PUTs.
+  // Persist canvas mutations (drag/resize/notes/blocks) with a trailing
+  // debounce so pointer-up bursts don't stack PUTs.
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   function persistSoon(): void {
     if (!canvas.value) return
@@ -236,6 +257,283 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       if (canvas.value) void wireframeDoc.saveCanvas(activeRoute(), canvas.value)
     }, 300)
   }
+
+  // ── Block operations (W2 manipulation) ────────────────────
+
+  function findBlock(id: string): WireframeBlock | null {
+    return canvas.value?.blocks.find((b) => b.id === id) ?? null
+  }
+
+  function maxZ(): number {
+    return (canvas.value?.blocks ?? []).reduce((m, b) => Math.max(m, b.z), 0)
+  }
+
+  function updateBlockRect(id: string, rect: { x: number; y: number; width: number; height: number }): void {
+    const b = findBlock(id)
+    if (!b) return
+    b.rect = { ...rect }
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  function bringToFront(id: string): void {
+    const b = findBlock(id)
+    if (!b) return
+    const top = maxZ()
+    if (b.z === top && canvas.value!.blocks.filter((x) => x.z === top).length === 1) return
+    b.z = top + 1
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  function setNote(id: string, note: string): void {
+    const b = findBlock(id)
+    if (!b) return
+    const trimmed = note.trim()
+    if (trimmed) b.note = trimmed
+    else delete b.note
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  /** Captured blocks soft-delete (the apply diff needs deletion as a fact);
+   *  palette/placeholder blocks are sketch material — remove outright, and
+   *  drop the snapshot file unless another block (duplicate) still shares it. */
+  function deleteBlock(id: string): void {
+    const c = canvas.value
+    const b = findBlock(id)
+    if (!c || !b) return
+    if (b.kind === 'captured') {
+      b.deleted = true
+      b.updatedAt = Date.now()
+    } else {
+      c.blocks = c.blocks.filter((x) => x.id !== id)
+      if (b.image && !c.blocks.some((x) => x.image === b.image)) {
+        void deleteSnapshot(b.image)
+      }
+    }
+    persistSoon()
+  }
+
+  function undeleteBlock(id: string): void {
+    const b = findBlock(id)
+    if (!b?.deleted) return
+    delete b.deleted
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  const deletedBlocks = computed(() => (canvas.value?.blocks ?? []).filter((b) => b.deleted))
+
+  /** Duplicate = new sketch material based on an existing block. Shares the
+   *  image file; `duplicateOf` points at the ROOT original so the apply diff
+   *  can say "another <X>" even through duplicate-of-duplicate chains. */
+  function duplicateBlock(id: string): string | null {
+    const c = canvas.value
+    const src = findBlock(id)
+    if (!c || !src || src.deleted) return null
+    const copy: WireframeBlock = {
+      ...JSON.parse(JSON.stringify(src)) as WireframeBlock,
+      id: mintBlockId(),
+      rect: { ...src.rect, x: src.rect.x + 16, y: src.rect.y + 16 },
+      z: maxZ() + 1,
+      duplicateOf: src.duplicateOf ?? src.id,
+      createdAt: Date.now(),
+    }
+    delete copy.updatedAt
+    c.blocks.push(copy)
+    persistSoon()
+    return copy.id
+  }
+
+  /** Palette drop onto the canvas: components render as an honest
+   *  preview:component snapshot (live iframe under the overlay does the
+   *  mounting); html/layout-preset catalog items become labeled placeholders —
+   *  there is no real render to rasterize, so we never fabricate one. */
+  async function dropPaletteItem(item: WireframeDropItem, at: { x: number; y: number }): Promise<void> {
+    const c = canvas.value
+    if (!c) return
+    const id = mintBlockId()
+    if (item.kind === 'component' && item.componentName) {
+      // The drag item rides a Vue reactive proxy — postMessage can't clone it
+      // (DataCloneError). Strip to plain JSON before anything crosses the
+      // bridge or lands in the persisted block.
+      const previewProps = item.previewProps ? JSON.parse(JSON.stringify(item.previewProps)) as Record<string, unknown> : undefined
+      const props = item.props ? JSON.parse(JSON.stringify(item.props)) as Record<string, unknown> : undefined
+      const res = await iframe.previewComponent(item.componentName, previewProps ?? props, item.module, 320)
+      if (!res.dataUrl) console.warn('[Annotask] wireframe palette drop: no snapshot —', JSON.stringify(res).slice(0, 300))
+      const width = res.width && res.width > 24 ? res.width : 320
+      const height = res.height && res.height > 24 ? res.height : 120
+      const block: WireframeBlock = {
+        id,
+        kind: 'palette',
+        rect: { x: at.x, y: at.y, width, height },
+        z: maxZ() + 1,
+        createdAt: Date.now(),
+        component: {
+          tag: item.tag,
+          componentName: item.componentName,
+          ...(item.library ? { library: item.library } : {}),
+          ...(item.module ? { module: item.module } : {}),
+          ...(props ? { props } : {}),
+          ...(previewProps ? { previewProps } : {}),
+        },
+        fidelity: (res.fidelity as WireframeBlock['fidelity']) ?? (res.mounted ? 'isolated-preview' : 'placeholder'),
+      }
+      if (res.dataUrl) {
+        liveImages.value = { ...liveImages.value, [id]: res.dataUrl }
+        const filename = await uploadSnapshot(id, res.dataUrl)
+        if (filename) block.image = filename
+      } else {
+        block.fidelity = 'placeholder'
+      }
+      c.blocks.push(block)
+    } else {
+      c.blocks.push({
+        id,
+        kind: 'placeholder',
+        rect: { x: at.x, y: at.y, width: 320, height: 120 },
+        z: maxZ() + 1,
+        createdAt: Date.now(),
+        label: item.textContent || item.category || `<${item.tag}>`,
+      })
+    }
+    persistSoon()
+  }
+
+  /** User-drawn placeholder box — visibly a sketch, never fabricated UI. */
+  function addPlaceholderBlock(rect: { x: number; y: number; width: number; height: number }, label: string): string | null {
+    const c = canvas.value
+    if (!c) return null
+    const id = mintBlockId()
+    c.blocks.push({
+      id,
+      kind: 'placeholder',
+      rect: { ...rect },
+      z: maxZ() + 1,
+      createdAt: Date.now(),
+      label: label.trim() || 'placeholder',
+    })
+    persistSoon()
+    return id
+  }
+
+  // ── Implement this wireframe (W3 directions + agent apply) ─────────────
+
+  /** Locked while a wireframe_apply task implements this sketch. */
+  const building = computed(() => canvas.value?.status === 'building')
+  const implementing = ref(false)
+
+  /**
+   * Diff the sketch into anchored directions, compose+upload the before/after
+   * composite, replace the route's pending direction entries in the journal,
+   * and mint ONE wireframe_apply task through the existing apply loop. The
+   * caller hands the taskId to the embedded-agent auto-run.
+   */
+  async function implementWireframe(): Promise<{ taskId: string; batchId: string } | null> {
+    const c = canvas.value
+    if (!c || capturing.value || implementing.value || building.value) return null
+    implementing.value = true
+    error.value = null
+    try {
+      const route = activeRoute()
+      // The diff and the persisted doc must agree — flush pending mutations.
+      if (persistTimer) { clearTimeout(persistTimer); persistTimer = null }
+      await wireframeDoc.saveCanvas(route, c)
+
+      const directions = computeWireframeDirections(c)
+      if (directions.length === 0) {
+        error.value = 'Nothing to implement — rearrange the sketch first.'
+        return null
+      }
+
+      // Composite is best-effort reinforcement; the directions text is the
+      // contract. A failed upload never blocks the apply.
+      let screenshot: string | undefined
+      try {
+        const composite = await composeWireframeDiff({
+          canvas: c,
+          directions,
+          imageSrc,
+          beforeSrc: c.fullImage ? `/__annotask/wireframe-snapshots/${c.fullImage}` : null,
+        })
+        if (composite) {
+          const res = await fetch('/__annotask/api/screenshots', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: composite }),
+          })
+          if (res.ok) screenshot = ((await res.json()) as { filename: string }).filename
+        }
+      } catch { /* image is reinforcement, not the contract */ }
+
+      // Direction entries are a PROJECTION of the canvas — replace this
+      // route's pending set wholesale, then record the fresh diff.
+      session.removeWhere((e) =>
+        e.change.type === 'wireframe_direction' && e.route === route
+        && (e.live.status === 'pending' || e.live.status === 'failed'))
+      for (const d of directions) {
+        session.record({
+          change: d,
+          anchor: { file: d.file, line: d.line, ...(d.block.tag ? { targetTag: d.block.tag } : {}) },
+          route,
+        })
+      }
+
+      const result = await session.applyNow({ route, ...(screenshot ? { screenshot } : {}) })
+      if (!result) {
+        error.value = session.lastError.value ?? 'apply failed'
+        return null
+      }
+      // The server stamped the canvas 'building' — pick up the locked copy.
+      await wireframeDoc.load()
+      const locked = wireframeDoc.canvasForRoute(route)
+      if (locked) canvas.value = locked
+      return result
+    } finally {
+      implementing.value = false
+    }
+  }
+
+  /** Undo this implementation: delete the task (lifecycle revert: canvas back
+   *  to 'sketch', entries released) then restore the batch's pre-apply bytes.
+   *  The sketch is retained for tweak-and-re-implement. */
+  async function undoImplementation(): Promise<void> {
+    const taskId = canvas.value?.taskId
+    if (!taskId) return
+    try {
+      await fetch(`/__annotask/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+    } catch { /* task may already be gone */ }
+    await session.undoLastBatch()
+    await wireframeDoc.load()
+    const fresh = wireframeDoc.canvasForRoute(activeRoute())
+    if (fresh) canvas.value = fresh
+  }
+
+  // Server-side lifecycle flips (verify/accept/delete hooks broadcast
+  // wireframe:updated → the doc singleton reloads) must reach the working
+  // copy: sync ONLY the lifecycle identity so a reload can't roll back
+  // un-debounced local edits mid-drag. A canvas that disappears while locked
+  // means the task was accepted — the implementation is live; show it.
+  watch(
+    () => {
+      if (!active.value) return null
+      const c = wireframeDoc.canvasForRoute(activeRoute())
+      return c ? `${c.status ?? 'sketch'}:${c.taskId ?? ''}` : 'gone'
+    },
+    (sig) => {
+      if (!active.value || sig === null) return
+      const fresh = wireframeDoc.canvasForRoute(activeRoute())
+      if (!fresh) {
+        if (canvas.value?.status === 'building') exit()
+        return
+      }
+      const cur = canvas.value
+      if (cur && ((fresh.status ?? 'sketch') !== (cur.status ?? 'sketch') || fresh.taskId !== cur.taskId)) {
+        canvas.value = fresh
+      }
+    },
+  )
 
   // The canvas is per-route and per-view: leaving the Design view or
   // navigating the iframe exits the mode (re-entering restores the sketch).
@@ -247,27 +545,34 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   })
 
   // Boot restore: re-enter only when the flag survives AND a persisted canvas
-  // exists for the current route. Never auto-capture at boot.
+  // exists for the current route. Never auto-capture at boot. The iframe's
+  // currentRoute starts at '/' and settles to the restored last-route a beat
+  // AFTER bridgeReady — so a no-canvas miss on the unsettled '/' must keep
+  // waiting, not clear the flag.
   let booted = false
   const stopBoot = watch(
-    [iframe.bridgeReady, wireframeDoc.isLoading],
+    [iframe.bridgeReady, wireframeDoc.isLoading, iframe.currentRoute],
     ([ready, loading]) => {
       // The immediate pass runs before `stopBoot` exists — gate on a flag and
       // detach the watcher on the first post-boot change instead.
       if (booted) { stopBoot(); return }
       if (!ready || loading) return
-      booted = true
       let flagged = false
       try { flagged = localStorage.getItem(STORAGE_KEY) === '1' } catch { /* ignore */ }
-      if (!flagged) return
-      const existing = wireframeDoc.canvasForRoute(activeRoute())
+      if (!flagged) { booted = true; return }
+      const route = activeRoute()
+      const existing = wireframeDoc.canvasForRoute(route)
       if (existing && shellView.value === 'design') {
+        booted = true
         canvas.value = existing
         interactionMode.value = 'select'
         active.value = true
-      } else {
+      } else if (route !== '/') {
+        // The route has settled somewhere without a sketch — stale flag.
+        booted = true
         setFlag(false)
       }
+      // route === '/' with no canvas: still settling — keep watching.
     },
     { immediate: true },
   )
@@ -284,5 +589,20 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     recapture,
     persistSoon,
     deleteSnapshot,
+    // block ops
+    updateBlockRect,
+    bringToFront,
+    setNote,
+    deleteBlock,
+    undeleteBlock,
+    deletedBlocks,
+    duplicateBlock,
+    dropPaletteItem,
+    addPlaceholderBlock,
+    // implement (W3)
+    building,
+    implementing,
+    implementWireframe,
+    undoImplementation,
   }
 }

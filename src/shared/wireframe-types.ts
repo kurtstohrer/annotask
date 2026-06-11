@@ -115,6 +115,9 @@ export interface WireframeBlockAnchor {
   component?: string
   sourceTag?: string
   tag?: string
+  /** First class name at capture time — the human-distinct direction label
+   *  ('toolbar', 'layout'); component names repeat across a page's blocks. */
+  cssClass?: string
   /** 'header' | 'nav' | 'footer' | 'aside' | 'content' from block discovery. */
   role?: string
 }

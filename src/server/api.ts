@@ -231,7 +231,8 @@ async function closeWireframeLifecycle(
     const doc = await options.getWireframe()
     let touched = false
     const routes = doc.routes.map((route) => {
-      if (!route.instances.some((i) => i.taskId === taskId)) return route
+      const canvasOwned = route.canvas?.taskId === taskId
+      if (!route.instances.some((i) => i.taskId === taskId) && !canvasOwned) return route
       touched = true
       const instances: WireframeInstance[] = mode === 'remove'
         ? route.instances.filter((i) => i.taskId !== taskId)
@@ -240,7 +241,18 @@ async function closeWireframeLifecycle(
             const { taskId: _cleared, ...rest } = i
             return { ...rest, status: 'placed' as const, updatedAt: Date.now() }
           })
-      return { ...route, instances, updatedAt: Date.now() }
+      // The snapshot-wireframe canvas rides the same lifecycle: accept removes
+      // the implemented sketch; task delete (revert) unlocks it for editing.
+      let canvas = route.canvas
+      if (canvasOwned) {
+        if (mode === 'remove') {
+          canvas = undefined
+        } else {
+          const { taskId: _t, ...rest } = route.canvas!
+          canvas = { ...rest, status: 'sketch' as const }
+        }
+      }
+      return { ...route, instances, canvas, updatedAt: Date.now() }
     })
     if (!touched) return
     try {
@@ -663,34 +675,48 @@ export function createAPIMiddleware(options: APIOptions) {
       const doc = await options.getDesignSession()
       const instanceIds = new Set(doc.entries.map((e) => e.instanceId).filter((id): id is string => typeof id === 'string'))
       let removedInstances = 0
-      if (instanceIds.size > 0) {
-        // Remove the session's placements from wireframe.json — same retry
-        // discipline as closeWireframeLifecycle (best-effort, CAS-retried).
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const wf = await options.getWireframe()
-          let touched = false
-          let removed = 0
-          const routes = wf.routes.map((route) => {
-            if (!route.instances.some((i) => instanceIds.has(i.id))) return route
-            touched = true
-            const instances = route.instances.filter((i) => {
-              if (instanceIds.has(i.id)) { removed++; return false }
-              return true
-            })
-            return { ...route, instances, updatedAt: Date.now() }
+      // Discard is a full session reset: the session's placements AND every
+      // route's wireframe-canvas sketch go — same retry discipline as
+      // closeWireframeLifecycle (best-effort, CAS-retried).
+      const snapshotFiles: string[] = []
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const wf = await options.getWireframe()
+        let touched = false
+        let removed = 0
+        const routes = wf.routes.map((route) => {
+          const hasInstances = route.instances.some((i) => instanceIds.has(i.id))
+          if (!hasInstances && !route.canvas) return route
+          touched = true
+          const instances = route.instances.filter((i) => {
+            if (instanceIds.has(i.id)) { removed++; return false }
+            return true
           })
-          if (!touched) break
-          try {
-            await options.setWireframe({ ...wf, routes, updatedAt: Date.now() })
-            removedInstances = removed
+          if (route.canvas) {
+            for (const b of route.canvas.blocks) if (b.image) snapshotFiles.push(b.image)
+            if (route.canvas.fullImage) snapshotFiles.push(route.canvas.fullImage)
+          }
+          return { ...route, instances, canvas: undefined, updatedAt: Date.now() }
+        })
+        if (!touched) break
+        try {
+          await options.setWireframe({ ...wf, routes, updatedAt: Date.now() })
+          removedInstances = removed
+          break
+        } catch (err) {
+          snapshotFiles.length = 0
+          if (!(err instanceof WireframeRevConflictError)) {
+            console.warn('[Annotask] design-session discard: wireframe cleanup failed:', err)
             break
-          } catch (err) {
-            if (!(err instanceof WireframeRevConflictError)) {
-              console.warn('[Annotask] design-session discard: wireframe cleanup failed:', err)
-              break
-            }
           }
         }
+      }
+      // Snapshot PNGs are sketch material — drop them with the sketches.
+      const snapshotsDir = nodePath.resolve(options.projectRoot, '.annotask', 'wireframe-snapshots')
+      for (const f of new Set(snapshotFiles)) {
+        if (!WIREFRAME_SNAPSHOT_FILENAME_RE.test(f)) continue
+        const p = nodePath.resolve(snapshotsDir, f)
+        if (!p.startsWith(snapshotsDir + nodePath.sep)) continue
+        fsp.unlink(p).catch(() => { /* already gone */ })
       }
       // Restore every snapshot-tracked file to its session-base bytes
       // (hash-guarded — files the user edited outside Annotask are skipped
@@ -722,7 +748,10 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
       const b = (parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)) ? parsed.data as Record<string, unknown> : null
       if (!b || typeof b.route !== 'string') return sendError(res, 400, 'Body must include route', 'invalid_body')
-      const result = await applyDesignSession(options, b.route)
+      // Optional before/after composite — already uploaded via /screenshots;
+      // only a safe filename rides through to the task.
+      const screenshot = typeof b.screenshot === 'string' && isSafeScreenshot(b.screenshot) ? b.screenshot : undefined
+      const result = await applyDesignSession(options, b.route, screenshot ? { screenshot } : undefined)
       if ('error' in result) return sendError(res, 400, result.error, 'invalid_body')
       res.end(JSON.stringify(result, null, 2))
       return

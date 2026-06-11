@@ -1,6 +1,6 @@
 import { computed, watch } from 'vue'
 import type { CatalogItem } from '../types'
-import type { AnnotaskReport } from '../../schema'
+import type { AnnotaskReport, WireframeDirectionChange } from '../../schema'
 import { useDesignSpec } from './useDesignSpec'
 import { useViewportPreview } from './useViewportPreview'
 import { useInteractionHistory } from './useInteractionHistory'
@@ -98,7 +98,10 @@ export interface ClassChangeRecord {
   after: { classes: string }
 }
 
-export type ChangeRecord = StyleChangeRecord | ClassChangeRecord | InsertChangeRecord | MoveChangeRecord | AnnotationChangeRecord
+// WireframeDirectionChange rides the same journal (the apply loop's transport)
+// but is invisible to the report/inspector projections: shapeChange has no
+// case for it, and the pending-change UIs filter to style/class.
+export type ChangeRecord = StyleChangeRecord | ClassChangeRecord | InsertChangeRecord | MoveChangeRecord | AnnotationChangeRecord | WireframeDirectionChange
 
 let changeCounter = 0
 
@@ -469,6 +472,7 @@ export function useStyleEditor() {
 
     const meaningful = changes.value.filter(c => {
       if (c.type === 'component_insert' || c.type === 'component_move' || c.type === 'annotation') return true
+      if (c.type === 'wireframe_direction') return false // apply-loop transport, never reported
       if (c.type === 'class_update') return c.before.classes !== c.after.classes
       return c.before !== c.after
     })

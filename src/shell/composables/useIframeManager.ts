@@ -519,7 +519,10 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
   ): Promise<PreviewComponentResult> {
     try {
       return await bridge.request<PreviewComponentResult>('preview:component', { componentName, props, module, width }, 8000)
-    } catch { return { mounted: false, reason: 'no-runtime', fidelity: 'placeholder' } }
+    } catch (err) {
+      console.warn('[Annotask] preview:component request failed:', err)
+      return { mounted: false, reason: 'no-runtime', fidelity: 'placeholder' }
+    }
   }
 
   async function getComponentChain(eid: string): Promise<ResolveComponentChainResult | null> {
