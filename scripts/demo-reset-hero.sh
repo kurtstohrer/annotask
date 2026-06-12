@@ -27,7 +27,7 @@ git -C "$REPO_ROOT" clean -fdq -- "$MARKETING_REL/src" || true
 
 if [ -d "$STATE" ]; then
   echo "[demo-reset-hero] Clearing wireframe / session / task state..."
-  echo '[]' > "$STATE/tasks.json"
+  echo '{"version":"1.0","tasks":[]}' > "$STATE/tasks.json"
   rm -f "$STATE/wireframe.json" \
         "$STATE/design-session.json" \
         "$STATE/file-snapshots.json" \

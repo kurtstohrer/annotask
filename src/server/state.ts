@@ -280,7 +280,13 @@ export function createProjectState(
 
   function loadTasksFromDisk(): { version: string; tasks: any[] } {
     try {
-      return JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
+      const parsed = JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
+      // Tolerate a bare-array file (hand-written resets, older tooling) and
+      // a missing `tasks` key — a wrong-shape parse would otherwise crash
+      // the first addTask() and take the whole dev server down with it.
+      if (Array.isArray(parsed)) return { version: '1.0', tasks: parsed }
+      if (!Array.isArray(parsed?.tasks)) return { version: parsed?.version ?? '1.0', tasks: [] }
+      return parsed
     } catch (err) {
       // Distinguish "no file yet" (normal first boot) from a corrupt-but-
       // recoverable file. Falling back to empty is fine in memory, but the
