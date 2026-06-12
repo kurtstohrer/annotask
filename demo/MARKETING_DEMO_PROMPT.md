@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-06-11).** The "AI draft → polished page" hero was never
+> recorded and has been replaced by the wireframe hero — see `demo_plan.md`,
+> `demo/transcript-hero.md`, and `demo/HERO_RECORDING_PROMPT.md`. This file is
+> kept because deep-dive clips **C3** (embedded agents, pins on the degraded
+> page) and **C8** (a11y scan) still use its stage: the `demo/marketing-before`
+> tag via `pnpm demo:reset`, and segments 3–4/7 of `demo/transcript.md`.
+
 # Marketing Hero Demo — Recording Prompt (testreel)
 
 Use this prompt to start a **new Claude Code session** that records Annotask's
