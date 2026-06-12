@@ -69,6 +69,7 @@
     "test:e2e": "playwright test",
     "screenshots": "npx playwright test --project=screenshots",
     "demo:reset": "bash scripts/demo-reset.sh",
+    "demo:reset:hero": "bash scripts/demo-reset-hero.sh",
     "demo:restore": "bash scripts/demo-restore.sh",
     "test:live-providers": "ANNOTASK_LIVE_CLI=1 vitest run src/embedded/__tests__/cli-providers-live.test.ts",
     "test:cli-matrix:stress": "vitest run src/server/__tests__/init-cli-matrix-stress.test.ts",
