@@ -151,8 +151,14 @@ applied state for the end card (do not re-apply on camera).
    returns `shape_source: "api-schema"`. If `none`: the schema scanner's negative
    probe cache is poisoned — fully restart the dev-server process (an in-process
    Vite restart is NOT enough; the cache is module-level).
-5. `bash scripts/demo-reset-hero.sh`; `git status` clean for the playground;
-   `/__annotask/` loads with NO InitWizard.
+5. `bash scripts/demo-reset-hero.sh` **then restart the dev server** — the
+   server caches tasks/wireframe state in memory, so resetting files under a
+   running server leaves stale state live (and the next mutation flushes it
+   back to disk). Order is always: reset → start server → take. Then:
+   `git status` clean for the playground; `/__annotask/` loads with NO
+   InitWizard. (tasks.json must be `{"version":"1.0","tasks":[]}` — a bare
+   `[]` is tolerated since the state.ts shape-normalization fix, but don't
+   rely on it against older builds.)
 6. `claude` CLI on PATH and authenticated (`claude -p "say ok"`).
 7. WSLg alive (`echo $WAYLAND_DISPLAY`), display scale 100%, other GUI apps closed.
 8. `edge-tts --list-voices | grep AndrewNeural` succeeds.

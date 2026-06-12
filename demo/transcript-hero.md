@@ -146,31 +146,37 @@ longer than 4 shots; cuts, not fades.
 
 ---
 
-## Segment 8 — Reveal (3:30 – 3:55)
+## Segment 9 — Safety net (3:30 – 3:45) — BEFORE accept
+
+> Accepting the task clears the session and its snapshot batches — the undo
+> affordance only exists while the task is in review. So the safety beat
+> plays before the accept, and the actual undo click is demonstrated in
+> deep-dive clip C4 instead.
 
 **Voiceover:**
-> Exit the sketch — and it's not a mockup anymore. The install section moved.
-> The video is wider. And "what's new" is your real changelog, fetched live.
+> Before accepting — the safety net. Byte-exact undo sits one click away,
+> from snapshots taken before the agent touched anything. This one's right.
 
 **Screen:**
-1. [3:30] Accept the task → the canvas exits to the live page (zero reloads)
-2. [3:36] Scroll: Install now sits after "How it works"
-3. [3:42] The "What's new" strip renders live release cards (version badges,
-   dates, headlines from the API)
-4. [3:50] Hover a release card
+1. [3:30] Switch to Design → Components — the design-session panel lists the
+   written entries and the apply batch
+2. [3:36] Hover **Undo last apply** (don't click)
+3. [3:42] Switch back to the Tasks panel
 
 ---
 
-## Segment 9 — Safety net (3:55 – 4:15 ... overlaps end card)
+## Segment 8 — Accept & reveal (3:45 – 4:10)
 
 **Voiceover:**
-> Don't like it? One click. Byte-exact undo, from snapshots taken before the
-> agent touched anything.
+> Accept — and it's not a mockup anymore. The demo moved up. The section is
+> wider. And "what's new" is your real changelog, fetched live.
 
 **Screen:**
-1. [3:55] Open the design-session panel — the apply batch is listed
-2. [4:00] Click **Undo last apply** — the page reverts in front of you
-3. [4:05] (post: cut back to the applied state for the end card)
+1. [3:45] Accept the task → the canvas exits to the live page (zero reloads)
+2. [3:50] Scroll: the demo section now sits right under the hero
+3. [3:57] The "What's new" strip renders live release cards (version badges,
+   dates, headlines from the API)
+4. [4:05] Hover a release card
 
 ---
 
