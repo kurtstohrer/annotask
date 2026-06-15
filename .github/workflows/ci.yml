@@ -58,3 +58,33 @@ jobs:
       - run: npx playwright install --with-deps chromium
 
       - run: pnpm test:e2e --project=${{ matrix.project }}
+
+  agent-loop:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - run: npx playwright install --with-deps chromium
+
+      - run: pnpm test:e2e:stress:annotask:agent-loop
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-loop-metrics
+          path: playgrounds/stress-test/e2e/annotask/reports/agent-loop/
+          if-no-files-found: warn
