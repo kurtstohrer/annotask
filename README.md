@@ -45,6 +45,31 @@ Review in the task drawer        <--> Answers questions / retries denied work
 Accept or deny changes
 ```
 
+The coding agent can be **external** (your editor's agent, reading tasks over MCP/CLI/HTTP) or **embedded** — see below.
+
+## Embedded agents
+
+Annotask can run a coding agent in-shell. Point it at a local CLI (claude, codex,
+opencode, copilot) or an HTTP provider (Anthropic, OpenAI-compatible, OpenRouter)
+in Settings, and the agent applies tasks without leaving the browser. Runs stream
+into a per-task conversation thread (persisted to `.annotask/conversations/`),
+are gated to the same origin/port, and respect an `ANNOTASK_MAX_PERMISSION`
+ceiling and a token budget cap. The agent — never the tool — writes application
+source.
+
+## Wireframing
+
+Freeze the current route into a manipulable snapshot canvas, then sketch: drag,
+resize, multi-select and nudge, soft-delete, duplicate, explode a block into its
+children, drop palette components (configured in place with props and a REAL
+data-source binding), and draw sections with a markdown spec. Hit **Implement
+this wireframe** and Annotask diffs the sketch into anchored directions, snapshots
+every file it touches, and drives the embedded agent through the apply loop —
+spatial relations are the contract, pixels are hints. Every apply is byte-exact
+reversible: **Undo last apply** restores that batch's pre-apply bytes and
+**Discard session** restores every touched file to its session base, both
+hash-guarded so a file you edited outside Annotask is never clobbered.
+
 ## What it does
 
 Annotask has three user-facing surfaces.
@@ -150,6 +175,8 @@ pending -> in_progress -> review -> accepted | denied
 
 ## Current highlights
 
+- Embedded agent mode — apply tasks in-shell via a local CLI or HTTP provider, with a per-task conversation thread
+- Snapshot wireframing with byte-exact, hash-guarded undo/discard of every agent apply
 - Route-aware task filtering and editable route bar
 - Screenshot uploads and automatic cleanup on acceptance
 - Variant-aware design spec with `themes[]`, `defaultTheme`, and per-theme token values
