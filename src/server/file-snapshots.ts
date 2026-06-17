@@ -72,6 +72,11 @@ export interface SnapshotStore {
   snapshotFiles(files: string[], batch: { id: string; taskId: string }): Promise<void>
   /** Record post-apply hashes + finish the batch (the restore hash-guard baseline). */
   sealBatch(batchId: string, opts?: { failed?: boolean }): Promise<void>
+  /** Seal the most-recent batch for a task — used by the review hook (which
+   *  knows the taskId, not the batchId) so re-apply-after-deny and
+   *  pure-instances applies still establish a hash baseline. No-op if no batch
+   *  matches; re-sealing is safe (only lastAppliedHash + the created net move). */
+  sealBatchByTask(taskId: string, opts?: { failed?: boolean }): Promise<void>
   /** Restore the batch's pre-apply bytes. LIFO-only: only the newest batch can
    *  be undone (out-of-order restores would resurrect older bytes). */
   revertBatch(batchId: string): Promise<{ reverted: string[]; skipped: string[] }>
@@ -174,6 +179,40 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
     }
   }
 
+  /** Seal a found batch in place: record each touched file's post-apply hash
+   *  (the restore guard baseline) and net agent-CREATED files into the batch.
+   *  Idempotent enough to re-run on a second review — `before` is untouched. */
+  async function sealBatchInternal(batch: SnapshotBatch, opts?: { failed?: boolean }): Promise<void> {
+    for (const file of batch.files) {
+      const entry = journal.files[file]
+      if (!entry) continue
+      try {
+        entry.lastAppliedHash = sha256(await fsp.readFile(entry.absPath, 'utf-8'))
+      } catch { /* file deleted by the agent — restore will recreate it */ }
+    }
+    // Net agent-CREATED files into the batch: anything newly untracked since
+    // the snapshot baseline (and not already a snapshotted target) belongs to
+    // this apply, hashed so undo only deletes pristine copies.
+    if (batch.untrackedBefore) {
+      const after = await gitUntracked()
+      if (after) {
+        const baseline = new Set(batch.untrackedBefore)
+        const snapshotted = new Set(batch.files)
+        const created: Record<string, string> = {}
+        for (const file of after) {
+          if (baseline.has(file) || snapshotted.has(file)) continue
+          try {
+            const abs = resolveAbs(file)
+            created[file] = sha256(await fsp.readFile(abs, 'utf-8'))
+          } catch { /* unreadable/escaping — leave it alone */ }
+        }
+        if (Object.keys(created).length > 0) batch.created = created
+      }
+    }
+    batch.finishedAt = Date.now()
+    batch.status = opts?.failed ? 'failed' : 'done'
+  }
+
   /** Hash-guarded restore of one file. Returns false (and marks diverged) when
    *  the disk bytes aren't the ones our last sealed batch left behind. */
   async function restoreFile(relFile: string, bytes: string): Promise<boolean> {
@@ -224,34 +263,19 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
         await ready
         const batch = journal.batches.find((b) => b.id === batchId)
         if (!batch) return
-        for (const file of batch.files) {
-          const entry = journal.files[file]
-          if (!entry) continue
-          try {
-            entry.lastAppliedHash = sha256(await fsp.readFile(entry.absPath, 'utf-8'))
-          } catch { /* file deleted by the agent — restore will recreate it */ }
-        }
-        // Net agent-CREATED files into the batch: anything newly untracked
-        // since the snapshot baseline (and not already a snapshotted target)
-        // belongs to this apply, hashed so undo only deletes pristine copies.
-        if (batch.untrackedBefore) {
-          const after = await gitUntracked()
-          if (after) {
-            const baseline = new Set(batch.untrackedBefore)
-            const snapshotted = new Set(batch.files)
-            const created: Record<string, string> = {}
-            for (const file of after) {
-              if (baseline.has(file) || snapshotted.has(file)) continue
-              try {
-                const abs = resolveAbs(file)
-                created[file] = sha256(await fsp.readFile(abs, 'utf-8'))
-              } catch { /* unreadable/escaping — leave it alone */ }
-            }
-            if (Object.keys(created).length > 0) batch.created = created
-          }
-        }
-        batch.finishedAt = Date.now()
-        batch.status = opts?.failed ? 'failed' : 'done'
+        await sealBatchInternal(batch, opts)
+        await persist()
+      })
+    },
+
+    sealBatchByTask(taskId, opts) {
+      return enqueue(async () => {
+        await ready
+        // Newest batch for the task (one task → one batch today; reverse keeps
+        // this correct if that ever changes).
+        const batch = [...journal.batches].reverse().find((b) => b.taskId === taskId)
+        if (!batch) return
+        await sealBatchInternal(batch, opts)
         await persist()
       })
     },
@@ -262,6 +286,13 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
         const last = journal.batches[journal.batches.length - 1]
         if (!last || last.id !== batchId) {
           throw new Error('Only the most recent apply batch can be undone')
+        }
+        // A 'running' batch is unsealed — its files have no lastAppliedHash, so
+        // restoreFile would clobber the agent's in-progress bytes with no guard.
+        // Abandoned runs are sealed 'failed' first (releaseApplyTask), so this
+        // only ever refuses a batch whose agent is genuinely still writing.
+        if (last.status === 'running') {
+          throw new Error('This apply is still running — wait for it to finish before undoing')
         }
         const reverted: string[] = []
         const skipped: string[] = []
@@ -301,6 +332,10 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
     revertAll() {
       return enqueue(async () => {
         await ready
+        // Same guard as revertBatch: never discard over a live, unsealed run.
+        if (journal.batches.some((b) => b.status === 'running')) {
+          throw new Error('An apply is still running — wait for it to finish before discarding')
+        }
         const reverted: string[] = []
         const skipped: string[] = []
         for (const [file, entry] of Object.entries(journal.files)) {

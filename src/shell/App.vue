@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useStyleEditor } from './composables/useStyleEditor'
 import { useDesignSession } from './composables/useDesignSession'
 import { useInteractionMode } from './composables/useInteractionMode'
 import { useWireframeMode } from './composables/useWireframeMode'
 import { useComponentGenerator } from './composables/useComponentGenerator'
+import { useWorkspace } from './composables/useWorkspace'
+import type { PaletteDragItem } from './composables/usePaletteDrag'
 import { useDesignSpec, setActiveColorScheme } from './composables/useDesignSpec'
 import { useLayoutOverlay } from './composables/useLayoutOverlay'
 import { useAnnotations } from './composables/useAnnotations'
@@ -606,27 +608,52 @@ watch(iframe.currentRoute, (r) => { designSession.sessionRoute.value = normalize
 // ── Wireframe mode (snapshot canvas over the live iframe) ──
 const wireframeMode = useWireframeMode({ iframe, interactionMode, shellView })
 
-// Generate-component flow (pick → settings → datasource → generate → place).
-// Component drops/clicks open the panel instead of minting a blind block;
-// html/layout-preset drops keep the instant placeholder path.
-const componentGenerator = useComponentGenerator({ iframe, wireframe: wireframeMode })
+// Place-first component flow: a drop/click mints the block immediately and the
+// snapshot fills in the background; the user configures it in place via the
+// inline popover. surfaceMfe stamps placed blocks so apply-time codegen imports
+// from the right package in a multi-MFE workspace.
+const workspace = useWorkspace()
+void workspace.load()
+const componentGenerator = useComponentGenerator({
+  iframe,
+  wireframe: wireframeMode,
+  surfaceMfe: () => workspace.currentMfe.value,
+})
 
 // Palette drops land on the canvas natively (no iframe shield in the way);
 // the drag item rides usePaletteDrag, not the DataTransfer.
+// Place-first goes through selection.select directly (not the canvas's select()
+// wrapper that focuses on click), so neither drop nor click focuses the canvas —
+// focus it after the block lands so Delete/Escape/arrow-nudge work right away.
+const wireframeCanvasRef = ref<InstanceType<typeof WireframeCanvas> | null>(null)
+function focusWireframeCanvasSoon() {
+  void nextTick(() => wireframeCanvasRef.value?.focusStage())
+}
+
 function onWireframePaletteDrop(at: { x: number; y: number }) {
   const item = paletteDrag.draggingItem.value
   paletteDrag.endDrag()
   if (!item) return
   if (item.kind === 'component' && item.componentName) {
-    componentGenerator.openFromDrop(item, at)
+    // Place-first: the block lands now and configures in place on the canvas.
+    componentGenerator.placeComponent(item, at)
+    focusWireframeCanvasSoon()
   } else {
     void wireframeMode.dropPaletteItem(item, at)
   }
 }
 
-function onWireframeConfigureBlock(id: string) {
-  const block = wireframeMode.findBlock(id)
-  if (block) componentGenerator.openFromBlock(block)
+// Palette CLICK path (wireframe mode only): place at a small cascade so repeated
+// clicks don't stack exactly on top of each other. Drag is the primary path.
+const clickCascade = ref(0)
+function onWireframeGenerateComponent(item: PaletteDragItem) {
+  if (!item.componentName) return
+  const vp = wireframeMode.canvas.value?.viewport
+  const baseX = vp ? Math.max(20, Math.round(vp.width / 2 - 160)) : 40
+  const step = clickCascade.value
+  clickCascade.value = (clickCascade.value + 1) % 6
+  componentGenerator.placeComponent(item, { x: baseX + step * 24, y: 80 + step * 24 })
+  focusWireframeCanvasSoon()
 }
 
 // "Implement this wireframe" mints the task through the existing apply loop,
@@ -697,6 +724,17 @@ const { selectionChanges, doUndo, doClearChanges, commitChangesAsTask } = useCha
   deletePlacement,
 })
 
+// Undo/redo dispatch: the wireframe canvas owns its own history while active
+// (no-op while building); everywhere else falls back to the design-session
+// style/class/placement undo. Redo only exists for the wireframe canvas today.
+function onUndo(): void {
+  if (wireframeMode.active.value) { wireframeMode.undo(); return }
+  void doUndo()
+}
+function onRedo(): void {
+  if (wireframeMode.active.value) { wireframeMode.redo(); return }
+}
+
 // ── Bridge event handlers (needs doUndo from useChangeHistory) ──
 const { setup: setupBridgeEvents } = useBridgeEventHandlers({
   iframe, iframeRef, annotations, interactionHistory, errorMonitor, networkMonitor,
@@ -708,7 +746,7 @@ const { setup: setupBridgeEvents } = useBridgeEventHandlers({
   describeElement, discardUncommittedAnnotations,
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
   contextMenu, currentRoute,
-  doUndo, scheduleAutoScan,
+  doUndo: onUndo, scheduleAutoScan,
 })
 
 // ── Keyboard Shortcuts (composable handles mount/unmount) ──
@@ -724,7 +762,8 @@ useKeyboardShortcuts({
   selectionRects,
   groupRects,
   activePanel,
-  doUndo,
+  doUndo: onUndo,
+  doRedo: onRedo,
   cancelSnip,
   cancelPendingTask,
   layoutOverlayToggle: () => layoutOverlay.toggle(),
@@ -832,6 +871,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
              iframe stays mounted (bridge alive for component snapshots), so
              exiting is lossless — remove the overlay, the app is still there. -->
         <WireframeCanvas v-if="wireframeMode.active.value || wireframeMode.capturing.value"
+          ref="wireframeCanvasRef"
           :canvas="wireframeMode.canvas.value"
           :capturing="wireframeMode.capturing.value"
           :progress="wireframeMode.progress.value"
@@ -840,7 +880,10 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           :deleted-blocks="wireframeMode.deletedBlocks.value"
           :building="wireframeMode.building.value"
           :implementing="wireframeMode.implementing.value"
+          :selection="wireframeMode.selection"
+          :history="wireframeMode.history"
           :generator="componentGenerator"
+          :generating-ids="wireframeMode.generatingIds.value"
           @exit="wireframeMode.exit()"
           @recapture="wireframeMode.recapture()"
           @implement="onImplementWireframe"
@@ -848,13 +891,15 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           @explode-block="wireframeMode.explodeBlock"
           @update-rect="wireframeMode.updateBlockRect"
           @bring-to-front="wireframeMode.bringToFront"
+          @send-to-back="wireframeMode.sendToBack"
+          @bring-forward="wireframeMode.bringForward"
+          @send-backward="wireframeMode.sendBackward"
           @delete-block="wireframeMode.deleteBlock"
           @undelete-block="wireframeMode.undeleteBlock"
           @duplicate-block="wireframeMode.duplicateBlock"
           @set-note="wireframeMode.setNote"
           @set-md="wireframeMode.setBlockMd"
           @set-data="wireframeMode.setBlockData"
-          @configure-block="onWireframeConfigureBlock"
           @add-placeholder="wireframeMode.addPlaceholderBlock"
           @palette-drop="onWireframePaletteDrop" />
 
@@ -1070,7 +1115,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         @build="buildWireframeRoute"
         @delete-placement="deletePlacement"
         @run-agent="onApplyRunAgent"
-        @generate-component="componentGenerator.openFromPick"
+        @generate-component="onWireframeGenerateComponent"
       />
 
       <!-- Audit > A11y panel -->

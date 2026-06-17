@@ -130,7 +130,19 @@ export interface ProjectState {
   clearDesignSession: () => Promise<DesignSessionDocument>
   /** Wait for any pending writes to complete. Use before process shutdown. */
   flush: () => Promise<void>
+  /**
+   * Health of the tasks.json disk-write path. Mutations reply 200 before the
+   * fire-and-forget flush lands, so a failing disk write would otherwise lose
+   * data silently — this lets `/api/status` report `persistence: 'degraded'`.
+   */
+  getPersistenceHealth: () => PersistenceHealth
   dispose: () => void
+}
+
+export interface PersistenceHealth {
+  ok: boolean
+  consecutiveFailures: number
+  lastError: string | null
 }
 
 function clampNonNeg(n: number | undefined): number {
@@ -277,6 +289,9 @@ export function createProjectState(
   let taskFlushChain: Promise<unknown> = Promise.resolve()
   // Watcher fires on our own rename; skip events within this window after a self-write.
   let selfWriteUntil = 0
+  // Flush-failure tracking — see getPersistenceHealth.
+  let flushFailureCount = 0
+  let lastFlushError: string | null = null
 
   function loadTasksFromDisk(): { version: string; tasks: any[] } {
     try {
@@ -336,8 +351,14 @@ export function createProjectState(
       selfWriteUntil = Date.now() + 500
       await atomicWrite(tasksPath, payload)
       selfWriteUntil = Date.now() + 500
+      flushFailureCount = 0
+      lastFlushError = null
     }).catch(err => {
-      console.warn('[Annotask] task flush failed:', err)
+      // The HTTP response already went out before this write ran, so a failure
+      // here is silent data loss across restarts — track it for /api/status.
+      flushFailureCount += 1
+      lastFlushError = err instanceof Error ? err.message : String(err)
+      console.error(`[Annotask] task flush failed (${flushFailureCount} consecutive) — task changes are NOT being persisted to ${tasksPath}:`, err)
     })
     taskFlushChain = run
     return run
@@ -670,6 +691,11 @@ export function createProjectState(
     setDesignSession,
     clearDesignSession,
     flush,
+    getPersistenceHealth: () => ({
+      ok: flushFailureCount === 0,
+      consecutiveFailures: flushFailureCount,
+      lastError: lastFlushError,
+    }),
     dispose,
   }
 }

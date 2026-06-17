@@ -1338,9 +1338,39 @@ export function bridgeMessages(): string {
       pvContainer.setAttribute('data-annotask-preview', 'true');
       pvContainer.style.cssText = 'position:fixed;left:-99999px;top:0;z-index:-1;width:' + (payload.width || 320) + 'px;padding:12px;background:' + pvSurface.background + ';color:' + pvSurface.color + ';box-sizing:border-box;';
       document.body.appendChild(pvContainer);
-      var pvRes = tryMountComponent(pvContainer, payload.componentName, payload.props || {});
+      // Repeat a list/loop binding into N stacked instances so the sketch shows
+      // the real v-for. Each instance mounts into its own point with optional
+      // per-row props; unmounts are composited (a single mount overwrites the
+      // container's __annotask_unmount, so N copies would leak without this).
+      var pvRepeat = Math.max(1, Math.min(payload.repeat || 1, 24));
+      var pvInstanceProps = payload.instanceProps || null;
+      var pvUnmounts = [];
+      var pvFirstPoint = pvContainer;
+      var pvRes = { mounted: false, reason: null, fidelity: undefined, detail: null };
+      var pvWrap = pvContainer;
+      if (pvRepeat > 1) {
+        pvWrap = document.createElement('div');
+        pvWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+        pvContainer.appendChild(pvWrap);
+      }
+      for (var pvI = 0; pvI < pvRepeat; pvI++) {
+        var pvPoint = pvRepeat > 1 ? document.createElement('div') : pvContainer;
+        if (pvRepeat > 1) pvWrap.appendChild(pvPoint);
+        if (pvI === 0) pvFirstPoint = pvPoint;
+        var pvProps = payload.props || {};
+        var pvOverlay = pvInstanceProps ? (pvInstanceProps[pvI] || pvInstanceProps[0]) : null;
+        if (pvOverlay) {
+          var pvMerged = {};
+          for (var pvK1 in pvProps) { if (Object.prototype.hasOwnProperty.call(pvProps, pvK1)) pvMerged[pvK1] = pvProps[pvK1]; }
+          for (var pvK2 in pvOverlay) { if (Object.prototype.hasOwnProperty.call(pvOverlay, pvK2)) pvMerged[pvK2] = pvOverlay[pvK2]; }
+          pvProps = pvMerged;
+        }
+        var pvOne = tryMountComponent(pvPoint, payload.componentName, pvProps);
+        if (pvI === 0) pvRes = pvOne; // first instance decides reported status/fidelity
+        if (pvOne.mounted && pvPoint.__annotask_unmount) pvUnmounts.push(pvPoint.__annotask_unmount);
+      }
       function pvCleanup() {
-        try { if (pvContainer.__annotask_unmount) pvContainer.__annotask_unmount(); } catch(e) {}
+        for (var pvU = pvUnmounts.length - 1; pvU >= 0; pvU--) { try { pvUnmounts[pvU](); } catch(e) {} }
         try { pvContainer.remove(); } catch(e) {}
       }
       if (!pvRes.mounted) {
@@ -1352,10 +1382,14 @@ export function bridgeMessages(): string {
         var h2c = window.html2canvas;
         if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
         if (typeof h2c !== 'function') { pvCleanup(); respond(id, { mounted: true, fidelity: pvRes.fidelity, error: 'html2canvas not loaded' }); return; }
-        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: true, backgroundColor: pvSurface.background, width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
+        // Retina-sharp: render at devicePixelRatio (capped 2x) like the page
+        // capture. The PNG is hi-res but the block keeps its CSS size, so report
+        // the unscaled (CSS) dimensions — else the block would land 2x too big.
+        var pvScale = Math.min(window.devicePixelRatio || 1, 2);
+        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: true, scale: pvScale, backgroundColor: pvSurface.background, width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
           var dataUrl = canvas.toDataURL('image/png');
           pvCleanup();
-          respond(id, { mounted: true, fidelity: pvRes.fidelity, dataUrl: dataUrl, width: canvas.width, height: canvas.height });
+          respond(id, { mounted: true, fidelity: pvRes.fidelity, dataUrl: dataUrl, width: Math.round(canvas.width / pvScale), height: Math.round(canvas.height / pvScale) });
         }).catch(function(err) {
           pvCleanup();
           respond(id, { mounted: true, fidelity: pvRes.fidelity, error: (err && err.message) || 'snapshot failed' });
@@ -1364,7 +1398,7 @@ export function bridgeMessages(): string {
       function pvAfterFrames() {
         // Two frames so async React/Svelte/Solid renders settle before snapshot.
         requestAnimationFrame(function() { requestAnimationFrame(function() {
-          if (isEmptyMount(pvContainer)) { pvCleanup(); respond(id, { mounted: false, reason: 'rendered-empty', fidelity: 'placeholder' }); return; }
+          if (isEmptyMount(pvFirstPoint)) { pvCleanup(); respond(id, { mounted: false, reason: 'rendered-empty', fidelity: 'placeholder' }); return; }
           pvSnapshot();
         }); });
       }

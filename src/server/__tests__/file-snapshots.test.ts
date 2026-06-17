@@ -246,4 +246,72 @@ describe('file-snapshots', () => {
       expect(fs.existsSync(path.join(root, 'src/New.vue'))).toBe(true)
     })
   })
+
+  describe('running-batch guard (no clobbering a live, unsealed apply)', () => {
+    it('revertBatch refuses a still-running batch — the agent may be mid-write', async () => {
+      const store = createSnapshotStore(root)
+      // snapshot but DON'T seal: the batch is 'running', files have no
+      // lastAppliedHash, so an unguarded restore would clobber blindly.
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write(file, ORIGINAL.replace('Planets', 'half-written'))
+
+      await expect(store.revertBatch('ab-1')).rejects.toThrow(/still running/)
+      // The in-progress bytes are untouched.
+      expect(await read(file)).toBe(ORIGINAL.replace('Planets', 'half-written'))
+    })
+
+    it('revertAll refuses while any batch is still running', async () => {
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write(file, ORIGINAL.replace('Planets', 'half-written'))
+      await expect(store.revertAll()).rejects.toThrow(/still running/)
+      expect(await read(file)).toBe(ORIGINAL.replace('Planets', 'half-written'))
+    })
+
+    it('sealing the batch as failed makes it revertible again (the abandon path)', async () => {
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write(file, ORIGINAL.replace('Planets', 'half-written'))
+
+      // releaseApplyTask seals 'failed' on abandon — now the guard passes and
+      // undo restores the clean pre-apply bytes.
+      await store.sealBatchByTask('task-1', { failed: true })
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted).toEqual([file])
+      expect(await read(file)).toBe(ORIGINAL)
+    })
+  })
+
+  describe('sealBatchByTask (the review hook seals by task, not batch id)', () => {
+    it('seals the batch for a task and re-seals to the NEW bytes on a second review', async () => {
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+
+      // First agent run + review.
+      const v1 = ORIGINAL.replace('Planets', 'Worlds')
+      await write(file, v1)
+      await store.sealBatchByTask('task-1')
+      expect((await store.state()).batches[0].status).toBe('done')
+
+      // Deny → re-apply: the SAME batch, the agent writes NEW bytes, review
+      // fires again. Without a re-seal the undo guard would think v2 diverged.
+      const v2 = ORIGINAL.replace('Planets', 'Galaxies')
+      await write(file, v2)
+      await store.sealBatchByTask('task-1')
+
+      // The file is NOT diverged (the seal caught up to v2)…
+      expect((await store.state()).files[file]?.status).toBe('clean')
+      // …and undo restores the clean pre-apply bytes byte-for-byte.
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted).toEqual([file])
+      expect(await read(file)).toBe(ORIGINAL)
+    })
+
+    it('is a no-op when no batch matches the task', async () => {
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await expect(store.sealBatchByTask('task-unknown')).resolves.toBeUndefined()
+      expect((await store.state()).batches[0].status).toBe('running')
+    })
+  })
 })

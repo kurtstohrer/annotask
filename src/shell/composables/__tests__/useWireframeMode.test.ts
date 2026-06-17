@@ -233,7 +233,11 @@ describe('useWireframeMode', () => {
       const { mode } = makeMode()
       await mode.enter()
       // Palette block (hard-delete path) + its duplicate share one file.
-      await mode.dropPaletteItem({ kind: 'component', tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue' }, { x: 40, y: 40 })
+      await mode.addPaletteBlock(
+        { tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue' },
+        { dataUrl: 'data:image/png;base64,P', width: 320, height: 140, fidelity: 'isolated-preview', mounted: true },
+        { x: 40, y: 40 },
+      )
       const palette = mode.canvas.value!.blocks.find((b) => b.kind === 'palette')!
       const dupId = mode.duplicateBlock(palette.id)!
       const fileDeletes = () => fetchMock.mock.calls.filter((c) => String(c[0]).includes(`wireframe-snapshots/${palette.image}`) && (c[1] as RequestInit)?.method === 'DELETE').length
@@ -244,17 +248,58 @@ describe('useWireframeMode', () => {
       expect(fileDeletes()).toBe(1)
     })
 
-    it('dropPaletteItem: components snapshot honestly; catalog items become placeholders', async () => {
-      const { mode, iframe } = makeMode()
+    it('placeComponentBlock mints an imageless, selected block as ONE undo entry', async () => {
+      const { mode } = makeMode()
       await mode.enter()
-      await mode.dropPaletteItem({ kind: 'component', tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue', props: { real: true } }, { x: 100, y: 200 })
-      const palette = mode.canvas.value!.blocks.find((b) => b.kind === 'palette')!
-      expect(iframe.previewComponent).toHaveBeenCalledWith('PlanetCard', { real: true }, './components/PlanetCard.vue', 320)
-      expect(palette.rect).toMatchObject({ x: 100, y: 200, width: 320, height: 140 })
-      expect(palette.fidelity).toBe('isolated-preview')
-      expect(palette.component).toMatchObject({ componentName: 'PlanetCard', props: { real: true } })
-      expect(palette.image).toMatch(/\.png$/)
+      const id = mode.placeComponentBlock(
+        { tag: 'planetcard', componentName: 'PlanetCard', module: './components/PlanetCard.vue', props: { real: true }, mfe: 'planets' },
+        { x: 100, y: 200 },
+      )!
+      const block = mode.findBlock(id)!
+      // Honest from the first frame: no fabricated image, placeholder fidelity.
+      expect(block.kind).toBe('palette')
+      expect(block.fidelity).toBe('placeholder')
+      expect(block.image).toBeUndefined()
+      expect(mode.imageSrc(block)).toBeNull()
+      expect(block.rect).toMatchObject({ x: 100, y: 200, width: 320, height: 120 })
+      expect(block.component).toMatchObject({ componentName: 'PlanetCard', props: { real: true }, mfe: 'planets' })
+      // Auto-selected + shimmering.
+      expect(mode.selection.selectedIds.value).toEqual([id])
+      expect(mode.generatingIds.value.has(id)).toBe(true)
 
+      // The background fill folds into the drop's single undo entry.
+      await mode.updatePaletteBlock(
+        id,
+        { previewProps: {}, snapshot: { dataUrl: 'data:image/png;base64,P', width: 320, height: 140, fidelity: 'isolated-preview', mounted: true } },
+        { recordHistory: false },
+      )
+      expect(mode.findBlock(id)!.fidelity).toBe('isolated-preview')
+      expect(mode.findBlock(id)!.image).toMatch(/\.png$/)
+      expect(mode.history.canUndo.value).toBe(true)
+      mode.history.undo()
+      expect(mode.findBlock(id)).toBeNull() // one undo removes the whole block (place + fill)
+      expect(mode.history.canUndo.value).toBe(false)
+    })
+
+    it('a place-first block is honest before its snapshot fills (client-only shimmer)', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const id = mode.placeComponentBlock({ tag: 'planetcard', componentName: 'PlanetCard' }, { x: 10, y: 20 })!
+      const block = mode.findBlock(id)!
+      // The PERSISTED block is honest: no 'generating' fidelity, no image.
+      expect(block.fidelity).toBe('placeholder')
+      expect(block.image).toBeUndefined()
+      expect(mode.imageSrc(block)).toBeNull()
+      // The shimmer is client-only state, not on the block — a reload (fresh
+      // mode reading the same doc) starts with no shimmer and an honest block.
+      expect(mode.generatingIds.value.has(id)).toBe(true)
+      const fresh = makeMode().mode
+      expect(fresh.generatingIds.value.has(id)).toBe(false)
+    })
+
+    it('dropPaletteItem turns catalog items into labeled placeholders', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
       await mode.dropPaletteItem({ kind: 'layout-preset', tag: 'div', category: 'flex row' }, { x: 0, y: 0 })
       const ph = mode.canvas.value!.blocks.filter((b) => b.kind === 'placeholder')
       expect(ph).toHaveLength(1)
@@ -381,5 +426,88 @@ describe('useWireframeMode', () => {
     const second = makeMode()
     await nextTick()
     expect(second.mode.active.value).toBe(true)
+  })
+
+  describe('z-order + undo/redo', () => {
+    it('bringToFront / sendToBack / forward / backward reorder z', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const [b0, b1, b2] = mode.canvas.value!.blocks
+      expect([b0.z, b1.z, b2.z]).toEqual([1, 2, 3])
+
+      mode.sendToBack(b2.id)
+      expect(b2.z).toBeLessThan(b0.z)
+
+      mode.bringToFront(b0.id)
+      expect(b0.z).toBeGreaterThan(b1.z)
+      expect(b0.z).toBeGreaterThan(b2.z)
+
+      // forward/backward swap with the nearest neighbour in z order.
+      const beforeFwd = b1.z
+      mode.bringForward(b1.id)
+      expect(b1.z).toBeGreaterThan(beforeFwd)
+    })
+
+    it('undo reverts a z change and restores the prior selection; redo re-applies', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const b0 = mode.canvas.value!.blocks[0]
+      const z0 = b0.z
+      mode.selection.select(b0.id)
+
+      mode.bringToFront(b0.id)
+      const raised = mode.canvas.value!.blocks.find((b) => b.id === b0.id)!.z
+      expect(raised).toBeGreaterThan(z0)
+
+      // Selection moves elsewhere; undo must bring it back to where the edit was.
+      mode.selection.clear()
+      mode.undo()
+      expect(mode.canvas.value!.blocks.find((b) => b.id === b0.id)!.z).toBe(z0)
+      expect(mode.selection.selectedIds.value).toEqual([b0.id])
+
+      mode.redo()
+      expect(mode.canvas.value!.blocks.find((b) => b.id === b0.id)!.z).toBe(raised)
+    })
+
+    it('a begin/end-bracketed move is one undo step', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const b0 = mode.canvas.value!.blocks[0]
+      const orig = { ...b0.rect }
+
+      // Simulate a drag gesture: one entry, several rect updates.
+      mode.history.begin()
+      mode.updateBlockRect(b0.id, { ...orig, x: orig.x + 10 })
+      mode.updateBlockRect(b0.id, { ...orig, x: orig.x + 40 })
+      mode.history.end()
+      expect(mode.canvas.value!.blocks[0].rect.x).toBe(orig.x + 40)
+
+      mode.undo()
+      expect(mode.canvas.value!.blocks[0].rect.x).toBe(orig.x)
+      expect(mode.history.canUndo.value).toBe(false)
+    })
+
+    it('undo restores a soft-deleted captured block', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const b0 = mode.canvas.value!.blocks[0]
+      mode.deleteBlock(b0.id)
+      expect(mode.canvas.value!.blocks.find((b) => b.id === b0.id)!.deleted).toBe(true)
+
+      mode.undo()
+      expect(mode.canvas.value!.blocks.find((b) => b.id === b0.id)!.deleted).toBeUndefined()
+    })
+
+    it('undo/redo are no-ops while the sketch is building (locked)', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const b0 = mode.canvas.value!.blocks[0]
+      mode.bringToFront(b0.id)
+      const raised = mode.canvas.value!.blocks.find((b) => b.id === b0.id)!.z
+
+      mode.canvas.value!.status = 'building'
+      mode.undo() // locked — must not roll back
+      expect(mode.canvas.value!.blocks.find((b) => b.id === b0.id)!.z).toBe(raised)
+    })
   })
 })

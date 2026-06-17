@@ -120,7 +120,7 @@ function onKeydown(e: KeyboardEvent) {
 .report-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--overlay);
 }
 .report-drawer {
   position: relative;

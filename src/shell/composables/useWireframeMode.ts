@@ -1,6 +1,8 @@
 import { ref, computed, watch, type Ref } from 'vue'
 import { useWireframeDoc } from './useWireframeDoc'
 import { useDesignSession } from './useDesignSession'
+import { useCanvasSelection } from './useCanvasSelection'
+import { useCanvasHistory } from './useCanvasHistory'
 import { computeWireframeDirections } from '../utils/wireframeDirections'
 import { composeWireframeDiff } from '../utils/wireframeComposite'
 import { normalizeRoute } from '../utils/routes'
@@ -16,8 +18,10 @@ export interface WireframeModeIframe {
   currentRoute: Ref<string>
   bridgeReady: Ref<boolean>
   captureWireframe: (opts?: WireframeCapturePayload) => Promise<WireframeCaptureResult>
-  /** Offscreen component mount → honest snapshot (palette drops). */
-  previewComponent: (componentName: string, props?: Record<string, unknown>, module?: string, width?: number) => Promise<{ mounted: boolean; fidelity?: string | null; dataUrl?: string; width?: number; height?: number; error?: string }>
+  /** Offscreen component mount → honest snapshot (palette drops). `opts.repeat`
+   *  mounts N stacked instances; `opts.instanceProps` overlays per-instance prop
+   *  values (bound data rows). */
+  previewComponent: (componentName: string, props?: Record<string, unknown>, module?: string, width?: number, opts?: { repeat?: number; instanceProps?: Record<string, unknown>[] }) => Promise<{ mounted: boolean; fidelity?: string | null; dataUrl?: string; width?: number; height?: number; error?: string }>
   /** Durable-anchor → live eids re-resolution (explode targets). */
   findTemplateGroup: (file: string, line: string, tagName: string) => Promise<{ eids: string[] }>
   // `any` matches the bridge event registry's signature (iframeBridge.on).
@@ -82,9 +86,39 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   const error = ref<string | null>(null)
   /** Working copy of the route's canvas while the mode is active. */
   const canvas = ref<WireframeCanvasState | null>(null)
+  /** The route the working canvas belongs to. Saves key off THIS, not the
+   *  live iframe route — a route change fires the exit-flush while the iframe
+   *  has already moved on, and keying off the live route would persist the old
+   *  canvas under the new route. */
+  const canvasRoute = ref<string | null>(null)
   /** This-session dataUrls (blockId → PNG) — instant render before/while the
    *  uploads land; after a reload images come from the snapshot routes. */
   const liveImages = ref<Record<string, string>>({})
+  /** Blocks whose snapshot is currently rendering (place-first first fill, or a
+   *  live reconfigure regen). CLIENT-ONLY — never persisted, so a reload mid-
+   *  generation reads the block as an honest 'placeholder', never a stuck
+   *  shimmer. The canvas reads this to show the "rendering…" overlay. */
+  const generatingIds = ref<Set<string>>(new Set())
+  function setGenerating(id: string, on: boolean): void {
+    const has = generatingIds.value.has(id)
+    if (on === has) return
+    const next = new Set(generatingIds.value)
+    if (on) next.add(id); else next.delete(id)
+    generatingIds.value = next
+  }
+
+  // Selection + undo/redo operate on the working canvas. History snapshots both
+  // blocks AND selection, so undo restores what was selected at each step.
+  const selection = useCanvasSelection(canvas)
+  const history = useCanvasHistory(
+    () => ({ blocks: canvas.value?.blocks ?? [], selection: selection.selectedIds.value }),
+    (snap) => {
+      if (!canvas.value) return
+      canvas.value.blocks = snap.blocks
+      selection.setSelection(snap.selection)
+      persistSoon()
+    },
+  )
 
   iframe.onBridgeEvent('wireframe:capture-progress', (p: WireframeCaptureProgress) => {
     if (capturing.value) progress.value = p
@@ -186,6 +220,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       }
       liveImages.value = nextImages
       canvas.value = next
+      canvasRoute.value = route
+      history.clear()
 
       // Uploads are sequential-ish but independent: a failed upload leaves the
       // block image-less on disk (renders from memory this session, honest
@@ -217,6 +253,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     const existing = wireframeDoc.canvasForRoute(route)
     if (existing) {
       canvas.value = existing
+      canvasRoute.value = route
+      history.clear()
     } else {
       const ok = await captureIntoCanvas(route)
       if (!ok) return
@@ -229,8 +267,11 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   /** Toggle OFF: the live app is still there underneath — lossless. The
    *  canvas stays persisted; re-entering reuses it. */
   function exit(): void {
+    flushPersist()
     active.value = false
     canvas.value = null
+    canvasRoute.value = null
+    history.clear()
     setFlag(false)
   }
 
@@ -263,12 +304,20 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   // debounce so pointer-up bursts don't stack PUTs.
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   function persistSoon(): void {
-    if (!canvas.value) return
+    if (!canvas.value || !canvasRoute.value) return
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => {
       persistTimer = null
-      if (canvas.value) void wireframeDoc.saveCanvas(activeRoute(), canvas.value)
+      if (canvas.value && canvasRoute.value) void wireframeDoc.saveCanvas(canvasRoute.value, canvas.value)
     }, 300)
+  }
+
+  /** Cancel the trailing debounce and write once, NOW. Called on exit so the
+   *  last drag/edit can't be dropped by `canvas.value` being cleared before the
+   *  pending timer fires (the old fire-and-forget timer lost that tail edit). */
+  function flushPersist(): void {
+    if (persistTimer) { clearTimeout(persistTimer); persistTimer = null }
+    if (canvas.value && canvasRoute.value) void wireframeDoc.saveCanvas(canvasRoute.value, canvas.value)
   }
 
   // ── Block operations (W2 manipulation) ────────────────────
@@ -281,6 +330,14 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     return (canvas.value?.blocks ?? []).reduce((m, b) => Math.max(m, b.z), 0)
   }
 
+  function minZ(): number {
+    const blocks = canvas.value?.blocks ?? []
+    return blocks.length ? blocks.reduce((m, b) => Math.min(m, b.z), Infinity) : 0
+  }
+
+  // Rect updates are gesture/nudge driven: the component brackets a drag with
+  // history.begin()/end() and records once per arrow-nudge, so this stays out
+  // of the history (recording per pointermove would bury the stack).
   function updateBlockRect(id: string, rect: { x: number; y: number; width: number; height: number }): void {
     const b = findBlock(id)
     if (!b) return
@@ -294,14 +351,63 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     if (!b) return
     const top = maxZ()
     if (b.z === top && canvas.value!.blocks.filter((x) => x.z === top).length === 1) return
+    history.record('z:' + id)
     b.z = top + 1
     b.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  function sendToBack(id: string): void {
+    const b = findBlock(id)
+    if (!b) return
+    const bottom = minZ()
+    if (b.z === bottom && canvas.value!.blocks.filter((x) => x.z === bottom).length === 1) return
+    history.record('z:' + id)
+    b.z = bottom - 1
+    b.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  /** One layer up: swap z with the nearest block currently above it. */
+  function bringForward(id: string): void {
+    const c = canvas.value
+    const b = findBlock(id)
+    if (!c || !b) return
+    const above = c.blocks
+      .filter((x) => !x.deleted && x.z > b.z)
+      .sort((p, q) => p.z - q.z)[0]
+    if (!above) return // already on top
+    history.record('z:' + id)
+    const z = b.z
+    b.z = above.z
+    above.z = z
+    b.updatedAt = Date.now()
+    above.updatedAt = Date.now()
+    persistSoon()
+  }
+
+  /** One layer down: swap z with the nearest block currently below it. */
+  function sendBackward(id: string): void {
+    const c = canvas.value
+    const b = findBlock(id)
+    if (!c || !b) return
+    const below = c.blocks
+      .filter((x) => !x.deleted && x.z < b.z)
+      .sort((p, q) => q.z - p.z)[0]
+    if (!below) return // already at the bottom
+    history.record('z:' + id)
+    const z = b.z
+    b.z = below.z
+    below.z = z
+    b.updatedAt = Date.now()
+    below.updatedAt = Date.now()
     persistSoon()
   }
 
   function setNote(id: string, note: string): void {
     const b = findBlock(id)
     if (!b) return
+    history.record('note:' + id)
     const trimmed = note.trim()
     if (trimmed) b.note = trimmed
     else delete b.note
@@ -313,6 +419,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   function setBlockMd(id: string, md: string): void {
     const b = findBlock(id)
     if (!b) return
+    history.record('md:' + id)
     const trimmed = md.trim()
     if (trimmed) b.md = trimmed
     else delete b.md
@@ -325,6 +432,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   function setBlockData(id: string, data: WireframeDataBinding | null): void {
     const b = findBlock(id)
     if (!b) return
+    history.record('data:' + id)
     if (data) b.data = JSON.parse(JSON.stringify(data)) as WireframeDataBinding
     else delete b.data
     b.updatedAt = Date.now()
@@ -338,6 +446,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     const c = canvas.value
     const b = findBlock(id)
     if (!c || !b) return
+    history.record('delete:' + id)
     if (b.kind === 'captured') {
       b.deleted = true
       b.updatedAt = Date.now()
@@ -353,6 +462,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   function undeleteBlock(id: string): void {
     const b = findBlock(id)
     if (!b?.deleted) return
+    history.record('undelete:' + id)
     delete b.deleted
     b.updatedAt = Date.now()
     persistSoon()
@@ -367,6 +477,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     const c = canvas.value
     const src = findBlock(id)
     if (!c || !src || src.deleted) return null
+    history.record('duplicate:' + id)
     const copy: WireframeBlock = {
       ...JSON.parse(JSON.stringify(src)) as WireframeBlock,
       id: mintBlockId(),
@@ -397,6 +508,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   ): Promise<string | null> {
     const c = canvas.value
     if (!c) return null
+    history.record('add')
     const id = mintBlockId()
     const width = snapshot.width && snapshot.width > 24 ? snapshot.width : 320
     const height = snapshot.height && snapshot.height > 24 ? snapshot.height : 120
@@ -422,6 +534,34 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     return id
   }
 
+  /** Place-first: synchronously mint an IMAGELESS palette block at the drop
+   *  point, auto-select it, and record ONE undo entry — the snapshot is filled
+   *  in afterwards (by the generator) through updatePaletteBlock with
+   *  recordHistory:false, so it folds into this single entry. The block is
+   *  honest from the first frame: fidelity 'placeholder', no fabricated pixels,
+   *  and `generatingIds` drives the "rendering…" shimmer until the fill lands.
+   *  Returns the new block id (null while the sketch is locked). */
+  function placeComponentBlock(componentRef: WireframePaletteRef, at: { x: number; y: number }): string | null {
+    const c = canvas.value
+    if (!c || building.value) return null
+    history.record('add')
+    const id = mintBlockId()
+    const block: WireframeBlock = {
+      id,
+      kind: 'palette',
+      rect: { x: at.x, y: at.y, width: 320, height: 120 },
+      z: maxZ() + 1,
+      createdAt: Date.now(),
+      component: JSON.parse(JSON.stringify(componentRef)) as WireframePaletteRef,
+      fidelity: 'placeholder',
+    }
+    c.blocks.push(block)
+    selection.select(id)
+    setGenerating(id, true)
+    persistSoon()
+    return id
+  }
+
   /** Regenerate-in-place: patch a placed palette block's props/binding and/or
    *  swap its snapshot. Re-uploads under the SAME block id (`<id>.png`
    *  overwrites; the current session renders from liveImages so there is no
@@ -431,9 +571,15 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     previewProps?: Record<string, unknown>
     data?: WireframeDataBinding | null
     snapshot?: PaletteSnapshot
-  }): Promise<void> {
+  }, opts: { recordHistory?: boolean } = {}): Promise<void> {
     const b = findBlock(id)
     if (!b || b.kind !== 'palette' || !b.component) return
+    // The drop and prop/binding edits already snapshot the pre-mutation state;
+    // the async snapshot fill that follows is a derived image swap that must
+    // FOLD into that one entry (recordHistory:false) so a place + render — or a
+    // prop-edit burst + its regen — is a single undo. The prop/binding setters
+    // pass recordHistory:true (coalesce-keyed) so a burst still folds.
+    if (opts.recordHistory !== false) history.record('regenerate:' + id)
     if (patch.props !== undefined) {
       if (Object.keys(patch.props).length > 0) b.component.props = JSON.parse(JSON.stringify(patch.props)) as Record<string, unknown>
       else delete b.component.props
@@ -481,44 +627,28 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   async function dropPaletteItem(item: WireframeDropItem, at: { x: number; y: number }): Promise<void> {
     const c = canvas.value
     if (!c) return
-    if (item.kind === 'component' && item.componentName) {
-      // The drag item rides a Vue reactive proxy — postMessage can't clone it
-      // (DataCloneError). Strip to plain JSON before anything crosses the
-      // bridge or lands in the persisted block.
-      const previewProps = item.previewProps ? JSON.parse(JSON.stringify(item.previewProps)) as Record<string, unknown> : undefined
-      const props = item.props ? JSON.parse(JSON.stringify(item.props)) as Record<string, unknown> : undefined
-      const res = await iframe.previewComponent(item.componentName, previewProps ?? props, item.module, 320)
-      if (!res.dataUrl) console.warn('[Annotask] wireframe palette drop: no snapshot —', JSON.stringify(res).slice(0, 300))
-      await addPaletteBlock(
-        {
-          tag: item.tag,
-          componentName: item.componentName,
-          ...(item.library ? { library: item.library } : {}),
-          ...(item.module ? { module: item.module } : {}),
-          ...(props ? { props } : {}),
-          ...(previewProps ? { previewProps } : {}),
-        },
-        { dataUrl: res.dataUrl, width: res.width, height: res.height, fidelity: (res.fidelity as WireframeFidelity | null) ?? undefined, mounted: res.mounted },
-        at,
-      )
-    } else {
-      const id = mintBlockId()
-      c.blocks.push({
-        id,
-        kind: 'placeholder',
-        rect: { x: at.x, y: at.y, width: 320, height: 120 },
-        z: maxZ() + 1,
-        createdAt: Date.now(),
-        label: item.textContent || item.category || `<${item.tag}>`,
-      })
-      persistSoon()
-    }
+    // Components are placed first (imageless) via placeComponentBlock and filled
+    // by the generator — they never reach here. This path is html/layout-preset
+    // catalog items: there is no real render to rasterize, so they become
+    // labeled placeholders, never a fabricated snapshot.
+    history.record('add')
+    const id = mintBlockId()
+    c.blocks.push({
+      id,
+      kind: 'placeholder',
+      rect: { x: at.x, y: at.y, width: 320, height: 120 },
+      z: maxZ() + 1,
+      createdAt: Date.now(),
+      label: item.textContent || item.category || `<${item.tag}>`,
+    })
+    persistSoon()
   }
 
   /** User-drawn placeholder box — visibly a sketch, never fabricated UI. */
   function addPlaceholderBlock(rect: { x: number; y: number; width: number; height: number }, label: string): string | null {
     const c = canvas.value
     if (!c) return null
+    history.record('add')
     const id = mintBlockId()
     c.blocks.push({
       id,
@@ -608,6 +738,9 @@ export function useWireframeMode(deps: WireframeModeDeps) {
         }
       })
 
+      // Past every early-return — about to mutate the canvas. Snapshot now so a
+      // single undo restores the parent block in place of its children.
+      history.record('explode:' + id)
       liveImages.value = nextImages
       const oldParentImage = parent.image
       if (res.shellDataUrl) {
@@ -733,7 +866,11 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     await session.undoLastBatch()
     await wireframeDoc.load()
     const fresh = wireframeDoc.canvasForRoute(activeRoute())
-    if (fresh) canvas.value = fresh
+    if (fresh) {
+      canvas.value = fresh
+      canvasRoute.value = activeRoute()
+      history.clear()
+    }
   }
 
   // Server-side lifecycle flips (verify/accept/delete hooks broadcast
@@ -757,6 +894,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       const cur = canvas.value
       if (cur && ((fresh.status ?? 'sketch') !== (cur.status ?? 'sketch') || fresh.taskId !== cur.taskId)) {
         canvas.value = fresh
+        canvasRoute.value = activeRoute()
+        // Lifecycle flip (sketch ⇄ building) replaces the working copy — the
+        // pre-flip undo stack no longer matches it.
+        history.clear()
       }
     },
   )
@@ -791,6 +932,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       if (existing && shellView.value === 'design') {
         booted = true
         canvas.value = existing
+        canvasRoute.value = route
+        history.clear()
         interactionMode.value = 'select'
         active.value = true
       } else if (route !== '/') {
@@ -802,6 +945,17 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     },
     { immediate: true },
   )
+
+  /** Canvas-scoped undo/redo. No-ops while the sketch is locked (building) or
+   *  the mode is closed — the agent-apply path has its own server-owned undo. */
+  function undo(): void {
+    if (!active.value || building.value || !canvas.value) return
+    history.undo()
+  }
+  function redo(): void {
+    if (!active.value || building.value || !canvas.value) return
+    history.redo()
+  }
 
   return {
     active,
@@ -815,9 +969,17 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     recapture,
     persistSoon,
     deleteSnapshot,
+    // selection + history
+    selection,
+    history,
+    undo,
+    redo,
     // block ops
     updateBlockRect,
     bringToFront,
+    sendToBack,
+    bringForward,
+    sendBackward,
     setNote,
     setBlockMd,
     setBlockData,
@@ -827,7 +989,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     duplicateBlock,
     dropPaletteItem,
     addPaletteBlock,
+    placeComponentBlock,
     updatePaletteBlock,
+    generatingIds,
+    setGenerating,
     findBlock,
     addPlaceholderBlock,
     explodeBlock,

@@ -81,10 +81,23 @@ const readOnly = ref(false)
 const staleEntryIds = ref<string[]>([])
 /** Snapshot-engine state (touched files + apply batches) for the panel. */
 const snapshotState = ref<{ files: Record<string, { baseHash: string; lastAppliedHash?: string; status: 'clean' | 'diverged' }>; batches: ApplyBatch[] }>({ files: {}, batches: [] })
-/** An apply POST is in flight or its agent run hasn't settled yet. */
+/** An apply POST is in flight (just the request — see applyInFlight for the run). */
 const applying = ref(false)
 /** Loud-failure surface for apply/undo/discard operations. */
 const lastError = ref<string | null>(null)
+
+/**
+ * True while an apply run is unsettled: the POST is in flight, a batch is still
+ * 'running' (its agent is mid-write, or crashed before sealing), or entries are
+ * still 'applying'. Undo/Discard MUST be inert here — reverting an unsealed
+ * batch clobbers the agent's in-progress bytes with no hash guard. Clears only
+ * once the review hook seals the batch (or an abandon seals it 'failed').
+ */
+const applyInFlight = computed(() =>
+  applying.value
+  || snapshotState.value.batches.some((b) => (b.status ?? 'running') === 'running')
+  || entries.value.some((e) => e.live.status === 'applying'),
+)
 
 let ordinalCounter = 0
 let entryCounter = 0
@@ -472,6 +485,10 @@ export function useDesignSession() {
 
   /** Restore the newest apply batch's pre-apply bytes; its entries return to pending. */
   async function undoLastBatch(): Promise<{ reverted: string[]; skipped: string[] } | null> {
+    if (applyInFlight.value) {
+      lastError.value = 'An apply is still running — wait for it to finish before undoing.'
+      return null
+    }
     const batch = snapshotState.value.batches[snapshotState.value.batches.length - 1]
     if (!batch) return null
     lastError.value = null
@@ -501,6 +518,10 @@ export function useDesignSession() {
   /** Discard the whole session: server restores every snapshot-tracked file to
    *  its session base and removes the session's placements. */
   async function discardSession(): Promise<{ revertedFiles: string[]; failedFiles: string[]; removedInstances: number } | null> {
+    if (applyInFlight.value) {
+      lastError.value = 'An apply is still running — wait for it to finish before discarding.'
+      return null
+    }
     lastError.value = null
     try {
       const res = await fetch('/__annotask/api/design-session', { method: 'DELETE' })
@@ -546,6 +567,7 @@ export function useDesignSession() {
     staleEntryIds,
     snapshotState,
     applying,
+    applyInFlight,
     lastError,
     record,
     popForUndo,

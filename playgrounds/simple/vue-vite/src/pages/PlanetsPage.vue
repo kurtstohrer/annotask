@@ -93,22 +93,6 @@ watch(
     <p v-if="error" class="error-banner">{{ error }}</p>
 
     <div class="planets-content">
-      <div class="layout">
-        <div class="planet-list">
-          <p v-if="loading" class="loading">Loading planets…</p>
-          <p v-else-if="!filtered.length" class="empty">No planets match your filters.</p>
-          <PlanetCard
-            v-for="planet in filtered"
-            v-else
-            :key="planet.id"
-            :planet="planet"
-            :active="selected?.id === planet.id"
-            @select="select"
-          />
-        </div>
-        <PlanetDetail v-if="selected" :planet="selected" @close="close" />
-      </div>
-
       <aside class="controls">
         <div class="toolbar">
           <label class="select">
@@ -133,18 +117,33 @@ watch(
           <!-- PrimeVue components — exercise component-library discovery + highlights -->
           <Tag :value="`${filtered.length} planets`" severity="info" rounded />
           <Button label="Reset" icon="pi pi-times" severity="secondary" size="small" outlined @click="resetFilters" />
-        </div>
-
-        <div class="field">
-          <i class="pi pi-search"></i>
-          <input
-            v-model="search"
-            type="search"
-            placeholder="Search planets…"
-            aria-label="Search planets"
-          />
+          <div class="field">
+            <i class="pi pi-search"></i>
+            <input
+              v-model="search"
+              type="search"
+              placeholder="Search planets…"
+              aria-label="Search planets"
+            />
+          </div>
         </div>
       </aside>
+
+      <div class="layout">
+        <div class="planet-list">
+          <p v-if="loading" class="loading">Loading planets…</p>
+          <p v-else-if="!filtered.length" class="empty">No planets match your filters.</p>
+          <PlanetCard
+            v-for="planet in filtered"
+            v-else
+            :key="planet.id"
+            :planet="planet"
+            :active="selected?.id === planet.id"
+            @select="select"
+          />
+        </div>
+        <PlanetDetail v-if="selected" :planet="selected" @close="close" />
+      </div>
     </div>
   </section>
 </template>
@@ -158,16 +157,15 @@ watch(
 
 .planets-content {
   display: flex;
+  flex-direction: column;
   gap: 20px;
-  align-items: flex-start;
+  align-items: stretch;
 }
 
 .controls {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-width: 280px;
 }
 
 .toolbar {
@@ -179,6 +177,7 @@ watch(
 
 .field {
   position: relative;
+  flex: 1 1 240px;
   min-width: 220px;
   max-width: 440px;
 }
@@ -259,8 +258,6 @@ watch(
 }
 
 @media (max-width: 900px) {
-  .planets-content { flex-direction: column-reverse; }
-  .controls { min-width: 0; }
   .layout { flex-direction: column; }
   .planet-list { grid-template-columns: 1fr; }
 }

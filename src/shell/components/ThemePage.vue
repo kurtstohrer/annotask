@@ -123,5 +123,5 @@ function discardChanges() {
 .theme-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; padding: 24px; }
 .theme-empty p { font-size: 13px; }
 .theme-empty-hint { font-size: 11px; opacity: 0.7; }
-.theme-empty code { background: rgba(59,130,246,0.15); padding: 1px 6px; border-radius: 3px; font-weight: 600; color: #60a5fa; }
+.theme-empty code { background: color-mix(in srgb, var(--accent) 15%, transparent); padding: 1px 6px; border-radius: 3px; font-weight: 600; color: var(--text-link); }
 </style>

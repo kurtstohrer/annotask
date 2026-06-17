@@ -209,6 +209,36 @@ async function fetchSystemPrompt(taskType: string | undefined): Promise<string> 
   }
 }
 
+/**
+ * Task ids this tab currently holds an `in_progress` lock for via a live seed
+ * run. If the tab is closed mid-run, the run's normal finalization never gets
+ * to execute — so on `pagehide` we relinquish each lock back to `pending` with
+ * a keepalive PATCH. That reconciles the task *before* the server's
+ * orphan-finalizer has to guess, so a closed tab leaves a retryable `pending`
+ * task instead of a stranded one (and never the misleading "tab was likely
+ * closed" blocked state). Module-scoped so the single listener covers both the
+ * headless auto-run driver and any open Conversation tab.
+ */
+const lockedSeedTasks = new Set<string>()
+let pagehideArmed = false
+function armPagehideFlush(): void {
+  if (pagehideArmed || typeof window === 'undefined') return
+  pagehideArmed = true
+  window.addEventListener('pagehide', () => {
+    for (const id of lockedSeedTasks) {
+      try {
+        // keepalive lets the request outlive the unloading document.
+        void fetch(`/__annotask/api/tasks/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'pending' }),
+          keepalive: true,
+        }).catch(() => { /* best-effort */ })
+      } catch { /* ignore */ }
+    }
+  })
+}
+
 export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
   const providerSettings = useProviderSettings()
   const agentConfigs = useAgentConfigs()
@@ -226,6 +256,12 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
   function reset() {
     currentBlocks.value = []
     errorMessage.value = null
+    // `usage` is the live accumulator for the CURRENT (not-yet-persisted) turn
+    // only — each completed turn's tokens land on its persisted ThreadMessage
+    // (via flushPartial's final write), and the header sums those. Resetting
+    // here keeps `agent.usage` from carrying prior turns' tokens forward, which
+    // would otherwise be double-counted on top of the persisted-message sum.
+    usage.value = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   }
 
   /**
@@ -644,6 +680,12 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       }
     }
 
+    // The turn's tokens now live on its persisted ThreadMessage. Zero the live
+    // accumulator so the header's `tokenSummary` (persisted-message sum + live
+    // accumulator) doesn't count this turn twice in the idle gap before the
+    // next turn's `reset()` clears it.
+    usage.value = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+
     // Surface a watchdog stall or a failed seed run as a system message so
     // it's part of the persisted transcript (visible to every observer +
     // MCP tail-readers) — the error strip is local to this tab.
@@ -670,14 +712,18 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       await markTaskBlocked(taskId, errorMessage.value ?? 'Run cancelled by the stall watchdog.')
     } else if (isSeed && taskId && status.value === 'completed') {
       await markTaskForReview(taskId, finalBlocks)
-    } else if (isSeed && taskId && status.value === 'error') {
+    } else if (isSeed && taskId && (status.value === 'error' || status.value === 'aborted')) {
       // A seed run that errored out (provider stream threw, CLI exited
-      // non-zero, spawn failed mid-flight) must release its lock or the
-      // task stays in_progress forever with no agent attached.
+      // non-zero, spawn failed mid-flight) OR was deliberately aborted (the
+      // Stop button / requestAutoRunCancel — which ends the stream as
+      // 'aborted' with no watchdogReason) must release its lock back to
+      // `pending` or the task is stranded in_progress with no agent attached.
+      // Finalizing here is what keeps the server's orphan-finalizer from
+      // firing 12s later and mislabeling the run "the tab was likely closed".
       await revertTaskToPending(taskId)
     }
 
-    if (taskId) markRunFinished(taskId)
+    if (taskId) { lockedSeedTasks.delete(taskId); markRunFinished(taskId) }
   }
 
   /**
@@ -694,6 +740,9 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       if (!current) return
       if (current.status !== 'pending' && current.status !== 'denied') return
       await taskSystem.updateTaskStatus(taskId, 'in_progress')
+      // Track the held lock so a pagehide (tab close) can relinquish it.
+      lockedSeedTasks.add(taskId)
+      armPagehideFlush()
     } catch (err) {
       // Surface in the conversation error strip, don't abort the run — the
       // agent should still try to do useful work even if the lock fails.
@@ -770,6 +819,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
    */
   async function finalizeErrorExit(taskId: string | null, isSeed: boolean): Promise<void> {
     if (!taskId) return
+    lockedSeedTasks.delete(taskId)
     if (isSeed) {
       if (errorMessage.value) {
         try {

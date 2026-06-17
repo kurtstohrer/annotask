@@ -97,29 +97,72 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
   onTaskRemoved = (taskId) => {
     void taskThread.clear(taskId)
   }
-  // Orphaned-task finalization. When an agent run ends (child exit) but the
+  // Orphaned-task reconcile. When an agent run ends (child exit) but the
   // orchestrating client never transitioned the task — e.g. the tab closed
-  // mid-run — the task is stuck in `in_progress` forever (the spawn registry
-  // kills the *process* but can't fix the *status*). The registry reports
-  // every run end; we grace-check a moment later (a normal completion's client
-  // `review`/`blocked` PATCH lands well within this window, so it no-ops) and,
-  // if the task is still `in_progress`, mark it `blocked` so it's surfaced
-  // instead of stuck.
+  // mid-run, or the client crashed before its finalizing PATCH — the task is
+  // left locked in `in_progress` (the spawn registry kills the *process* but
+  // can't fix the *status*). We relinquish the lock back to `pending` so the
+  // task is retryable instead of stranded. The transition guard runs INSIDE
+  // the task lock, so a client transition that's merely slow still wins the
+  // race rather than being clobbered (guard rejects → we no-op).
+  function reconcileOrphanedTask(taskId: string, why: string): void {
+    void state.updateTask(
+      taskId,
+      { status: 'pending' },
+      { guard: (t) => (t.status === 'in_progress' ? null : 'task already finalized') },
+    ).then((res) => {
+      // Guard rejected (client won the race) → nothing to report.
+      if (res && typeof res === 'object' && 'error' in res) return
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask] reconciled orphaned task ${taskId} → pending (${why})`)
+    }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask] orphan reconcile failed for task ${taskId}:`, err)
+    })
+  }
+  // The registry reports every run end; we grace-check a moment later (a normal
+  // completion's client review/pending PATCH lands well within this window, so
+  // it no-ops) and, if the task is still `in_progress`, reconcile it. `killed`
+  // distinguishes an interrupted run (we terminated the child) from a child
+  // that exited on its own while the client failed to finalize — for honest
+  // logging; both reconcile to `pending`.
   const ORPHAN_FINALIZE_GRACE_MS = 12_000
-  function scheduleOrphanFinalize(taskId: string): void {
+  function scheduleOrphanFinalize(taskId: string, info: { killed: boolean }): void {
     setTimeout(() => {
       const task = state.getTasks().tasks.find((t: { id?: string; status?: string }) => t?.id === taskId)
       if (!task || task.status !== 'in_progress') return
-      void state.updateTask(taskId, {
-        status: 'blocked',
-        blocked_reason: 'The agent run ended before finishing (the tab was likely closed). Re-run the task to continue.',
-      }).catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn(`[annotask] orphan finalize failed for task ${taskId}:`, err)
-      })
+      reconcileOrphanedTask(taskId, info.killed ? 'run interrupted' : 'client never finalized')
     }, ORPHAN_FINALIZE_GRACE_MS).unref()
   }
   const agentSpawn = createAgentSpawnHandler({ onRunEnd: scheduleOrphanFinalize })
+
+  // Boot reconcile sweep. A task persisted as `in_progress` with no live run is
+  // an orphan from a previous process (server restarted mid-run, or a tab
+  // closed while the prior process's orphan-finalize timer — an in-memory
+  // unref'd setTimeout — was pending and never fired). The fresh run registry
+  // has no live runs at boot, so we can't tell an embedded orphan from a task
+  // an EXTERNAL MCP agent (e.g. /annotask-apply in another editor) locked and
+  // is still working across our restart. We therefore only reclaim tasks that
+  // have clearly been sitting (older than BOOT_RECLAIM_MIN_AGE_MS): a freshly
+  // killed embedded run is reverted to pending by its own still-open tab when
+  // the SSE dies, and a live external agent's recent lock is left untouched.
+  // Deferred a tick so it doesn't block boot; the task cache loads lazily.
+  const BOOT_RECLAIM_MIN_AGE_MS = 120_000
+  setImmediate(() => {
+    try {
+      const now = Date.now()
+      for (const t of state.getTasks().tasks as Array<{ id?: string; status?: string; updatedAt?: number }>) {
+        if (!t?.id || t.status !== 'in_progress') continue
+        if (agentSpawn.registry.taskRunning(t.id)) continue
+        const age = now - (typeof t.updatedAt === 'number' ? t.updatedAt : 0)
+        if (age < BOOT_RECLAIM_MIN_AGE_MS) continue
+        reconcileOrphanedTask(t.id, 'stale lock at boot')
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[annotask] boot orphan sweep failed:', err)
+    }
+  })
   const agentDetect = createAgentDetector()
   const initRunner = createInitRunner({
     projectRoot: options.projectRoot,
@@ -169,6 +212,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     clearDesignSession: () => state.clearDesignSession(),
     snapshots: snapshotStore,
     usageLedger,
+    getPersistenceHealth: () => state.getPersistenceHealth(),
   })
 
   const mcpMiddleware = createMcpMiddleware({

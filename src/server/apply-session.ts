@@ -235,7 +235,6 @@ export async function verifyAppliedEntries(
 ): Promise<void> {
   const session = await options.getDesignSession()
   const toVerify = session.entries.filter((e) => e.taskId === taskId && e.live.status === 'applying')
-  if (toVerify.length === 0) return
 
   const verdicts = new Map<string, { ok: boolean; error?: string }>()
   for (const e of toVerify) {
@@ -280,22 +279,28 @@ export async function verifyAppliedEntries(
     }
   }
 
-  await mutateSession(options, (doc) => {
-    let touched = false
-    for (const e of doc.entries) {
-      const verdict = verdicts.get(e.id)
-      if (!verdict || e.live.status !== 'applying') continue
-      e.live = verdict.ok
-        ? { status: 'written', applyBatchId: e.live.applyBatchId, writtenAt: Date.now() }
-        : { status: 'failed', applyBatchId: e.live.applyBatchId, error: verdict.error }
-      touched = true
-    }
-    return touched
-  })
+  if (toVerify.length > 0) {
+    await mutateSession(options, (doc) => {
+      let touched = false
+      for (const e of doc.entries) {
+        const verdict = verdicts.get(e.id)
+        if (!verdict || e.live.status !== 'applying') continue
+        e.live = verdict.ok
+          ? { status: 'written', applyBatchId: e.live.applyBatchId, writtenAt: Date.now() }
+          : { status: 'failed', applyBatchId: e.live.applyBatchId, error: verdict.error }
+        touched = true
+      }
+      return touched
+    })
+  }
 
-  // Seal post-apply hashes — the baseline the undo/discard hash-guard trusts.
-  const batchId = toVerify[0].live.applyBatchId
-  if (batchId) await options.snapshots.sealBatch(batchId)
+  // (Re-)seal post-apply hashes — the baseline the undo/discard hash-guard
+  // trusts. Sealed by TASK, unconditionally on every review: re-apply after a
+  // deny leaves no entry in 'applying' (they're already written/failed) yet the
+  // agent wrote NEW bytes that must become the new undo baseline; and a
+  // pure-instances apply has no session entries to verify but still needs its
+  // hash. Re-sealing is safe — only lastAppliedHash + the created net change.
+  await options.snapshots.sealBatchByTask(taskId)
 }
 
 /** Undo the newest apply batch: restore its pre-apply bytes and return its
@@ -337,12 +342,16 @@ export async function acceptApplyTask(
   return { rotated: !!doc && doc.entries.length === 0 }
 }
 
-/** Abandoned run (task deleted / agent aborted): entries return to 'pending';
- *  the batch stays revertible (the agent may have half-written). */
+/** Abandoned run (task deleted, or a crashed/aborted seed run flipped the task
+ *  back to pending/blocked without ever reaching review): seal the
+ *  possibly-half-written batch as 'failed' so it carries a hash baseline and
+ *  stays revertible (the undo/discard guard refuses a still-'running' batch),
+ *  then return its entries to 'pending' so they re-surface as work. */
 export async function releaseApplyTask(
-  options: Pick<ApplySessionOptions, 'getDesignSession' | 'setDesignSession'>,
+  options: Pick<ApplySessionOptions, 'getDesignSession' | 'setDesignSession' | 'snapshots'>,
   taskId: string,
 ): Promise<void> {
+  await options.snapshots.sealBatchByTask(taskId, { failed: true })
   await mutateSession(options, (doc) => {
     let touched = false
     for (const e of doc.entries) {

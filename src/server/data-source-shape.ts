@@ -41,11 +41,16 @@ export function schemaToShape(schema: Record<string, unknown>, depth = 0): DataS
   const gqlType = schema.$type
   if (typeof gqlType === 'string') return { kind: 'ref', ref: gqlType }
 
+  // REAL contract sample value at this node (OpenAPI `example`/`default`), used
+  // to preview bound props honestly. Spread onto each structural return below.
+  const ex = schema.example !== undefined ? schema.example : schema.default
+  const exField = ex !== undefined ? { example: ex } : {}
+
   const type = schema.type
   if (type === 'array' || (schema.items !== undefined && type === undefined)) {
     const items = schema.items
     const item = isPlainObject(items) ? schemaToShape(items, depth + 1) : { kind: 'unknown' as const }
-    return { kind: 'array', item }
+    return { kind: 'array', item, ...exField }
   }
 
   if (type === 'object' || isPlainObject(schema.properties)) {
@@ -66,7 +71,7 @@ export function schemaToShape(schema: Record<string, unknown>, depth = 0): DataS
         children[key] = isPlainObject(value) ? schemaToShape(value, depth + 1) : { kind: 'unknown' }
       }
     }
-    return { kind: 'object', children }
+    return { kind: 'object', children, ...exField }
   }
 
   if (Array.isArray(schema.allOf)) {
@@ -80,7 +85,7 @@ export function schemaToShape(schema: Record<string, unknown>, depth = 0): DataS
         Object.assign(children, walked.children)
       }
     }
-    if (sawObject) return { kind: 'object', children }
+    if (sawObject) return { kind: 'object', children, ...exField }
     return { kind: 'unknown' }
   }
 
@@ -94,7 +99,7 @@ export function schemaToShape(schema: Record<string, unknown>, depth = 0): DataS
     return { kind: 'unknown' }
   }
 
-  if (typeof type === 'string') return { kind: 'scalar', scalar: type }
+  if (typeof type === 'string') return { kind: 'scalar', scalar: type, ...exField }
   return { kind: 'unknown' }
 }
 

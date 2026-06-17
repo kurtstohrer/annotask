@@ -26,6 +26,34 @@ describe('schemaToShape — pure walker', () => {
     })
   })
 
+  it('captures the contract example/default at each node (api-schema sample data)', () => {
+    // Per-field example + a full array example of objects.
+    const shape = schemaToShape({
+      type: 'object',
+      properties: {
+        planets: {
+          type: 'array',
+          example: [{ name: 'Mercury', type: 'rocky' }, { name: 'Venus', type: 'rocky' }],
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', example: 'Earth' },
+              type: { type: 'string', default: 'rocky' },
+            },
+          },
+        },
+      },
+    })
+    const planets = shape.children!.planets
+    expect(planets.example).toEqual([{ name: 'Mercury', type: 'rocky' }, { name: 'Venus', type: 'rocky' }])
+    expect(planets.item!.children!.name.example).toBe('Earth')
+    expect(planets.item!.children!.type.example).toBe('rocky') // falls back to `default`
+  })
+
+  it('omits example when the schema declares none', () => {
+    expect(schemaToShape({ type: 'string' })).toEqual({ kind: 'scalar', scalar: 'string' })
+  })
+
   it('degrades residual $ref cycle markers to named ref leaves', () => {
     expect(schemaToShape({ type: 'object', properties: { parent: { $ref: '#/components/schemas/Cat' } } }))
       .toEqual({ kind: 'object', children: { parent: { kind: 'ref', ref: 'Cat' } } })

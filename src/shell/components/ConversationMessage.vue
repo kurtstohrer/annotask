@@ -12,8 +12,8 @@
  *     Rendered as markdown (assistant/user) or plain text (system/tool).
  */
 import { computed } from 'vue'
-import { marked } from 'marked'
 import ConversationStreamBlock from './ConversationStreamBlock.vue'
+import { safeMd } from '../utils/safeMd'
 import type { WorkStreamBlock } from '../../shared/work-stream'
 
 interface Props {
@@ -34,7 +34,7 @@ const props = withDefaults(defineProps<Props>(), { streaming: false, content: ''
 const html = computed(() => {
   if (props.streaming) return ''
   if (props.role === 'system' || props.role === 'tool') return ''
-  try { return marked.parse(props.content, { async: false }) as string }
+  try { return safeMd(props.content) }
   catch { return '' }
 })
 

@@ -23,6 +23,9 @@ export interface PaletteDragItem {
   category?: string
   /** Scanner hint so the drop can predict fidelity before mounting. */
   fidelityHint?: 'live' | 'isolated-preview' | 'placeholder' | 'unknown'
+  /** Owning MFE id (the component's home package), carried from the palette
+   *  through the drop so the placed block can be stamped. */
+  mfe?: string
 }
 
 // Module-singleton: native HTML5 drag events block `dataTransfer.getData` during

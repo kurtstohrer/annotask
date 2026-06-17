@@ -477,11 +477,11 @@ defineExpose({ collectEdits, resetEdits, totalChanges, activeThemeId })
   padding: 6px 8px; border-radius: 6px; gap: 8px; transition: background 0.1s;
 }
 .token-row:hover { background: var(--surface-2); }
-.token-row.new { background: rgba(59,130,246,0.06); }
+.token-row.new { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .token-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex-shrink: 1; }
 .token-role { font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; }
 .token-role.edited { color: var(--accent); }
-.token-role.new-badge { color: #22c55e; font-weight: 600; }
+.token-role.new-badge { color: var(--success); font-weight: 600; }
 .token-source { font-size: 9px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
 .token-controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .token-value-input {
@@ -498,7 +498,7 @@ defineExpose({ collectEdits, resetEdits, totalChanges, activeThemeId })
   font-size: 14px; cursor: pointer; display: flex; align-items: center;
   justify-content: center; border-radius: 3px;
 }
-.token-remove:hover { color: #ef4444; background: rgba(239,68,68,0.1); }
+.token-remove:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .no-preview-badge { font-size: 8px; color: var(--text-muted); opacity: 0.6; white-space: nowrap; }
 .color-swatch-wrapper { flex-shrink: 0; }
 .color-swatch-inline {

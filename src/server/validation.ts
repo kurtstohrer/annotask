@@ -18,7 +18,11 @@ export const VALID_TASK_STATUSES = new Set([
 /** From `current` → allowed `next`. Rejects silent-overwrite transitions. */
 export const VALID_TRANSITIONS: Record<string, ReadonlySet<string>> = {
   pending:     new Set(['in_progress', 'denied']),
-  in_progress: new Set(['applied', 'review', 'needs_info', 'blocked', 'denied']),
+  // `pending` = relinquish the lock back to the queue without finishing: the
+  // agent gave up, the stream errored, or the user/observer cancelled the run.
+  // Without this, the client's revert-to-pending recovery (and the server's
+  // orphan reconcile) would be rejected and the task stranded in_progress.
+  in_progress: new Set(['applied', 'review', 'needs_info', 'blocked', 'denied', 'pending']),
   applied:     new Set(['review', 'in_progress']),
   review:      new Set(['accepted', 'denied', 'in_progress']),
   needs_info:  new Set(['in_progress', 'denied']),

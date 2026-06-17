@@ -499,9 +499,10 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
    *  honest fidelity. Used by the Components detail preview + drag thumbnail. */
   async function previewComponent(
     componentName: string, props?: Record<string, unknown>, module?: string, width?: number,
+    opts?: { repeat?: number; instanceProps?: Record<string, unknown>[] },
   ): Promise<PreviewComponentResult> {
     try {
-      return await bridge.request<PreviewComponentResult>('preview:component', { componentName, props, module, width }, 8000)
+      return await bridge.request<PreviewComponentResult>('preview:component', { componentName, props, module, width, repeat: opts?.repeat, instanceProps: opts?.instanceProps }, 8000)
     } catch (err) {
       console.warn('[Annotask] preview:component request failed:', err)
       return { mounted: false, reason: 'no-runtime', fidelity: 'placeholder' }

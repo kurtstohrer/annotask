@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { flattenShape, fieldCandidates, buildBinding } from '../bindingShape'
+import { flattenShape, fieldCandidates, sampleRows, buildBinding } from '../bindingShape'
 import type { DataShapeNode } from '../../../schema'
 
 // Cat[] with a nested owner object and a cycle-ref leaf — mirrors the server
@@ -77,6 +77,62 @@ describe('fieldCandidates', () => {
   })
 })
 
+describe('sampleRows', () => {
+  it('uses an array example of objects as distinct rows, capped at n, fields only', () => {
+    const node: DataShapeNode = {
+      kind: 'array',
+      example: [
+        { name: 'Mercury', type: 'rocky', moons: 0 },
+        { name: 'Venus', type: 'rocky' },
+        { name: 'Earth', type: 'rocky' },
+        { name: 'Mars', type: 'rocky' },
+      ],
+      item: { kind: 'object', children: { name: { kind: 'scalar', scalar: 'string' }, type: { kind: 'scalar', scalar: 'string' } } },
+    }
+    expect(sampleRows(node, ['name', 'type'], 3)).toEqual([
+      { name: 'Mercury', type: 'rocky' },
+      { name: 'Venus', type: 'rocky' },
+      { name: 'Earth', type: 'rocky' },
+    ])
+  })
+
+  it('falls back to per-field examples on the item children (one row)', () => {
+    const node: DataShapeNode = {
+      kind: 'array',
+      item: {
+        kind: 'object',
+        children: {
+          name: { kind: 'scalar', scalar: 'string', example: 'Saturn' },
+          type: { kind: 'scalar', scalar: 'string', example: 'gas giant' },
+        },
+      },
+    }
+    expect(sampleRows(node, ['name', 'type'], 3)).toEqual([{ name: 'Saturn', type: 'gas giant' }])
+  })
+
+  it('uses a single object example for a non-array node', () => {
+    const node: DataShapeNode = {
+      kind: 'object',
+      example: { name: 'Earth', type: 'rocky' },
+      children: { name: { kind: 'scalar', scalar: 'string' }, type: { kind: 'scalar', scalar: 'string' } },
+    }
+    expect(sampleRows(node, ['name'], 3)).toEqual([{ name: 'Earth' }])
+  })
+
+  it('returns [] when the contract carries no examples (caller falls back to tokens)', () => {
+    expect(sampleRows(CATS, ['name', 'price'], 3)).toEqual([])
+  })
+
+  it('keeps only scalar field values', () => {
+    const node: DataShapeNode = {
+      kind: 'array',
+      example: [{ name: 'A', owner: { email: 'x@y.z' } }],
+      item: { kind: 'object', children: { name: { kind: 'scalar', scalar: 'string' } } },
+    }
+    expect(sampleRows(node, ['name', 'owner'], 3)).toEqual([{ name: 'A' }])
+  })
+})
+
 describe('buildBinding', () => {
   const entry = { kind: 'composable' as const, name: 'usePlanets', file: 'src/composables/usePlanets.ts', endpoint: '/api/solar/planets' }
 
@@ -106,5 +162,25 @@ describe('buildBinding', () => {
 
   it('throws on an unbuildable binding instead of persisting garbage', () => {
     expect(() => buildBinding({ kind: 'composable', name: '', file: 'x.ts', endpoint: undefined }, { shape_source: 'none' })).toThrow()
+  })
+
+  it('carries sample rows, a >1 repeat, and a non-empty propMap when given', () => {
+    const b = buildBinding(entry, {
+      path: 'planets[]', fields: ['name'], shape_source: 'api-schema',
+      sample: [{ name: 'Mercury' }], repeat: 3, propMap: { label: 'name' },
+    })
+    expect(b.sample).toEqual([{ name: 'Mercury' }])
+    expect(b.repeat).toBe(3)
+    expect(b.propMap).toEqual({ label: 'name' })
+  })
+
+  it('drops empty sample/propMap and a repeat of 1', () => {
+    const b = buildBinding(entry, {
+      path: 'planets[]', fields: ['name'], shape_source: 'api-schema',
+      sample: [], repeat: 1, propMap: {},
+    })
+    expect(b.sample).toBeUndefined()
+    expect(b.repeat).toBeUndefined()
+    expect(b.propMap).toBeUndefined()
   })
 })

@@ -91,10 +91,27 @@ function sampleProps(c: LibraryComponent): Record<string, unknown> {
   return out
 }
 
+/** Per-component MFE renderability on the current surface, computed once per
+ *  catalog change. Drives draggability, the unavailable chip/tooltip, and the
+ *  block's MFE stamp. */
+const renderInfoByKey = computed(() => {
+  const m = new Map<string, { renderable: boolean; owningMfe: string | null }>()
+  for (const lib of cl.filteredLibraries.value) {
+    for (const c of lib.components) m.set(`${lib.name}:::${c.name}`, cl.surfaceRenderInfo(lib.name, c))
+  }
+  return m
+})
+function rinfo(libName: string, name: string): { renderable: boolean; owningMfe: string | null } {
+  return renderInfoByKey.value.get(`${libName}:::${name}`) ?? { renderable: true, owningMfe: null }
+}
+
 function componentDragItem(libName: string, c: LibraryComponent): PaletteDragItem {
+  const info = rinfo(libName, c.name)
+  const mfe = info.owningMfe ?? ws.currentMfe.value ?? undefined
   return {
     kind: 'component', componentName: c.name, tag: c.name, label: c.name, library: libName,
     module: c.module, fidelityHint: c.fidelityHint ?? 'unknown', previewProps: sampleProps(c),
+    ...(mfe ? { mfe } : {}),
   }
 }
 
@@ -217,6 +234,10 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   lines.push(`${c.props.length} prop${c.props.length === 1 ? '' : 's'}` + (c.slots?.length ? ` · ${c.slots.length} slot${c.slots.length === 1 ? '' : 's'}` : '') + (c.events?.length ? ` · ${c.events.length} event${c.events.length === 1 ? '' : 's'}` : ''))
   if (cl.isOnPageInLib(lib, c.name)) lines.push('● on this page')
   else if (cl.isUsedInLib(lib, c.name)) lines.push('✓ used in this project')
+  const info = rinfo(lib, c.name)
+  if (!info.renderable && info.owningMfe) {
+    lines.push(`⊘ lives in MFE "${info.owningMfe}" — can't render on this surface (predicted)`)
+  }
   return lines.join('\n')
 }
 </script>
@@ -351,13 +372,14 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
                 selected: cl.selectedKey.value === `${lib.name}:::${c.name}`,
                 focused: focusedName === cl.sourceName(lib.name, c.name),
                 'on-page': cl.isOnPageInLib(lib.name, c.name),
+                unavailable: !rinfo(lib.name, c.name).renderable,
               }"
               :data-component-name="c.name"
-              :title="componentTooltip(lib.name, c) + (props.wireframeActive ? '\n↳ click to generate, or drag onto the canvas' : '\n↳ drag onto the app to place')"
-              draggable="true"
+              :title="componentTooltip(lib.name, c) + (rinfo(lib.name, c.name).renderable ? (props.wireframeActive ? '\n↳ click to generate, or drag onto the canvas' : '\n↳ drag onto the app to place') : '')"
+              :draggable="rinfo(lib.name, c.name).renderable"
               @dragstart="onDragStart($event, componentDragItem(lib.name, c))"
               @dragend="onDragEnd"
-              @click="props.wireframeActive ? emit('generateComponent', componentDragItem(lib.name, c)) : cl.select(lib.name, c.name)"
+              @click="rinfo(lib.name, c.name).renderable && props.wireframeActive ? emit('generateComponent', componentDragItem(lib.name, c)) : cl.select(lib.name, c.name)"
               @mouseenter="cl.isOnPageInLib(lib.name, c.name) && cl.setFocus(cl.sourceName(lib.name, c.name))"
               @mouseleave="focusedName === cl.sourceName(lib.name, c.name) && cl.setFocus(null)"
             >
@@ -369,6 +391,7 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
                   <Icon name="info" :size="11" />
                 </button>
                 <span v-if="fidelityLabel(c.fidelityHint)" class="item-fidelity" :class="'fid-' + c.fidelityHint" :title="c.providerSignals && c.providerSignals.length ? 'Uses: ' + c.providerSignals.join(', ') : ''">{{ fidelityLabel(c.fidelityHint) }}</span>
+                <span v-if="!rinfo(lib.name, c.name).renderable" class="item-mfe-na" :title="`Lives in MFE ${rinfo(lib.name, c.name).owningMfe} — can't render on this surface`">⊘ {{ rinfo(lib.name, c.name).owningMfe }}</span>
                 <span v-if="cl.isOnPageInLib(lib.name, c.name)" class="item-onpage" title="Rendered on the current route">on page</span>
                 <span v-else-if="cl.isUsedInLib(lib.name, c.name)" class="item-used" title="Referenced somewhere in this project">used</span>
                 <span v-if="matchCount(cl.sourceName(lib.name, c.name)) > 0" class="item-match">
@@ -1214,6 +1237,20 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
 .item-fidelity.fid-isolated-preview { background: var(--warning); }
 .item-fidelity.fid-placeholder,
 .item-fidelity.fid-unknown { background: var(--role-component); }
+
+/* Component lives in another MFE — can't render a live snapshot here. */
+.item-mfe-na {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  color: var(--text-muted);
+}
+.components-list-item.unavailable { opacity: 0.55; cursor: not-allowed; }
+.components-list-item.unavailable:hover { border-color: var(--border); }
 
 /* Detail live preview */
 .detail-preview {

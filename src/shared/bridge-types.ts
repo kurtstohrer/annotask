@@ -613,6 +613,12 @@ export interface PreviewComponentPayload {
   module?: string
   /** Render width for the offscreen snapshot (px). */
   width?: number
+  /** Mount this many copies (a list/loop binding) into one snapshot. Default 1. */
+  repeat?: number
+  /** Per-instance prop overlays for a repeated render — instance i merges
+   *  `{ ...props, ...instanceProps[i] }` (falls back to instanceProps[0]). Used
+   *  to show bound data values per row. */
+  instanceProps?: Record<string, unknown>[]
 }
 
 export interface PreviewComponentResult {

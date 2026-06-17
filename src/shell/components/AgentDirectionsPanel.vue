@@ -152,8 +152,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { marked } from 'marked'
 import MarkdownEditor from './MarkdownEditor.vue'
+import { safeMd } from '../utils/safeMd'
 import { useAgentConfigs } from '../composables/useAgentConfigs'
 import { useProviderSettings } from '../composables/useProviderSettings'
 import { useAgentModels } from '../composables/useAgentModels'
@@ -211,7 +211,7 @@ watch([selected, currentContent], ([, content]) => {
 const renderedContent = computed(() => {
   const md = draftContent.value.trim()
   if (!md) return ''
-  try { return marked.parse(md, { async: false, gfm: true }) as string } catch { return `<pre>${md}</pre>` }
+  try { return safeMd(md) } catch { return safeMd(md) }
 })
 
 function providerLabel(personaId: string): string {
@@ -533,7 +533,7 @@ function onEffortChange(value: string) {
 .adp-mode.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  box-shadow: 0 1px 3px var(--shadow);
 }
 
 .adp-runtime {

@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import DataBindingPicker from './DataBindingPicker.vue'
-import GenerateComponentPanel from './GenerateComponentPanel.vue'
+import WireframeBlockPopover from './WireframeBlockPopover.vue'
 import Icon from './Icon.vue'
 import { computeSnap, type SnapGuide } from '../utils/wireframeSnap'
 import { safeMd } from '../utils/safeMd'
 import type { useComponentGenerator } from '../composables/useComponentGenerator'
+import type { CanvasSelection } from '../composables/useCanvasSelection'
+import type { CanvasHistory } from '../composables/useCanvasHistory'
 import type { WireframeBlock, WireframeCanvasState, WireframeDataBinding } from '../../shared/wireframe-types'
 import type { WireframeCaptureProgress } from '../../shared/bridge-types'
 
@@ -21,10 +23,28 @@ const props = defineProps<{
   /** Locked: a wireframe_apply task is implementing this sketch right now. */
   building: boolean
   implementing: boolean
-  /** Generate-component session (pick → settings → datasource → generate →
-   *  place). Null when the host view doesn't offer the flow. */
+  /** Block selection (lifted to the mode so undo/redo can restore it). */
+  selection: CanvasSelection
+  /** Canvas undo/redo — the component brackets gestures; keys live in App. */
+  history: CanvasHistory
+  /** Place-first component config — drives the inline block popover. Null when
+   *  the host view doesn't offer the flow. */
   generator?: ReturnType<typeof useComponentGenerator> | null
+  /** Block ids whose snapshot is rendering right now (drives the shimmer). */
+  generatingIds?: Set<string>
 }>()
+
+/** Is this block's snapshot currently rendering? */
+function isGenerating(b: WireframeBlock): boolean {
+  return props.generatingIds?.has(b.id) === true
+}
+
+/** Click-vs-drag threshold, min block dimension, duplicate offset, nudge step. */
+const DRAG_THRESHOLD_PX = 3
+const MIN_BLOCK_PX = 24
+const NUDGE_STEP_PX = 1
+const NUDGE_STEP_SHIFT_PX = 10
+const MARQUEE_MIN_PX = 6
 
 const emit = defineEmits<{
   exit: []
@@ -34,13 +54,15 @@ const emit = defineEmits<{
   'explode-block': [id: string]
   'update-rect': [id: string, rect: { x: number; y: number; width: number; height: number }]
   'bring-to-front': [id: string]
+  'send-to-back': [id: string]
+  'bring-forward': [id: string]
+  'send-backward': [id: string]
   'delete-block': [id: string]
   'undelete-block': [id: string]
   'duplicate-block': [id: string]
   'set-note': [id: string, note: string]
   'set-md': [id: string, md: string]
   'set-data': [id: string, data: WireframeDataBinding | null]
-  'configure-block': [id: string]
   'palette-drop': [at: { x: number; y: number }]
   'add-placeholder': [rect: { x: number; y: number; width: number; height: number }, label: string]
 }>()
@@ -69,64 +91,89 @@ function anchorChip(b: WireframeBlock): string | null {
   return `${b.anchor.file}:${b.anchor.line}`
 }
 
-// ── Selection (multi via shift-click / marquee) ───────────
+/** Why a snapshot isn't a live render — shown as the fidelity pill's tooltip so
+ *  the state is actionable, not just labeled. */
+function fidelityReason(f: WireframeBlock['fidelity']): string {
+  if (f === 'isolated-preview') return 'Rendered outside the live app context (its providers/stores weren’t reachable) — may differ from production.'
+  if (f === 'placeholder') return 'Couldn’t render this component live here — it may not be imported in the running app, or it needs required props.'
+  return ''
+}
 
-const selectedIds = ref<string[]>([])
-const primaryBlock = computed(() => {
-  const id = selectedIds.value[selectedIds.value.length - 1]
-  return props.canvas?.blocks.find((b) => b.id === id && !b.deleted) ?? null
-})
-const isSelected = (id: string) => selectedIds.value.includes(id)
+// ── Selection (multi via shift-click / marquee) ───────────
+// State lives in the mode (props.selection) so undo/redo can restore it; the
+// component only adds editor-flag hygiene and focus on top.
+
+const selectedIds = computed(() => props.selection.selectedIds.value)
+const primaryBlock = computed(() => props.selection.primaryBlock.value)
+const isSelected = (id: string) => props.selection.isSelected(id)
+const selectedBlocks = () => props.selection.selectedBlocks()
 
 function select(id: string | null, additive = false): void {
-  noteEditing.value = false
-  mdEditing.value = false // the editor unmounts with the selection — never leave the flag set (it gates ALL canvas keys)
-  if (id === null) {
-    selectedIds.value = []
-    return
-  }
-  if (additive) {
-    selectedIds.value = isSelected(id)
-      ? selectedIds.value.filter((x) => x !== id)
-      : [...selectedIds.value, id]
-  } else if (!isSelected(id)) {
-    selectedIds.value = [id]
-  } else {
-    // Re-click inside a multi-selection keeps the group; promote to primary.
-    selectedIds.value = [...selectedIds.value.filter((x) => x !== id), id]
-  }
-  rootRef.value?.focus()
+  closeEditors()
+  props.selection.select(id, additive)
+  if (id !== null) rootRef.value?.focus()
 }
 
-function selectedBlocks(): WireframeBlock[] {
-  return (props.canvas?.blocks ?? []).filter((b) => isSelected(b.id) && !b.deleted)
+/** The note/markdown editors unmount with the selection — never leave a flag
+ *  set (it gates ALL canvas keys). Also called when undo/redo swaps selection
+ *  out from under an open editor. */
+function closeEditors(): void {
+  noteEditing.value = false
+  mdEditing.value = false
 }
+
+/** Focus the canvas root so keyboard shortcuts (Delete/Escape/arrow-nudge) work
+ *  immediately after a place-first drop/click — those go through
+ *  useWireframeMode.placeComponentBlock → selection.select directly, bypassing
+ *  the local select() wrapper (line below) that normally focuses on click. */
+function focusStage(): void {
+  rootRef.value?.focus()
+}
+defineExpose({ focusStage })
+
+// Undo/redo (and marquee) can change the primary block without going through
+// select() — close any open editor so a stale flag can't swallow keystrokes.
+watch(() => props.selection.primaryId.value, () => closeEditors())
 
 // ── Keyboard: delete / duplicate / Escape / arrow nudge ───
 
 function onKeydown(e: KeyboardEvent): void {
   // Typing/picking — keys belong to the inputs, never to block ops. The
-  // target check covers inputs that bubble from INSIDE the canvas root
-  // (GenerateComponentPanel, its embedded picker) — without it, Backspace in
-  // a prop field deletes the selected block.
+  // target check covers inputs that bubble from INSIDE the canvas root (the
+  // inline config popover, its embedded picker) — without it, Backspace in a
+  // prop field deletes the selected block. The popover also stops its own
+  // keydowns, but this is the backstop for focused non-field controls.
   const tag = (e.target as HTMLElement)?.tagName
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
   if (noteEditing.value || labelDraft.value !== null || mdEditing.value || dataPickerFor.value !== null) return
-  if (e.key === 'Escape' && placing.value) { props.generator?.cancelPlace(); return }
+  // Escape deselects, which closes the inline config popover (it's bound to the
+  // selection). The popover swallows its own Escape before it reaches here.
   if (e.key === 'Escape') { select(null); drawMode.value = false; return }
   if (props.building) return // sketch is locked while the agent implements it
   const blocks = selectedBlocks()
   if (blocks.length === 0) return
+  const mod = e.ctrlKey || e.metaKey
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault()
+    // begin/end collapses the per-block deletes into ONE undo step.
+    props.history.begin()
     for (const b of blocks) emit('delete-block', b.id)
+    props.history.end()
     select(null)
-  } else if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+  } else if (mod && (e.key === 'd' || e.key === 'D')) {
     e.preventDefault()
+    props.history.begin()
     for (const b of blocks) emit('duplicate-block', b.id)
+    props.history.end()
+  } else if (e.key === '[' || e.key === ']') {
+    e.preventDefault()
+    nudgeZOrder(blocks, e.key === ']', mod)
   } else if (e.key.startsWith('Arrow')) {
     e.preventDefault()
-    const step = e.shiftKey ? 10 : 1
+    // One coalesced entry per nudge burst (held/repeated keys merge); the
+    // rect updates themselves don't record.
+    props.history.record('nudge')
+    const step = e.shiftKey ? NUDGE_STEP_SHIFT_PX : NUDGE_STEP_PX
     const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
     const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
     for (const b of blocks) {
@@ -136,6 +183,23 @@ function onKeydown(e: KeyboardEvent): void {
       })
     }
   }
+}
+
+/** Z-order via keyboard: `]`/`[` step one layer, Ctrl/Cmd+`]`/`[` jump to
+ *  front/back. Processed in a z-order that preserves the group's relative
+ *  stacking; the whole batch is one undo step. */
+function nudgeZOrder(blocks: WireframeBlock[], forward: boolean, toEnd: boolean): void {
+  // front/back: stack so the originally-front block ends up front. forward/
+  // backward: step the trailing edge first so blocks don't leapfrog each other.
+  const ordered = [...blocks].sort((a, b) => (forward ? a.z - b.z : b.z - a.z))
+  props.history.begin()
+  for (const b of ordered) {
+    if (toEnd && forward) emit('bring-to-front', b.id)
+    else if (toEnd) emit('send-to-back', b.id)
+    else if (forward) emit('bring-forward', b.id)
+    else emit('send-backward', b.id)
+  }
+  props.history.end()
 }
 
 // ── Move / resize (window-level listeners) + snap guides ──
@@ -153,13 +217,11 @@ const dragState = ref<{
 function beginDrag(e: PointerEvent, b: WireframeBlock, mode: 'move' | 'resize', handle?: string): void {
   e.preventDefault()
   e.stopPropagation()
-  // Ghost placement wins over every block gesture: clicking anywhere on the
-  // canvas (including over an existing block) places the generated image.
-  if (placing.value) { void props.generator?.placeAt(stagePoint(e)); return }
   select(b.id, e.shiftKey)
   if (props.building) return // selection only — the sketch is locked
   if (e.shiftKey) return // shift-click is selection surgery, never a drag
-  if (mode === 'move') emit('bring-to-front', b.id)
+  // bring-to-front is deferred to the first actual move (onDragMove): a plain
+  // click must not bump z, so it leaves no undo step behind.
   const group = mode === 'move' ? selectedBlocks() : [b]
   dragState.value = {
     mode, handle,
@@ -177,9 +239,15 @@ function onDragMove(e: PointerEvent): void {
   if (!d) return
   let dx = e.clientX - d.startX
   let dy = e.clientY - d.startY
-  // 3px threshold separates click-to-select from an actual drag.
-  if (!d.moved && Math.abs(dx) + Math.abs(dy) < 3) return
-  d.moved = true
+  // Threshold separates click-to-select from an actual drag.
+  if (!d.moved && Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD_PX) return
+  if (!d.moved) {
+    d.moved = true
+    // First real movement: open ONE history entry for the whole gesture, then
+    // raise the grabbed block (the z-bump rides inside this same undo step).
+    props.history.begin()
+    if (d.mode === 'move') emit('bring-to-front', d.grabbedId)
+  }
 
   if (d.mode === 'move') {
     // Snap by the GRABBED block against everything outside the moving group
@@ -208,14 +276,16 @@ function onDragMove(e: PointerEvent): void {
   const item = d.items[0]
   let x = item.origX, y = item.origY, w = item.origW, h = item.origH
   const handle = d.handle || ''
-  if (handle.includes('e')) w = Math.max(24, item.origW + dx)
-  if (handle.includes('s')) h = Math.max(24, item.origH + dy)
-  if (handle.includes('w')) { w = Math.max(24, item.origW - dx); x = item.origX + item.origW - w }
-  if (handle.includes('n')) { h = Math.max(24, item.origH - dy); y = item.origY + item.origH - h }
+  if (handle.includes('e')) w = Math.max(MIN_BLOCK_PX, item.origW + dx)
+  if (handle.includes('s')) h = Math.max(MIN_BLOCK_PX, item.origH + dy)
+  if (handle.includes('w')) { w = Math.max(MIN_BLOCK_PX, item.origW - dx); x = item.origX + item.origW - w }
+  if (handle.includes('n')) { h = Math.max(MIN_BLOCK_PX, item.origH - dy); y = item.origY + item.origH - h }
   emit('update-rect', item.id, { x: Math.max(0, x), y: Math.max(0, y), width: w, height: h })
 }
 
 function onDragUp(): void {
+  // Commit the gesture's single undo entry (no-op if it never moved).
+  if (dragState.value?.moved) props.history.end()
   dragState.value = null
   snapGuides.value = []
   window.removeEventListener('pointermove', onDragMove)
@@ -319,7 +389,6 @@ function stagePoint(e: PointerEvent | DragEvent): { x: number; y: number } {
 }
 
 function onStagePointerDown(e: PointerEvent): void {
-  if (placing.value) { void props.generator?.placeAt(stagePoint(e)); return }
   stageStart = stagePoint(e)
   if (drawMode.value) {
     stageGesture = 'draw'
@@ -359,7 +428,7 @@ function onStageUp(): void {
 
   if (gesture === 'draw') {
     drawMode.value = false
-    if (draw && draw.width >= 24 && draw.height >= 24) {
+    if (draw && draw.width >= MIN_BLOCK_PX && draw.height >= MIN_BLOCK_PX) {
       labelRect.value = draw
       labelDraft.value = ''
       void nextTick(() => labelInputRef.value?.focus())
@@ -368,15 +437,14 @@ function onStageUp(): void {
   }
 
   // Marquee: a real sweep selects every intersecting block; a click clears.
-  if (marquee && marquee.width + marquee.height > 6) {
+  if (marquee && marquee.width + marquee.height > MARQUEE_MIN_PX) {
     const hit = visibleBlocks.value.filter((b) =>
       b.rect.x < marquee.x + marquee.width && b.rect.x + b.rect.width > marquee.x
       && b.rect.y < marquee.y + marquee.height && b.rect.y + b.rect.height > marquee.y,
     ).map((b) => b.id)
     // Direct selection change — same editor-flag hygiene as select().
-    noteEditing.value = false
-    mdEditing.value = false
-    selectedIds.value = marqueeAdditive ? [...new Set([...selectedIds.value, ...hit])] : hit
+    closeEditors()
+    props.selection.setSelection(marqueeAdditive ? [...new Set([...selectedIds.value, ...hit])] : hit)
     if (hit.length) rootRef.value?.focus()
   } else {
     select(null)
@@ -402,16 +470,6 @@ function onCanvasDrop(e: DragEvent): void {
   e.preventDefault()
   if (props.building) return
   emit('palette-drop', stagePoint(e))
-}
-
-// ── Ghost placement (generate-component flow's Place step) ──
-
-const placing = computed(() => props.generator?.session.value?.placing === true)
-const ghostPos = ref<{ x: number; y: number } | null>(null)
-
-function onStageHover(e: PointerEvent): void {
-  if (!placing.value) return
-  ghostPos.value = stagePoint(e)
 }
 
 function onRecaptureConfirmed(): void {
@@ -483,10 +541,9 @@ function onRecaptureConfirmed(): void {
       @dragenter.prevent
       @dragover.prevent
       @drop="onCanvasDrop">
-      <div ref="stageRef" class="wf-stage" :class="{ drawing: drawMode, placing }"
+      <div ref="stageRef" class="wf-stage" :class="{ drawing: drawMode }"
         :style="{ width: canvas.viewport.docWidth + 'px', height: canvas.viewport.docHeight + 'px' }"
-        @pointerdown.self="onStagePointerDown"
-        @pointermove="onStageHover">
+        @pointerdown.self="onStagePointerDown">
         <div v-for="b in visibleBlocks" :key="b.id"
           class="wf-block"
           :class="{ selected: isSelected(b.id), failed: !imageSrc(b) && b.kind === 'captured', placeholder: b.kind === 'placeholder', dragging: dragState?.moved && dragState.items.some((i) => i.id === b.id) }"
@@ -502,19 +559,29 @@ function onRecaptureConfirmed(): void {
                  verbatim body rides added.md; this is just the sketch view. -->
             <div v-if="b.md" class="wf-md-hint" v-html="safeMd(b.md)" />
           </div>
+          <!-- Palette block with no snapshot yet: honest placeholder while the
+               first render lands (place-first), or after a render produced no
+               pixels. Never a fabricated image. -->
+          <div v-else-if="b.kind === 'palette'" class="wf-palette-body">
+            <span class="wf-palette-label">{{ blockLabel(b) }}</span>
+            <span class="wf-palette-tag">{{ isGenerating(b) ? 'rendering…' : 'no render' }}</span>
+          </div>
           <div v-else class="wf-block-failed">
             <span>{{ b.captureError ? 'capture failed' : 'image missing' }}</span>
             <span class="wf-failed-label">{{ blockLabel(b) }}</span>
           </div>
+          <!-- Shimmer while this block's snapshot is rendering; the last-good
+               image (if any) stays visible underneath. -->
+          <div v-if="isGenerating(b)" class="wf-shimmer" data-testid="wf-shimmer" />
           <div v-if="b.clipped" class="wf-clipped-note" title="Block was taller than the capture cap — only the top is shown">clipped</div>
           <div v-if="b.note && primaryBlock?.id !== b.id" class="wf-note-chip" :title="b.note">
             <Icon name="pencil" :size="9" /> note
           </div>
-          <div v-if="b.kind === 'palette' && b.fidelity && b.fidelity !== 'live'" class="wf-fidelity-pill" :class="b.fidelity">
+          <div v-if="b.kind === 'palette' && b.fidelity && b.fidelity !== 'live'" class="wf-fidelity-pill" :class="b.fidelity" :title="fidelityReason(b.fidelity)">
             {{ b.fidelity === 'isolated-preview' ? 'isolated preview' : 'placeholder render' }}
           </div>
           <div v-if="b.data" class="wf-data-chip" :data-testid="`wf-data-chip-${b.id}`" :title="`bound to ${b.data.name}${b.data.path ? ' → ' + b.data.path : ''} [${b.data.shape_source}]`">
-            <Icon name="database" :size="9" /> {{ b.data.name }}<template v-if="b.data.path"> · {{ b.data.path }}</template>
+            <Icon name="database" :size="9" /> {{ b.data.name }}<template v-if="b.data.path"> · {{ b.data.path }}</template><template v-if="b.data.repeat && b.data.repeat > 1"> · ×{{ b.data.repeat }}</template>
           </div>
 
           <template v-if="primaryBlock?.id === b.id && selectedIds.length === 1">
@@ -528,15 +595,26 @@ function onRecaptureConfirmed(): void {
               <button class="wf-hbtn" data-testid="wf-note-btn" @pointerdown.stop @click.stop="openNote()" :title="b.note ? `Note: ${b.note}` : 'Add a note for the agent'">
                 <Icon name="pencil" :size="10" />
               </button>
-              <button v-if="b.kind === 'palette' && generator" class="wf-hbtn" data-testid="wf-configure-btn" @pointerdown.stop @click.stop="emit('configure-block', b.id)" title="Reconfigure — props, data binding, regenerate">
-                <Icon name="settings" :size="10" />
-              </button>
               <button v-if="b.kind === 'placeholder'" class="wf-hbtn" data-testid="wf-md-btn" @pointerdown.stop @click.stop="openMd()" :title="b.md ? 'Edit the section\'s markdown spec' : 'Write a markdown spec for this section'">
                 <Icon name="file-text" :size="10" />
               </button>
               <button v-if="b.kind === 'placeholder'" class="wf-hbtn" data-testid="wf-data-btn" @pointerdown.stop @click.stop="openDataPicker(b.id)" :title="b.data ? `Bound to ${b.data.name} — change or clear` : 'Bind a data source'">
                 <Icon name="database" :size="10" />
               </button>
+              <span class="wf-hbtn-sep" />
+              <button class="wf-hbtn" data-testid="wf-bring-to-front-btn" @pointerdown.stop @click.stop="emit('bring-to-front', b.id)" title="Bring to front (Ctrl+])">
+                <Icon name="bring-to-front" :size="10" />
+              </button>
+              <button class="wf-hbtn" data-testid="wf-bring-forward-btn" @pointerdown.stop @click.stop="emit('bring-forward', b.id)" title="Bring forward (])">
+                <Icon name="chevron-up" :size="10" />
+              </button>
+              <button class="wf-hbtn" data-testid="wf-send-backward-btn" @pointerdown.stop @click.stop="emit('send-backward', b.id)" title="Send backward ([)">
+                <Icon name="chevron-down" :size="10" />
+              </button>
+              <button class="wf-hbtn" data-testid="wf-send-to-back-btn" @pointerdown.stop @click.stop="emit('send-to-back', b.id)" title="Send to back (Ctrl+[)">
+                <Icon name="send-to-back" :size="10" />
+              </button>
+              <span class="wf-hbtn-sep" />
               <button class="wf-hbtn" data-testid="wf-duplicate-btn" @pointerdown.stop @click.stop="emit('duplicate-block', b.id)" title="Duplicate (Ctrl+D)">
                 <Icon name="copy" :size="10" />
               </button>
@@ -563,6 +641,12 @@ function onRecaptureConfirmed(): void {
                 @keydown.enter.ctrl.prevent="commitMd" @keydown.enter.meta.prevent="commitMd" @keydown.escape.stop="cancelMd" />
               <div v-else class="wf-md-preview" data-testid="wf-md-rendered" v-html="safeMd(mdDraft)" />
             </div>
+            <!-- Inline config popover — "configure on canvas" for palette blocks.
+                 Opens with the selection; Escape / close deselects. -->
+            <WireframeBlockPopover v-if="b.kind === 'palette' && generator"
+              :block="b" :generator="generator" :generating="isGenerating(b)"
+              :doc-height="canvas?.viewport.docHeight"
+              @close="select(null)" />
             <div class="resize-handle rh-n" @pointerdown.stop="beginDrag($event, b, 'resize', 'n')" />
             <div class="resize-handle rh-s" @pointerdown.stop="beginDrag($event, b, 'resize', 's')" />
             <div class="resize-handle rh-e" @pointerdown.stop="beginDrag($event, b, 'resize', 'e')" />
@@ -594,16 +678,8 @@ function onRecaptureConfirmed(): void {
             @keydown.enter.prevent="commitPlaceholder" @keydown.escape="cancelPlaceholder" @blur="commitPlaceholder" />
         </div>
 
-        <!-- Generated-image ghost riding the cursor during Place -->
-        <img v-if="placing && ghostPos && generator?.session.value?.generated?.dataUrl"
-          class="wf-ghost" data-testid="wf-ghost"
-          :src="generator.session.value.generated.dataUrl"
-          :style="{ left: ghostPos.x + 'px', top: ghostPos.y + 'px', width: (generator.session.value.generated.width ?? 320) + 'px' }"
-          alt="" draggable="false" />
       </div>
     </div>
-
-    <GenerateComponentPanel v-if="generator?.session.value" :generator="generator" />
 
     <div v-if="dataPickerFor" class="wf-picker-overlay" @pointerdown.self="dataPickerFor = null">
       <DataBindingPicker :initial="pickerInitial" @select="onBindingSelect" @clear="onBindingClear" @cancel="dataPickerFor = null" />
@@ -854,15 +930,44 @@ function onRecaptureConfirmed(): void {
   white-space: nowrap;
 }
 
-.wf-stage.placing { cursor: copy; }
+/* Palette block awaiting (or lacking) a snapshot — honest, never a fake image. */
+.wf-palette-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 4px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+.wf-palette-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.wf-palette-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
 
-.wf-ghost {
+/* Rendering shimmer — overlays the block (last-good image stays visible). */
+.wf-shimmer {
   position: absolute;
-  z-index: 10000;
-  opacity: 0.7;
+  inset: 0;
   pointer-events: none;
-  border: 1px dashed var(--accent);
   border-radius: 2px;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in srgb, var(--accent) 22%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 220% 100%;
+  animation: wf-shimmer-slide 1.1s ease-in-out infinite;
+}
+@keyframes wf-shimmer-slide {
+  from { background-position: 180% 0; }
+  to { background-position: -80% 0; }
 }
 
 .wf-block-header {
@@ -901,6 +1006,12 @@ function onRecaptureConfirmed(): void {
 }
 .wf-hbtn:hover { opacity: 1; }
 .wf-hbtn-danger:hover { color: var(--danger); }
+.wf-hbtn-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 3px;
+  background: color-mix(in srgb, var(--text-on-accent) 30%, transparent);
+}
 
 .wf-note-editor {
   position: absolute;

@@ -194,14 +194,23 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       // real source + the shape_source honesty tag.
       const mdFirstLine = b.md ? b.md.split('\n')[0].replace(/^#+\s*/, '').slice(0, 120) : ''
       const mdNote = b.md ? `; user wrote a markdown spec (rides added.md verbatim) — first line: "${mdFirstLine}"` : ''
-      const dataNote = b.data
-        ? `; bind to the ${b.data.kind} ${b.data.name}${b.data.path ? ` → ${b.data.path}` : ''}${b.data.fields?.length ? ` (show ${b.data.fields.join(', ')})` : ''} [shape: ${b.data.shape_source}]`
+      const mapNote = b.data?.propMap && Object.keys(b.data.propMap).length
+        ? `; map ${Object.entries(b.data.propMap).map(([prop, field]) => `${field}→${prop}`).join(', ')}`
         : ''
+      const loopNote = b.data?.path && b.data.path.includes('[]')
+        ? `; render a v-for over ${b.data.path} — render ALL items (the ×${b.data.repeat ?? 'N'} on the canvas is a sketch hint)`
+        : ''
+      const dataNote = b.data
+        ? `; bind to the ${b.data.kind} ${b.data.name}${b.data.path ? ` → ${b.data.path}` : ''}${b.data.fields?.length ? ` (show ${b.data.fields.join(', ')})` : ''}${mapNote}${loopNote} [shape: ${b.data.shape_source}]`
+        : ''
+      // Multi-MFE: name the owning package so the agent imports from it and
+      // scopes example search there (see WIREFRAME_APPLY.md).
+      const mfeNote = b.component?.mfe ? `; import from MFE "${b.component.mfe}"` : ''
       directions.push({
         id: `wd-${b.id}-add`,
         type: 'wireframe_direction',
         op: 'add',
-        description: `ADD ${what} ${where}${mdNote}${dataNote}${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `ADD ${what} ${where}${mdNote}${dataNote}${mfeNote}${b.note ? ` — user said: "${b.note}"` : ''}`,
         file: neighbor?.anchor?.file ?? '',
         section: 'template',
         line: neighbor?.anchor?.line ?? 0,
@@ -213,6 +222,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
           ...(componentName ? { componentName } : {}),
           ...(b.component?.library ? { library: b.component.library } : {}),
           ...(b.component?.module ? { module: b.component.module } : {}),
+          ...(b.component?.mfe ? { mfe: b.component.mfe } : {}),
           ...(b.component?.props ? { props: b.component.props } : {}),
           ...(b.component?.previewProps ? { previewProps: b.component.previewProps } : {}),
           ...(kind === 'placeholder' ? { label: ownLabel } : {}),

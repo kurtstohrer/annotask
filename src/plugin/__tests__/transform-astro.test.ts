@@ -119,6 +119,38 @@ describe('transformAstro', () => {
     expect(result).toContain('data-annotask-file="src/pages/index.astro"')
   })
 
+  it('does not treat a --- inside markup as frontmatter when none opens the file', () => {
+    const code = [
+      '<div>start</div>',
+      '---',
+      '<p>middle</p>',
+      '---',
+      '<div>end</div>',
+    ].join('\n')
+    const result = transform(code)!
+    // A bare indexOf('---') used to swallow everything between the two
+    // dashes as "frontmatter", leaving <p> uninstrumented.
+    expect(result).toMatch(/<p[^>]*data-annotask/)
+    const matches = result.match(/data-annotask-file/g)
+    expect(matches).toHaveLength(3)
+  })
+
+  it('anchors the frontmatter close to its own line', () => {
+    const code = [
+      '---',
+      'const divider = "a --- b"',
+      '---',
+      '<div>content</div>',
+      '---',
+      '<p>after</p>',
+    ].join('\n')
+    const result = transform(code)!
+    expect(result).toMatch(/<div[^>]*data-annotask/)
+    expect(result).toMatch(/<p[^>]*data-annotask/)
+    // The inline --- inside the frontmatter string must not close the block.
+    expect(result).toContain('const divider = "a --- b"')
+  })
+
   it('handles multiple markup regions between blocks', () => {
     const code = [
       '<header>top</header>',

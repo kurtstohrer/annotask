@@ -326,13 +326,19 @@ export function transformAstro(
   const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
 
-  // Find frontmatter block (--- ... ---)
+  // Find frontmatter block (--- ... ---). Astro frontmatter opens at the top
+  // of the file and both fences sit alone on their own lines — a bare
+  // indexOf('---') would mis-anchor on a `---` appearing later in markup
+  // content or inside a frontmatter string.
   const frontmatterRanges: Range[] = []
-  const fmStart = code.indexOf('---')
-  if (fmStart !== -1) {
-    const fmEnd = code.indexOf('---', fmStart + 3)
-    if (fmEnd !== -1) {
-      frontmatterRanges.push({ start: fmStart, end: fmEnd + 3 })
+  const fmOpen = code.match(/^\uFEFF?(?:[ \t]*\r?\n)*---\r?\n/)
+  if (fmOpen) {
+    const fmStart = fmOpen[0].indexOf('---')
+    const closeRe = /^---[ \t\r]*$/gm
+    closeRe.lastIndex = fmOpen[0].length
+    const fmClose = closeRe.exec(code)
+    if (fmClose) {
+      frontmatterRanges.push({ start: fmStart, end: fmClose.index + fmClose[0].length })
     }
   }
 

@@ -142,8 +142,13 @@ export interface AgentSpawnOptions {
    * index.ts uses it to finalize a task the client never transitioned (e.g.
    * the orchestrating tab closed mid-run) — it grace-checks "still in_progress?"
    * so a normal completion (client about to set `review`) is a no-op.
+   *
+   * `info.killed` is true when WE terminated the child (client disconnect,
+   * explicit abort, or the duration backstop) and false when it exited on its
+   * own — lets the finalizer word its reason honestly instead of always
+   * blaming a closed tab.
    */
-  onRunEnd?: (taskId: string) => void
+  onRunEnd?: (taskId: string, info: { killed: boolean }) => void
   /** Test seam: inject a child-process factory (defaults to node:child_process spawn). */
   spawnImpl?: typeof spawn
 }
@@ -544,7 +549,7 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
     // closed tab) can be reconciled server-side. Fired for normal completions
     // too — the handler grace-checks status, so those no-op.
     if (parsed.taskId) {
-      try { opts.onRunEnd?.(parsed.taskId) } catch { /* never let a sink break cleanup */ }
+      try { opts.onRunEnd?.(parsed.taskId, { killed }) } catch { /* never let a sink break cleanup */ }
     }
   }
 

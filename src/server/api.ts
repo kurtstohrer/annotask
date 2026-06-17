@@ -90,6 +90,8 @@ export interface APIOptions {
   snapshots: SnapshotStore
   /** Append-only token-usage ledger across init / task / apply runs. */
   usageLedger: UsageLedger
+  /** Health of the tasks.json write path — surfaced via GET /api/status. */
+  getPersistenceHealth?: () => { ok: boolean; consecutiveFailures: number; lastError: string | null }
 }
 
 const MAX_BODY_SIZE = 4_194_304
@@ -110,6 +112,22 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 function parseJSON(raw: string): { ok: true; data: unknown } | { ok: false } {
   try { return { ok: true, data: JSON.parse(raw) } } catch { return { ok: false } }
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+/**
+ * Decode a `data:image/png;base64,…` URL into a buffer, verifying the PNG
+ * signature — Buffer.from() tolerates malformed base64 (it pads/drops bytes),
+ * so a bare regex match isn't enough to keep garbage out of the .png files
+ * we serve back to the shell.
+ */
+function decodePngDataUrl(dataUrl: string): Buffer | null {
+  const match = dataUrl.match(/^data:image\/png;base64,(.+)$/)
+  if (!match) return null
+  const buffer = Buffer.from(match[1], 'base64')
+  if (buffer.length < PNG_SIGNATURE.length || !buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return null
+  return buffer
 }
 
 /**
@@ -673,6 +691,13 @@ export function createAPIMiddleware(options: APIOptions) {
     }
 
     if (path === 'design-session' && req.method === 'DELETE') {
+      // Never discard over a live, unsealed apply — reverting its files would
+      // clobber the agent's in-progress bytes (no hash guard yet). The shell
+      // disables Discard while a run is in flight; this backstops other callers.
+      const snap = await options.snapshots.state()
+      if (snap.batches.some((b) => b.status === 'running')) {
+        return sendError(res, 409, 'An apply is still running — wait for it to finish before discarding', 'conflict')
+      }
       const doc = await options.getDesignSession()
       const instanceIds = new Set(doc.entries.map((e) => e.instanceId).filter((id): id is string => typeof id === 'string'))
       let removedInstances = 0
@@ -826,9 +851,8 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
       const bodyResult = parseWith(UploadScreenshotBody, parsed.data)
       if (!bodyResult.ok) return sendError(res, 400, bodyResult.error)
-      const match = bodyResult.data.data.match(/^data:image\/png;base64,(.+)$/)
-      if (!match) return sendError(res, 400, 'Invalid PNG data URL')
-      const buffer = Buffer.from(match[1], 'base64')
+      const buffer = decodePngDataUrl(bodyResult.data.data)
+      if (!buffer) return sendError(res, 400, 'Invalid PNG data URL')
       if (buffer.length > 4 * 1024 * 1024) return sendError(res, 413, 'Screenshot too large (max 4MB)')
       const filename = `screenshot-${Date.now()}-${crypto.randomBytes(8).toString('hex')}.png`
       const dir = nodePath.join(options.projectRoot, '.annotask', 'screenshots')
@@ -848,9 +872,8 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
       const bodyResult = parseWith(UploadWireframeSnapshotBody, parsed.data)
       if (!bodyResult.ok) return sendError(res, 400, bodyResult.error)
-      const match = bodyResult.data.data.match(/^data:image\/png;base64,(.+)$/)
-      if (!match) return sendError(res, 400, 'Invalid PNG data URL')
-      const buffer = Buffer.from(match[1], 'base64')
+      const buffer = decodePngDataUrl(bodyResult.data.data)
+      if (!buffer) return sendError(res, 400, 'Invalid PNG data URL')
       if (buffer.length > 4 * 1024 * 1024) return sendError(res, 413, 'Snapshot too large (max 4MB)')
       const filename = `${bodyResult.data.id}.png`
       const dir = nodePath.join(options.projectRoot, '.annotask', 'wireframe-snapshots')
@@ -933,6 +956,16 @@ export function createAPIMiddleware(options: APIOptions) {
       if (updates.status === 'review' && taskBefore?.type === 'wireframe_apply') {
         try { await verifyAppliedEntries(options, id) }
         catch (err) { console.warn('[Annotask] apply verification failed:', err) }
+      }
+      // Abandoned run: a crashed/aborted seed run flipped the task back to
+      // 'pending', or the stall watchdog 'blocked' it — without ever reaching
+      // review. Return its 'applying' session entries to pending and seal the
+      // (possibly half-written) batch as failed so it stays revertible, instead
+      // of stranding entries in 'applying' forever.
+      if ((updates.status === 'pending' || updates.status === 'blocked')
+        && taskBefore?.type === 'wireframe_apply' && taskBefore?.status === 'in_progress') {
+        try { await releaseApplyTask(options, id) }
+        catch (err) { console.warn('[Annotask] apply release failed:', err) }
       }
       res.end(JSON.stringify(updated, null, 2))
       return
@@ -1214,7 +1247,17 @@ export function createAPIMiddleware(options: APIOptions) {
         await fsp.access(sentinel)
         sessionReset = true
       } catch { /* not present — normal case */ }
-      res.end(JSON.stringify({ status: 'ok', tool: 'annotask', sessionReset }))
+      const persistenceHealth = options.getPersistenceHealth?.()
+      res.end(JSON.stringify({
+        status: 'ok',
+        tool: 'annotask',
+        sessionReset,
+        // 'degraded' = task mutations are ACKed but failing to reach disk —
+        // a restart would lose them. Shell/CLI should surface this loudly.
+        persistence: persistenceHealth && !persistenceHealth.ok
+          ? { state: 'degraded', consecutiveFailures: persistenceHealth.consecutiveFailures, lastError: persistenceHealth.lastError }
+          : { state: 'ok' },
+      }))
       return
     }
 

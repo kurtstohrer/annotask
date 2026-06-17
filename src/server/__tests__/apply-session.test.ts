@@ -206,7 +206,7 @@ describe('apply-session', () => {
     expect((await options.getDesignSession()).entries).toEqual([])
   })
 
-  it('release (task deleted mid-run): applying entries return to pending; the batch stays revertible', async () => {
+  it('release (task deleted mid-run): applying entries return to pending; the batch seals failed and stays revertible', async () => {
     await seedSession([textEntry('se-1')])
     const result = await applyDesignSession(options, '/planets')
     if ('error' in result) throw new Error('apply failed')
@@ -219,8 +219,57 @@ describe('apply-session', () => {
     expect(session.entries[0].live.status).toBe('pending')
     expect(session.entries[0].taskId).toBeUndefined()
 
+    // The batch is sealed 'failed' (not left 'running'), so the undo guard lets
+    // it through — undo restores the clean pre-apply bytes despite the half-write.
     const snap = await options.snapshots.state()
     expect(snap.batches).toHaveLength(1)
+    expect(snap.batches[0].status).toBe('failed')
+    const undo = await revertApplyBatch(options, result.batchId)
+    expect(undo.reverted).toEqual(['src/Page.vue'])
+    expect(await fsp.readFile(path.join(root, 'src/Page.vue'), 'utf-8')).toBe(PAGE)
+  })
+
+  it('re-apply after deny re-seals the batch so undo stays byte-exact', async () => {
+    await seedSession([textEntry('se-1')])
+    const result = await applyDesignSession(options, '/planets')
+    if ('error' in result) throw new Error('apply failed')
+
+    // First agent run + review: the edit lands, the entry flips written.
+    await fsp.writeFile(path.join(root, 'src/Page.vue'), PAGE.replace('Planets', 'Worlds'), 'utf-8')
+    clearBindingClassifyCache()
+    await verifyAppliedEntries(options, result.taskId)
+    expect((await options.getDesignSession()).entries[0].live.status).toBe('written')
+
+    // User DENIES; the agent re-runs on the SAME task and writes DIFFERENT
+    // bytes, then review fires again. No entry is 'applying' now (it's written),
+    // so the re-seal must key off the task — otherwise lastAppliedHash stays at
+    // v1 while disk holds v2, and undo would falsely cry "edited outside Annotask".
+    await fsp.writeFile(path.join(root, 'src/Page.vue'), PAGE.replace('Planets', 'Galaxies'), 'utf-8')
+    clearBindingClassifyCache()
+    await verifyAppliedEntries(options, result.taskId)
+
+    const undo = await revertApplyBatch(options, result.batchId)
+    expect(undo.skipped).toEqual([])
+    expect(undo.reverted).toEqual(['src/Page.vue'])
+    expect(await fsp.readFile(path.join(root, 'src/Page.vue'), 'utf-8')).toBe(PAGE)
+  })
+
+  it('verify seals a pure-instances apply (no session entries) so its batch is revertible', async () => {
+    // Build-this-route: placements only, no panel edits — toVerify is empty, but
+    // the batch still needs a hash baseline or undo can't restore it.
+    const wf = await options.getWireframe()
+    await options.setWireframe({ ...wf, updatedAt: 1, routes: [{ route: '/planets', instances: [instance('wfi-1')] }] })
+    const result = await applyDesignSession(options, '/planets')
+    if ('error' in result) throw new Error('apply failed')
+
+    await fsp.writeFile(path.join(root, 'src/Page.vue'), PAGE.replace('Planets', 'Worlds'), 'utf-8')
+    await verifyAppliedEntries(options, result.taskId)
+
+    const snap = await options.snapshots.state()
+    expect(snap.batches[0].status).toBe('done')
+    const undo = await revertApplyBatch(options, result.batchId)
+    expect(undo.reverted).toEqual(['src/Page.vue'])
+    expect(await fsp.readFile(path.join(root, 'src/Page.vue'), 'utf-8')).toBe(PAGE)
   })
 
   describe('wireframe directions (W3)', () => {
@@ -303,7 +352,10 @@ describe('apply-session', () => {
       const result = await applyDesignSession(options, '/planets')
       if ('error' in result) throw new Error(result.error)
 
+      // Agent rewrites, then review seals the batch — undo is only reachable on
+      // a sealed batch (the running-batch guard refuses an unsealed one).
       await fsp.writeFile(path.join(root, 'src/Page.vue'), '<template><p>agent rewrote</p></template>', 'utf-8')
+      await verifyAppliedEntries(options, result.taskId)
       const reverted = await revertApplyBatch(options, result.batchId)
       expect(reverted.reverted).toEqual(['src/Page.vue'])
       expect(await fsp.readFile(path.join(root, 'src/Page.vue'), 'utf-8')).toBe(before)

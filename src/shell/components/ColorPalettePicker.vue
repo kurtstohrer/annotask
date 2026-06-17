@@ -334,7 +334,7 @@ onUnmounted(() => {
 }
 .var-swatch:hover { background: var(--surface-2); border-color: var(--border); }
 .var-swatch.selected { border-color: var(--accent); }
-.var-color { width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.08); }
+.var-color { width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--text) 8%, transparent); }
 .var-name { font-size: 11px; color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace; flex: 1; text-align: left; }
 .var-hex { font-size: 9px; color: var(--text-muted); font-family: 'SF Mono', 'Fira Code', monospace; }
 

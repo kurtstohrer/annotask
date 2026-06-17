@@ -14,6 +14,7 @@ export interface KeyboardShortcutDeps {
   groupRects: Ref<unknown[]>
   activePanel: Ref<'inspector' | 'tasks'>
   doUndo: () => void
+  doRedo: () => void
   cancelSnip: () => void
   cancelPendingTask: () => void
   layoutOverlayToggle: () => void
@@ -24,8 +25,15 @@ export function useKeyboardShortcuts(deps: KeyboardShortcutDeps) {
 
   function onShellKeyDown(e: KeyboardEvent) {
     const mod = e.ctrlKey || e.metaKey
+    const k = e.key.toLowerCase()
 
-    if (mod && e.key === 'z' && !e.shiftKey) {
+    // Redo before undo so Ctrl/Cmd+Shift+Z isn't swallowed by the undo branch.
+    if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) {
+      e.preventDefault()
+      deps.doRedo()
+      return
+    }
+    if (mod && k === 'z' && !e.shiftKey) {
       e.preventDefault()
       deps.doUndo()
       return

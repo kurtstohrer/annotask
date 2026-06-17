@@ -78,6 +78,7 @@ export function useOverlayLoop(deps: OverlayLoopDeps): OverlayLoop {
   const { active, refresh, inputs, isIdle, onDeactivate } = deps
 
   let loopRunning = false
+  let rafHandle: number | null = null
   let refreshInFlight = false
   let lastRunAt = 0
 
@@ -96,26 +97,34 @@ export function useOverlayLoop(deps: OverlayLoopDeps): OverlayLoop {
     }
   }
 
+  function stopLoop(): void {
+    loopRunning = false
+    if (rafHandle !== null) {
+      cancelAnimationFrame(rafHandle)
+      rafHandle = null
+    }
+  }
+
   function startLoop(): void {
     if (loopRunning || !active.value || idle()) return
     loopRunning = true
     const tick = () => {
       if (!active.value || idle()) {
-        loopRunning = false
+        stopLoop()
         return
       }
       // Skip work while the tab is backgrounded, but keep the rAF alive so the
       // loop resumes the instant the tab is visible again.
       if (typeof document !== 'undefined' && document.hidden) {
-        requestAnimationFrame(tick)
+        rafHandle = requestAnimationFrame(tick)
         return
       }
       // Rate-cap the bridge round-trip to ~30fps. Always refreshes (no
       // staleness) — just not on every single animation frame.
       if (nowMs() - lastRunAt >= MIN_REFRESH_INTERVAL_MS) runOnce()
-      requestAnimationFrame(tick)
+      rafHandle = requestAnimationFrame(tick)
     }
-    requestAnimationFrame(tick)
+    rafHandle = requestAnimationFrame(tick)
   }
 
   function kick(): void {
@@ -128,7 +137,10 @@ export function useOverlayLoop(deps: OverlayLoopDeps): OverlayLoop {
     if (v && !old) {
       kick()
     } else if (!v && old) {
-      loopRunning = false
+      // Cancel the queued tick too — a bare `loopRunning = false` leaves one
+      // frame in flight, and a reactivate before it fires would stack a second
+      // loop on top of it.
+      stopLoop()
       onDeactivate?.()
     }
   })

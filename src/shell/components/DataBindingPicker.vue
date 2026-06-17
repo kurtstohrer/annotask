@@ -16,7 +16,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import Icon from './Icon.vue'
-import { flattenShape, fieldCandidates, buildBinding, type ShapeRow } from '../utils/bindingShape'
+import { flattenShape, fieldCandidates, sampleRows, buildBinding, type ShapeRow } from '../utils/bindingShape'
 import type { DataSourceShape, DataShapeNode, ProjectDataEntry } from '../../schema'
 import type { WireframeDataBinding } from '../../shared/wireframe-types'
 
@@ -159,7 +159,17 @@ function confirm(): void {
   const fields = usingTree
     ? [...pickedFields.value]
     : freeFields.value.split(',').map(f => f.trim()).filter(Boolean)
-  emit('select', buildBinding(entry, { path, fields, shape_source: s.shape_source }))
+  // Pull REAL contract example rows for the preview (api-schema only); default a
+  // sketch repeat for a list path. propMap is mapped later in the popover.
+  const sample = usingTree && pickedNode.value ? sampleRows(pickedNode.value, fields, 5) : []
+  const isList = path.includes('[]')
+  emit('select', buildBinding(entry, {
+    path,
+    fields,
+    shape_source: s.shape_source,
+    ...(sample.length > 0 ? { sample } : {}),
+    ...(isList ? { repeat: 3 } : {}),
+  }))
 }
 </script>
 

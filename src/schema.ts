@@ -255,6 +255,10 @@ export interface WireframeDirectionChange extends BaseChange {
     componentName?: string
     library?: string
     module?: string
+    /** Owning MFE id in a multi-MFE workspace — the package the agent must
+     *  import the component from (and scope example search to). Absent in
+     *  single-MFE projects; codegen then uses library/module as before. */
+    mfe?: string
     props?: Record<string, unknown>
     previewProps?: Record<string, unknown>
     /** placeholder: the user's label, verbatim. Stays visibly a placeholder. */
@@ -579,6 +583,11 @@ export interface DataShapeNode {
   item?: DataShapeNode
   /** Named type (cycle marker / GraphQL $type), when kind 'ref'. */
   ref?: string
+  /** Example/default value declared by the API contract at this node — REAL
+   *  contract sample data (api-schema tier only), used to preview bound props
+   *  honestly. For an array, an example array of items when the schema provides
+   *  one. Never synthesized. */
+  example?: unknown
 }
 
 /**

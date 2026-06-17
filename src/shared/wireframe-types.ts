@@ -41,6 +41,19 @@ export interface WireframeDataBinding {
    *  'api-schema' (real contract) | 'source-details' (regex inference,
    *  confidence attached) | 'none' (user typed the path blind). */
   shape_source: 'api-schema' | 'source-details' | 'none'
+  /** Maps a component PROP name → a data FIELD within the bound item
+   *  (e.g. { label: 'name', value: 'type' }). Drives the preview's bound
+   *  values; the agent wires the real binding from it at apply. Components
+   *  only — drawn sections describe content via `md`, not props. */
+  propMap?: Record<string, string>
+  /** For a LIST binding (`path` ends '[]'): how many instances to SKETCH on the
+   *  canvas (the repeated v-for elements). A hint only — at apply the agent
+   *  renders a real loop over the whole `path`, not literally N copies. */
+  repeat?: number
+  /** Up to a few REAL example rows pulled from the API contract at pick time
+   *  (api-schema tier only) — drives the preview's bound values and gives the
+   *  agent honest sample context. NEVER fabricated; absent for lower tiers. */
+  sample?: Record<string, unknown>[]
 }
 
 /** Runtime mirror of DataSource['kind'] — typed against the union so schema
@@ -62,6 +75,17 @@ export function isWireframeDataBinding(value: unknown): value is WireframeDataBi
   if (b.fields !== undefined) {
     if (!Array.isArray(b.fields)) return false
     if (!(b.fields as unknown[]).every((f) => typeof f === 'string' && !!f)) return false
+  }
+  if (b.propMap !== undefined) {
+    if (!b.propMap || typeof b.propMap !== 'object' || Array.isArray(b.propMap)) return false
+    for (const v of Object.values(b.propMap as Record<string, unknown>)) {
+      if (typeof v !== 'string' || !v) return false
+    }
+  }
+  if (b.repeat !== undefined && (typeof b.repeat !== 'number' || !Number.isFinite(b.repeat) || b.repeat < 1)) return false
+  if (b.sample !== undefined) {
+    if (!Array.isArray(b.sample)) return false
+    if (!(b.sample as unknown[]).every((r) => !!r && typeof r === 'object' && !Array.isArray(r))) return false
   }
   return true
 }
@@ -182,6 +206,10 @@ export interface WireframePaletteRef {
   module?: string
   props?: Record<string, unknown>
   previewProps?: Record<string, unknown>
+  /** Owning MFE id, stamped at place time so apply-time codegen imports from
+   *  the correct package in a multi-MFE workspace. Absent in single-MFE/legacy
+   *  docs — codegen then falls back to library/module exactly as before. */
+  mfe?: string
 }
 
 export interface WireframeBlock {

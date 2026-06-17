@@ -397,6 +397,36 @@ const filteredLibraries = computed<LibraryCatalog[]>(() => {
     .filter(lib => lib.components.length > 0)
 })
 
+/** Predict whether a palette component can render a LIVE snapshot on the CURRENT
+ *  iframe surface, and which MFE owns it. There is exactly one active surface and
+ *  one global component registry, so a Project component defined in / used only by
+ *  a DIFFERENT MFE isn't reachable here — mark it unavailable (honest) but still
+ *  report its owning MFE so apply-time codegen imports from the right package.
+ *  Third-party libraries are left renderable: the registry is the real arbiter we
+ *  can't see statically, and over-blocking a shared design system would make the
+ *  palette feel broken. Returns renderable:true / owningMfe:null in single-MFE or
+ *  non-workspace projects (no gating). The owning MFE comes from the component's
+ *  workspace-relative usage files (the same signal filteredLibraries trusts) plus
+ *  its definition file when that is workspace-relative. */
+function surfaceRenderInfo(libName: string, c: LibraryComponent): { renderable: boolean; owningMfe: string | null } {
+  const ws = useWorkspace()
+  if (!ws.hasAnyMfes.value) return { renderable: true, owningMfe: null }
+  const cur = ws.currentMfe.value
+  // Only the project's own components are gated cross-MFE; installed libraries
+  // are assumed available across surfaces.
+  if (libName !== 'Project') return { renderable: true, owningMfe: cur }
+  const mfes = new Set<string>()
+  for (const f of filesForLibComponent(libName, c.name)) {
+    const id = ws.mfeForFile(f)
+    if (id) mfes.add(id)
+  }
+  const srcMfe = c.sourceFile ? ws.mfeForFile(c.sourceFile) : null
+  if (srcMfe) mfes.add(srcMfe)
+  if (mfes.size === 0) return { renderable: true, owningMfe: null } // unattributed → allow
+  if (cur && mfes.has(cur)) return { renderable: true, owningMfe: cur }
+  return { renderable: false, owningMfe: [...mfes][0] }
+}
+
 function select(libraryName: string, componentName: string): void {
   selectedKey.value = `${libraryName}:::${componentName}`
   selectedLibrary.value = libraryName
@@ -604,5 +634,6 @@ export function useComponentLibrary(iframe?: ReturnType<typeof useIframeManager>
     isUsedInLib,
     isOnPageInLib,
     filesForLibComponent,
+    surfaceRenderInfo,
   }
 }

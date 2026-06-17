@@ -81,6 +81,57 @@ export function fieldCandidates(node: DataShapeNode): string[] {
     .map(([key]) => key)
 }
 
+function asScalar(v: unknown): string | number | boolean | undefined {
+  return (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') ? v : undefined
+}
+
+/**
+ * Up to `n` REAL example rows for the picked node, drawn from the API contract's
+ * `example`/`default` values (never synthesized). Used to preview bound props on
+ * the wireframe canvas. Precedence: an array example of objects (distinct rows)
+ * → a single object example → per-field examples on the item's children. Returns
+ * [] when the contract carries no examples (the caller falls back to `{field}`
+ * tokens). Only scalar field values are kept, so a row is a flat prop bag.
+ */
+export function sampleRows(node: DataShapeNode | null | undefined, fields: string[], n: number): Record<string, unknown>[] {
+  if (!node || n <= 0) return []
+  const item = node.kind === 'array' ? node.item : node
+  const keys = fields.length > 0 ? fields : fieldCandidates(node)
+  if (keys.length === 0) return []
+
+  const pick = (obj: unknown): Record<string, unknown> | null => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null
+    const row: Record<string, unknown> = {}
+    let any = false
+    for (const k of keys) {
+      const v = asScalar((obj as Record<string, unknown>)[k])
+      if (v !== undefined) { row[k] = v; any = true }
+    }
+    return any ? row : null
+  }
+
+  // 1) Array example of objects — the richest source (distinct rows).
+  const arrEx = node.kind === 'array' ? node.example : undefined
+  if (Array.isArray(arrEx)) {
+    const rows = arrEx.slice(0, n).map(pick).filter((r): r is Record<string, unknown> => !!r)
+    if (rows.length) return rows
+  }
+  // 2) A single object example (the item shape, or the node itself).
+  const objRow = pick(item?.example ?? (node.kind === 'object' ? node.example : undefined))
+  if (objRow) return [objRow]
+  // 3) Per-field examples on the item's children.
+  if (item?.kind === 'object' && item.children) {
+    const row: Record<string, unknown> = {}
+    let any = false
+    for (const k of keys) {
+      const v = asScalar(item.children[k]?.example)
+      if (v !== undefined) { row[k] = v; any = true }
+    }
+    if (any) return [row]
+  }
+  return []
+}
+
 /**
  * Assemble a plain-JSON WireframeDataBinding from a catalog entry + the
  * picker's selection. Validates before returning — an invalid binding here is
@@ -89,7 +140,17 @@ export function fieldCandidates(node: DataShapeNode): string[] {
  */
 export function buildBinding(
   entry: Pick<ProjectDataEntry, 'kind' | 'name' | 'file' | 'endpoint'>,
-  sel: { path?: string; fields?: string[]; shape_source: WireframeDataBinding['shape_source'] },
+  sel: {
+    path?: string
+    fields?: string[]
+    shape_source: WireframeDataBinding['shape_source']
+    /** REAL contract example rows (api-schema tier) for the preview. */
+    sample?: Record<string, unknown>[]
+    /** Sketch instance count for a list binding. */
+    repeat?: number
+    /** prop→field map (usually set later in the popover, preserved here). */
+    propMap?: Record<string, string>
+  },
 ): WireframeDataBinding {
   const fields = (sel.fields ?? []).map(f => f.trim()).filter(Boolean)
   const path = sel.path?.trim()
@@ -103,6 +164,9 @@ export function buildBinding(
     ...(path ? { path } : {}),
     ...(fields.length > 0 ? { fields } : {}),
     shape_source: sel.shape_source,
+    ...(sel.sample && sel.sample.length > 0 ? { sample: sel.sample } : {}),
+    ...(sel.repeat && sel.repeat > 1 ? { repeat: sel.repeat } : {}),
+    ...(sel.propMap && Object.keys(sel.propMap).length > 0 ? { propMap: sel.propMap } : {}),
   }
   const plain = JSON.parse(JSON.stringify(binding)) as WireframeDataBinding
   if (!isWireframeDataBinding(plain)) {

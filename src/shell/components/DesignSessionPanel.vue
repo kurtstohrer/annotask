@@ -72,21 +72,27 @@ async function onDiscard() {
     <div class="session-actions">
       <button
         class="session-apply"
-        :disabled="session.applying.value || pendingEntries.length === 0"
+        :disabled="session.applyInFlight.value || pendingEntries.length === 0"
         :title="pendingEntries.length === 0
           ? 'No pending edits — make a change in the properties panel or drop a component'
           : 'Snapshot the touched files and hand the pending edits to the agent to write into source'"
         @click="onApply"
-      >{{ session.applying.value ? 'Applying…' : `Apply ${pendingEntries.length || ''} edit${pendingEntries.length === 1 ? '' : 's'} (agent)` }}</button>
+      >{{ session.applyInFlight.value ? 'Applying…' : `Apply ${pendingEntries.length || ''} edit${pendingEntries.length === 1 ? '' : 's'} (agent)` }}</button>
       <button
         v-if="lastBatch"
         class="session-undo"
-        title="Restore the files this apply touched to their pre-apply bytes"
+        :disabled="session.applyInFlight.value"
+        :title="session.applyInFlight.value
+          ? 'Wait for the current apply to finish before undoing'
+          : 'Restore the files this apply touched to their pre-apply bytes'"
         @click="session.undoLastBatch()"
       >Undo last apply</button>
       <button
         class="session-discard"
-        title="Restore every touched file to its session-start bytes and remove session placements"
+        :disabled="session.applyInFlight.value"
+        :title="session.applyInFlight.value
+          ? 'Wait for the current apply to finish before discarding'
+          : 'Restore every touched file to its session-start bytes and remove session placements'"
         @click="confirmingDiscard = true"
       >Discard session</button>
     </div>

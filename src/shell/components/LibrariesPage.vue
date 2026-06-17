@@ -330,7 +330,7 @@ onMounted(refresh)
 .comp-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .used-badge {
   font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
-  color: #22c55e; background: rgba(34, 197, 94, 0.1);
+  color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent);
   padding: 1px 5px; border-radius: 3px; flex-shrink: 0;
 }
 .comp-prop-count {
@@ -357,9 +357,9 @@ onMounted(refresh)
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
   white-space: pre; overflow-x: auto;
 }
-.syn-kw { color: #c792ea; }
+.syn-kw { color: var(--purple); }
 .syn-name { color: var(--accent); }
-.syn-str { color: #c3e88d; }
+.syn-str { color: var(--syntax-string); }
 
 .detail-section { }
 .section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -378,11 +378,11 @@ onMounted(refresh)
 .props-table th:last-child { border-radius: 0 6px 0 0; }
 .props-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .props-table tr:last-child td { border-bottom: none; }
-.props-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+.props-table tbody tr:hover { background: color-mix(in srgb, var(--text) 2%, transparent); }
 
 .prop-name { font-size: 13px; color: var(--accent); font-weight: 600; }
 .prop-type { font-size: 12px; color: var(--text-muted); word-break: break-all; }
-.req-badge { font-size: 10px; font-weight: 700; color: #f59e0b; text-transform: uppercase; }
+.req-badge { font-size: 10px; font-weight: 700; color: var(--warning); text-transform: uppercase; }
 .prop-default { font-size: 12px; color: var(--text-muted); }
 
 /* Context explanation page */
@@ -395,19 +395,19 @@ onMounted(refresh)
   margin: 0 0 16px;
   font-size: 20px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text);
 }
 .context-page p {
   margin: 0 0 12px;
   font-size: 14px;
-  color: #ccc;
+  color: var(--text-muted);
   line-height: 1.7;
 }
 .context-page h3 {
   margin: 0 0 8px;
   font-size: 14px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text);
 }
 
 /* Flow diagram */
@@ -448,7 +448,7 @@ onMounted(refresh)
   display: flex; flex-direction: column; gap: 6px;
 }
 .context-section li {
-  font-size: 14px; color: #ccc; line-height: 1.6;
+  font-size: 14px; color: var(--text-muted); line-height: 1.6;
 }
 .context-section code {
   font-family: 'SF Mono', 'Fira Code', Consolas, monospace;

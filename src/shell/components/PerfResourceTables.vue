@@ -91,7 +91,7 @@ function shortenUrl(url: string): string {
 .resource-table { margin-top: 6px; font-size: 10px; }
 .resource-header, .resource-row { display: grid; grid-template-columns: 1fr 60px 60px 60px; gap: 4px; padding: 3px 0; }
 .resource-header { font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--border); text-transform: uppercase; font-size: 9px; }
-.resource-row { color: var(--text); border-bottom: 1px solid rgba(255,255,255,0.04); }
+.resource-row { color: var(--text); border-bottom: 1px solid color-mix(in srgb, var(--text) 4%, transparent); }
 .resource-row.heavy { color: var(--warning); }
 .res-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .res-type { color: var(--text-muted); }

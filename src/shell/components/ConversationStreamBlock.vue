@@ -13,8 +13,8 @@
  * completed state in one row without a second component.
  */
 import { computed, ref } from 'vue'
-import { marked } from 'marked'
 import Icon from './Icon.vue'
+import { safeMd } from '../utils/safeMd'
 import type { WorkStreamBlock } from '../../shared/work-stream'
 
 interface Props {
@@ -30,7 +30,7 @@ const expanded = ref(false)
 
 const markdown = computed(() => {
   if (props.block.kind !== 'text') return ''
-  try { return marked.parse(props.block.text, { async: false }) as string }
+  try { return safeMd(props.block.text) }
   catch { return '' }
 })
 

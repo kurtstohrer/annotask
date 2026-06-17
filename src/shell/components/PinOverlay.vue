@@ -44,12 +44,12 @@ const emit = defineEmits<{
   justify-content: center;
   cursor: pointer;
   transform: translate(-11px, -11px);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 6px var(--shadow);
   transition: all 0.15s;
   border: 2px solid white;
 }
 .pin:hover { transform: translate(-11px, -11px) scale(1.2); }
-.pin.selected { background: var(--pin-color); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pin-color) 30%, transparent), 0 2px 6px rgba(0,0,0,0.3); }
+.pin.selected { background: var(--pin-color); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pin-color) 30%, transparent), 0 2px 6px var(--shadow); }
 .pin.has-action { background: var(--purple); }
 .pin.has-note.has-action { background: var(--purple); }
 

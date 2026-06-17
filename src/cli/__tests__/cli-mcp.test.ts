@@ -118,6 +118,7 @@ function makeOptions() {
     snapshots: {
       snapshotFiles: async () => undefined,
       sealBatch: async () => undefined,
+      sealBatchByTask: async () => undefined,
       revertBatch: async () => ({ reverted: [], skipped: [] }),
       revertAll: async () => ({ reverted: [], skipped: [] }),
       commit: async () => undefined,

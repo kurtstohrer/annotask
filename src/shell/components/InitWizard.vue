@@ -2120,7 +2120,7 @@ function close() {
 .init-guide-mode.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  box-shadow: 0 1px 3px var(--shadow);
 }
 
 .init-style-guide {

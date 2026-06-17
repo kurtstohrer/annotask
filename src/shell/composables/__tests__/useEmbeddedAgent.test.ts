@@ -30,11 +30,14 @@ vi.mock('../useTasks', () => ({
 // Mock the provider factory so `runOne()` doesn't try to hit a real API.
 // We return a provider that emits a single text block then `done` — enough
 // for the seed-run lifecycle assertions.
+// The real provider stream is a `type`-tagged event union (text | tool_call |
+// tool_result | usage | error | done) — type the double openly so individual
+// tests can yield any variant (e.g. a `usage` event) without fighting inference.
 const providerStreamMock = vi.fn(async function* (
   _messages?: unknown,
   _tools?: unknown,
   _options?: { signal?: AbortSignal },
-) {
+): AsyncGenerator<{ type: string; [k: string]: unknown }> {
   yield { type: 'text', text: 'All set.' }
   yield { type: 'done', stopReason: 'end_turn' }
 })
@@ -339,6 +342,90 @@ describe('useEmbeddedAgent — seed run error paths', () => {
     expect(useAgentMode().activeRuns.value.has('task-test')).toBe(false)
     // No system message either — the error strip is enough for a chat turn.
     expect(thread.appended.some((m) => m.role === 'system')).toBe(false)
+  })
+})
+
+describe('useEmbeddedAgent — seed run abort', () => {
+  it('reverts the task to pending when a seed run is aborted (Stop / requestAutoRunCancel)', async () => {
+    // Regression: a deliberate abort ends the stream as `done`/'aborted' with
+    // no watchdogReason. Before the fix this fell through every terminal
+    // branch, leaving the task stranded in_progress for the server to
+    // mislabel "tab was likely closed". It must now release the lock to
+    // pending — same recovery as the error path.
+    tasksRef.value = [{ id: 'task-test', status: 'in_progress', description: 'x' }]
+    providerStreamMock.mockImplementationOnce(async function* (
+      _m?: unknown, _t?: unknown, options?: { signal?: AbortSignal },
+    ) {
+      yield { type: 'text', text: 'working…' }
+      await new Promise<void>((resolve) => {
+        if (options?.signal?.aborted) { resolve(); return }
+        options?.signal?.addEventListener('abort', () => resolve())
+      })
+      // Local CLI providers normalize an aborted run to a clean done/'aborted'
+      // event (they don't throw) — mirror that so we exercise the gap.
+      yield { type: 'done', stopReason: 'aborted' }
+    })
+    const agent = useEmbeddedAgent(makeStubThread())
+
+    const run = agent.send('Do the thing.', { isSeed: true })
+    await new Promise((r) => setTimeout(r, 0))
+    agent.abort()
+    await run
+
+    expect(agent.status.value).toBe('aborted')
+    expect(abortRunMock).toHaveBeenCalled()
+    expect(updateTaskStatusMock).toHaveBeenCalledWith('task-test', 'pending')
+    expect(useAgentMode().activeRuns.value.has('task-test')).toBe(false)
+  })
+})
+
+describe('useEmbeddedAgent — usage accounting (no double-count across turns)', () => {
+  it('keeps usage per-turn so a 2-turn conversation sums to the true total, not 2x', async () => {
+    // Each turn emits its OWN usage event. Before the fix, `usage` accumulated
+    // across every turn and was never reset, so turn 2's persisted message
+    // carried turn-1+turn-2 tokens AND the live accumulator still held the
+    // running total — the header (persisted-message sum + live accumulator)
+    // showed ~2x. The invariant: each persisted message holds exactly its own
+    // turn, and the live accumulator is zeroed once the turn is persisted.
+    providerStreamMock.mockImplementation(async function* () {
+      yield { type: 'text', text: 'turn output' }
+      yield { type: 'usage', inputTokens: 100, outputTokens: 30 }
+      yield { type: 'done', stopReason: 'end_turn' }
+    })
+    const thread = makeStubThread()
+    const agent = useEmbeddedAgent(thread)
+
+    await agent.send('first turn')
+    // After the turn persists, the live accumulator is cleared (so the idle
+    // gap between turns can't double-count it against the persisted message).
+    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+
+    await agent.send('second turn')
+    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+
+    // Each assistant turn's persisted message carries exactly its OWN turn's
+    // tokens — never the running cumulative — so the header summing them lands
+    // on the true total (200 in / 60 out), not 2x turn-1.
+    const usages = thread.messages.value
+      .filter((m) => m.role === 'assistant' && m.usage)
+      .map((m) => m.usage!)
+    expect(usages).toHaveLength(2)
+    for (const u of usages) {
+      expect(u.inputTokens).toBe(100)
+      expect(u.outputTokens).toBe(30)
+    }
+    const totalIn = usages.reduce((s, u) => s + (u.inputTokens || 0), 0) + agent.usage.value.input
+    const totalOut = usages.reduce((s, u) => s + (u.outputTokens || 0), 0) + agent.usage.value.output
+    expect(totalIn).toBe(200)
+    expect(totalOut).toBe(60)
+
+    // Restore the suite default — this test installed a persistent
+    // implementation (both turns needed it); `mockClear()` in beforeEach only
+    // resets call history, not the implementation.
+    providerStreamMock.mockImplementation(async function* () {
+      yield { type: 'text', text: 'All set.' }
+      yield { type: 'done', stopReason: 'end_turn' }
+    })
   })
 })
 
