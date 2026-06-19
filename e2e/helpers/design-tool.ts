@@ -2,11 +2,10 @@ import type { Page, APIRequestContext } from '@playwright/test'
 
 /**
  * Shared helpers for the design-tool e2e suites — the repo's first
- * task-creating/editing e2e. Encodes the hard-won gotchas from
- * todo/wireframe-to-design-tool.md: boot the wanted view via localStorage
- * BEFORE the shell loads, dismiss the InitWizard via the API (with an Origin
- * header), never trust networkidle (the shell holds a WebSocket), and count
- * framenavigated to prove edits are reload-free.
+ * task-creating/editing e2e. Encodes the hard-won gotchas: boot the wanted
+ * view via localStorage BEFORE the shell loads, dismiss the InitWizard via
+ * the API (with an Origin header), never trust networkidle (the shell holds a
+ * WebSocket), and count framenavigated to prove edits are reload-free.
  */
 
 export const PLANETS_FIXTURE = {

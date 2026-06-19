@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Reset the marketing playground for the wireframe hero demo
-# ("Freeze. Sketch. Real." — see demo_plan.md).
+# ("Freeze. Sketch. Real.").
 #
 # Unlike scripts/demo-reset.sh (which restores the DEGRADED `demo/marketing-before`
 # tag for the AI-first-draft clips), the hero's "before" state is simply HEAD:
