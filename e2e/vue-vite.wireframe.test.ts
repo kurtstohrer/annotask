@@ -233,7 +233,9 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
   // usePlanets resolves 'api-schema' without the FastAPI running), live-
   // regenerates the snapshot, survives a reload, and regenerates in place when
   // the popover is reopened on the existing block.
-  test('place-first config binds a data source and survives reload', async ({ page, request }) => {
+  // Data binding is gated off this release (see wireframeFeatures.ts →
+  // WIREFRAME_DATA_BINDING_ENABLED); re-enable this spec when the flag flips on.
+  test.skip('place-first config binds a data source and survives reload', async ({ page, request }) => {
     test.setTimeout(120_000)
     await page.setViewportSize({ width: 1600, height: 900 })
     await bootDesignShell(page)
@@ -334,7 +336,7 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
   })
 
   // W4: marquee multi-select, group nudge, explode-to-children, viewport label.
-  test('multi-select, nudge, and explode refine the sketch', async ({ page, request }) => {
+  test('multi-select and group-nudge refine the sketch', async ({ page, request }) => {
     test.setTimeout(120_000)
     await bootDesignShell(page)
     const frame = page.frameLocator('.app-iframe')
@@ -379,26 +381,9 @@ test.describe('Vue + Vite wireframe capture (W1)', () => {
       }
     }, { timeout: 5_000 }).toEqual({ header: headerBlk.rect.y + 10, grid: gridBlk.rect.y + 10 })
 
-    // EXPLODE: double-click the grid block → per-child blocks with their own
-    // anchors, while the grid itself stays as the container-shell backdrop
-    // (its background/padding must not vanish — the styling-loss regression).
-    const countBefore = (await getBlocks()).length
-    await blockEl(gridBlk.id).dblclick()
-    await expect.poll(async () => {
-      const blocks = await getBlocks()
-      const parent = blocks.find((b) => b.id === gridBlk.id) as (Blk & { shell?: boolean; image?: string }) | undefined
-      return { shell: parent?.shell, count: blocks.length }
-    }, { timeout: 30_000 }).toMatchObject({ shell: true })
-    const after = await getBlocks()
-    expect(after.length).toBeGreaterThan(countBefore)
-    const shellBlk = after.find((b) => b.id === gridBlk.id) as Blk & { image?: string }
-    expect(shellBlk.image).toMatch(/-shell\.png$/)
-    expect(await blockEl(gridBlk.id).locator('img').evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
-    // Children carry their OWN source anchors (finer than the grid's line).
-    const children = after.filter((b) => b.anchor?.file.includes('PlanetsPage.vue') && b.anchor.line !== gridBlk.anchor!.line && (b.originalRect?.y ?? 0) >= (gridBlk.originalRect?.y ?? 0) - 1)
-    expect(children.length).toBeGreaterThanOrEqual(1)
-
-    function blockEl(id: string) { return page.locator(`[data-block-id="${id}"]`) }
+    // NOTE: explode-to-children is gated off this release (see
+    // src/shell/wireframeFeatures.ts → WIREFRAME_EXPLODE_ENABLED). The
+    // double-click/explode assertions move back here when the flag flips on.
   })
 })
 
@@ -508,7 +493,10 @@ test.describe('Vue + Vite wireframe implement (W3 UI)', () => {
 
   // D6: a drawn SECTION (md spec + data binding) survives F5 and rides the
   // implement task's add direction with VERBATIM added.md/.data.
-  test('a section with md + binding implements into ONE task carrying both verbatim', async ({ page, request }) => {
+  // Data binding is gated off this release (see wireframeFeatures.ts →
+  // WIREFRAME_DATA_BINDING_ENABLED). The drawn-section + md half stays shippable;
+  // re-enable this combined spec when binding flips back on.
+  test.skip('a section with md + binding implements into ONE task carrying both verbatim', async ({ page, request }) => {
     test.setTimeout(120_000)
     await bootDesignShell(page)
     const frame = page.frameLocator('.app-iframe')

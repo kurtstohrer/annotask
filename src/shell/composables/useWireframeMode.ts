@@ -273,6 +273,9 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     canvasRoute.value = null
     history.clear()
     setFlag(false)
+    // Clear any capture/explode error so the App-level banner (shown when the
+    // canvas is unmounted) doesn't linger after a clean exit.
+    error.value = null
   }
 
   /** Discard the persisted canvas (and its snapshot files) and capture fresh.

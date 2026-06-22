@@ -20,6 +20,10 @@ import PropWidgetRows from './PropWidgetRows.vue'
 import type { WidgetProp } from '../utils/propWidgets'
 import type { useComponentGenerator } from '../composables/useComponentGenerator'
 import type { WireframeBlock, WireframeDataBinding } from '../../shared/wireframe-types'
+import { WIREFRAME_DATA_BINDING_ENABLED } from '../wireframeFeatures'
+
+// Deferred this release (see wireframeFeatures.ts) — the Data section is gated.
+const dataBindingEnabled = WIREFRAME_DATA_BINDING_ENABLED
 
 const props = defineProps<{
   block: WireframeBlock
@@ -129,7 +133,7 @@ function onKeydown(e: KeyboardEvent): void {
         <PropWidgetRows v-else :rows="rows" :values="values" testid-prefix="wf-prop" @set="onSet" />
       </section>
 
-      <section class="wf-pop-section">
+      <section v-if="dataBindingEnabled" class="wf-pop-section">
         <h4>Data <em v-if="dataSuggested">— looks data-driven</em></h4>
         <div v-if="binding" class="wf-pop-binding" data-testid="wf-pop-binding">
           <span class="wf-pop-binding-name">{{ binding.name }}</span>
@@ -161,7 +165,7 @@ function onKeydown(e: KeyboardEvent): void {
       </section>
     </div>
 
-    <div v-if="pickerOpen" class="wf-pop-picker-overlay" @pointerdown.self="pickerOpen = false">
+    <div v-if="dataBindingEnabled && pickerOpen" class="wf-pop-picker-overlay" @pointerdown.self="pickerOpen = false">
       <DataBindingPicker :initial="binding" @select="onBindingSelect" @clear="onBindingClear" @cancel="pickerOpen = false" />
     </div>
   </div>

@@ -6,11 +6,16 @@ import WireframeBlockPopover from './WireframeBlockPopover.vue'
 import Icon from './Icon.vue'
 import { computeSnap, type SnapGuide } from '../utils/wireframeSnap'
 import { safeMd } from '../utils/safeMd'
+import { WIREFRAME_DATA_BINDING_ENABLED, WIREFRAME_EXPLODE_ENABLED } from '../wireframeFeatures'
 import type { useComponentGenerator } from '../composables/useComponentGenerator'
 import type { CanvasSelection } from '../composables/useCanvasSelection'
 import type { CanvasHistory } from '../composables/useCanvasHistory'
 import type { WireframeBlock, WireframeCanvasState, WireframeDataBinding } from '../../shared/wireframe-types'
 import type { WireframeCaptureProgress } from '../../shared/bridge-types'
+
+// Release-scope flags (deferred this release — see wireframeFeatures.ts).
+const dataBindingEnabled = WIREFRAME_DATA_BINDING_ENABLED
+const explodeEnabled = WIREFRAME_EXPLODE_ENABLED
 
 const props = defineProps<{
   canvas: WireframeCanvasState | null
@@ -295,6 +300,7 @@ function onDragUp(): void {
 // ── Explode (double-click a captured block one level deeper) ──
 
 function onBlockDblClick(b: WireframeBlock): void {
+  if (!WIREFRAME_EXPLODE_ENABLED) return // deferred this release (see wireframeFeatures)
   if (props.building || b.kind !== 'captured' || b.shell) return
   emit('explode-block', b.id)
 }
@@ -589,7 +595,7 @@ function onRecaptureConfirmed(): void {
               <span class="wf-block-name">{{ blockLabel(b) }}</span>
               <code v-if="anchorChip(b)" class="wf-anchor-chip" data-testid="wf-anchor-chip">{{ anchorChip(b) }}</code>
               <span class="wf-header-spacer" />
-              <button v-if="b.kind === 'captured' && !b.shell" class="wf-hbtn" data-testid="wf-explode-btn" @pointerdown.stop @click.stop="onBlockDblClick(b)" title="Explode into child blocks (double-click)">
+              <button v-if="explodeEnabled && b.kind === 'captured' && !b.shell" class="wf-hbtn" data-testid="wf-explode-btn" @pointerdown.stop @click.stop="onBlockDblClick(b)" title="Explode into child blocks (double-click)">
                 <Icon name="maximize-2" :size="10" />
               </button>
               <button class="wf-hbtn" data-testid="wf-note-btn" @pointerdown.stop @click.stop="openNote()" :title="b.note ? `Note: ${b.note}` : 'Add a note for the agent'">
@@ -598,7 +604,7 @@ function onRecaptureConfirmed(): void {
               <button v-if="b.kind === 'placeholder'" class="wf-hbtn" data-testid="wf-md-btn" @pointerdown.stop @click.stop="openMd()" :title="b.md ? 'Edit the section\'s markdown spec' : 'Write a markdown spec for this section'">
                 <Icon name="file-text" :size="10" />
               </button>
-              <button v-if="b.kind === 'placeholder'" class="wf-hbtn" data-testid="wf-data-btn" @pointerdown.stop @click.stop="openDataPicker(b.id)" :title="b.data ? `Bound to ${b.data.name} — change or clear` : 'Bind a data source'">
+              <button v-if="dataBindingEnabled && b.kind === 'placeholder'" class="wf-hbtn" data-testid="wf-data-btn" @pointerdown.stop @click.stop="openDataPicker(b.id)" :title="b.data ? `Bound to ${b.data.name} — change or clear` : 'Bind a data source'">
                 <Icon name="database" :size="10" />
               </button>
               <span class="wf-hbtn-sep" />

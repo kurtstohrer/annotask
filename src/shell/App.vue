@@ -839,7 +839,9 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
     />
 
     <!-- Banners -->
-    <AppBanners :show-warning="showWarning" :config-initialized="configInitialized" />
+    <AppBanners :show-warning="showWarning" :config-initialized="configInitialized"
+      :wireframe-error="(!wireframeMode.active.value && !wireframeMode.capturing.value) ? wireframeMode.error.value : null"
+      @dismiss-wireframe-error="wireframeMode.error.value = null" />
 
     <!-- Snipping overlay -->
     <SnippingOverlay v-if="snipActive" :snip-rect="snipRect"
