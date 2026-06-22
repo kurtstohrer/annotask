@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { globSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
@@ -354,7 +354,12 @@ describe('transformJSX', () => {
         path.dirname(fileURLToPath(import.meta.url)),
         '../../../playgrounds/simple/react-vite'
       )
-      const files = globSync('src/**/*.{tsx,jsx}', { cwd: playgroundRoot })
+      // Recursive readdir (Node 18.17+/20) — NOT fs.globSync, which is Node 22+
+      // and would throw on CI's Node 20.
+      const files = readdirSync(path.join(playgroundRoot, 'src'), { recursive: true })
+        .map(String)
+        .filter((f) => f.endsWith('.tsx') || f.endsWith('.jsx'))
+        .map((f) => path.join('src', f))
       expect(files.length).toBeGreaterThan(0)
       for (const rel of files) {
         const file = path.join(playgroundRoot, rel)
