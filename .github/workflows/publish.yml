@@ -3,6 +3,15 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  # Called directly by release.yml after it cuts the tag/release. A reusable
+  # workflow_call is a direct invocation, so it runs even though the release
+  # was created with GITHUB_TOKEN (whose events don't trigger other workflows).
+  workflow_call:
+    inputs:
+      dry-run:
+        description: 'Dry run (skip actual publish)'
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       dry-run:
