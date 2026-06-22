@@ -297,7 +297,7 @@ The shell currently exposes three top-level surfaces:
 
 - **Annotate** - annotations, screenshots, viewport tools, route-aware tasks
 - **Design** - tokens, inspector, layout overlay, component browser
-- **Audit** - a11y, data, libraries, performance, errors
+- **Audit** - a11y, data, performance, errors
 
 Internally the Audit tab still uses the `develop` view id for localStorage compatibility.
 

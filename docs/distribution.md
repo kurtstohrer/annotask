@@ -38,6 +38,9 @@ Published skill files:
 - `skills/annotask-apply/SKILL.md`
 - `skills/annotask-apply/A11Y_RULES.md`
 - `skills/annotask-apply/THEME_UPDATE.md`
+- `skills/annotask-apply/ERROR_FIX.md`
+- `skills/annotask-apply/PERF_FIX.md`
+- `skills/annotask-apply/WIREFRAME_APPLY.md`
 
 ## Build Pipeline
 

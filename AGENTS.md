@@ -30,6 +30,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_api_operation` | Fetch one API operation by path |
 | `annotask_resolve_endpoint` | Match a concrete URL to a known API operation |
 | `annotask_get_source_excerpt` | Direct source excerpt by file/line (no task required) |
+| `annotask_get_binding_classification` | Round-trip honesty classification of one element by file/line[/tag]: per-prop literal/bound/unknown, text kind, enclosing loop |
 | `annotask_get_playbook` | Fetch a task-type companion playbook (A11Y_RULES, THEME_UPDATE, ERROR_FIX, PERF_FIX, WIREFRAME_APPLY) |
 | `annotask_get_agent_directions` | Fetch per-persona project directions from `.annotask/agents.json` |
 | `annotask_conversation_read` | Read a task's conversation thread (optional `after_id` for cheap polling) |
@@ -134,9 +135,15 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET|POST /__annotask/api/tasks/:id/rendered-html` — Per-task `outerHTML` sidecar (always written when a selection exists; 200 KB cap)
 - `GET /__annotask/api/agent-configs` — Per-persona project directions (`{ version, agents: { [personaId]: { projectDirections } } }`)
 - `PATCH /__annotask/api/agent-configs/:id` — Update one persona's `projectDirections`, `providerId`, `model`, or `effort`
-- `GET|PUT /__annotask/api/wireframe` — Multi-route wireframe document (`?route=PATH` slices one route; persists to `.annotask/wireframe.json`)
-- `POST /__annotask/api/wireframe/draft` — Reversible render-in-place draft (opt-in via `ANNOTASK_RENDER_IN_PLACE`; 404 when off)
-- `POST /__annotask/api/wireframe/draft/revert` — Revert a draft by `draftId` (hash-guarded)
+- `GET|PUT /__annotask/api/wireframe` — Multi-route wireframe document (`?route=PATH` slices one route; persists to `.annotask/wireframe.json`). Each route carries `instances[]` (palette placements) and an optional `canvas` (the snapshot-wireframe sketch: per-block captures with source anchors, transforms, notes, soft-deletes)
+- `POST /__annotask/api/wireframe-snapshots` — Upload a canvas block PNG (`{id, data}`; id-addressed, 4MB cap; persists to `.annotask/wireframe-snapshots/`)
+- `GET /__annotask/wireframe-snapshots/:filename` — Serve a canvas snapshot PNG (containment-guarded)
+- `DELETE /__annotask/api/wireframe-snapshots/:filename` — Drop a canvas snapshot PNG
+- `GET|PUT|DELETE /__annotask/api/design-session` — Design-session journal (ordered record of design-tool edits; CAS on `rev`, 409 on stale writes; persists to `.annotask/design-session.json`). DELETE = server-owned discard: clears the journal, removes session-created wireframe placements, and drops every route's canvas sketch (+ its snapshot PNGs)
+- `POST /__annotask/api/design-session/apply` — "Apply now" / "Implement this wireframe": snapshots the touched files, mints ONE `wireframe_apply` task (placements + design-session edits/directions in `context.session`; optional `screenshot` = the before/after composite), stamps statuses; the shell then runs the embedded agent on it. The agent writes source — the tool never does
+- `POST /__annotask/api/design-session/undo-batch` — Restore the newest apply batch's pre-apply bytes (hash-guarded; entries return to pending)
+- `POST /__annotask/api/design-session/detach-file` — Diverged-file resolution: keep the disk bytes, drop the file from the session
+- `GET /__annotask/api/design-session/snapshots` — Snapshot-engine state (touched files, divergence, apply batches) — persists to `.annotask/file-snapshots.json`; rehydrates across restarts (files revert only via explicit undo/discard)
 - `POST /__annotask/api/agent/spawn` — Spawn an allow-listed local CLI as SSE (same-port origin gate; `ANNOTASK_MAX_PERMISSION` ceiling)
 - `DELETE /__annotask/api/agent/spawn/:runId` — Abort a running spawn
 - `GET /__annotask/api/agent/detect` — Detect installed/logged-in local CLIs
@@ -185,7 +192,7 @@ Use `/annotask-apply` to fetch and apply pending visual changes to source code.
 `App.vue` is the shell orchestrator — it wires composables together and handles bridge events. **Do not add business logic directly to App.vue.** Extract new concerns into composables under `src/shell/composables/`.
 
 Key composables:
-- `useShellTheme` — Theme system: 63 CSS variables, 18 built-in themes, custom theme CRUD, system preference, localStorage persistence
+- `useShellTheme` — Theme system: 62 CSS variables, 18 built-in themes, custom theme CRUD, system preference, localStorage persistence
 - `useSelectionModel` — Element selection state, rect tracking, hover, live styles, style/class change handlers
 - `useTaskWorkflows` — Task creation flows (pin, arrow, highlight, section → task), pending task panel, accept/deny, annotation restoration, auto-opens task panel on create
 - `useAnnotationRects` — rAF loop keeping annotation overlays positioned during scroll/resize
@@ -199,20 +206,20 @@ When adding new shell features, create a new composable that accepts its depende
 
 ## Shell Theme System
 
-The shell has a VS Code-style theme system with 18 built-in themes and custom theme support. Themes control every color in the UI via 63 CSS custom properties.
+The shell has a VS Code-style theme system with 18 built-in themes and custom theme support. Themes control every color in the UI via 62 CSS custom properties.
 
 ### Architecture
 
-- `src/shell/themes/types.ts` — `ShellThemeColors` (63 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
+- `src/shell/themes/types.ts` — `ShellThemeColors` (62 vars), `ShellTheme` interface, `THEME_COLOR_KEYS` array
 - `src/shell/themes/builtin.ts` — 18 built-in theme definitions with `deriveDefaults()` helper
 - `src/shell/composables/useShellTheme.ts` — Core composable: applies themes at runtime via `style.setProperty()`, handles localStorage persistence, system preference detection, custom theme CRUD, and a one-shot migration from the legacy `annotask:themeMode` key
 - `src/shell/components/ShellThemeEditor.vue` — Full-screen custom theme creator with grouped color pickers and live preview
 
 ### How themes are applied
 
-Themes are applied at runtime via `document.documentElement.style.setProperty()` for each of the 63 CSS variables. The `:root` block in App.vue provides dark fallback values, and `:root.light` provides light fallback values — these are safety nets for first paint before JS runs. Once `useShellTheme` initializes, it overrides all variables via inline styles.
+Themes are applied at runtime via `document.documentElement.style.setProperty()` for each of the 62 CSS variables. The `:root` block in App.vue provides dark fallback values, and `:root.light` provides light fallback values — these are safety nets for first paint before JS runs. Once `useShellTheme` initializes, it overrides all variables via inline styles.
 
-### CSS variable categories (63 total)
+### CSS variable categories (62 total)
 
 | Category | Variables | Purpose |
 |----------|-----------|---------|
@@ -225,7 +232,7 @@ Themes are applied at runtime via `document.documentElement.style.setProperty()`
 | Utility (2) | `--overlay`, `--shadow` | Overlays and shadows |
 | Status (7) | `--status-pending`, `--status-in-progress`, `--status-review`, `--status-denied`, `--status-accepted`, `--status-needs-info`, `--status-blocked` | Task lifecycle |
 | Severity (4) | `--severity-critical`, `--severity-serious`, `--severity-moderate`, `--severity-minor` | A11y/perf findings |
-| Modes (4) | `--mode-interact`, `--mode-arrow`, `--mode-draw`, `--mode-highlight` | Tool button active states |
+| Modes (3) | `--mode-interact`, `--mode-arrow`, `--mode-highlight` | Tool button active states |
 | Layout (2) | `--layout-flex`, `--layout-grid` | Layout visualization |
 | Roles (3) | `--role-container`, `--role-content`, `--role-component` | Element classification |
 | Syntax (7) | `--syntax-property`, `--syntax-string`, `--syntax-number`, `--syntax-boolean`, `--syntax-null`, `--syntax-operator`, `--syntax-punctuation` | Code highlighting |
@@ -281,6 +288,7 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 
 ## Key Shell Features
 
+- **Wireframe mode** — Freezes the current route into a manipulable image canvas: per-block html2canvas snapshots (each carrying its `data-annotask-file/-line` source anchor), drag with snap/align guides, 8-handle resize, marquee/shift-click multi-select with group move, arrow-key nudging, soft-delete/undelete, duplicate, notes, palette-drop component snapshots (configured in place), and drawn sections (a labeled box, optionally with a markdown spec). State persists per-route in `wireframe.json` (PNGs in `.annotask/wireframe-snapshots/`). "Implement this wireframe" diffs the sketch into anchored `wireframe_direction` entries, composes a labeled before/after screenshot, and runs the embedded agent through the apply loop — accept/undo/discard ride the file-snapshot engine. **NOTE:** explode-to-children and data-source binding are built but DEFERRED this release (gated in `src/shell/wireframeFeatures.ts`) — the code paths and persisted bindings remain read-only, but the UI entry points are hidden and new tasks won't carry bindings or exploded child blocks.
 - **Viewport preview** — Device presets + custom dimensions, viewport info included in tasks/reports
 - **Interaction history** — Pre-task user trace (route + ~20 recent actions). Always captured and persisted per task to `.annotask/interaction-history/<id>.json`; the "Embed interaction history" toggle only decides whether it rides in the task payload
 - **Element context / rendered HTML** — Post-render `outerHTML` of the selected element. Always captured and persisted per task to `.annotask/rendered-html/<id>.json` (200 KB cap); the "Embed rendered HTML" toggle only decides payload inclusion
@@ -297,7 +305,6 @@ Users create custom themes via Settings > Appearance > "+ Create Custom Theme". 
 - **Async I/O** — In-memory task cache with atomic file writes (no race conditions)
 - **Inspector highlights** — Selection/hover overlays that track scroll and resize via rAF loop
 - **Arrow tool** — Multi-color arrows with element outlines, edge-to-edge bezier paths, draggable endpoints, element-aware re-resolution on move, scroll/resize tracking via rAF
-- **Section tool** — Markdown editor (edit/preview toggle), dark theme, movable/resizable sections with drag handles, explicit "Add Task" / "Update Task" button
 - **Text highlights** — Multi-color highlights with visual overlay on selected text, sidebar task creation with preloaded text
 - **Scroll/resize tracking** — All annotations (arrows, highlights, sections) follow elements during scroll and window resize via rAF loop, same pattern as inspector selections
 - **Route persistence** — Iframe route saved to localStorage, restored on page reload
@@ -312,13 +319,13 @@ Canonical list — `TASK_TYPES` in `src/schema.ts` is the single source of truth
 | Type | Source | Description |
 |------|--------|-------------|
 | `annotation` | Pins, arrows, notes, text highlights | User intent described in `description`, optional `action` and `context` |
-| `section_request` | Drawn sections | New content area with `description` and `placement` |
+| `section_request` | Legacy — the Annotate tab no longer emits these (sections are wireframe sketch material riding `wireframe_apply` add directions); apply per SKILL.md when present in older task files | New content area with `description` and `placement` |
 | `style_update` | Inspector style/class edits | CSS changes in `context.changes` array with `property`, `before`, `after` |
 | `theme_update` | Theme page commit | One task per commit. `context.edits[]` — each entry carries `category`, `role`, `cssVar`, `theme_variant`, `theme_selector`, `before`, `after`, `sourceFile`, `sourceLine`, `isNew`. `context.specFile` is the relative path to `.annotask/design-spec.json`; the agent patches it after applying CSS edits so the Theme page hot-reloads |
 | `a11y_fix` | A11y panel violations | WCAG fix with `rule`, `impact`, `help`, `elements` in `context` |
 | `error_fix` | Errors tab "Fix" action | Console error/warning with `level`, `occurrences`, `errorId` in `context` |
 | `perf_fix` | Perf tab "Fix" action | Performance finding with `metric`, `value`, `unit`, `severity`, `category`, `findingId` in `context` |
-| `wireframe_apply` | Wireframe palette ("Build this route") | One task per route. `context.wireframe` = `{ route, instances[] }` — each instance carries an `anchor` (`file`, `line`, `position`, `component`, `targetTag` — the drop target's source location and placement) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). Applied via the `WIREFRAME_APPLY.md` companion playbook. |
+| `wireframe_apply` | Wireframe palette ("Build this route"), design session ("Apply now"), or snapshot sketch ("Implement this wireframe") | One task per route. `context.wireframe` = `{ route, instances[] }` — each instance carries an `anchor` (`file`, `line`, `position`, `component`, `targetTag`) and an `inserted` payload. `context.session` = `{ session_id, entries[] }` — design-session edits and/or **wireframe directions** (`change.type: 'wireframe_direction'`: per-block `op` move/resize/delete/add/note, tool-`measured` geometry + relational facts, user-said `note`, anchored `file`/`line`; `add` directions may carry `added.md` — the user's VERBATIM markdown spec for a drawn section — and `added.data`, a `WireframeDataBinding` naming a REAL catalog data source with drill-down `path`/`fields` and a `shape_source` honesty tag). An "Implement this wireframe" task also carries a labeled before/after composite as its screenshot. The server snapshots the touched files first so undo/discard stays byte-exact; on `review` it verifies literal entries against source and trusts direction entries (spatial outcomes verify visually). Applied via the `WIREFRAME_APPLY.md` companion playbook. **Note:** the `added.data` data-binding path is deferred this release (gated in `src/shell/wireframeFeatures.ts`) — new tasks won't carry bindings; only legacy task files do. |
 
 ## Task Lifecycle
 

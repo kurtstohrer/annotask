@@ -195,6 +195,15 @@ annotask source-excerpt src/components/Header.vue 12
 annotask source-excerpt src/components/Header.vue 12 --context-lines=25 --mcp
 ```
 
+### `binding-classify`
+
+Round-trip-honesty classification of one element by file and line (optionally a tag): per-prop literal/bound/unknown, the element's text kind, and the enclosing loop. Use it to ground an element before rewriting its props or text.
+
+```bash
+annotask binding-classify --file=src/components/Card.vue --line=12
+annotask binding-classify --file=src/components/Card.vue --line=12 --tag=button --mcp
+```
+
 ### `playbook`
 
 Print a task-type companion playbook (`a11y_fix`, `theme_update`, `error_fix`, `perf_fix`, `wireframe_apply`).
@@ -390,7 +399,9 @@ annotask help
 | `--limit=N` | `components`, `component-examples`, `data-source-examples` |
 | `--offset=N` | `components` |
 | `--context-lines=N` | `code-context`, `data-source-details` |
-| `--file=PATH` | `data-source-details` |
+| `--file=PATH` | `data-source-details`, `binding-classify` |
+| `--line=N` | `binding-classify` |
+| `--tag=T` | `binding-classify` |
 | `--refresh` | `data-context` |
 | `--used-only` | `data-sources` |
 | `--kind=K` | `data-sources`, `data-source-examples`, `data-source-details`, `api-schemas` |

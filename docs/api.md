@@ -47,7 +47,7 @@ Canonical task types:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `wireframe_apply` — created by the wireframe palette's "Build this route". `context.wireframe` carries `{ route, instances[] }`; each instance has an `anchor` (`file`, `line`, `position`, `component`, `targetTag`) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). Applied via the `WIREFRAME_APPLY.md` companion playbook.
+- `wireframe_apply` — created by the wireframe palette's "Build this route" or by the design-session apply path ("Apply now" / "Implement this wireframe"). `context.wireframe` carries `{ route, instances[] }`; each instance has an `anchor` (`file`, `line`, `position`, `component`, `targetTag`) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). `context.session` (when present) carries `{ session_id, entries[] }` — the design-session edits and/or wireframe directions. Applied via the `WIREFRAME_APPLY.md` companion playbook.
 
 There is no dedicated task type for backend-contract work; it surfaces as `annotation` tasks grounded with `data_context` and runtime-endpoint evidence.
 
@@ -262,10 +262,16 @@ Useful query params:
 |--------|------|---------|
 | `GET` | `/__annotask/api/wireframe` | full multi-route wireframe document, or one route's slice with `?route=PATH` |
 | `PUT` | `/__annotask/api/wireframe` | replace the whole document (the shell owns the in-memory merge) |
-| `POST` | `/__annotask/api/wireframe/draft` | write a reversible render-in-place component draft at an anchor |
-| `POST` | `/__annotask/api/wireframe/draft/revert` | revert a draft by `draftId` (hash-guarded restore) |
+| `POST` | `/__annotask/api/wireframe-snapshots` | upload a canvas block PNG (`{id, data}`; id-addressed, 4MB cap) |
+| `GET` | `/__annotask/wireframe-snapshots/:filename` | serve a canvas snapshot PNG (containment-guarded) |
+| `DELETE` | `/__annotask/api/wireframe-snapshots/:filename` | drop a canvas snapshot PNG |
+| `GET` `PUT` `DELETE` | `/__annotask/api/design-session` | design-session journal (CAS on `rev`, 409 on stale writes); DELETE discards the journal, session-created placements, and every route's canvas sketch |
+| `POST` | `/__annotask/api/design-session/apply` | snapshot the touched files and mint one `wireframe_apply` task (placements + design-session edits/directions); the embedded agent then writes source |
+| `POST` | `/__annotask/api/design-session/undo-batch` | restore the newest apply batch's pre-apply bytes (hash-guarded) |
+| `POST` | `/__annotask/api/design-session/detach-file` | diverged-file resolution: keep the disk bytes, drop the file from the session |
+| `GET` | `/__annotask/api/design-session/snapshots` | snapshot-engine state (touched files, divergence, apply batches) |
 
-The document persists to `.annotask/wireframe.json` and is shape-validated (`{ version: "1.0", updatedAt, routes[] }`) on PUT. The two `draft` routes are the only path that mutates real project source, so they stay opt-in behind `ANNOTASK_RENDER_IN_PLACE` and return 404 when the flag is off.
+The document persists to `.annotask/wireframe.json` and is shape-validated (`{ version: "1.0", updatedAt, routes[] }`) on PUT. Snapshot PNGs live in `.annotask/wireframe-snapshots/` (orphans GC'd at boot). The design-session journal persists to `.annotask/design-session.json`; "Apply now" / "Implement this wireframe" snapshots the touched files first so undo/discard stays byte-exact — the agent writes source, the tool only snapshots and restores.
 
 ### Agent Configs
 
@@ -283,7 +289,7 @@ The document persists to `.annotask/wireframe.json` and is shape-validated (`{ v
 | `GET` | `/__annotask/api/agent/detect` | detect which local CLIs are installed and logged in |
 | `GET` | `/__annotask/api/agent/models` | per-provider model catalog for `?cli=ID` (`?refresh=1` bypasses the 5-min cache) |
 
-The spawn routes enforce a stricter same-port origin check on top of the general localhost gate — a page on a different localhost port cannot spawn CLIs that have credential access (`origin_port_mismatch`). The server also enforces the `ANNOTASK_MAX_PERMISSION` ceiling (`plan` or `default`) and refuses spawns that request more.
+The spawn routes enforce a stricter same-port origin check on top of the general localhost gate — a page on a different localhost port cannot spawn CLIs that have credential access (`origin_port_mismatch`). When `ANNOTASK_MAX_PERMISSION` is set to `plan` or `default`, the server refuses any spawn that exceeds it. The default is no ceiling (`bypass`).
 
 ### Task Conversations
 
@@ -333,6 +339,7 @@ Server-to-client events:
 | `init:progress` | init-runner step state for the wizard |
 | `runtime-endpoints:updated` | current runtime endpoint catalog |
 | `wireframe:updated` | saved wireframe document (`null` when invalidated from disk) |
+| `session:updated` | `null` — broadcast when `.annotask/design-session.json` changes |
 
 Client-to-server events:
 
@@ -370,6 +377,7 @@ Current tool surface:
 - `annotask_get_data_source_examples`
 - `annotask_get_data_source_details`
 - `annotask_get_source_excerpt`
+- `annotask_get_binding_classification`
 - `annotask_get_playbook`
 - `annotask_get_agent_directions`
 - `annotask_conversation_read`
@@ -390,7 +398,7 @@ The live report's `changes[]` union currently includes:
 - `style_update`
 - `class_update`
 - `scoped_style_update` experimental
-- `prop_update` experimental
+- `component_prop_update` experimental
 - `component_insert`
 - `component_move` legacy — no longer emitted (the Reposition tool was removed); agents still apply it from older reports
 - `component_delete` experimental

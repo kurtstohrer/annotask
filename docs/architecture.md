@@ -96,7 +96,10 @@ Representative files:
 - `src/server/task-thread.ts` — per-task conversation threads (append-only JSONL + SSE)
 - `src/server/usage-ledger.ts` — append-only token-usage ledger at `.annotask/usage.jsonl`
 - `src/server/wireframe-store.ts` — persisted multi-route wireframe document
-- `src/server/draft-edits.ts` — opt-in render-in-place drafts (journaled, hash-guarded revert)
+- `src/server/apply-session.ts` — agent-apply orchestration ("Apply now" / "Implement this wireframe" → snapshot + mint task + run the embedded agent)
+- `src/server/file-snapshots.ts` — byte-exact snapshot/restore engine backing undo/discard
+- `src/server/session-store.ts` — design-session journal (`.annotask/design-session.json`)
+- `src/server/json-cas-store.ts` — compare-and-set rev store for journal writes (409 on stale)
 - `src/server/init.ts` — init-wizard scan runner (design spec, agent configs, style guide)
 - `src/server/path-safety.ts` — shared path-traversal guard for user-supplied file paths
 - `src/server/origin.ts` — origin validation (`isLocalOrigin`, stricter `originMatchesPort`)
@@ -123,8 +126,9 @@ Supporting modules:
 - `provider.ts` / `provider-factory.ts` / `provider-config.ts` - provider contract, construction, and settings
 - `permission-mode.ts` / `permission-mode-flags.ts` - `default` / `plan` / `bypass` modes mapped onto each CLI's native flags
 - `persona.ts` - per-task-type agent personas
-- `budget-cap.ts` - per-conversation spend cap
 - `event-log.ts` / `redaction.ts` - turn event capture with secret redaction
+
+Runaway runs are bounded by idle and max-duration wall-clock watchdogs rather than a USD/token spend cap (a money cap is not portable across the provider mix).
 
 Server-side counterparts live in `src/server/`: `agent-spawn.ts` (allow-listed subprocess spawner, SSE streaming, run registry), `agent-detect.ts`, `agent-models.ts`, `agent-configs.ts`, `task-thread.ts` (per-task conversation persistence), and `usage-ledger.ts` (token spend). Spawn requests pass the same-port origin gate in `origin.ts`, and the server enforces the `ANNOTASK_MAX_PERMISSION` ceiling regardless of what the client asks for.
 
@@ -155,7 +159,7 @@ Current sub-sections:
 
 - Annotate: tasks and annotation workflows
 - Design: Tokens, Inspector, Components
-- Audit: Accessibility, Data, Libraries, Performance, Errors
+- Audit: Accessibility, Data, Performance, Errors
 
 Important constraint:
 

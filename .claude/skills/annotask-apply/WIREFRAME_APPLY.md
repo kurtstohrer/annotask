@@ -30,7 +30,7 @@ The task screenshot (`annotask_get_screenshot`) is a labeled composite: **left =
 
 ### Per-op rules
 
-- **move** — relocate the block's anchored markup to satisfy the relations. Apply per-file edits bottom-up (descending line); re-ground drifted anchors with `annotask_get_source_excerpt`. A loop-rendered block moves as the loop, not one iteration. An exploded container appears as both a container block and separate child blocks (each with finer anchors): directions on children mean restructuring INSIDE the container; a direction on the container means moving the whole thing, children included.
+- **move** — relocate the block's anchored markup to satisfy the relations. Apply per-file edits bottom-up (descending line); re-ground drifted anchors with `annotask_get_source_excerpt`. A loop-rendered block moves as the loop, not one iteration. An exploded container appears as both a container block and separate child blocks (each with finer anchors): directions on children mean restructuring INSIDE the container; a direction on the container means moving the whole thing, children included. (Explode-to-children is deferred this release — `WIREFRAME_EXPLODE_ENABLED=false` — so new tasks won't carry exploded child blocks; this guidance applies to legacy task files that already do.)
 - **resize** — prefer tokens/utility classes/grid-template changes over raw px. Say in the resolution what you chose and why.
 - **delete** — remove the anchored markup. Remove now-dead local bindings only when provably unused; never delete shared code.
 - **add / component** — resolve the real import via `annotask_get_component_examples` (proven specifier + export kind). No in-repo examples → fall back to `library`/`module` and say so. Apply `added.props` primitives only; never fabricate handlers, bindings, or children. When `added.data` is present, wire the REAL source per *Data bindings on adds* below — never sample data.
@@ -42,6 +42,8 @@ The task screenshot (`annotask_get_screenshot`) is a labeled composite: **left =
 Before rewriting any expression or bound markup you encounter mid-edit, re-classify it against CURRENT source: `annotask_get_binding_classification` (CLI: `annotask binding-classify`). Never rewrite an expression that references variables.
 
 ### Data bindings on adds (`added.data`)
+
+> **Gated off this release.** Wireframe data binding is DEFERRED (`WIREFRAME_DATA_BINDING_ENABLED=false` in `src/shell/wireframeFeatures.ts`), so new `wireframe_apply` tasks won't carry `added.data`. This section applies to legacy/older task files that already contain a binding — when one is present, wire it per the rules below.
 
 `added.data` means "wire THIS source" — it is REAL scanner-catalog identity, never invented:
 

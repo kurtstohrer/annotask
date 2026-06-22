@@ -72,7 +72,7 @@ All notable changes to this project are documented here. Versions follow [Semant
 - `src/shell/composables/useThemeMode.ts` — the deprecated wrapper around `useShellTheme` was unused at any call site.
 
 ### Security
-- GET endpoints are Host-gated against non-local hostnames. Agent spawn routes additionally enforce same-port origin matching (`origin_port_mismatch`) and the server-side `ANNOTASK_MAX_PERMISSION` permission ceiling so a page on another localhost port cannot spawn credential-bearing CLIs, and no client can request more permission than the admin allows.
+- All `/__annotask/*` requests are Host-gated against non-local hostnames. Agent spawn routes additionally enforce same-port origin matching (`origin_port_mismatch`) and the server-side `ANNOTASK_MAX_PERMISSION` permission ceiling so a page on another localhost port cannot spawn credential-bearing CLIs, and no client can request more permission than the admin allows.
 - `annotask_get_screenshot` MCP tool now routes `task.screenshot` through `isSafeScreenshot` before path construction, closing a path-traversal hole.
 
 ### Breaking

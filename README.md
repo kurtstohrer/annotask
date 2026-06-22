@@ -64,10 +64,13 @@ resize, multi-select and nudge, soft-delete, duplicate, drop palette components
 (configured in place with props), and draw sections with a markdown spec. Hit **Implement
 this wireframe** and Annotask diffs the sketch into anchored directions, snapshots
 every file it touches, and drives the embedded agent through the apply loop —
-spatial relations are the contract, pixels are hints. Every apply is byte-exact
-reversible: **Undo last apply** restores that batch's pre-apply bytes and
-**Discard session** restores every touched file to its session base, both
-hash-guarded so a file you edited outside Annotask is never clobbered.
+spatial relations are the contract, pixels are hints. **Undo last apply**
+restores that batch's pre-apply bytes and **Discard session** restores every
+touched file to its session base, both hash-guarded so a file you edited
+outside Annotask is never clobbered. In git projects the reversal is byte-exact
+across the whole apply footprint — the engine baselines off `git stash-create`,
+auto-extends via `git show`, and recreates agent-deleted files — while non-git
+projects fall back to reverting the predicted anchor files only.
 
 ## What it does
 
@@ -134,7 +137,7 @@ npx annotask init-skills
 
 ## Agent surfaces
 
-- **MCP**: `POST /__annotask/mcp` with 27 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, rendered HTML, playbooks, and per-task conversations.
+- **MCP**: `POST /__annotask/mcp` with 28 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, rendered HTML, playbooks, and per-task conversations.
 - **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `runtime-endpoints`, `interaction-history`, `rendered-html`, `api-schemas`, `resolve-endpoint`, `source-excerpt`, `playbook`, `agent-directions`, `init-mcp`, `init-skills`, `mcp`, and more.
 - **HTTP + WebSocket**: local API under `/__annotask/api/*` and live updates on `/__annotask/ws`.
 
