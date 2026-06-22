@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
-## [Unreleased]
+## [0.4.0] - 2026-06-22
 
 ### Fixed
 - **Apply/undo lifecycle no longer wedges.** A crash, aborted run, server restart, orphan reconcile, or an agent that pauses at `needs_info` / is `denied` used to strand the snapshot batch as `running` and the session entries as `applying` — permanently disabling Undo, Discard, AND re-apply at once, and leaving the wireframe canvas locked at `building` forever. Every terminal transition (HTTP and the server-side orphan/boot sweep) now routes through one shared closure that seals the batch, releases the entries, and unlocks the canvas. `applyInFlight` keys off the (always-sealed) batch status, so undo/discard re-enable as soon as the agent stops.
