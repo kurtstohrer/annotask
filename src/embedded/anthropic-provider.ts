@@ -22,6 +22,9 @@ export interface AnthropicCreateParams {
   messages: AnthropicMessage[]
   tools?: AnthropicTool[]
   metadata?: Record<string, unknown>
+  /** Extended-thinking budget. Mapped from StreamOptions.effort in
+   *  buildAnthropicRequest. */
+  thinking?: { type: 'enabled'; budget_tokens: number }
 }
 
 export type AnthropicSystem =
@@ -184,12 +187,32 @@ export function buildAnthropicRequest(
     anthropicTools[anthropicTools.length - 1].cache_control = { type: 'ephemeral' }
   }
 
-  return {
+  const params: AnthropicCreateParams = {
     model: options.model ?? defaults.defaultModel,
     max_tokens: options.maxTokens ?? defaults.defaultMaxTokens,
     system,
     messages: messages.map(toAnthropicMessage),
     tools: anthropicTools,
+  }
+  // Map provider-agnostic effort to Anthropic extended-thinking budget.
+  // `auto` → don't request thinking at all; minimal/low → small budget for
+  // brief reasoning; medium/high → progressively larger budgets. Models
+  // that don't support extended thinking ignore the field.
+  const thinkingBudget = mapEffortToThinkingBudget(options.effort)
+  if (thinkingBudget > 0) {
+    params.thinking = { type: 'enabled', budget_tokens: thinkingBudget }
+  }
+  return params
+}
+
+function mapEffortToThinkingBudget(effort: StreamOptions['effort']): number {
+  switch (effort) {
+    case 'minimal': return 1024
+    case 'low':     return 2048
+    case 'medium':  return 5000
+    case 'high':    return 15000
+    case 'auto':
+    case undefined: return 0
   }
 }
 

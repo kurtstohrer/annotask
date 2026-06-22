@@ -1,3 +1,6 @@
+// Type-only — wireframe-types.ts has no runtime imports, so no cycle.
+import type { WireframeDataBinding } from './shared/wireframe-types'
+
 export interface ViewportInfo {
   width: number | null
   height: number | null
@@ -64,12 +67,14 @@ export type AnnotaskChange =
   | StyleUpdateChange
   | ClassUpdateChange
   | ScopedStyleUpdateChange
-  | PropUpdateChange
+  | ComponentPropUpdateChange
+  | TextUpdateChange
   | ComponentInsertChange
   | ComponentMoveChange
   | ComponentDeleteChange
   | AnnotationChange
   | SectionRequestChange
+  | WireframeDirectionChange
 
 interface BaseChange {
   id: string
@@ -107,12 +112,40 @@ export interface ScopedStyleUpdateChange extends BaseChange {
   after: Record<string, string>
 }
 
-/** @experimental Not yet emitted at runtime. Component prop value changes */
-export interface PropUpdateChange extends BaseChange {
-  type: 'prop_update'
-  component: string
-  before: Record<string, unknown>
-  after: Record<string, unknown>
+/**
+ * One component-prop value change at a usage site (from the properties panel).
+ * Per-prop (not a before/after dict) so edits collapse by (file, line, prop),
+ * undo one field at a time, and read unambiguously for the agent.
+ */
+export interface ComponentPropUpdateChange extends BaseChange {
+  type: 'component_prop_update'
+  /** Component tag as written at the usage site (e.g. 'Button', 'PlanetCard'). */
+  element: string
+  prop: string
+  /** Undefined when the prop wasn't set at the usage site (binding: 'new'). */
+  before: unknown
+  after: unknown
+  /**
+   * Honesty proof carried to the agent:
+   *  'literal'            — plain attribute (label="Reset"); rewrite the attribute value
+   *  'expression-literal' — literal through binding syntax (:count="3", count={3}); keep the syntax
+   *  'new'                — prop not present at the usage site; add it
+   * Bound expressions never appear here — the shell refuses to edit them.
+   */
+  binding: 'literal' | 'expression-literal' | 'new'
+  /** Scanned type string ('boolean', "'small' | 'large'") — serialization hint. */
+  prop_type?: string
+}
+
+/** Literal text-content change on an element (from the properties panel).
+ *  Only emitted when the source content is a single literal text run —
+ *  bound/mixed content is refused at the UI layer. */
+export interface TextUpdateChange extends BaseChange {
+  type: 'text_update'
+  /** DOM tag of the element (e.g. 'h1'). */
+  element: string
+  before: string
+  after: string
 }
 
 /** Insert a new element/component */
@@ -129,7 +162,8 @@ export interface ComponentInsertChange extends Omit<BaseChange, 'component'> {
   }
 }
 
-/** Move/reorder an element */
+/** Legacy — emitted by the removed Reposition tool; no longer produced, but
+ *  agents still apply it when present in older tasks/reports. */
 export interface ComponentMoveChange extends BaseChange {
   type: 'component_move'
   element: {
@@ -176,6 +210,72 @@ export interface SectionRequestChange extends BaseChange {
     height: string
   }
   prompt: string
+}
+
+/** Document CSS px in the wireframe canvas's capture coordinate space. */
+export interface WireframeRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * One snapshot-wireframe direction — what the user's sketch encodes for ONE
+ * canvas block, computed by diffing the original capture against the current
+ * canvas at "Implement this wireframe" time. `file`/`line` (BaseChange) anchor
+ * at the block's captured source, or for adds at the nearest anchored
+ * neighbor block. Pixel geometry is a HINT; relational facts are the
+ * contract — agents implement the intent with idiomatic layout, not absolute
+ * positioning. `measured` is tool-derived geometry and `note` is the user's
+ * verbatim words: never conflate the two channels.
+ */
+export interface WireframeDirectionChange extends BaseChange {
+  type: 'wireframe_direction'
+  op: 'move' | 'resize' | 'delete' | 'add' | 'note'
+  /** The block's identity as captured/created — tool-derived, never invented. */
+  block: { label: string; component?: string; tag?: string }
+  /** TOOL-MEASURED spatial facts. Never user-authored. */
+  measured?: {
+    before?: WireframeRect
+    after?: WireframeRect
+    dx?: number
+    dy?: number
+    /** Resize as % of original (wPct: 150 = +50% wider). */
+    wPct?: number
+    hPct?: number
+    /** Relational facts computed from box geometry, highest-value first —
+     *  e.g. "now above the filters toolbar (was below)". Max 3. */
+    relations?: string[]
+  }
+  /** op 'add' only. Component names/modules are REAL scanner output.
+   *  'duplicate' = another copy of a captured block's anchored markup. */
+  added?: {
+    kind: 'component' | 'placeholder' | 'duplicate'
+    componentName?: string
+    library?: string
+    module?: string
+    /** Owning MFE id in a multi-MFE workspace — the package the agent must
+     *  import the component from (and scope example search to). Absent in
+     *  single-MFE projects; codegen then uses library/module as before. */
+    mfe?: string
+    props?: Record<string, unknown>
+    previewProps?: Record<string, unknown>
+    /** placeholder: the user's label, verbatim. Stays visibly a placeholder. */
+    label?: string
+    /** USER-WRITTEN markdown spec (drawn sections). Travels VERBATIM — never
+     *  blended with measured geometry; the description quotes only its first
+     *  line. */
+    md?: string
+    /** Wire THIS real catalog data source. The agent re-grounds it before
+     *  use and never invents fields — see WIREFRAME_APPLY.md. */
+    data?: WireframeDataBinding
+    /** Where it goes relative to the anchored neighbor (file/line above). */
+    position: 'before' | 'after' | 'append' | 'prepend'
+  }
+  /** USER-SAID, verbatim (the block's canvas note). Rides any op; op 'note'
+   *  when the note is the only change on the block. */
+  note?: string
 }
 
 /**
@@ -468,6 +568,66 @@ export type DataSourceDetailsResult =
   | DataSourceDetailsNotFound
 
 /**
+ * One node of a walkable response shape — `schemaToShape()` output
+ * (data-source-shape.ts). Derived from a REAL schema only; residual `$ref`
+ * cycle markers and GraphQL `$type` names degrade to honest `ref` leaves,
+ * never fabricated key trees.
+ */
+export interface DataShapeNode {
+  kind: 'object' | 'array' | 'scalar' | 'ref' | 'unknown'
+  /** JSON-schema scalar type when kind 'scalar' ('string', 'number', …). */
+  scalar?: string
+  /** Object children by key, when kind 'object'. */
+  children?: Record<string, DataShapeNode>
+  /** Array item shape, when kind 'array'. */
+  item?: DataShapeNode
+  /** Named type (cycle marker / GraphQL $type), when kind 'ref'. */
+  ref?: string
+  /** Example/default value declared by the API contract at this node — REAL
+   *  contract sample data (api-schema tier only), used to preview bound props
+   *  honestly. For an array, an example array of items when the schema provides
+   *  one. Never synthesized. */
+  example?: unknown
+}
+
+/**
+ * Shape resolution for one data source — the binding picker's honesty-tagged
+ * ladder result. `shape_source` says which rung answered:
+ *   'api-schema'     — a real API contract matched the entry's endpoint;
+ *                      `shape` is walkable, `match_confidence` is the
+ *                      endpoint-match score.
+ *   'source-details' — regex-inferred hints only (`return_type` /
+ *                      `referenced_types` / `signature`, with the regex
+ *                      `details_confidence`); NO `shape` tree — expanding a
+ *                      type name into keys would fabricate.
+ *   'none'           — nothing known; the picker offers free-text entry,
+ *                      visibly blind.
+ */
+export interface DataSourceShape {
+  name: string
+  kind: DataSource['kind']
+  file: string
+  endpoint?: string
+  method?: string
+  shape_source: 'api-schema' | 'source-details' | 'none'
+  /** Walkable response shape — present only for 'api-schema'. */
+  shape?: DataShapeNode
+  /** Short schema-type name (e.g. "Planet[]") for agent follow-up. */
+  schema_ref?: string
+  schema_kind?: ApiSchema['kind']
+  /** resolveEndpoint score 0..1 ('api-schema' rung). */
+  match_confidence?: number
+  /** Regex-resolution confidence ('source-details' rung). */
+  details_confidence?: 'high' | 'medium' | 'low'
+  /** Verbatim inferred hints ('source-details' rung). */
+  return_type?: string
+  referenced_types?: string[]
+  signature?: string
+}
+
+export type DataSourceShapeResult = DataSourceShape | DataSourceDetailsAmbiguous | DataSourceDetailsNotFound
+
+/**
  * A single element-rendering site that consumes a data source. The pair
  * (file, line) maps directly onto the `data-annotask-file` + `data-annotask-line`
  * attributes the transform injects on every DOM element, so the iframe can
@@ -605,6 +765,23 @@ export interface ScreenshotMeta {
   section_bounds?: { x: number; y: number; w: number; h: number }
 }
 
+/**
+ * Per-task aggregate of provider token usage. Rolled up from each assistant
+ * turn's `ThreadMessage.usage` (input/output + Anthropic cache buckets), plus
+ * a `turns` counter and the timestamp of the last update so the UI can show
+ * "last activity X ago" without re-reading the JSONL log.
+ */
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  /** Number of provider turns folded into the totals above. */
+  turns: number
+  /** Epoch ms of the most recent contribution. */
+  lastUpdated: number
+}
+
 /** A single question the agent asks the user */
 export interface AgentFeedbackQuestion {
   id: string
@@ -623,40 +800,6 @@ export interface AgentFeedbackEntry {
 }
 
 /**
- * A backend-contract edit performed during a task. Two call sites:
- *   - `api_update` tasks: primary deliverable; context.api_edits[] is how the
- *     agent records every schema/route change needed.
- *   - Non-api_update tasks (usually `annotation`): when the user approves a
- *     cross-boundary edit via needs_info, the agent records the edit here so
- *     triage can see that this task crossed the frontend/backend line. Keeps
- *     lineage on the original task — no spawned child.
- */
-export interface ApiEdit {
-  schema_location: string
-  schema_kind: 'openapi' | 'graphql' | 'trpc' | 'jsonschema'
-  operation?: { method: string; path: string }
-  change_summary: string
-}
-
-/**
- * Structured context on an `api_update` task. Populated at creation time from
- * the Data view; the agent reads these fields (plus the task's description
- * and any linked data-source metadata) to know what the backend edit needs to
- * accomplish.
- */
-export interface ApiUpdateContext {
-  data_source_name: string
-  data_source_kind: DataSource['kind']
-  schema_location: string
-  schema_kind: 'openapi' | 'graphql' | 'trpc' | 'jsonschema'
-  endpoint?: string
-  operation?: { method: string; path: string; response_schema?: unknown; request_schema?: unknown }
-  desired_change: string
-  rationale?: string
-  api_edits?: ApiEdit[]
-}
-
-/**
  * Canonical list of task types recognized across HTTP, MCP, CLI, shell UI,
  * and task-summary lifting. Single source of truth — consumers must derive
  * from this tuple rather than hardcoding strings.
@@ -669,10 +812,31 @@ export const TASK_TYPES = [
   'a11y_fix',
   'error_fix',
   'perf_fix',
-  'api_update',
+  'wireframe_apply',
 ] as const
 
 export type TaskType = typeof TASK_TYPES[number]
+
+/**
+ * Permission mode for agent actions. Three modes, two tiers (global + task):
+ *   - `default` — CLI asks for non-trivial tool use (its own default behavior)
+ *   - `plan`    — read-only. Enforced natively where possible (claude's
+ *                 `--permission-mode plan`, codex's read-only sandbox) and via
+ *                 a model-level system-prompt directive on CLIs that lack a
+ *                 native plan flag (opencode, copilot headless).
+ *   - `bypass`  — bypass all permission checks (historical default)
+ *
+ * Resolved per-task as `task ?? global`. The persona tier was dropped — it
+ * added a dropdown nobody used and the chip menu in the Conversation tab
+ * already covers the "per-task tighten/loosen" flow.
+ *
+ * acceptEdits was removed in the same cut: only claude-local could
+ * meaningfully distinguish it from `default`, so it was theater on the other
+ * three CLIs.
+ */
+export const PERMISSION_MODES = ['default', 'plan', 'bypass'] as const
+
+export type PermissionMode = typeof PERMISSION_MODES[number]
 
 /** Task in the review pipeline */
 export interface AnnotaskTask {
@@ -699,6 +863,13 @@ export interface AnnotaskTask {
   blocked_reason?: string                // why agent cannot apply this task (markdown)
   resolution?: string                    // brief note on what the agent did
   visual?: Record<string, unknown>       // annotation visual state for restoration
+  /** Aggregate provider token usage across this task's conversation turns. */
+  tokenUsage?: TokenUsage
+  /**
+   * Per-task permission-mode override. Wins over the persona and global
+   * tiers when set. Absent = inherit (resolver falls back to persona, then global).
+   */
+  permissionMode?: PermissionMode
   createdAt: number
   updatedAt: number
 }

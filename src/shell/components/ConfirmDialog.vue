@@ -36,7 +36,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 <style scoped>
 .confirm-backdrop {
   position: fixed; inset: 0; z-index: 100000;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   display: flex; align-items: center; justify-content: center;
 }
 .confirm-dialog {
@@ -45,7 +45,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   border-radius: 10px;
   padding: 20px 24px;
   width: 320px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 32px var(--shadow);
 }
 .confirm-message {
   font-size: 13px; color: var(--text, #e4e4e7);
@@ -64,7 +64,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 }
 .confirm-cancel:hover { background: var(--border, #333); color: var(--text, #e4e4e7); }
 .confirm-ok {
-  background: rgba(239, 68, 68, 0.15); color: #ef4444;
+  background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger);
 }
-.confirm-ok:hover { background: #ef4444; color: white; }
+.confirm-ok:hover { background: var(--danger); color: var(--text-on-accent); }
 </style>

@@ -143,7 +143,7 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 .vp-item.active { background: var(--accent); color: var(--text-on-accent); }
 .vp-item-label { flex: 1; text-align: left; }
 .vp-item-dim { font-family: monospace; font-size: 10px; color: var(--text-muted); }
-.vp-item.active .vp-item-dim { color: rgba(255,255,255,0.7); }
+.vp-item.active .vp-item-dim { color: color-mix(in srgb, var(--text-on-accent) 70%, transparent); }
 
 .vp-custom { margin-top: 2px; border-top: 1px solid var(--border); padding-top: 4px; }
 .vp-custom-row { display: flex; align-items: center; gap: 4px; padding: 4px 8px; }

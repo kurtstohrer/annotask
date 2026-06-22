@@ -43,18 +43,29 @@
 }
 
 /* Data view — per-source highlights driven by useDataHighlights.
- * --hl-color is set inline per overlay from the annotation palette.
- * Dotted outline only, no fill — keeps the underlying content readable. */
+ * --hl-color is set inline per overlay (annotation palette = identity, or a
+ * latency bucket on the Network tab). Transparent fill keeps content readable.
+ *
+ * Three signals, three independent channels — so they never alias each other:
+ *   COLOR (--hl-color)       → identity, OR latency when `.latency` is set
+ *   BORDER STYLE             → confidence: dashed = precise, dotted = approximate
+ *   CORNER GLYPH (::before)  → an always-on confidence marker, legible on any
+ *                              theme regardless of the rect's opacity
+ * Opacity now encodes ONLY interaction state (focus/dim); it no longer carries
+ * confidence, so a file-level match is just as visible as a precise one. */
 .highlight.data-source {
   background: transparent;
   border: 2px dashed var(--hl-color);
-  opacity: 0.7;
-  transition: opacity 0.12s ease-out, border-width 0.12s ease-out;
+  opacity: 0.75;
+  transition: opacity 0.12s ease-out, border-width 0.12s ease-out, box-shadow 0.12s ease-out;
 }
 
+/* Focus 'pop' — a colored glow ring (not a transform, so the rect stays aligned
+ * to its element) makes the newly-focused set perceptible on a dense page. */
 .highlight.data-source.focused {
   border-width: 3px;
   opacity: 1;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--hl-color) 35%, transparent);
 }
 
 .highlight.data-source.dimmed {
@@ -68,33 +79,64 @@
 .highlight.data-source.hover-only.dimmed { opacity: 0; }
 .highlight.data-source.hover-only.focused { opacity: 1; }
 
-/* Fallback confidence — dotted + dimmer. A wildcard file-level match
- * shouldn't read as authoritative as a precise AST binding. Focused/
- * dimmed variants compose with the base `.data-source` rules. */
-.highlight.data-source.fallback {
+/* Confidence = border style + an always-on corner glyph (NOT opacity).
+ * 'fallback' is a file-level wildcard match; 'runtime-only' is a network call
+ * with no resolved static site. Both are "approximate" — dotted border plus an
+ * ≈ marker pinned INSIDE the rect (top-left) so `.overlay-layer`'s
+ * overflow:hidden can't clip it at the canvas edge. A surface-filled chip with
+ * a colored glyph stays legible on light and dark themes alike. */
+.highlight.data-source.fallback,
+.highlight.data-source.runtime-only {
   border-style: dotted;
-  opacity: 0.4;
 }
-.highlight.data-source.fallback.focused { opacity: 0.9; }
+.highlight.data-source.fallback::before,
+.highlight.data-source.runtime-only::before {
+  content: '≈';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: monospace;
+  line-height: 14px;
+  text-align: center;
+  color: var(--hl-color);
+  background: var(--surface);
+  border: 1px solid var(--hl-color);
+  border-radius: 7px;
+  pointer-events: none;
+}
+
+/* Latency encoding (Network tab) — color means "how slow", not "which source".
+ * A solid border keeps an orange "slow endpoint" visually distinct from an
+ * orange identity hue elsewhere. Ordered after the confidence rules so the
+ * solid border wins for a (rare) latency+approximate combo. */
+.highlight.data-source.latency {
+  border-style: solid;
+}
 
 /* Multi-owner overlay — same element is powered by more than one source.
- * Count badge pinned to the top-right; `data-multi-count` is the raw
- * count string set inline by App.vue. */
+ * Count badge pinned INSIDE the top-right corner (was top:-9px/right:-9px,
+ * which `.overlay-layer { overflow:hidden }` clipped for edge elements) so it's
+ * always visible. The confidence ≈ glyph sits top-left, so they never collide. */
 .highlight.data-source.multi::after {
   content: attr(data-multi-count);
   position: absolute;
-  top: -9px;
-  right: -9px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  font-size: 10px;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  font-size: 9px;
   font-weight: 700;
   font-family: monospace;
   color: var(--text-on-accent, white);
   background: var(--accent);
-  border: 2px solid var(--surface);
-  border-radius: 9px;
+  border: 1px solid var(--surface);
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

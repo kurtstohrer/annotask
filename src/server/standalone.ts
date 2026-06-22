@@ -12,9 +12,28 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
   close: () => Promise<void>
 }> {
   const port = options.port || 24678
-  const uiServer = createAnnotaskServer({ projectRoot: options.projectRoot })
+  // The standalone server binds 127.0.0.1 only, so the API middleware's Host
+  // gate (DNS rebinding) passes on the IP literal already — the array exists
+  // so the announced host stays allowed if the bind logic ever changes.
+  const extraAllowedHosts: string[] = []
+  const uiServer = createAnnotaskServer({
+    projectRoot: options.projectRoot,
+    allowedHosts: () => extraAllowedHosts,
+  })
 
   const httpServer = http.createServer((req, res) => {
+    // Vite serves /__annotask/preview-module through its on-demand /@fs/
+    // transform pipeline; webpack has no equivalent (a raw .vue/.svelte URL
+    // would be untransformable in the browser). Answer honestly and FAST so
+    // ensureComponentLoaded falls into the labeled 'not-registered'
+    // placeholder — off-route palette mounts are a documented Vite-only
+    // capability; on-route components work the same under both bundlers.
+    if (req.url?.startsWith('/__annotask/preview-module')) {
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'preview-module unavailable under webpack: components must be loaded by a visited route' }))
+      return
+    }
     uiServer.middleware(req, res, () => {
       res.statusCode = 404
       res.end('Not found')
@@ -41,6 +60,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
         httpServer.listen(0, '127.0.0.1', () => {
           const addr = httpServer.address() as { port: number; address: string }
           writeServerInfo(options.projectRoot, addr.port, addr.address)
+          extraAllowedHosts.push(addr.address)
           resolve({ port: addr.port, close: shutdown })
         })
       } else {
@@ -50,6 +70,7 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
 
     httpServer.listen(port, '127.0.0.1', () => {
       writeServerInfo(options.projectRoot, port, '127.0.0.1')
+      extraAllowedHosts.push('127.0.0.1')
       resolve({ port, close: shutdown })
     })
   })

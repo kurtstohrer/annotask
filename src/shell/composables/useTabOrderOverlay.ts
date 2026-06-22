@@ -4,13 +4,24 @@
  * native interactives, and DOM/visual reorderings. Synthesizes `tab-order`
  * a11y_fix tasks for any flagged item.
  *
- * Lifecycle: refresh runs once per `enable()` and on each rAF tick while
- * active — no auto-poll between renders, since the user explicitly opted in.
- * Disabling clears the overlay and stops the loop.
+ * Lifecycle: refresh runs once per `enable()` and then on a rAF loop while
+ * active so badges track scroll/resize. Each refresh is a full-DOM
+ * compute:tab-order bridge walk — far too heavy for every animation frame —
+ * so the loop is rate-capped to ~30fps, mirroring useOverlayEngine's
+ * MIN_REFRESH_INTERVAL_MS. Disabling clears the overlay and stops the loop.
  */
 import { ref, watch, type Ref } from 'vue'
 import type { TabOrderEntry, ComputeTabOrderResult } from '../../shared/bridge-types'
 import type { useIframeManager } from './useIframeManager'
+
+// Same cap as useOverlayEngine: rects can go at most one capped interval
+// stale (imperceptible during scroll) while the bridge round-trip cost is
+// roughly halved versus refreshing every animation frame.
+const MIN_REFRESH_INTERVAL_MS = 33
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
+}
 
 export type TabOrderFlag = 'positive' | 'unreachable' | 'reorder' | null
 
@@ -33,10 +44,12 @@ export function useTabOrderOverlay(deps: {
 
   let loopRunning = false
   let inflight = false
+  let lastRunAt = 0
 
   async function refresh(): Promise<void> {
     if (inflight) return
     inflight = true
+    lastRunAt = nowMs()
     try {
       const result = await iframe.computeTabOrder()
       const flagsByEid = new Map<string, { flag: TabOrderFlag; reason: string }>()
@@ -82,7 +95,8 @@ export function useTabOrderOverlay(deps: {
         requestAnimationFrame(tick)
         return
       }
-      refresh()
+      // Rate-cap the full-DOM bridge walk to ~30fps (see header comment).
+      if (nowMs() - lastRunAt >= MIN_REFRESH_INTERVAL_MS) refresh()
       requestAnimationFrame(tick)
     }
     requestAnimationFrame(tick)

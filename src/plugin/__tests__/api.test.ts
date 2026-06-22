@@ -1,6 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import http from 'http'
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { createAPIMiddleware } from '../../server/api'
+import { createWireframeStore } from '../../server/wireframe-store'
+import { createSessionStore } from '../../server/session-store'
+import { createSnapshotStore } from '../../server/file-snapshots'
+import type { WireframeDocument, WireframeInstance } from '../../shared/wireframe-types'
+import { emptyDesignSessionDocument, type DesignSessionDocument, type SessionEntry } from '../../shared/design-session-types'
 
 function createTestServer(options: Parameters<typeof createAPIMiddleware>[0]) {
   const middleware = createAPIMiddleware(options)
@@ -18,7 +27,7 @@ function createTestServer(options: Parameters<typeof createAPIMiddleware>[0]) {
 function request(server: http.Server, method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<{ status: number; data: any; raw: string }> {
   return new Promise((resolve, reject) => {
     const url = new URL(path, `http://localhost:${(server.address() as any).port}`)
-    const options: http.RequestOptions = { method, hostname: url.hostname, port: url.port, path: url.pathname, headers: { ...extraHeaders } }
+    const options: http.RequestOptions = { method, hostname: url.hostname, port: url.port, path: url.pathname + url.search, headers: { ...extraHeaders } }
     if (body !== undefined) {
       options.headers = { ...options.headers, 'Content-Type': 'application/json' }
     }
@@ -42,6 +51,12 @@ describe('API endpoints', () => {
   const tasks: any[] = []
 
   let perfSnapshot: unknown = null
+  // Real wireframe store on a temp dir — the rev CAS and the accept/delete
+  // lifecycle hooks are exactly what these tests exercise, so stubbing the
+  // store would test nothing.
+  let wireframeRoot: string
+  let wireframeStore: ReturnType<typeof createWireframeStore>
+  let sessionStore: ReturnType<typeof createSessionStore>
   const options = {
     projectRoot: '/tmp/annotask-test',
     getReport: () => ({ version: '1.0', changes: [] }),
@@ -53,9 +68,15 @@ describe('API endpoints', () => {
       tasks.push(newTask)
       return newTask
     },
-    updateTask: (id: string, updates: Record<string, unknown>) => {
+    updateTask: (id: string, updates: Record<string, unknown>, opts?: { guard?: (task: Record<string, unknown>) => string | null }) => {
       const task = tasks.find(t => t.id === id)
       if (!task) return { error: 'Task not found' }
+      // Mirror the real store: the transition guard runs against the task as
+      // it exists at update time (state.ts runs it inside the task lock).
+      if (opts?.guard) {
+        const reason = opts.guard(task)
+        if (reason) return { error: 'Invalid transition', reason }
+      }
       Object.assign(task, updates)
       return task
     },
@@ -74,15 +95,89 @@ describe('API endpoints', () => {
     ingestNetworkCalls: (_calls: unknown[]) => { /* no-op for tests */ },
     getRuntimeEndpointCatalog: () => ({ version: '1.0' as const, updatedAt: 0, endpoints: [] }),
     clearRuntimeEndpoints: () => { /* no-op for tests */ },
+    // Embedded-chat stubs — these tests don't exercise the chat endpoints,
+    // but APIOptions requires them. Each stub returns a sensible empty value.
+    taskThread: {
+      read: async (_id: string) => [],
+      append: async (_id: string, input: { role: 'user' | 'assistant' | 'system' | 'tool'; content: string }) => ({
+        id: 'msg-test', ts: 0, role: input.role, content: input.content,
+      }),
+      update: async (_id: string, msgId: string, patch: { content?: string }) => ({
+        id: msgId, ts: 0, role: 'assistant' as const, content: patch.content ?? '',
+      }),
+      subscribe: () => () => { /* no-op */ },
+      clear: async () => { /* no-op */ },
+    },
+    agentSpawn: {
+      registry: { abort: () => false, size: () => 0, taskRunning: () => false, killAll: () => { /* no-op */ } },
+      handleSpawn: async (_req: unknown, res: { statusCode: number; end: (s?: string) => void }) => {
+        res.statusCode = 501; res.end('not supported in this test')
+      },
+    },
+    agentDetect: {
+      detect: async () => ({
+        'claude-local': { found: false },
+        'codex-local': { found: false },
+        'opencode-local': { found: false },
+        'copilot-local': { found: false },
+        copilot: { found: false },
+        openrouter: { hasEnv: false },
+        ts: 0,
+      }),
+      invalidate: () => { /* no-op */ },
+    },
+    initRunner: {
+      start: () => ({ running: false, steps: [] }),
+      cancel: () => { /* no-op */ },
+      commit: async () => ({ running: false, steps: [], result: 'success' as const }),
+      skip: async () => ({ running: false, steps: [], result: 'success' as const }),
+      reset: () => ({ running: false, steps: [] }),
+      getState: () => ({ running: false, steps: [] }),
+    },
+    getAgentConfigs: async () => ({ version: 1 as const, agents: {} }),
+    setAgentConfig: async () => ({ version: 1 as const, agents: {} }),
+    getWireframe: async () => wireframeStore.get(),
+    setWireframe: async (doc: WireframeDocument) => wireframeStore.set(doc),
+    getDesignSession: async () => sessionStore.get(),
+    setDesignSession: async (doc: DesignSessionDocument) => sessionStore.set(doc),
+    clearDesignSession: async () => {
+      const fresh = emptyDesignSessionDocument(`ds-${Date.now()}`)
+      fresh.startedAt = Date.now()
+      fresh.updatedAt = Date.now()
+      return sessionStore.replace(fresh)
+    },
+    snapshots: undefined as never, // assigned a real store on the temp dir in beforeAll
+    usageLedger: {
+      append: async (e: { scope: 'task' | 'init' | 'apply' | 'chat' }) => ({ ts: 0, scope: e.scope, inputTokens: 0, outputTokens: 0 }),
+      readAll: async () => [],
+      summary: async () => ({
+        totals: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+        byScope: {
+          task: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+          init: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+          apply: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+          chat: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, turns: 0 },
+        },
+        byProvider: {},
+        firstAt: null,
+        lastAt: null,
+      }),
+      recent: async () => [],
+    },
   }
 
   beforeAll(async () => {
+    wireframeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-api-wf-'))
+    wireframeStore = createWireframeStore(wireframeRoot)
+    sessionStore = createSessionStore(wireframeRoot)
+    ;(options as { snapshots: unknown }).snapshots = createSnapshotStore(wireframeRoot)
     server = createTestServer(options)
     await new Promise<void>((resolve) => server.listen(0, resolve))
   })
 
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()))
+    await fsp.rm(wireframeRoot, { recursive: true, force: true })
   })
 
   it('GET /api/report returns report', async () => {
@@ -108,6 +203,14 @@ describe('API endpoints', () => {
     const { status, data } = await request(server, 'GET', '/__annotask/api/tasks')
     expect(status).toBe(200)
     expect(data.tasks).toEqual(tasks)
+  })
+
+  it('GET /api/project-components returns the Project library envelope', async () => {
+    const { status, data } = await request(server, 'GET', '/__annotask/api/project-components')
+    expect(status).toBe(200)
+    expect(data.library.name).toBe('Project')
+    expect(Array.isArray(data.library.components)).toBe(true)
+    expect(typeof data.scannedAt).toBe('number')
   })
 
   it('GET /api/status returns ok', async () => {
@@ -190,7 +293,7 @@ describe('API endpoints', () => {
     it('accepts every canonical task type', async () => {
       const canonical = [
         'annotation', 'section_request', 'style_update', 'theme_update',
-        'a11y_fix', 'error_fix', 'perf_fix', 'api_update',
+        'a11y_fix', 'error_fix', 'perf_fix', 'wireframe_apply',
       ]
       for (const type of canonical) {
         const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
@@ -436,6 +539,78 @@ describe('API endpoints', () => {
       })
       expect(status).toBe(200)
     })
+
+    it('concurrent pending → in_progress PATCHes: exactly one wins (guard runs at update time)', async () => {
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation',
+        description: 'Race test task',
+      })
+      expect(created.status).toBe(200)
+      const id = created.data.id
+      const [a, b] = await Promise.all([
+        request(server, 'PATCH', `/__annotask/api/tasks/${id}`, { status: 'in_progress' }),
+        request(server, 'PATCH', `/__annotask/api/tasks/${id}`, { status: 'in_progress' }),
+      ])
+      const ok = [a, b].filter(r => r.status === 200)
+      const rejected = [a, b].filter(r => r.status === 400)
+      expect(ok).toHaveLength(1)
+      expect(rejected).toHaveLength(1)
+      expect(rejected[0].data.error.code).toBe('invalid_transition')
+      expect(rejected[0].data.error.message).toContain('Invalid state transition')
+    })
+  })
+
+  describe('host validation (DNS-rebinding gate)', () => {
+    afterEach(() => {
+      delete process.env.ANNOTASK_ALLOWED_HOSTS
+    })
+
+    it('blocks GET /api/tasks with a non-local Host header', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: 'evil.example' })
+      expect(status).toBe(403)
+      expect(data.error.code).toBe('forbidden_host')
+    })
+
+    it('blocks the screenshot route with a non-local Host header', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/screenshots/screenshot-1-a.png', undefined, { Host: 'evil.example:5173' })
+      expect(status).toBe(403)
+      expect(data.error.code).toBe('forbidden_host')
+    })
+
+    it('blocks mutations with a non-local Host header even when Origin is local', async () => {
+      const { status, data } = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation', description: 'rebound',
+      }, { Host: 'evil.example', Origin: 'http://localhost:5173' })
+      expect(status).toBe(403)
+      expect(data.error.code).toBe('forbidden_host')
+    })
+
+    it('allows explicit localhost and IP-literal Host headers', async () => {
+      const local = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: 'localhost:9999' })
+      expect(local.status).toBe(200)
+      const lan = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: '192.168.1.20:5173' })
+      expect(lan.status).toBe(200)
+    })
+
+    it('allows a host listed in ANNOTASK_ALLOWED_HOSTS', async () => {
+      process.env.ANNOTASK_ALLOWED_HOSTS = 'evil.example'
+      const { status } = await request(server, 'GET', '/__annotask/api/tasks', undefined, { Host: 'evil.example' })
+      expect(status).toBe(200)
+    })
+
+    it('allows hosts threaded via the allowedHosts option (announced bind host)', async () => {
+      const gated = createTestServer({ ...options, allowedHosts: () => ['dev.example.com'] })
+      await new Promise<void>((resolve) => gated.listen(0, resolve))
+      try {
+        const ok = await request(gated, 'GET', '/__annotask/api/tasks', undefined, { Host: 'dev.example.com:5173' })
+        expect(ok.status).toBe(200)
+        const blocked = await request(gated, 'GET', '/__annotask/api/tasks', undefined, { Host: 'other.example.com' })
+        expect(blocked.status).toBe(403)
+        expect(blocked.data.error.code).toBe('forbidden_host')
+      } finally {
+        await new Promise<void>((resolve) => gated.close(() => resolve()))
+      }
+    })
   })
 
   describe('origin validation', () => {
@@ -463,6 +638,340 @@ describe('API endpoints', () => {
         description: 'From localhost',
       }, { Origin: 'http://localhost:5173' })
       expect(status).toBe(200)
+    })
+  })
+
+  describe('wireframe GET/PUT', () => {
+    it('GET returns an empty document on a fresh project', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(status).toBe(200)
+      expect(data.version).toBe('1.0')
+      expect(Array.isArray(data.routes)).toBe(true)
+    })
+
+    it('PUT persists a document and GET returns it (with route filtering)', async () => {
+      const doc: WireframeDocument = {
+        version: '1.0',
+        updatedAt: 1,
+        routes: [
+          { route: '/planets', instances: [
+            { id: 'wfi-1', kind: 'component', anchor: { file: 'PlanetsPage.vue', line: 12, position: 'append' }, inserted: { tag: 'planetcard', componentName: 'PlanetCard' }, fidelity: 'live', mounted: true, createdAt: 1 },
+          ] },
+          { route: '/', instances: [] },
+        ],
+      }
+      const put = await request(server, 'PUT', '/__annotask/api/wireframe', doc as unknown as Record<string, unknown>)
+      expect(put.status).toBe(200)
+      expect(put.data.routes).toHaveLength(2)
+      // First write against a rev-less doc stamps the rev.
+      expect(put.data.rev).toBe(1)
+
+      const all = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(all.data.routes).toHaveLength(2)
+      expect(all.data.rev).toBe(1)
+
+      const filtered = await request(server, 'GET', '/__annotask/api/wireframe?route=/planets')
+      expect(filtered.data.routes).toHaveLength(1)
+      expect(filtered.data.routes[0].instances[0].id).toBe('wfi-1')
+    })
+
+    it('PUT rejects a non-wireframe body', async () => {
+      const { status, data } = await request(server, 'PUT', '/__annotask/api/wireframe', { nope: true })
+      expect(status).toBe(400)
+      expect(data.error.code).toBe('validation_failed')
+    })
+
+    it('PUT rejects a document with one malformed instance', async () => {
+      const current = await request(server, 'GET', '/__annotask/api/wireframe')
+      const { status, data } = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        version: '1.0', updatedAt: 2, rev: current.data.rev,
+        routes: [{ route: '/planets', instances: [{ id: 'wfi-bad' /* no kind/anchor/inserted */ }] }],
+      })
+      expect(status).toBe(400)
+      expect(data.error.code).toBe('validation_failed')
+    })
+
+    it('PUT with the current rev succeeds and increments; stale/missing rev → 409 conflict', async () => {
+      const current = await request(server, 'GET', '/__annotask/api/wireframe')
+      const rev = current.data.rev as number
+
+      const ok = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        ...current.data, updatedAt: Date.now(), rev,
+      })
+      expect(ok.status).toBe(200)
+      expect(ok.data.rev).toBe(rev + 1)
+
+      // Replaying the same (now stale) rev — the other-tab scenario.
+      const stale = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        ...current.data, updatedAt: Date.now(), rev,
+      })
+      expect(stale.status).toBe(409)
+      expect(stale.data.error.code).toBe('conflict')
+
+      // Missing rev once the doc carries one is just as stale.
+      const { rev: _omitted, ...revless } = current.data
+      const missing = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        ...revless, updatedAt: Date.now(),
+      })
+      expect(missing.status).toBe(409)
+      expect(missing.data.error.code).toBe('conflict')
+
+      // The losing writes must not have advanced the doc.
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(after.data.rev).toBe(rev + 1)
+    })
+  })
+
+  describe('design-session GET/PUT/DELETE', () => {
+    function sessionEntry(id: string, extra: Partial<SessionEntry> = {}): SessionEntry {
+      return {
+        id,
+        ordinal: 1,
+        ts: 1,
+        route: '/planets',
+        change: {
+          id: `c-${id}`, type: 'style_update', description: 'x', file: 'PlanetsPage.vue',
+          section: 'style', line: 9, element: 'h1', property: 'color', before: 'red', after: 'blue',
+        } as SessionEntry['change'],
+        anchor: { file: 'PlanetsPage.vue', line: 9 },
+        live: { status: 'pending' },
+        ...extra,
+      }
+    }
+
+    it('GET returns an empty document on a fresh project', async () => {
+      const { status, data } = await request(server, 'GET', '/__annotask/api/design-session')
+      expect(status).toBe(200)
+      expect(data.version).toBe('1.0')
+      expect(data.entries).toEqual([])
+      expect(typeof data.sessionId).toBe('string')
+    })
+
+    it('PUT persists the journal (stamping the first rev) and CAS-rejects a stale rev', async () => {
+      const doc: DesignSessionDocument = {
+        version: '1.0', sessionId: 'ds-test-1', startedAt: 1, updatedAt: 1,
+        entries: [sessionEntry('se-1')],
+      }
+      const put = await request(server, 'PUT', '/__annotask/api/design-session', doc as unknown as Record<string, unknown>)
+      expect(put.status).toBe(200)
+      expect(put.data.rev).toBe(1)
+      expect(put.data.entries).toHaveLength(1)
+
+      const got = await request(server, 'GET', '/__annotask/api/design-session')
+      expect(got.data.entries[0].id).toBe('se-1')
+
+      // Round-tripping the current rev wins; replaying it is the other-tab loss.
+      const ok = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...got.data, updatedAt: Date.now(), entries: [sessionEntry('se-1'), sessionEntry('se-2', { ordinal: 2 })],
+      })
+      expect(ok.status).toBe(200)
+      expect(ok.data.rev).toBe(2)
+
+      const stale = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...got.data, updatedAt: Date.now(),
+      })
+      expect(stale.status).toBe(409)
+      expect(stale.data.error.code).toBe('conflict')
+    })
+
+    it('PUT rejects a non-session body and a document with one malformed entry', async () => {
+      const bad = await request(server, 'PUT', '/__annotask/api/design-session', { nope: true })
+      expect(bad.status).toBe(400)
+      expect(bad.data.error.code).toBe('validation_failed')
+
+      const current = await request(server, 'GET', '/__annotask/api/design-session')
+      const oneBad = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...current.data, entries: [sessionEntry('se-good'), { id: 'se-bad' }],
+      })
+      expect(oneBad.status).toBe(400)
+      expect(oneBad.data.error.code).toBe('validation_failed')
+    })
+
+    it('DELETE discards the session: clears the journal and removes session-created placements', async () => {
+      // Seed the wireframe doc with one session-owned instance and one foreign one.
+      const wf = await request(server, 'GET', '/__annotask/api/wireframe')
+      const seeded = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        version: '1.0', updatedAt: Date.now(), rev: wf.data.rev,
+        routes: [{
+          route: '/planets',
+          instances: [
+            { id: 'wfi-session', kind: 'component', anchor: { file: 'PlanetsPage.vue', line: 12, position: 'append' }, inserted: { tag: 'planetcard', componentName: 'PlanetCard' }, fidelity: 'live', mounted: true, createdAt: 1 },
+            { id: 'wfi-keep', kind: 'component', anchor: { file: 'PlanetsPage.vue', line: 20, position: 'append' }, inserted: { tag: 'tag' }, fidelity: 'live', mounted: true, createdAt: 1 },
+          ],
+        }],
+      })
+      expect(seeded.status).toBe(200)
+
+      // Seed the session journal with a placement cross-ref + an element edit.
+      const current = await request(server, 'GET', '/__annotask/api/design-session')
+      const put = await request(server, 'PUT', '/__annotask/api/design-session', {
+        ...current.data, updatedAt: Date.now(),
+        entries: [
+          sessionEntry('se-place', { instanceId: 'wfi-session', change: { id: 'c-place', type: 'component_insert', description: 'place', file: 'PlanetsPage.vue', section: 'template', line: 12, insert_position: 'append', inserted: { tag: 'planetcard' } } as never }),
+          sessionEntry('se-style', { ordinal: 2 }),
+        ],
+      })
+      expect(put.status).toBe(200)
+
+      const del = await request(server, 'DELETE', '/__annotask/api/design-session')
+      expect(del.status).toBe(200)
+      expect(del.data.removedInstances).toBe(1)
+      expect(del.data.revertedFiles).toEqual([])
+
+      const after = await request(server, 'GET', '/__annotask/api/design-session')
+      expect(after.data.entries).toEqual([])
+      expect(after.data.sessionId).not.toBe(put.data.sessionId)
+
+      const wfAfter = await request(server, 'GET', '/__annotask/api/wireframe')
+      const ids = wfAfter.data.routes.flatMap((r: { instances: Array<{ id: string }> }) => r.instances.map((i) => i.id))
+      expect(ids).toContain('wfi-keep')
+      expect(ids).not.toContain('wfi-session')
+    })
+  })
+
+  describe('wireframe lifecycle closure (task accept / delete hooks)', () => {
+    function instance(id: string, extra: Partial<WireframeInstance> = {}): WireframeInstance {
+      return {
+        id,
+        kind: 'component',
+        anchor: { file: 'PlanetsPage.vue', line: 9, position: 'append' },
+        inserted: { tag: 'planetcard', componentName: 'PlanetCard' },
+        fidelity: 'live',
+        mounted: true,
+        createdAt: 1,
+        ...extra,
+      }
+    }
+
+    /** PUT the routes payload with the current rev (CAS round-trip). */
+    async function putRoutes(routes: WireframeDocument['routes']): Promise<void> {
+      const current = await request(server, 'GET', '/__annotask/api/wireframe')
+      const put = await request(server, 'PUT', '/__annotask/api/wireframe', {
+        version: '1.0', updatedAt: Date.now(), rev: current.data.rev, routes,
+      })
+      expect(put.status).toBe(200)
+    }
+
+    it('accepting a wireframe_apply task removes its instances (and only its instances)', async () => {
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'wireframe_apply', description: 'Build /planets',
+      })
+      expect(created.status).toBe(200)
+      const taskId = created.data.id as string
+
+      await putRoutes([
+        { route: '/planets', instances: [
+          instance('wfi-owned-1', { status: 'building', taskId }),
+          instance('wfi-owned-2', { status: 'building', taskId }),
+          instance('wfi-other', { status: 'placed' }),
+        ] },
+      ])
+
+      // Walk the full lifecycle the agent would: lock → review → accept.
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'in_progress' })
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'review' })
+      const accepted = await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'accepted' })
+      expect(accepted.status).toBe(200)
+
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      const planets = after.data.routes.find((r: { route: string }) => r.route === '/planets')
+      expect(planets.instances.map((i: { id: string }) => i.id)).toEqual(['wfi-other'])
+    })
+
+    it('deleting a wireframe_apply task reverts its instances to placed and clears taskId', async () => {
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'wireframe_apply', description: 'Build /moons',
+      })
+      expect(created.status).toBe(200)
+      const taskId = created.data.id as string
+
+      await putRoutes([
+        { route: '/moons', instances: [
+          instance('wfi-reverted', { status: 'building', taskId }),
+        ] },
+      ])
+
+      const deleted = await request(server, 'DELETE', `/__annotask/api/tasks/${taskId}`)
+      expect(deleted.status).toBe(200)
+
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      const moons = after.data.routes.find((r: { route: string }) => r.route === '/moons')
+      expect(moons.instances).toHaveLength(1)
+      expect(moons.instances[0].status).toBe('placed')
+      expect(moons.instances[0].taskId).toBeUndefined()
+    })
+
+    it('accepting a non-wireframe task leaves the wireframe document untouched', async () => {
+      const before = await request(server, 'GET', '/__annotask/api/wireframe')
+      const created = await request(server, 'POST', '/__annotask/api/tasks', {
+        type: 'annotation', description: 'unrelated',
+      })
+      const taskId = created.data.id as string
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'in_progress' })
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'review' })
+      await request(server, 'PATCH', `/__annotask/api/tasks/${taskId}`, { status: 'accepted' })
+      const after = await request(server, 'GET', '/__annotask/api/wireframe')
+      expect(after.data.rev).toBe(before.data.rev)
+    })
+  })
+
+  describe('wireframe-snapshots upload/serve/delete', () => {
+    // 1x1 transparent PNG
+    const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const dataUrl = `data:image/png;base64,${PNG_B64}`
+
+    afterAll(async () => {
+      await fsp.rm(path.join(options.projectRoot, '.annotask', 'wireframe-snapshots'), { recursive: true, force: true })
+    })
+
+    it('uploads under the shell-minted id, serves it back as PNG, deletes it', async () => {
+      const up = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-1', data: dataUrl })
+      expect(up.status).toBe(200)
+      expect(up.data.filename).toBe('wfb-test-1.png')
+
+      const served = await request(server, 'GET', '/__annotask/wireframe-snapshots/wfb-test-1.png')
+      expect(served.status).toBe(200)
+      expect(served.raw.length).toBeGreaterThan(0)
+
+      const del = await request(server, 'DELETE', '/__annotask/api/wireframe-snapshots/wfb-test-1.png')
+      expect(del.status).toBe(200)
+      expect(del.data.deleted).toBe('wfb-test-1.png')
+
+      const gone = await request(server, 'GET', '/__annotask/wireframe-snapshots/wfb-test-1.png')
+      expect(gone.status).toBe(404)
+    })
+
+    it('re-upload under the same id overwrites (recapture semantics)', async () => {
+      await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-2', data: dataUrl })
+      const again = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-2', data: dataUrl })
+      expect(again.status).toBe(200)
+      expect(again.data.filename).toBe('wfb-test-2.png')
+    })
+
+    it('rejects ids that are not shell-mintable (traversal/case/format)', async () => {
+      for (const id of ['../escape', 'a/b', 'UPPER', 'wfb_underscore', '', '-leading']) {
+        const res = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id, data: dataUrl })
+        expect(res.status, `id ${JSON.stringify(id)} must be rejected`).toBe(400)
+      }
+    })
+
+    it('rejects non-PNG payloads and oversized bodies', async () => {
+      const badType = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-3', data: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' })
+      expect(badType.status).toBe(400)
+      // The global 4MB body cap fires while the client is still streaming —
+      // readBody destroys the socket (ECONNRESET) or answers 413 by timing.
+      const big = `data:image/png;base64,${Buffer.alloc(4 * 1024 * 1024 + 16).toString('base64')}`
+      const result = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-4', data: big })
+        .then((r) => r.status as number | string)
+        .catch(() => 'connection-destroyed')
+      expect([413, 'connection-destroyed']).toContain(result)
+      expect(fs.existsSync(path.join(options.projectRoot, '.annotask', 'wireframe-snapshots', 'wfb-test-4.png'))).toBe(false)
+    })
+
+    it('serve and delete refuse filenames outside the minted-id shape', async () => {
+      expect((await request(server, 'GET', '/__annotask/wireframe-snapshots/..%2Fescape.png')).status).toBe(400)
+      expect((await request(server, 'GET', '/__annotask/wireframe-snapshots/NOPE.PNG')).status).toBe(400)
+      expect((await request(server, 'DELETE', '/__annotask/api/wireframe-snapshots/..%2Fescape.png')).status).toBe(400)
     })
   })
 })

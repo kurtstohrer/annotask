@@ -6,12 +6,13 @@ import type {
   ClassSetResult, ElementClassificationData,
   LayoutContainerData, LayoutAddTrackResult, LayoutAddChildResult,
   CheckSourceMappingResult, ColorSwatch, ColorSchemeResult,
-  InsertPlaceholderResult, InsertVueComponentResult,
+  InsertPlaceholderResult, InsertVueComponentResult, PreviewComponentResult,
   InteractionMode, PerfScanResult, PerfRecording,
   ResolveComponentChainResult,
   ResolveBySelectorsResult, ResolveBySelectorsMatch,
   ComputeAccessibilityInfoResult, AccessibilityInfo,
   ComputeTabOrderResult, TabOrderEntry,
+  WireframeCapturePayload, WireframeCaptureResult,
 } from '../../shared/bridge-types'
 import type { DesignSpecThemeSelector } from '../../schema'
 
@@ -215,6 +216,21 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
       const result = await bridge.request<{ rects: (BridgeRect | null)[] }>('resolve:rects', { eids: [...eids] })
       return result.rects.map(r => r ? (toShellRect(r) || r) : null)
     } catch { return eids.map(() => null) }
+  }
+
+  /**
+   * Re-measure the per-line rects for a text selection by locating the
+   * substring inside the anchor element's text nodes. Used to refresh
+   * highlight overlays after text reflow (window/container resize), where
+   * delta translation can't track line-break shifts.
+   */
+  async function getTextRangeRects(eid: string, text: string): Promise<BridgeRect[] | null> {
+    if (!eid || !text) return null
+    try {
+      const result = await bridge.request<{ rects: BridgeRect[] } | null>('resolve:text-rects', { eid, text })
+      if (!result || !result.rects || !result.rects.length) return null
+      return result.rects.map(r => toShellRect(r) || r)
+    } catch { return null }
   }
 
   /**
@@ -452,7 +468,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
 
   async function insertPlaceholder(
     targetEid: string, position: string, tag: string,
-    opts?: { classes?: string; textContent?: string; category?: string; library?: string; defaultProps?: Record<string, unknown> }
+    opts?: { classes?: string; textContent?: string; category?: string; library?: string; defaultProps?: Record<string, unknown>; instanceId?: string }
   ): Promise<string> {
     try {
       const result = await bridge.request<InsertPlaceholderResult>('insert:placeholder', {
@@ -466,22 +482,32 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     try { await bridge.request('insert:remove', { eid }) } catch {}
   }
 
-  async function moveElement(eid: string, targetEid: string, position: string): Promise<void> {
-    try { await bridge.request('move:element', { eid, targetEid, position }) } catch {}
-  }
-
   async function insertComponent(
-    targetEid: string, position: string, componentName: string, props?: Record<string, unknown>
+    targetEid: string, position: string, componentName: string, props?: Record<string, unknown>, module?: string, instanceId?: string
   ): Promise<InsertVueComponentResult> {
     try {
       return await bridge.request<InsertVueComponentResult>('insert:component', {
-        targetEid, position, componentName, props
+        targetEid, position, componentName, props, module, instanceId
       })
-    } catch { return { eid: '', mounted: false } }
+    } catch { return { eid: '', mounted: false, reason: 'no-runtime', fidelity: 'placeholder' } }
   }
 
   /** @deprecated Use insertComponent */
   const insertVueComponent = insertComponent
+
+  /** Render a component offscreen in the iframe and return a PNG snapshot +
+   *  honest fidelity. Used by the Components detail preview + drag thumbnail. */
+  async function previewComponent(
+    componentName: string, props?: Record<string, unknown>, module?: string, width?: number,
+    opts?: { repeat?: number; instanceProps?: Record<string, unknown>[] },
+  ): Promise<PreviewComponentResult> {
+    try {
+      return await bridge.request<PreviewComponentResult>('preview:component', { componentName, props, module, width, repeat: opts?.repeat, instanceProps: opts?.instanceProps }, 8000)
+    } catch (err) {
+      console.warn('[Annotask] preview:component request failed:', err)
+      return { mounted: false, reason: 'no-runtime', fidelity: 'placeholder' }
+    }
+  }
 
   async function getComponentChain(eid: string): Promise<ResolveComponentChainResult | null> {
     try {
@@ -493,6 +519,16 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     try {
       return await bridge.request('screenshot:capture', { rect: clipRect }, 15000)
     } catch { return { error: 'timeout' } }
+  }
+
+  /** Rasterize the current route into per-block images (wireframe mode).
+   *  Rects come back in iframe-document coordinates — deliberately NOT
+   *  converted to shell coords; the canvas renders in capture space. Progress
+   *  arrives via 'wireframe:capture-progress' bridge events. */
+  async function captureWireframe(opts?: WireframeCapturePayload): Promise<WireframeCaptureResult> {
+    try {
+      return await bridge.request<WireframeCaptureResult>('wireframe:capture', opts ?? {}, 60000)
+    } catch { return { error: 'capture timed out' } }
   }
 
   async function scanA11y(eid?: string): Promise<{ violations: any[]; error?: string }> {
@@ -587,6 +623,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     findTemplateGroup,
     getElementRect,
     getElementRects,
+    getTextRangeRects,
     getFileElementRects,
     getLocationElementRects,
     listProjectComponents,
@@ -603,6 +640,7 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     classifyElement,
     getComponentChain,
     captureScreenshot,
+    captureWireframe,
     scanA11y,
     scrollIntoView,
     resolveBySelectors,
@@ -631,9 +669,9 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     // Insert/Move
     insertPlaceholder,
     removePlaceholder,
-    moveElement,
     insertComponent,
     insertVueComponent,
+    previewComponent,
     // Mode
     setMode,
     // Bridge events

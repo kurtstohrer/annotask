@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { globSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { transformJSX } from '../transform'
 
 const ROOT = '/project'
@@ -233,5 +237,138 @@ describe('transformJSX', () => {
     // header, footer, div, Header (self-closing), Footer (self-closing)
     const matches = result.match(/data-annotask-file/g)
     expect(matches!.length).toBeGreaterThanOrEqual(5)
+  })
+
+  // Regression: the top-level scanner must be string/comment-aware at
+  // statement scope — `const html = "<div>x</div>"` previously got
+  // attributes injected INSIDE the string literal (a hard syntax error for
+  // double-quoted strings, since the injection itself uses double quotes).
+  describe('statement-scope string/comment awareness', () => {
+    it('does not inject inside double-quoted string literals', () => {
+      const code = [
+        'const html = "<div>hello</div>"',
+        'export function App() { return <p>hi</p> }',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('const html = "<div>hello</div>"')
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1) // only <p>
+    })
+
+    it('does not inject inside single-quoted strings in a ternary', () => {
+      const code = [
+        "const label = ready ? '<b>y</b>' : '<i>n</i>'",
+        'export function App() { return <main>{label}</main> }',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain("ready ? '<b>y</b>' : '<i>n</i>'")
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1) // only <main>
+    })
+
+    it('does not mutate template-literal text', () => {
+      const code = [
+        'const t = `<section>hi</section>`',
+        'export const App = () => <p>hi</p>',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('const t = `<section>hi</section>`')
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1) // only <p>
+    })
+
+    it('still transforms JSX inside template-literal ${} interpolations', () => {
+      // A tag inside an interpolation IS legal JSX — only the raw template
+      // text around it is opaque.
+      const code = 'const out = `<li>raw</li> ${cond ? <span>real</span> : null}`'
+      const result = transform(code)!
+      expect(result).toContain('`<li>raw</li> ')
+      expect(result).toMatch(/<span data-annotask-file/)
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1) // span only, not li
+    })
+
+    it('handles nested template literals inside interpolations', () => {
+      const code = 'const out = `a ${wrap(`<em>inner</em>`)} ${flag ? <b>tag</b> : null} z`'
+      const result = transform(code)!
+      expect(result).toContain('`<em>inner</em>`')
+      expect(result).toMatch(/<b data-annotask-file/)
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1)
+    })
+
+    it('does not inject inside // and /* */ comments', () => {
+      const code = [
+        '// <div>line comment</div>',
+        '/* <section>block',
+        '   comment</section> */',
+        'export function App() { return <main>hi</main> }',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('// <div>line comment</div>')
+      expect(result).toContain('<section>block')
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1) // only <main>
+    })
+
+    it('does not inject inside JSX expression comments', () => {
+      const code = 'function App() { return <div>{/* <b>no</b> */}<span>x</span></div> }'
+      const result = transform(code)!
+      expect(result).toContain('{/* <b>no</b> */}')
+      expect(result.match(/data-annotask-file/g)).toHaveLength(2) // div, span
+    })
+
+    it('treats quotes and slashes inside JSX children as plain text', () => {
+      // String skipping must only apply at statement scope — apostrophes in
+      // JSX text are NOT string delimiters.
+      const code = 'function App() { return <div>it\'s "quoted" 1/2 <em>fine</em></div> }'
+      const result = transform(code)!
+      expect(result).toContain('it\'s "quoted" 1/2')
+      expect(result.match(/data-annotask-file/g)).toHaveLength(2) // div, em
+    })
+
+    it('does not inject inside regex literals', () => {
+      const code = [
+        'const re = /<div>/',
+        'const ratio = total / 2 / count',
+        'export function App() { return <p>ok</p> }',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('const re = /<div>/')
+      expect(result).toContain('total / 2 / count')
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1) // only <p>
+    })
+
+    it('still transforms JSX after a string-bearing statement', () => {
+      const code = [
+        'const greeting = "hello <name>"',
+        'function App() {',
+        '  const cls = `theme-${mode}`',
+        '  return <div className={cls}>{greeting}</div>',
+        '}',
+      ].join('\n')
+      const result = transform(code)!
+      expect(result).toContain('const greeting = "hello <name>"')
+      expect(result).toContain('`theme-${mode}`')
+      expect(result.match(/data-annotask-file/g)).toHaveLength(1) // the div
+    })
+
+    it('keeps every playground react-vite source syntactically valid after transform', () => {
+      // End-to-end net: real-world TSX (template literals, comments, string
+      // constants, generics) must survive the transform without syntax errors.
+      const playgroundRoot = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../playgrounds/simple/react-vite'
+      )
+      const files = globSync('src/**/*.{tsx,jsx}', { cwd: playgroundRoot })
+      expect(files.length).toBeGreaterThan(0)
+      for (const rel of files) {
+        const file = path.join(playgroundRoot, rel)
+        const code = readFileSync(file, 'utf8')
+        const result = transformJSX(code, file, playgroundRoot)
+        if (result === null) continue // nothing instrumentable
+        const sourceFile = ts.createSourceFile(rel, result, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+        // parseDiagnostics is internal but stable — the documented alternative
+        // (full ts.createProgram) is far heavier for a pure syntax check.
+        const diags = (sourceFile as unknown as { parseDiagnostics: ts.Diagnostic[] }).parseDiagnostics
+        expect(
+          diags.map(d => `${rel}: ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`),
+        ).toEqual([])
+      }
+    })
   })
 })

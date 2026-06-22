@@ -25,7 +25,6 @@ import {
 } from '../anthropic-provider'
 import { OpenAIProvider } from '../openai-provider'
 import { OpenAICompatibleProvider } from '../openai-compatible-provider'
-import { CopilotProvider } from '../copilot-provider'
 import { PaperclipProvider } from '../paperclip-provider'
 
 const TOOLS: ProviderTool[] = [
@@ -138,13 +137,6 @@ const VARIANTS: Variant[] = [
     build: () => new OpenAICompatibleProvider({
       baseURL: 'http://localhost:11434/v1',
       defaultModel: 'llama3.1',
-      transport: async () => makeChatCompletionsResponse(),
-    }),
-  },
-  {
-    name: 'CopilotProvider',
-    build: () => new CopilotProvider({
-      // The transport-injection path bypasses the OAuth/session exchange.
       transport: async () => makeChatCompletionsResponse(),
     }),
   },

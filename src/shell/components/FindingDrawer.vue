@@ -43,7 +43,7 @@ function onKeydown(e: KeyboardEvent) {
 
 <style scoped>
 .fd-overlay { position: fixed; inset: 0; z-index: 50000; display: flex; justify-content: flex-end; }
-.fd-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.4); }
+.fd-backdrop { position: absolute; inset: 0; background: var(--overlay); }
 .fd-drawer {
   position: relative; width: min(480px, 85vw); height: 100%;
   background: var(--surface); color: var(--text); border-left: 1px solid var(--border);

@@ -75,6 +75,14 @@ const hasMultipleMfes = computed<boolean>(() => mfePackages.value.length > 1)
 /** True when at least one MFE was discovered. */
 const hasAnyMfes = computed<boolean>(() => mfePackages.value.length > 0)
 
+/** The MFE id of the CURRENT iframe surface — the package running this dev
+ *  server, resolved from its workspace-relative `currentDir`. There is exactly
+ *  one active surface and one global component registry, so this is the
+ *  authoritative answer to "which MFE can render a live snapshot here". Null in
+ *  single-MFE / non-workspace projects (no gating then) and for a root package
+ *  that isn't itself an MFE. */
+const currentMfe = computed<string | null>(() => mfeForFile(info.value?.currentDir))
+
 /**
  * Map a workspace-relative file path to the MFE id whose directory prefixes
  * it, or null when the file isn't under any MFE's package (shared libs etc.).
@@ -120,6 +128,7 @@ export function useWorkspace() {
     mfePackages,
     hasMultipleMfes,
     hasAnyMfes,
+    currentMfe,
     selectedMfes,
     toggleMfe,
     clearMfes,

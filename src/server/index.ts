@@ -6,6 +6,13 @@ import { createShellMiddleware } from './serve-shell.js'
 import { createProjectState, type ProjectState } from './state.js'
 import { createMcpMiddleware } from '../mcp/server.js'
 import { onCatalogRefreshed, scanComponentLibraries } from './component-scanner.js'
+import { createTaskThreadStore } from './task-thread.js'
+import { createAgentSpawnHandler } from './agent-spawn.js'
+import { createAgentDetector } from './agent-detect.js'
+import { createInitRunner } from './init.js'
+import { createUsageLedger } from './usage-ledger.js'
+import { createSnapshotStore } from './file-snapshots.js'
+import { releaseApplyTask, type ApplySessionOptions } from './apply-session.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -23,22 +30,194 @@ export interface AnnotaskServerOptions {
   apiSchemaUrls?: string[]
   /** Extra project-relative schema file paths. */
   apiSchemaFiles?: string[]
+  /** Hostnames allowed in the Host header beyond localhost / IP literals —
+   *  the host the server announces plus any user-configured allowed hosts.
+   *  A function because the bind host is only known once listening starts. */
+  allowedHosts?: () => readonly string[]
 }
 
 export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskServer {
   const wsServer = createWSServer()
-  const state = createProjectState(options.projectRoot, wsServer.broadcast)
+  // Forward-declared so state.ts can notify the init runner when its source
+  // of truth (design-spec.json) is unlinked, and the task-thread store when a
+  // task is removed for good. Both are built below; until then these are
+  // no-op callbacks.
+  let onSpecCleared: () => void = () => { /* set below */ }
+  let onTaskRemoved: (taskId: string) => void = () => { /* set below */ }
+  const state = createProjectState(options.projectRoot, wsServer.broadcast, {
+    onSpecCleared: () => onSpecCleared(),
+    onTaskRemoved: (taskId) => onTaskRemoved(taskId),
+  })
+  // Embedded-chat moving parts: per-task message log, subprocess streamer,
+  // CLI-detection probe. All scoped to this server instance so a single
+  // dispose() tears them down cleanly.
+  // Project-wide token usage ledger. Used by:
+  //   - task-thread onAppend (every assistant turn that carries usage)
+  //   - init runner (token totals reported by the local CLI on finish)
+  // It's an append-only JSONL so external tooling can `tail -f` and so the
+  // shell, CLI, and MCP all read the same canonical record.
+  const usageLedger = createUsageLedger({ projectRoot: options.projectRoot })
+  const taskThread = createTaskThreadStore({
+    projectRoot: options.projectRoot,
+    onAppend: (taskId, msg) => {
+      // Only assistant turns carry usage; user/tool messages are no-ops here.
+      const u = msg.usage
+      if (!u) return
+      // Fire-and-forget (must not block the SSE response) but surface failures:
+      // the usage ledger is the only audit trail for autonomous-agent spend, so
+      // a silent disk/permission error would let accounting drift unnoticed.
+      void state.addTaskUsage(taskId, {
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheReadTokens: u.cacheReadTokens ?? 0,
+        cacheCreationTokens: u.cacheCreationTokens ?? 0,
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[annotask] addTaskUsage failed for task ${taskId}:`, err)
+      })
+      void usageLedger.append({
+        scope: 'task',
+        taskId,
+        ts: msg.ts,
+        providerId: msg.providerId,
+        model: msg.model,
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        cacheReadTokens: u.cacheReadTokens,
+        cacheCreationTokens: u.cacheCreationTokens,
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[annotask] usage ledger append failed for task ${taskId}:`, err)
+      })
+    },
+  })
+  // Transcript cleanup: accept/delete clean every other per-task sidecar
+  // (screenshot, interaction-history, rendered-html) inside state.ts, but the
+  // conversation transcript lives in the thread store — clear it here, the
+  // one layer that holds both. Fires after the task removal hits disk.
+  onTaskRemoved = (taskId) => {
+    void taskThread.clear(taskId)
+  }
+  // Orphaned-task reconcile. When an agent run ends (child exit) but the
+  // orchestrating client never transitioned the task — e.g. the tab closed
+  // mid-run, or the client crashed before its finalizing PATCH — the task is
+  // left locked in `in_progress` (the spawn registry kills the *process* but
+  // can't fix the *status*). We relinquish the lock back to `pending` so the
+  // task is retryable instead of stranded. The transition guard runs INSIDE
+  // the task lock, so a client transition that's merely slow still wins the
+  // race rather than being clobbered (guard rejects → we no-op).
+  function reconcileOrphanedTask(taskId: string, why: string): void {
+    // Capture the type BEFORE the update — a wireframe_apply orphan needs its
+    // apply batch sealed + entries released + canvas unlocked, exactly as the
+    // HTTP in_progress→pending hook does. This path bypasses the HTTP handler,
+    // so without the same closure the batch would stay 'running' and wedge
+    // undo/discard/re-apply.
+    const before = state.getTasks().tasks.find((t: { id?: string }) => t?.id === taskId) as { type?: string } | undefined
+    void state.updateTask(
+      taskId,
+      { status: 'pending' },
+      { guard: (t) => (t.status === 'in_progress' ? null : 'task already finalized') },
+    ).then(async (res) => {
+      // Guard rejected (client won the race) → nothing to report.
+      if (res && typeof res === 'object' && 'error' in res) return
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask] reconciled orphaned task ${taskId} → pending (${why})`)
+      if (before?.type === 'wireframe_apply') {
+        try { await releaseApplyTask(applyOptions, taskId) }
+        catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[annotask] orphan apply-release failed for ${taskId}:`, err)
+        }
+      }
+    }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask] orphan reconcile failed for task ${taskId}:`, err)
+    })
+  }
+  // The registry reports every run end; we grace-check a moment later (a normal
+  // completion's client review/pending PATCH lands well within this window, so
+  // it no-ops) and, if the task is still `in_progress`, reconcile it. `killed`
+  // distinguishes an interrupted run (we terminated the child) from a child
+  // that exited on its own while the client failed to finalize — for honest
+  // logging; both reconcile to `pending`.
+  const ORPHAN_FINALIZE_GRACE_MS = 12_000
+  function scheduleOrphanFinalize(taskId: string, info: { killed: boolean }): void {
+    setTimeout(() => {
+      const task = state.getTasks().tasks.find((t: { id?: string; status?: string }) => t?.id === taskId)
+      if (!task || task.status !== 'in_progress') return
+      reconcileOrphanedTask(taskId, info.killed ? 'run interrupted' : 'client never finalized')
+    }, ORPHAN_FINALIZE_GRACE_MS).unref()
+  }
+  const agentSpawn = createAgentSpawnHandler({ onRunEnd: scheduleOrphanFinalize })
+
+  // Boot reconcile sweep. A task persisted as `in_progress` with no live run is
+  // an orphan from a previous process (server restarted mid-run, or a tab
+  // closed while the prior process's orphan-finalize timer — an in-memory
+  // unref'd setTimeout — was pending and never fired). The fresh run registry
+  // has no live runs at boot, so we can't tell an embedded orphan from a task
+  // an EXTERNAL MCP agent (e.g. /annotask-apply in another editor) locked and
+  // is still working across our restart. We therefore only reclaim tasks that
+  // have clearly been sitting (older than BOOT_RECLAIM_MIN_AGE_MS): a freshly
+  // killed embedded run is reverted to pending by its own still-open tab when
+  // the SSE dies, and a live external agent's recent lock is left untouched.
+  // Deferred a tick so it doesn't block boot; the task cache loads lazily.
+  const BOOT_RECLAIM_MIN_AGE_MS = 120_000
+  setImmediate(() => {
+    try {
+      const now = Date.now()
+      for (const t of state.getTasks().tasks as Array<{ id?: string; status?: string; updatedAt?: number }>) {
+        if (!t?.id || t.status !== 'in_progress') continue
+        if (agentSpawn.registry.taskRunning(t.id)) continue
+        const age = now - (typeof t.updatedAt === 'number' ? t.updatedAt : 0)
+        if (age < BOOT_RECLAIM_MIN_AGE_MS) continue
+        reconcileOrphanedTask(t.id, 'stale lock at boot')
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[annotask] boot orphan sweep failed:', err)
+    }
+  })
+  const agentDetect = createAgentDetector()
+  const initRunner = createInitRunner({
+    projectRoot: options.projectRoot,
+    broadcast: wsServer.broadcast,
+    agentDetect,
+    usageLedger,
+  })
+  onSpecCleared = () => { initRunner.reset() }
+
+  // File-snapshot engine — the agent-apply safety net. The tool never authors
+  // application source (the embedded agent does); snapshots make "Undo last
+  // apply" and "Discard session" byte-exact. Always on: every write it ever
+  // performs is an explicit, user-initiated restore.
+  const snapshotStore = createSnapshotStore(options.projectRoot)
+
+  // Shared apply-session options so the HTTP PATCH path AND the server-side
+  // orphan reconcile / boot sweep drive a wireframe_apply task's lifecycle the
+  // SAME way. Diverging here is exactly what stranded orphaned applies: an
+  // in_progress run reclaimed without sealing its batch left undo/discard/
+  // re-apply all dead and the canvas locked at 'building' forever.
+  const applyOptions: ApplySessionOptions = {
+    projectRoot: options.projectRoot,
+    getDesignSession: () => state.getDesignSession(),
+    setDesignSession: (doc) => state.setDesignSession(doc),
+    getWireframe: () => state.getWireframe(),
+    setWireframe: (doc) => state.setWireframe(doc),
+    addTask: (task) => state.addTask(task),
+    snapshots: snapshotStore,
+  }
 
   const apiMiddleware = createAPIMiddleware({
     projectRoot: options.projectRoot,
     apiSchemaUrls: options.apiSchemaUrls,
     apiSchemaFiles: options.apiSchemaFiles,
+    allowedHosts: options.allowedHosts,
     getReport: () => wsServer.getReport(),
     getConfig: () => state.getConfig(),
     getDesignSpec: () => state.getDesignSpec(),
     getTasks: () => state.getTasks(),
     addTask: (task) => state.addTask(task),
-    updateTask: (id, updates) => state.updateTask(id, updates),
+    updateTask: (id, updates, opts) => state.updateTask(id, updates, opts),
     deleteTask: (id) => state.deleteTask(id),
     saveInteractionHistory: (id, snapshot) => state.saveInteractionHistory(id, snapshot),
     readInteractionHistory: (id) => state.readInteractionHistory(id),
@@ -49,6 +228,20 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     ingestNetworkCalls: (calls) => state.ingestNetworkCalls(calls),
     getRuntimeEndpointCatalog: () => state.getRuntimeEndpointCatalog(),
     clearRuntimeEndpoints: () => state.clearRuntimeEndpoints(),
+    taskThread,
+    agentSpawn,
+    agentDetect,
+    initRunner,
+    getAgentConfigs: () => state.getAgentConfigs(),
+    setAgentConfig: (id, entry) => state.setAgentConfig(id, entry),
+    getWireframe: () => state.getWireframe(),
+    setWireframe: (doc) => state.setWireframe(doc),
+    getDesignSession: () => state.getDesignSession(),
+    setDesignSession: (doc) => state.setDesignSession(doc),
+    clearDesignSession: () => state.clearDesignSession(),
+    snapshots: snapshotStore,
+    usageLedger,
+    getPersistenceHealth: () => state.getPersistenceHealth(),
   })
 
   const mcpMiddleware = createMcpMiddleware({
@@ -61,6 +254,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     readInteractionHistory: (id) => state.readInteractionHistory(id),
     readRenderedHtml: (id) => state.readRenderedHtml(id),
     getRuntimeEndpointCatalog: () => state.getRuntimeEndpointCatalog(),
+    taskThread,
   })
 
   const shellMiddleware = createShellMiddleware()
@@ -100,7 +294,9 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     broadcast: (event, data) => wsServer.broadcast(event, data),
     getReport: () => wsServer.getReport(),
     flush: () => state.flush(),
-    dispose: () => { offCatalog(); state.dispose(); wsServer.dispose() },
+    // flush, never revert: a live session is intentional user work and must
+    // survive dev-server restarts (rehydrate); discard is user-initiated only.
+    dispose: () => { void snapshotStore.flush(); agentSpawn.registry.killAll(); offCatalog(); state.dispose(); wsServer.dispose() },
   }
 }
 

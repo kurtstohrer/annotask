@@ -55,7 +55,8 @@ function isSunHit(x: number, y: number): boolean {
   if (!sunHit) return false
   const dx = x - sunHit.x
   const dy = y - sunHit.y
-  return dx * dx + dy * dy <= sunHit.r * sunHit.r
+  const hitR = sunHit.r + 4
+  return dx * dx + dy * dy <= hitR * hitR
 }
 
 function onCanvasPointerMove(event: PointerEvent) {
@@ -192,6 +193,15 @@ function startOrbitAnimation(canvas: HTMLCanvasElement, list: Planet[]) {
       ctx!.stroke()
       ctx!.restore()
     }
+    if (hoveredSun.value && sunHit) {
+      ctx!.save()
+      ctx!.strokeStyle = 'rgba(255,255,255,0.9)'
+      ctx!.lineWidth = 1.5
+      ctx!.beginPath()
+      ctx!.arc(sunHit.x, sunHit.y, sunHit.r + 4, 0, Math.PI * 2)
+      ctx!.stroke()
+      ctx!.restore()
+    }
 
     rafId = requestAnimationFrame(frame)
   }
@@ -241,7 +251,7 @@ onBeforeUnmount(() => {
 
 .page-header { display: flex; flex-direction: column; gap: 6px; }
 .title { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
-.lede { color: var(--text-muted); font-size: 14px; max-width: 640px; }
+.lede { color: var(--text-muted); font-size: 18px; max-width: 640px; }
 
 .orbit-stage {
   position: relative;

@@ -21,7 +21,6 @@ const CONTEXT_FIELDS_BY_TYPE: Partial<Record<TaskType, readonly string[]>> = {
   error_fix:    ['level', 'occurrences', 'errorId'],
   theme_update: ['category', 'role', 'before', 'after', 'cssVar'],
   style_update: [],
-  api_update:   ['data_source_name', 'data_source_kind', 'schema_location', 'schema_kind', 'endpoint', 'desired_change'],
 }
 
 /**
@@ -133,19 +132,6 @@ export function buildTaskSummary(task: Record<string, unknown>): Record<string, 
     if ((typeKey === 'style_update' || typeKey === 'class_update') && Array.isArray(ctxRecord.changes)) {
       summary.change_count = (ctxRecord.changes as unknown[]).length
     }
-    // api_update tasks: lift the nested operation pointer so triage sees
-    // method + path without a detail fetch.
-    if (typeKey === 'api_update' && ctxRecord.operation && typeof ctxRecord.operation === 'object' && !Array.isArray(ctxRecord.operation)) {
-      const op = ctxRecord.operation as Record<string, unknown>
-      if (typeof op.method === 'string' && op.method) summary.operation_method = op.method
-      if (typeof op.path === 'string' && op.path) summary.operation_path = op.path
-    }
-    // Any task that recorded cross-boundary API edits (commonly annotations
-    // that the user approved into backend territory) — surface the count so
-    // triage sees that this task crossed the frontend/backend line.
-    if (Array.isArray(ctxRecord.api_edits) && ctxRecord.api_edits.length > 0) {
-      summary.api_edits_count = ctxRecord.api_edits.length
-    }
   }
 
   return summary
@@ -173,6 +159,27 @@ export function stripTaskVisual(task: unknown): Record<string, unknown> {
   if (color_scheme && typeof color_scheme === 'object' && !Array.isArray(color_scheme)) {
     const scheme = (color_scheme as Record<string, unknown>).scheme
     if (scheme !== undefined) rest.color_scheme = scheme
+  }
+  return rest
+}
+
+/**
+ * List-mode variant of `stripTaskVisual` for `detail=true` task *lists*
+ * (MCP `annotask_get_tasks` and CLI `tasks --detail --mcp`). On top of the
+ * visual/timestamp stripping it drops the two per-task payloads that can be
+ * huge and each have a dedicated retrieval tool:
+ * - `interaction_history` → `annotask_get_interaction_history`
+ * - `context.rendered` (embedded outerHTML, up to 200 KB per task) →
+ *   `annotask_get_rendered_html`
+ * Single-task fetches (`annotask_get_task`) keep both fields — only bulk
+ * listings strip them, since N tasks × 200 KB would swamp an agent's context.
+ */
+export function stripTaskForList(task: unknown): Record<string, unknown> {
+  const rest = stripTaskVisual(task)
+  delete rest.interaction_history
+  if (rest.context && typeof rest.context === 'object' && !Array.isArray(rest.context)) {
+    const { rendered, ...ctx } = rest.context as Record<string, unknown>
+    if (rendered !== undefined) rest.context = ctx
   }
   return rest
 }

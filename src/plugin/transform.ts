@@ -71,6 +71,71 @@ export function parseImports(code: string): Map<string, string> {
   return out
 }
 
+// ── Component registry epilogue ─────────────────────────
+//
+// Populates `window.__ANNOTASK_COMPONENTS__` with a file's imported components
+// so the bridge's `tryMountComponent` can live-mount REAL project components
+// when a wireframe/insert drops one — the keystone that makes "real components
+// render on drop" true on Vite (the Vite plugin previously injected the
+// framework runtimes but never the component map, so only globally-registered
+// Vue components could mount).
+//
+// Supersedes the webpack loader's inline registration and fixes its blind
+// spots: it covers NAMED imports (`import { Button } from '@mantine/core'`),
+// ALIASED imports (registered under the EXPORT name so a lookup by the catalog
+// name resolves the local binding), and RELATIVE/local imports
+// (`./PlanetCard.vue`) — the loader only handled default, non-relative imports.
+//
+// PascalCase-only so hooks/utilities (`ref`, `useRoute`) don't pollute the
+// registry; each entry is `typeof`-guarded so a type-only binding that got
+// stripped at compile time never throws.
+const REG_NAMED_IMPORT_RE = /import\s+(?!type\b)(?:[A-Za-z0-9_$]+\s*,\s*)?\{([^}]+)\}\s*from\s*['"`][^'"`]+['"`]/g
+const REG_DEFAULT_IMPORT_RE = /import\s+([A-Z][A-Za-z0-9_$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*['"`][^'"`]+['"`]/g
+
+/** Collect `exportName → localBinding` for every PascalCase component import. */
+function collectComponentImports(code: string): Map<string, string> {
+  const out = new Map<string, string>()
+  let m: RegExpExecArray | null
+  REG_NAMED_IMPORT_RE.lastIndex = 0
+  while ((m = REG_NAMED_IMPORT_RE.exec(code)) !== null) {
+    for (const raw of m[1].split(',').map(s => s.trim()).filter(Boolean)) {
+      if (/^type\s/.test(raw)) continue
+      const parts = raw.split(/\s+as\s+/).map(s => s.trim())
+      const exportName = parts[0]
+      const binding = parts[parts.length - 1]
+      if (!/^[A-Z][A-Za-z0-9_$]*$/.test(exportName)) continue
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(binding)) continue
+      if (!out.has(exportName)) out.set(exportName, binding)
+    }
+  }
+  REG_DEFAULT_IMPORT_RE.lastIndex = 0
+  while ((m = REG_DEFAULT_IMPORT_RE.exec(code)) !== null) {
+    const name = m[1]
+    if (!out.has(name)) out.set(name, name)
+  }
+  return out
+}
+
+/**
+ * Append the component-registry epilogue to an already-transformed source file.
+ * Injected before the last `</script>` for Vue/Svelte SFCs (so the bindings are
+ * in scope) and at module end for JSX/TSX. No-op when there's nothing to
+ * register. Idempotent and side-effect-light (one window-guarded IIFE).
+ */
+export function injectComponentRegistry(transformed: string, filePath: string): string {
+  const imports = collectComponentImports(transformed)
+  if (imports.size === 0) return transformed
+  const body = [...imports.entries()]
+    .map(([name, binding]) => `if(typeof ${binding}!=='undefined')__uf_r[${JSON.stringify(name)}]=${binding};`)
+    .join('')
+  const epilogue = `\n;(function(){if(typeof window==='undefined')return;var __uf_r=window.__ANNOTASK_COMPONENTS__=window.__ANNOTASK_COMPONENTS__||{};${body}})();\n`
+  if ((filePath.endsWith('.vue') || filePath.endsWith('.svelte')) && transformed.includes('</script>')) {
+    const idx = transformed.lastIndexOf('</script>')
+    return transformed.slice(0, idx) + epilogue + transformed.slice(idx)
+  }
+  return transformed + epilogue
+}
+
 // ── Vue SFC ─────────────────────────────────────────────
 
 /**
@@ -149,7 +214,11 @@ export function transformSvelte(
       relativeFile,
       componentName,
       regionStartLine,
-      { skipTags: SVELTE_SKIP_TAGS, mfe, imports }
+      // trackBraces: Svelte attribute expressions use bare `{expr}` — the
+      // `>` in `onclick={() => ...}` or `class={a > b}` must not terminate
+      // the tag early. Full jsxMode would be wrong here: its type-context
+      // heuristic treats `text<span>` as a generic and skips real markup.
+      { skipTags: SVELTE_SKIP_TAGS, trackBraces: true, mfe, imports }
     )
 
     if (injected) {
@@ -257,13 +326,19 @@ export function transformAstro(
   const relativeFile = relativePath(filePath, projectRoot)
   const componentName = extractComponentName(filePath)
 
-  // Find frontmatter block (--- ... ---)
+  // Find frontmatter block (--- ... ---). Astro frontmatter opens at the top
+  // of the file and both fences sit alone on their own lines — a bare
+  // indexOf('---') would mis-anchor on a `---` appearing later in markup
+  // content or inside a frontmatter string.
   const frontmatterRanges: Range[] = []
-  const fmStart = code.indexOf('---')
-  if (fmStart !== -1) {
-    const fmEnd = code.indexOf('---', fmStart + 3)
-    if (fmEnd !== -1) {
-      frontmatterRanges.push({ start: fmStart, end: fmEnd + 3 })
+  const fmOpen = code.match(/^\uFEFF?(?:[ \t]*\r?\n)*---\r?\n/)
+  if (fmOpen) {
+    const fmStart = fmOpen[0].indexOf('---')
+    const closeRe = /^---[ \t\r]*$/gm
+    closeRe.lastIndex = fmOpen[0].length
+    const fmClose = closeRe.exec(code)
+    if (fmClose) {
+      frontmatterRanges.push({ start: fmStart, end: fmClose.index + fmClose[0].length })
     }
   }
 
@@ -352,8 +427,16 @@ function extractIsBinding(tagSource: string): string | null {
 }
 
 interface InjectOptions {
-  /** Enable JSX mode: track {} brace depth, skip TS generics */
+  /** Enable JSX mode: track {} brace depth, skip TS generics, and treat
+   *  statement-scope strings/comments/regexes as opaque (JSX is interleaved
+   *  with JavaScript, so `const a = "<div>"` must not be instrumented) */
   jsxMode?: boolean
+  /** Track `{}` brace depth inside tags WITHOUT the other jsxMode behaviors.
+   *  Svelte markup needs this: attribute expressions like `onclick={() => ...}`
+   *  contain bare `>` that would otherwise end the tag early — but Svelte text
+   *  content sits directly against tags (`count is {n}<span>`), so jsxMode's
+   *  type-context heuristic would misread real markup as TS generics. */
+  trackBraces?: boolean
   /** Tags to skip (won't have attributes injected) */
   skipTags?: Set<string>
   /** MFE identity for multi-project setups */
@@ -363,6 +446,22 @@ interface InjectOptions {
    *  module="<source>"` attribute is emitted. Lets the bridge tell two
    *  libraries' Buttons apart. */
   imports?: Map<string, string>
+}
+
+/**
+ * Scope frame for the jsxMode top-level scanner. The stack distinguishes the
+ * contexts where `<tag` is legal JSX (statement scope, `{...}` expressions,
+ * `${...}` interpolations) from the contexts where it is plain text or string
+ * content (JSX element children, raw template-literal text). String, comment,
+ * and regex literals are skipped inline within JS-like scopes and never land
+ * on the stack. An empty stack means JS statement scope.
+ */
+interface JsxScope {
+  /** jsx = element children, expr = `{...}` in children, template = raw
+   *  template-literal text, interp = `${...}` inside a template literal */
+  kind: 'jsx' | 'expr' | 'template' | 'interp'
+  /** Brace nesting for expr/interp — the scope pops when `}` arrives at depth 0 */
+  depth: number
 }
 
 /**
@@ -381,6 +480,7 @@ export function injectAttributes(
 ): string | null {
   const skipTags = options?.skipTags ?? DEFAULT_SKIP_TAGS
   const jsxMode = options?.jsxMode ?? false
+  const trackBraces = jsxMode || (options?.trackBraces ?? false)
   const mfe = options?.mfe
   const imports = options?.imports
 
@@ -389,7 +489,106 @@ export function injectAttributes(
   let changed = false
   let i = 0
 
+  // jsxMode scope stack — see JsxScope. Stays empty for non-JSX callers.
+  const scopes: JsxScope[] = []
+
   while (i < template.length) {
+    if (jsxMode) {
+      const top = scopes.length > 0 ? scopes[scopes.length - 1] : undefined
+
+      if (top === undefined || top.kind === 'expr' || top.kind === 'interp') {
+        // JS statement/expression scope — strings, comments, and regex
+        // literals are opaque here. Without this, `const a = "<div>x</div>"`
+        // gets attributes injected INSIDE the string literal (a hard syntax
+        // error for double-quoted strings, since the injection itself uses
+        // double quotes; template literals were silently mutated).
+        const ch = template[i]
+        if (ch === '/' && template[i + 1] === '/') {
+          const nl = template.indexOf('\n', i + 2)
+          i = nl === -1 ? template.length : nl + 1
+          continue
+        }
+        if (ch === '/' && template[i + 1] === '*') {
+          const end = template.indexOf('*/', i + 2)
+          i = end === -1 ? template.length : end + 2
+          continue
+        }
+        if (ch === '"' || ch === "'") {
+          i = skipStringLiteral(template, i)
+          continue
+        }
+        if (ch === '`') {
+          scopes.push({ kind: 'template', depth: 0 })
+          i++
+          continue
+        }
+        if (ch === '/' && regexCanStart(template, i)) {
+          i = skipRegexLiteral(template, i)
+          continue
+        }
+        if (ch === '{') {
+          if (top) top.depth++
+          i++
+          continue
+        }
+        if (ch === '}') {
+          // Terminates the expr/interp scope at depth 0; a stray `}` at
+          // statement scope (function body close) is just skipped.
+          if (top) {
+            if (top.depth === 0) scopes.pop()
+            else top.depth--
+          }
+          i++
+          continue
+        }
+        if (ch === '<' && template[i + 1] === '>') {
+          // JSX fragment open — the tag scanner below only fires on
+          // `<` + letter, so fragments would otherwise go untracked and the
+          // matching `</>` would pop a real element's children scope.
+          scopes.push({ kind: 'jsx', depth: 0 })
+          i += 2
+          continue
+        }
+        // Fall through to the tag scanner — JSX is legal in this scope.
+      } else if (top.kind === 'template') {
+        // Raw template-literal text — tags here are string content, not JSX.
+        // Only `${` re-enters a JS scope where JSX is legal again (and must
+        // still be transformed — see transform-react tests for `${cond ? <span/> : null}`).
+        const ch = template[i]
+        if (ch === '\\') {
+          i += 2
+          continue
+        }
+        if (ch === '`') {
+          scopes.pop()
+          i++
+          continue
+        }
+        if (ch === '$' && template[i + 1] === '{') {
+          scopes.push({ kind: 'interp', depth: 0 })
+          i += 2
+          continue
+        }
+        i++
+        continue
+      } else {
+        // JSX element children — quotes, slashes, and backticks are plain
+        // text here (`<div>it's 1/2</div>`); only `{` opens an expression
+        // scope and `<>` a nested fragment.
+        if (template[i] === '{') {
+          scopes.push({ kind: 'expr', depth: 0 })
+          i++
+          continue
+        }
+        if (template[i] === '<' && template[i + 1] === '>') {
+          scopes.push({ kind: 'jsx', depth: 0 })
+          i += 2
+          continue
+        }
+        // Fall through to the comment/closing-tag/tag handling below.
+      }
+    }
+
     // Skip comments
     if (template.startsWith('<!--', i)) {
       const end = template.indexOf('-->', i + 4)
@@ -401,6 +600,11 @@ export function injectAttributes(
     if (template.startsWith('</', i)) {
       const end = template.indexOf('>', i + 2)
       i = end === -1 ? template.length : end + 1
+      // A closing tag (or `</>` fragment close) ends the current children
+      // scope. Guarded on kind so a stray closer never pops an expr/template.
+      if (jsxMode && scopes.length > 0 && scopes[scopes.length - 1].kind === 'jsx') {
+        scopes.pop()
+      }
       continue
     }
 
@@ -414,10 +618,16 @@ export function injectAttributes(
       while (i < template.length && /[a-zA-Z0-9\-:]/.test(template[i])) i++
       const tagName = template.slice(nameStart, i)
 
+      // Inside JSX element children, `<` + letter is ALWAYS a tag — type
+      // syntax is not legal there, and the isTypeContext heuristic would
+      // misread inline text before a tag (`1/2 <em>`) as a generic.
+      const inJsxChildren =
+        jsxMode && scopes.length > 0 && scopes[scopes.length - 1].kind === 'jsx'
+
       // In JSX mode, skip React fragments (empty tag name won't reach here,
       // but <> starts with < followed by > which isn't [a-zA-Z])
       // Skip known TypeScript generics
-      if (jsxMode && TS_GENERIC_NAMES.has(tagName)) {
+      if (jsxMode && !inJsxChildren && TS_GENERIC_NAMES.has(tagName)) {
         // This is a TS generic like Array<string>, not a JSX tag
         // Find the closing > accounting for nested generics
         i = skipGeneric(template, i)
@@ -426,24 +636,33 @@ export function injectAttributes(
 
       // In JSX mode, check if this looks like a type context
       // (preceded by : or as or extends or implements)
-      if (jsxMode && isTypeContext(template, tagStart)) {
+      if (jsxMode && !inJsxChildren && isTypeContext(template, tagStart)) {
         i = skipGeneric(template, i)
         continue
       }
 
-      // Skip tags we don't want to instrument
-      if (skipTags.has(tagName) || skipTags.has(tagName.toLowerCase())) {
-        i = findTagEnd(template, i, jsxMode)
-        continue
-      }
-
       // Scan past attributes to find the closing > or />
-      const tagEndIndex = findTagEnd(template, i, jsxMode)
+      const tagEndIndex = findTagEnd(template, i, trackBraces)
 
       const tagSource = template.slice(tagStart, tagEndIndex)
 
+      // Track element nesting for the jsxMode scope stack: a non-self-closing,
+      // non-void opening tag puts the scanner into JSX-children scope, where
+      // quotes/comments are plain text. Computed for skipped/instrumented tags
+      // too — otherwise `<script>...</script>` in JSX would desync the stack.
+      const opensChildren =
+        jsxMode && !tagSource.endsWith('/>') && !VOID_TAGS.has(tagName.toLowerCase())
+
+      // Skip tags we don't want to instrument
+      if (skipTags.has(tagName) || skipTags.has(tagName.toLowerCase())) {
+        if (opensChildren) scopes.push({ kind: 'jsx', depth: 0 })
+        i = tagEndIndex
+        continue
+      }
+
       // Skip if already instrumented
       if (tagSource.includes('data-annotask-file')) {
+        if (opensChildren) scopes.push({ kind: 'jsx', depth: 0 })
         i = tagEndIndex
         continue
       }
@@ -480,6 +699,8 @@ export function injectAttributes(
       changed = true
       i = tagEndIndex
 
+      if (opensChildren) scopes.push({ kind: 'jsx', depth: 0 })
+
       continue
     }
 
@@ -494,15 +715,95 @@ export function injectAttributes(
 
 const DEFAULT_SKIP_TAGS = new Set(['script', 'style', 'template', 'slot'])
 
+/** Elements that never have children in HTML — opening one must NOT push a
+ *  JSX-children scope. Astro markup may write these HTML-style (`<br>`)
+ *  without a closing tag, which would otherwise desync the scope stack. */
+const VOID_TAGS = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+  'link', 'meta', 'param', 'source', 'track', 'wbr',
+])
+
+/**
+ * Skip a `'...'` or `"..."` string literal starting at `i` (the opening
+ * quote). Returns the index just past the closing quote. Bails at a raw
+ * newline (plain strings can't span lines) so a stray quote in odd input
+ * never swallows the rest of the file.
+ */
+function skipStringLiteral(code: string, i: number): number {
+  const quote = code[i]
+  i++
+  while (i < code.length) {
+    const ch = code[i]
+    if (ch === '\\') i++
+    else if (ch === quote) return i + 1
+    else if (ch === '\n') return i
+    i++
+  }
+  return i
+}
+
+/** Keywords after which a `/` starts a regex literal, not division. */
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'throw', 'case', 'do', 'else', 'yield', 'await',
+])
+
+/**
+ * Heuristic: can the `/` at position `i` start a regex literal (vs. being a
+ * division operator)? Mirrors the standard JS lexer rule — a regex may only
+ * appear where an expression is expected: after an operator/opening
+ * punctuation or an expression keyword, never directly after an identifier,
+ * number literal, or closing `)`/`]`.
+ */
+function regexCanStart(code: string, i: number): boolean {
+  let j = i - 1
+  while (j >= 0 && /\s/.test(code[j])) j--
+  if (j < 0) return true
+  const ch = code[j]
+  if (/[a-zA-Z0-9_$]/.test(ch)) {
+    // Identifier or number before `/` means division — unless it's a keyword
+    // that expects an expression (`return /re/`, `typeof /re/`, ...).
+    const wordEnd = j + 1
+    while (j >= 0 && /[a-zA-Z0-9_$]/.test(code[j])) j--
+    return REGEX_PRECEDING_KEYWORDS.has(code.slice(j + 1, wordEnd))
+  }
+  return ch !== ')' && ch !== ']'
+}
+
+/**
+ * Skip a regex literal starting at `i` (the opening `/`). Returns the index
+ * just past the closing `/` (flags are plain identifier chars — the normal
+ * scanner walks them). Bails at a raw newline, since regex literals cannot
+ * span lines — that caps the damage to one character if the division-vs-regex
+ * heuristic ever misfires.
+ */
+function skipRegexLiteral(code: string, i: number): number {
+  const start = i
+  i++ // past opening '/'
+  let inClass = false
+  while (i < code.length) {
+    const ch = code[i]
+    if (ch === '\\') i++
+    else if (ch === '\n') return start + 1
+    else if (ch === '[') inClass = true
+    else if (ch === ']') inClass = false
+    else if (ch === '/' && !inClass) return i + 1
+    i++
+  }
+  return start + 1
+}
+
 /**
  * Starting from position `i` (after the tag name), scan forward past
  * all attributes and find the closing `>`. Handles quoted strings
  * so that `>` inside `"..."`, `'...'`, or `` `...` `` doesn't end the tag.
  *
- * In JSX mode, also tracks `{}` brace depth so that `>` inside
- * JSX expression attributes (e.g., `{x > 5}`) doesn't end the tag.
+ * With `trackBraces` (JSX mode, and Svelte markup whose attributes use bare
+ * `{expr}` values), also tracks `{}` brace depth so that `>` inside
+ * expression attributes (e.g., `{x > 5}`, `onclick={() => fn()}`) doesn't
+ * end the tag.
  */
-export function findTagEnd(template: string, i: number, jsxMode = false): number {
+export function findTagEnd(template: string, i: number, trackBraces = false): number {
   let inQuote: string | null = null
   let braceDepth = 0
   // Stack of saved (inQuote, braceDepth) pairs for nested template literals.
@@ -540,9 +841,9 @@ export function findTagEnd(template: string, i: number, jsxMode = false): number
         stack.push({ inQuote, braceDepth })
         inQuote = '`'
         braceDepth = 0
-      } else if (jsxMode && ch === '{') {
+      } else if (trackBraces && ch === '{') {
         braceDepth++
-      } else if (jsxMode && ch === '}' && braceDepth > 0) {
+      } else if (trackBraces && ch === '}' && braceDepth > 0) {
         braceDepth--
       } else if (ch === '>' && braceDepth === 0) {
         return i + 1

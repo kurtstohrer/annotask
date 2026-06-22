@@ -5,6 +5,7 @@ import Footer from './components/Footer'
 import Landing from './pages/Landing'
 import Changelog from './pages/Changelog'
 import Integrations from './pages/Integrations'
+import Planets from './pages/Planets'
 
 type Theme = 'dark' | 'light'
 
@@ -29,6 +30,7 @@ function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/changelog" element={<Changelog />} />
           <Route path="/integrations" element={<Integrations />} />
+          <Route path="/planets" element={<Planets />} />
         </Routes>
       </main>
       <Footer />

@@ -74,6 +74,10 @@ svelte: ensure-api
 mfe: ensure-api
     pnpm dev:mfe-vite
 
+# Start the Annotask marketing page (live stats need the API)
+marketing: ensure-api
+    pnpm dev:marketing
+
 # Start shell UI in standalone dev mode
 shell:
     pnpm dev:shell
@@ -98,6 +102,7 @@ list:
     @echo "  just react        — React + Vite         (port 5174)"
     @echo "  just svelte       — Svelte + Vite        (port 5175)"
     @echo "  just mfe          — MFE + Vite           (port 5180, MFE mode)"
+  @echo "  just marketing    — Annotask marketing   (port 5181)"
     @echo "  just stop-api     — Stop background API"
     @echo ""
     @echo "The API auto-starts in the background when you run a playground."

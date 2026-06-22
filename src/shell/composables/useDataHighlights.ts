@@ -10,11 +10,12 @@
  *
  * Colors come from the annotation palette so they follow the active theme.
  */
-import { ref, watch, type Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import type { BridgeRect } from '../../shared/bridge-types'
 import type { DataSource } from '../../schema'
 import type { useIframeManager } from './useIframeManager'
 import { useWorkspace } from './useWorkspace'
+import { useOverlayLoop, OVERLAY_RECT_CAP } from './useOverlayEngine'
 
 export type HighlightConfidence = 'precise' | 'fallback' | 'runtime-only'
 
@@ -58,6 +59,12 @@ export interface DataHighlightSource {
    *  with no static binding, else `'precise'`. UI shows a badge when this is
    *  not precise. Defaults to `'precise'`. */
   confidence?: HighlightConfidence
+  /** How this source's COLOR should be read. `'identity'` (default) — color
+   *  distinguishes one source from another (library/positional palette).
+   *  `'latency'` — color encodes a measured latency bucket (the Network tab).
+   *  The overlay paints latency rects with a distinct border so an orange
+   *  "slow endpoint" can never be misread as an orange "2nd source". */
+  encoding?: 'identity' | 'latency'
   /** Short diagnostic string shown in row tooltips — "Astro analyzer
    *  missing", etc. Only surfaced when `confidence !== 'precise'`. */
   partialNote?: string
@@ -84,6 +91,10 @@ export interface DataHighlightRect {
    *  source when the site didn't set one). Drives fallback/precise overlay
    *  styling in `_highlights.css`. Defaults to `'precise'`. */
   confidence?: HighlightConfidence
+  /** Inherited from the owning source — `'latency'` makes the overlay draw a
+   *  distinct (solid) border so latency color isn't confused with identity
+   *  color. Defaults to `'identity'`. */
+  encoding?: 'identity' | 'latency'
   /** Every source that resolved to this DOM element. `sourceName` is the
    *  primary (first) owner for back-compat with existing callers; multi-
    *  source elements list every contributor here so the overlay can show a
@@ -153,8 +164,6 @@ export function colorForSource(name: string): string {
   return DATA_PALETTE[idx]
 }
 
-const RECT_CAP = 400
-
 export function useDataHighlights(deps: {
   iframe: ReturnType<typeof useIframeManager>
   /** True when the shell is on a view that should show data-source highlights
@@ -173,9 +182,10 @@ export function useDataHighlights(deps: {
   const focusedEid = ref<string | null>(null)
   const rects = ref<DataHighlightRect[]>([])
   const truncated = ref(false)
-
-  let loopRunning = false
-  let refreshInFlight = false
+  /** Total DOM matches the iframe resolved this pass (before the rect cap).
+   *  `rects.length` is what's drawn; this is the real count so the UI can say
+   *  "showing 400 of 1,237" instead of silently hiding the overflow. */
+  const totalResolved = ref(0)
 
   function setSources(list: DataHighlightSource[]): void {
     sources.value = list
@@ -186,13 +196,9 @@ export function useDataHighlights(deps: {
     if (focusedName.value && !list.find(s => s.name === focusedName.value)) {
       focusedName.value = null
     }
-    if (active.value) {
-      // Kick a refresh now so switching tools (Data → Components etc.) paints
-      // within the same frame instead of waiting for the next rAF tick. The
-      // rAF loop handles ongoing sync; this call just removes the startup gap.
-      refreshRects()
-      startLoop()
-    }
+    // Paint now so switching tools (Data → Components etc.) lands within the
+    // same frame; the shared loop handles ongoing sync.
+    if (active.value) loop.kick()
   }
 
   function setFocus(name: string | null, eid: string | null = null): void {
@@ -206,12 +212,11 @@ export function useDataHighlights(deps: {
     focusedEid.value = null
     rects.value = []
     truncated.value = false
+    totalResolved.value = 0
   }
 
   async function refreshRects(): Promise<void> {
-    if (refreshInFlight) return
-    refreshInFlight = true
-    try {
+    {
       if (!active.value || sources.value.length === 0) {
         if (rects.value.length) rects.value = []
         if (truncated.value) truncated.value = false
@@ -225,15 +230,23 @@ export function useDataHighlights(deps: {
       // location key itself so the bridge's match deduplicates across owners
       // before we even round-trip.
       const locations: Array<{ ref: string; file: string; line: number; tag?: string; mfe?: string; module?: string }> = []
-      interface OwnerMeta { sourceName: string; color: string; label: string; tag?: string; module?: string; confidence: HighlightConfidence }
+      interface OwnerMeta { sourceName: string; color: string; label: string; tag?: string; module?: string; confidence: HighlightConfidence; encoding: 'identity' | 'latency' }
       const siteOwners = new Map<string, OwnerMeta[]>()
 
-      // Workspace-aware path translation: catalogs store workspace-relative
-      // paths, but the iframe DOM carries MFE-local `data-annotask-file`
-      // values tagged with `data-annotask-mfe`. Convert each workspace path
-      // back to `(mfe-local, mfe)` so the bridge selector lines up.
+      // Workspace-aware path translation: catalogs/binding graphs store
+      // workspace-relative paths (e.g. `playgrounds/simple/vue-vite/src/App.vue`),
+      // but the iframe DOM carries `data-annotask-file` values that Vite stamps
+      // relative to ITS root = the running package (e.g. `src/App.vue`). Convert
+      // each workspace path back to that package-local form so the bridge
+      // selector lines up. MFE files strip the MFE package dir (and carry its id);
+      // every other file strips the running package's own dir (`currentDir`).
+      // Without the `currentDir` strip, a non-MFE app nested under the workspace
+      // root never matches and no data-source rects ever render — the same
+      // translation `useProjectComponents` already applies in the reverse
+      // direction (it *prefixes* currentDir onto bridge-reported files).
       const ws = useWorkspace()
       const mfePkgs = (ws.info.value?.packages ?? []).filter(p => !!p.mfe && !!p.dir)
+      const currentDir = ws.info.value?.currentDir ?? ''
 
       function toBridgeLoc(file: string): { file: string; mfe?: string } {
         // Longest-matching dir wins so nested packages beat their parent.
@@ -249,6 +262,12 @@ export function useDataHighlights(deps: {
         }
         if (bestMfe) {
           return { file: file === bestDir ? '' : file.slice(bestDir.length + 1), mfe: bestMfe }
+        }
+        // Non-MFE: strip the running package's dir so the path is package-local.
+        // `currentDir` is '' when the running package *is* the workspace root, in
+        // which case the path is already package-local and needs no change.
+        if (currentDir && (file === currentDir || file.startsWith(currentDir + '/'))) {
+          return { file: file === currentDir ? '' : file.slice(currentDir.length + 1) }
         }
         return { file }
       }
@@ -269,7 +288,7 @@ export function useDataHighlights(deps: {
             site.confidence
             ?? src.confidence
             ?? (site.line === 0 ? 'fallback' : 'precise')
-          const entry: OwnerMeta = { sourceName: src.name, color, label, tag: site.tag, module: site.module, confidence }
+          const entry: OwnerMeta = { sourceName: src.name, color, label, tag: site.tag, module: site.module, confidence, encoding: src.encoding ?? 'identity' }
           const existing = siteOwners.get(key)
           if (existing) {
             // Same (file, line, tag) already has an owner — stack this source
@@ -299,6 +318,9 @@ export function useDataHighlights(deps: {
       // merge those into a single rect with an `ownerSources` list so the
       // UI can show both owners instead of drawing two stacked overlays.
       const byEid = new Map<string, DataHighlightRect>()
+      // Unique elements past the rect cap — counted (not stored) so the UI can
+      // report the true total ("showing 400 of N") instead of silently hiding them.
+      const overflowEids = new Set<string>()
       const confidenceRank: Record<HighlightConfidence, number> = {
         precise: 2,
         fallback: 1,
@@ -326,7 +348,7 @@ export function useDataHighlights(deps: {
           }
           continue
         }
-        if (byEid.size >= RECT_CAP) continue
+        if (byEid.size >= OVERLAY_RECT_CAP) { overflowEids.add(m.eid); continue }
         byEid.set(m.eid, {
           sourceName: primary.sourceName,
           file: m.file,
@@ -338,59 +360,35 @@ export function useDataHighlights(deps: {
           tag: primary.tag,
           module: primary.module,
           confidence: primary.confidence,
+          encoding: primary.encoding,
           ownerSources: owners.map(o => o.sourceName),
           ownerLabels: owners.map(o => o.label),
         })
       }
       rects.value = [...byEid.values()]
-      truncated.value = wasTruncated || matches.length > RECT_CAP
-    } finally {
-      refreshInFlight = false
+      totalResolved.value = byEid.size + overflowEids.size
+      truncated.value = wasTruncated || overflowEids.size > 0
     }
   }
 
-  function startLoop(): void {
-    if (loopRunning) return
-    if (!active.value) return
-    loopRunning = true
-    const tick = () => {
-      if (!active.value || sources.value.length === 0) {
-        loopRunning = false
-        return
-      }
-      if (typeof document !== 'undefined' && document.hidden) {
-        requestAnimationFrame(tick)
-        return
-      }
-      refreshRects()
-      requestAnimationFrame(tick)
-    }
-    requestAnimationFrame(tick)
-  }
-
-  watch(active, (v, old) => {
-    if (v && !old) {
-      // Entering a highlight-showing view (Data / Components / etc.) — push a
-      // refresh immediately so already-set sources paint without waiting for
-      // the next setSources call. Fixes the case where a user switches to
-      // Components on an unchanged iframe route and expects the overlays to
-      // appear without them having to navigate the iframe first.
-      refreshRects()
-      startLoop()
-    } else if (!v && old) {
-      // Leaving a highlight view — clear both rects and sources so the next
-      // entry starts from a clean slate. Without this, switching
-      // Data → Annotate → Components would briefly paint the stale Data
-      // sources until Components' own load() pushed its list.
+  // The shared overlay loop owns the rAF lifecycle + re-entrancy/visibility
+  // guards; this composable only supplies the refresh body and what "idle"
+  // means. Leaving the view clears sources/focus/rects so the next entry
+  // starts clean (prevents a stale Data → Components flash).
+  const loop = useOverlayLoop({
+    active,
+    refresh: refreshRects,
+    inputs: () => sources.value,
+    isIdle: () => sources.value.length === 0,
+    onDeactivate: () => {
       sources.value = []
       focusedName.value = null
       focusedEid.value = null
       rects.value = []
       truncated.value = false
-    }
+      totalResolved.value = 0
+    },
   })
-
-  watch(sources, () => { if (active.value) startLoop() }, { deep: true })
 
   return {
     sources,
@@ -398,6 +396,7 @@ export function useDataHighlights(deps: {
     focusedEid,
     rects,
     truncated,
+    totalResolved,
     setSources,
     setFocus,
     clear,

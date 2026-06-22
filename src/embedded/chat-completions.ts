@@ -169,7 +169,7 @@ export function buildChatCompletionsRequest(
   }
   for (const msg of messages) out.push(...toChatCompletionsMessages(msg))
 
-  return {
+  const req: ChatCompletionsRequest = {
     model: options.model ?? defaults.defaultModel,
     messages: out,
     tools: tools.length > 0 ? tools.map(toChatCompletionsTool) : undefined,
@@ -179,6 +179,13 @@ export function buildChatCompletionsRequest(
     // most compat servers but they tolerate the extra field.
     stream_options: { include_usage: true },
   }
+  // Reasoning-effort hint. Compat servers without reasoning ignore unknown
+  // body fields, so it's safe to send always. We only send for non-auto
+  // levels so the body for older endpoints stays byte-identical.
+  if (options.effort && options.effort !== 'auto') {
+    req.reasoning_effort = options.effort
+  }
+  return req
 }
 
 function toChatCompletionsTool(tool: ProviderTool): ChatCompletionsTool {

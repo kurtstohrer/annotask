@@ -1,4 +1,6 @@
-export type ElementRole = 'container' | 'content' | 'component'
+/** 'placement' is assigned by the selection model (never by DOM classification):
+ *  an annotask-mounted wireframe placement selected via its container. */
+export type ElementRole = 'container' | 'content' | 'component' | 'placement'
 
 export interface ElementClassification {
   role: ElementRole

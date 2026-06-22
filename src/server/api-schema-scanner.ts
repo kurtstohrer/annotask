@@ -161,13 +161,18 @@ async function scanUncached(projectRoot: string, opts: ScanOptions): Promise<Api
   }
   const hasExplicit = (opts.apiSchemaFiles?.length ?? 0) + (opts.apiSchemaUrls?.length ?? 0) > 0
 
-  // 2. Filesystem auto-discovery — walk the whole workspace so schemas under
-  //    sibling MFEs or a top-level services/ dir are picked up.
+  // 2. Filesystem auto-discovery — scope to the RUNNING package, not the whole
+  //    workspace. Walking ws.root surfaced sibling apps' schema files (a Vue app
+  //    showed unrelated go-api / rust-api openapi.json from other playgrounds) —
+  //    the same over-reach fixed in the component + data-source scanners. The
+  //    running app's real backend is still discovered at RUNTIME via the
+  //    dev-server + docker-compose probes below, so a monorepo's shared
+  //    services/ backend still "just works" without reading sibling files.
   if (!hasExplicit) {
     const files: string[] = []
-    await walk(ws.root, files, ws.root)
+    await walk(projectRoot, files, projectRoot)
     for (const fp of files) {
-      const parsed = await tryParseFile(ws.root, nodePath.relative(ws.root, fp))
+      const parsed = await tryParseFile(projectRoot, nodePath.relative(projectRoot, fp))
       if (parsed) {
         // Dedupe by location
         if (!schemas.some(s => s.location === parsed.location)) schemas.push(parsed)

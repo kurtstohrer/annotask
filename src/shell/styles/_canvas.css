@@ -36,8 +36,40 @@
   cursor: crosshair;
 }
 
-.drawing-shield.draw {
-  cursor: crosshair;
+
+/* Wireframe palette: transparent catcher over the iframe so native drag events
+   reach the shell. Always present but inert (pointer-events:none) until a drag
+   starts — `.active` turns it on without a mid-drag mount race. */
+.palette-drop-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+}
+.palette-drop-shield.active {
+  pointer-events: auto;
+  cursor: copy;
+}
+
+/* Live drop indicator inside .overlay-layer (canvas-area-relative coords).
+   Outlines the resolved drop target; a top/bottom inset edge bar marks a
+   'before'/'after' insertion point. */
+.drop-indicator {
+  position: absolute;
+  z-index: 9998;
+  pointer-events: none;
+  border: 2px dashed var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-sizing: border-box;
+}
+
+.drop-indicator.before {
+  border-top: 3px solid var(--accent);
+}
+
+.drop-indicator.after {
+  border-bottom: 3px solid var(--accent);
 }
 
 /* Main layout */

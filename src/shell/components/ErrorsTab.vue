@@ -258,7 +258,7 @@ function onCreateTask(entry: ErrorEntry) {
 
 .error-stack {
   display: flex; flex-direction: column; gap: 2px;
-  padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.3);
+  padding: 8px; border-radius: 6px; background: var(--bg);
   overflow-x: auto;
 }
 .stack-line {

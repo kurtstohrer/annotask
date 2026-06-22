@@ -1,6 +1,13 @@
+---
+name: annotask-init
+description: Initialize Annotask for this project by scanning the codebase and generating .annotask/design-spec.json. Use when the user asks to initialize, set up, configure, or scan their project for Annotask, or runs /annotask-init.
+---
+
 # annotask-init
 
 Initialize Annotask for this project by scanning the codebase and generating `.annotask/design-spec.json`.
+
+> **For editor agents only.** Annotask's built-in agent runs init through the shell UI — open `http://localhost:5173/__annotask/` and the wizard walks the user through provider setup, project scan, and style guide. This skill exists for users who prefer their own editor agent (Claude Code, Cursor, Windsurf) to do the deeper token extraction the in-shell baseline doesn't cover.
 
 ## When to use
 

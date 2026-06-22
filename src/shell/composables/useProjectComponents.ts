@@ -50,6 +50,11 @@ export interface LibraryComponent {
   slots?: LibrarySlot[]
   events?: LibraryEvent[]
   sourceFile?: string | null
+  /** Provider-dependence markers from the scanner (see ScannedComponent). */
+  providerSignals?: string[]
+  /** Coarse render-fidelity hint so the palette can pre-mark a component as
+   *  isolated-preview before attempting a throwing mount. */
+  fidelityHint?: 'live' | 'isolated-preview' | 'placeholder' | 'unknown'
 }
 
 export interface LibraryCatalog {
@@ -127,11 +132,18 @@ async function load(iframe?: ReturnType<typeof useIframeManager>): Promise<void>
   isLoading.value = true
   loadError.value = null
   try {
-    const [catalog, usage] = await Promise.all([
+    const [catalog, projectLib, usage] = await Promise.all([
       fetchJson<LibraryComponentsIndex>('components'),
+      fetchJson<{ library: LibraryCatalog }>('project-components'),
       fetchJson<{ usage: Record<string, string[]>; imports?: Record<string, Record<string, string[]>> }>('component-usage'),
     ])
-    libraries.value = catalog?.libraries ?? []
+    // The user's own components come first — a design tool designs with the
+    // project's components, and same-named project components shadow library
+    // exports in metadata lookups.
+    const project = projectLib?.library
+    libraries.value = project && project.components.length > 0
+      ? [project, ...(catalog?.libraries ?? [])]
+      : (catalog?.libraries ?? [])
     const map = new Map<string, string[]>()
     for (const [name, files] of Object.entries(usage?.usage ?? {})) {
       map.set(name, files)
@@ -180,8 +192,13 @@ async function refreshRenderedFiles(iframe: ReturnType<typeof useIframeManager>)
 /** Does an import specifier (`from '…'`) belong to this library? Matches the
  *  package name exactly or as a subpath prefix so `@mantine/core` attributes
  *  imports from `@mantine/core/Button`, `primevue` attributes
- *  `primevue/button`, etc. */
+ *  `primevue/button`, etc. The synthetic "Project" library owns relative
+ *  imports (`./components/PlanetCard.vue`, `../ui/Button`) and `@/…`/`~/…`
+ *  src aliases — the project's own components are imported that way. */
 function fromMatchesLibrary(from: string, libName: string): boolean {
+  if (libName === 'Project') {
+    return from.startsWith('./') || from.startsWith('../') || from.startsWith('@/') || from.startsWith('~/')
+  }
   return from === libName || from.startsWith(libName + '/')
 }
 
@@ -379,6 +396,36 @@ const filteredLibraries = computed<LibraryCatalog[]>(() => {
     })
     .filter(lib => lib.components.length > 0)
 })
+
+/** Predict whether a palette component can render a LIVE snapshot on the CURRENT
+ *  iframe surface, and which MFE owns it. There is exactly one active surface and
+ *  one global component registry, so a Project component defined in / used only by
+ *  a DIFFERENT MFE isn't reachable here — mark it unavailable (honest) but still
+ *  report its owning MFE so apply-time codegen imports from the right package.
+ *  Third-party libraries are left renderable: the registry is the real arbiter we
+ *  can't see statically, and over-blocking a shared design system would make the
+ *  palette feel broken. Returns renderable:true / owningMfe:null in single-MFE or
+ *  non-workspace projects (no gating). The owning MFE comes from the component's
+ *  workspace-relative usage files (the same signal filteredLibraries trusts) plus
+ *  its definition file when that is workspace-relative. */
+function surfaceRenderInfo(libName: string, c: LibraryComponent): { renderable: boolean; owningMfe: string | null } {
+  const ws = useWorkspace()
+  if (!ws.hasAnyMfes.value) return { renderable: true, owningMfe: null }
+  const cur = ws.currentMfe.value
+  // Only the project's own components are gated cross-MFE; installed libraries
+  // are assumed available across surfaces.
+  if (libName !== 'Project') return { renderable: true, owningMfe: cur }
+  const mfes = new Set<string>()
+  for (const f of filesForLibComponent(libName, c.name)) {
+    const id = ws.mfeForFile(f)
+    if (id) mfes.add(id)
+  }
+  const srcMfe = c.sourceFile ? ws.mfeForFile(c.sourceFile) : null
+  if (srcMfe) mfes.add(srcMfe)
+  if (mfes.size === 0) return { renderable: true, owningMfe: null } // unattributed → allow
+  if (cur && mfes.has(cur)) return { renderable: true, owningMfe: cur }
+  return { renderable: false, owningMfe: [...mfes][0] }
+}
 
 function select(libraryName: string, componentName: string): void {
   selectedKey.value = `${libraryName}:::${componentName}`
@@ -587,5 +634,6 @@ export function useComponentLibrary(iframe?: ReturnType<typeof useIframeManager>
     isUsedInLib,
     isOnPageInLib,
     filesForLibComponent,
+    surfaceRenderInfo,
   }
 }

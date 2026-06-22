@@ -68,7 +68,7 @@ const historyNavPath = computed<string[]>(() => (props.interactionHistory as any
 .td-nav-route { color: var(--text); font-family: ui-monospace, 'SF Mono', monospace; }
 .td-nav-sep { color: var(--text-muted); }
 .td-log { display: flex; flex-direction: column; font-family: ui-monospace, 'SF Mono', monospace; font-size: 10px; }
-.td-log-entry { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.td-log-entry { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--text) 4%, transparent); }
 .td-log-idx { color: var(--text-muted); min-width: 18px; text-align: right; font-variant-numeric: tabular-nums; }
 .td-log-event { font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 0 4px; border-radius: 2px; flex-shrink: 0; }
 .td-log-event.route_change { color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }

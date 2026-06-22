@@ -3,7 +3,13 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { isSafeScreenshot } from './validation.js'
 import { createRuntimeEndpointStore, type RuntimeEndpointStore } from './runtime-endpoints.js'
-import type { NetworkCall, RuntimeEndpointCatalog } from '../schema.js'
+import { createAgentConfigStore } from './agent-configs.js'
+import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
+import { createWireframeStore } from './wireframe-store.js'
+import { createSessionStore } from './session-store.js'
+import type { NetworkCall, RuntimeEndpointCatalog, TokenUsage } from '../schema.js'
+import { isWireframeDocument, type WireframeDocument } from '../shared/wireframe-types.js'
+import { emptyDesignSessionDocument, type DesignSessionDocument } from '../shared/design-session-types.js'
 
 const DEFAULT_DESIGN_SPEC = {
   initialized: false,
@@ -72,7 +78,26 @@ export interface ProjectState {
   getConfig: () => unknown
   getTasks: () => { version: string; tasks: any[] }
   addTask: (task: Record<string, unknown>) => Promise<unknown>
-  updateTask: (id: string, updates: Record<string, unknown>) => Promise<unknown>
+  /**
+   * Update a task. `opts.guard` runs INSIDE the task lock against the task as
+   * it exists at update time — the HTTP layer passes its status-transition
+   * assert here so two concurrent PATCHes can't both pass a pre-lock check
+   * (TOCTOU). A non-null guard return aborts the update and surfaces as
+   * `{ error: 'Invalid transition', reason }`.
+   */
+  updateTask: (
+    id: string,
+    updates: Record<string, unknown>,
+    opts?: { guard?: (task: Record<string, unknown>) => string | null },
+  ) => Promise<unknown>
+  /**
+   * Increment a task's `tokenUsage` rollup. Called from the task-thread store's
+   * onAppend hook when an assistant turn lands with usage. Silently no-ops on
+   * unknown task ids — the conversation log can outlive the task record
+   * (e.g. an accepted task is removed while a late-arriving usage event is
+   * still in flight).
+   */
+  addTaskUsage: (id: string, usage: Partial<TokenUsage>) => Promise<TokenUsage | null>
   deleteTask: (id: string) => Promise<unknown>
   /** Persist per-task interaction history alongside tasks.json so agents can
    *  fetch it on demand even when the user didn't embed it in the task payload. */
@@ -89,13 +114,46 @@ export interface ProjectState {
   getRuntimeEndpointCatalog: () => RuntimeEndpointCatalog
   /** Drop the runtime endpoint catalog (in-memory + on-disk). */
   clearRuntimeEndpoints: () => void
+  /** Read per-persona project directions from `.annotask/agents.json`. */
+  getAgentConfigs: () => Promise<AgentConfigs>
+  /** Write one persona's project directions and return the updated file. */
+  setAgentConfig: (personaId: string, entry: Partial<AgentConfigEntry>) => Promise<AgentConfigs>
+  /** Read the persisted multi-route wireframe document (`.annotask/wireframe.json`). */
+  getWireframe: () => Promise<WireframeDocument>
+  /** Replace the wireframe document, persist atomically, broadcast, and return it. */
+  setWireframe: (doc: WireframeDocument) => Promise<WireframeDocument>
+  /** Read the persisted design-session journal (`.annotask/design-session.json`). */
+  getDesignSession: () => Promise<DesignSessionDocument>
+  /** Replace the design-session journal (CAS on rev), broadcast, and return it. */
+  setDesignSession: (doc: DesignSessionDocument) => Promise<DesignSessionDocument>
+  /** Server-owned reset to an empty session (discard / accept-all) — not CAS-gated. */
+  clearDesignSession: () => Promise<DesignSessionDocument>
   /** Wait for any pending writes to complete. Use before process shutdown. */
   flush: () => Promise<void>
+  /**
+   * Health of the tasks.json disk-write path. Mutations reply 200 before the
+   * fire-and-forget flush lands, so a failing disk write would otherwise lose
+   * data silently — this lets `/api/status` report `persistence: 'degraded'`.
+   */
+  getPersistenceHealth: () => PersistenceHealth
   dispose: () => void
 }
 
-/** Atomic write: write to tmp file then rename into place */
-async function atomicWrite(filePath: string, data: string) {
+export interface PersistenceHealth {
+  ok: boolean
+  consecutiveFailures: number
+  lastError: string | null
+}
+
+function clampNonNeg(n: number | undefined): number {
+  if (n == null || !Number.isFinite(n) || n < 0) return 0
+  return n
+}
+
+/** Atomic write: write to tmp file then rename into place. Exported so other
+ *  `.annotask/` writers (init commit/skip) share the same crash-safe pattern
+ *  instead of racing the sync readers here with a plain writeFile. */
+export async function atomicWrite(filePath: string, data: string) {
   const dir = path.dirname(filePath)
   await fsp.mkdir(dir, { recursive: true })
   const tmpPath = filePath + `.tmp.${process.pid}.${Date.now()}`
@@ -103,9 +161,57 @@ async function atomicWrite(filePath: string, data: string) {
   await fsp.rename(tmpPath, filePath)
 }
 
-export function createProjectState(projectRoot: string, broadcast: (event: string, data: unknown) => void): ProjectState {
+/**
+ * Best-effort: make sure `.annotask/` is gitignored. Transcripts
+ * (conversations/*.jsonl), screenshots, and sidecars accumulate under
+ * `.annotask/` — before this helper the only thing keeping them out of
+ * commits was an instruction inside the LLM skill text. Only touches
+ * projects that have a `.git` (dir or worktree file), appends exactly once,
+ * and never throws — a read-only checkout must not break server boot.
+ */
+export function ensureAnnotaskIgnored(projectRoot: string): void {
+  try {
+    if (!fs.existsSync(path.join(projectRoot, '.git'))) return
+    const gitignorePath = path.join(projectRoot, '.gitignore')
+    let existing = ''
+    try { existing = fs.readFileSync(gitignorePath, 'utf-8') } catch { /* no .gitignore yet */ }
+    // Already covered when any line is `.annotask` / `.annotask/` / `/.annotask/`.
+    if (/^\/?\.annotask\/?\s*$/m.test(existing)) return
+    const prefix = existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''
+    fs.appendFileSync(gitignorePath, `${prefix}# Annotask local data (tasks, screenshots, conversation transcripts)\n.annotask/\n`, 'utf-8')
+  } catch { /* best-effort — never block boot */ }
+}
+
+export interface ProjectStateOptions {
+  /**
+   * Fired when `design-spec.json` disappears from disk (the file is unlinked
+   * outside the normal init write flow). Used by the init runner to drop its
+   * in-memory step state — the wizard's "all green checkmarks from last run"
+   * survives a `rm -rf .annotask/*` until something tells it the world has
+   * changed.
+   */
+  onSpecCleared?: () => void
+  /**
+   * Fired after a task leaves the store for good (accepted or deleted) and
+   * the removal has been flushed to disk. Lets the server clean per-task
+   * sidecars state.ts doesn't own — today the conversation transcript
+   * (`.annotask/conversations/<id>.jsonl`, owned by the task-thread store).
+   * Screenshot / interaction-history / rendered-html cleanup stays in here.
+   */
+  onTaskRemoved?: (taskId: string) => void
+}
+
+export function createProjectState(
+  projectRoot: string,
+  broadcast: (event: string, data: unknown) => void,
+  options: ProjectStateOptions = {},
+): ProjectState {
   let cachedDesignSpec: unknown = null
   let specWatcher: fs.FSWatcher | null = null
+  // Canonical boot-time spot for keeping `.annotask/` out of version control —
+  // every server entry (Vite plugin, Webpack plugin, standalone) constructs a
+  // project state exactly once.
+  ensureAnnotaskIgnored(projectRoot)
   const tasksPath = path.join(projectRoot, '.annotask', 'tasks.json')
   const screenshotsDir = path.join(projectRoot, '.annotask', 'screenshots')
   const interactionHistoryDir = path.join(projectRoot, '.annotask', 'interaction-history')
@@ -183,11 +289,32 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
   let taskFlushChain: Promise<unknown> = Promise.resolve()
   // Watcher fires on our own rename; skip events within this window after a self-write.
   let selfWriteUntil = 0
+  // Flush-failure tracking — see getPersistenceHealth.
+  let flushFailureCount = 0
+  let lastFlushError: string | null = null
 
   function loadTasksFromDisk(): { version: string; tasks: any[] } {
     try {
-      return JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
-    } catch {
+      const parsed = JSON.parse(fs.readFileSync(tasksPath, 'utf-8'))
+      // Tolerate a bare-array file (hand-written resets, older tooling) and
+      // a missing `tasks` key — a wrong-shape parse would otherwise crash
+      // the first addTask() and take the whole dev server down with it.
+      if (Array.isArray(parsed)) return { version: '1.0', tasks: parsed }
+      if (!Array.isArray(parsed?.tasks)) return { version: parsed?.version ?? '1.0', tasks: [] }
+      return parsed
+    } catch (err) {
+      // Distinguish "no file yet" (normal first boot) from a corrupt-but-
+      // recoverable file. Falling back to empty is fine in memory, but the
+      // next mutation's atomic flush would overwrite the corrupt file with
+      // `[]` — quarantine a copy first so the user (or an agent) can hand-
+      // recover the tasks. Best-effort: a failed copy never blocks boot.
+      if (fs.existsSync(tasksPath)) {
+        const quarantinePath = `${tasksPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+        try {
+          fs.copyFileSync(tasksPath, quarantinePath)
+          console.warn(`[Annotask] tasks.json is unreadable (${(err as Error).message}) — quarantined a copy at ${quarantinePath}`)
+        } catch { /* best-effort */ }
+      }
       return { version: '1.0', tasks: [] }
     }
   }
@@ -224,8 +351,14 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
       selfWriteUntil = Date.now() + 500
       await atomicWrite(tasksPath, payload)
       selfWriteUntil = Date.now() + 500
+      flushFailureCount = 0
+      lastFlushError = null
     }).catch(err => {
-      console.warn('[Annotask] task flush failed:', err)
+      // The HTTP response already went out before this write ran, so a failure
+      // here is silent data loss across restarts — track it for /api/status.
+      flushFailureCount += 1
+      lastFlushError = err instanceof Error ? err.message : String(err)
+      console.error(`[Annotask] task flush failed (${flushFailureCount} consecutive) — task changes are NOT being persisted to ${tasksPath}:`, err)
     })
     taskFlushChain = run
     return run
@@ -247,7 +380,12 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     const specPath = path.join(projectRoot, '.annotask', 'design-spec.json')
     try {
       const parsed = JSON.parse(fs.readFileSync(specPath, 'utf-8'))
-      cachedDesignSpec = { initialized: true, ...normalizeDesignSpec(parsed) }
+      // Honor the file's own `initialized` field. The init wizard sets it
+      // to `true` only when the user explicitly commits — an agent-written
+      // spec that hasn't been accepted yet has no `initialized` key and
+      // should keep the wizard open (defaults to false, not true).
+      const normalized = normalizeDesignSpec(parsed)
+      cachedDesignSpec = { initialized: parsed.initialized === true, ...normalized }
     } catch {
       cachedDesignSpec = DEFAULT_DESIGN_SPEC
     }
@@ -259,12 +397,31 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
           if (filename === 'design-spec.json') {
             cachedDesignSpec = null
             broadcast('designspec:updated', null)
+            // If the file is gone entirely (user wiped .annotask/), tell the
+            // init runner to drop its remembered "all steps done" state so the
+            // wizard reopens cleanly without checkmarks from the last run.
+            // fs.watch fires before/around the write, so check synchronously.
+            try {
+              fs.statSync(specPath)
+            } catch {
+              options.onSpecCleared?.()
+            }
           }
           if (filename === 'tasks.json') {
             // Ignore events caused by our own atomic writes.
             if (Date.now() < selfWriteUntil) return
             // External edit — drop cache so the next read picks up the disk version.
             taskCache = null
+          }
+          if (filename === 'wireframe.json') {
+            // Ignore our own atomic writes; on a genuine external edit tell live
+            // listeners to re-load (the store reads fresh, so no cache to clear).
+            if (Date.now() < wireframeSelfWriteUntil) return
+            broadcast('wireframe:updated', null)
+          }
+          if (filename === 'design-session.json') {
+            if (Date.now() < sessionSelfWriteUntil) return
+            broadcast('session:updated', null)
           }
         })
       } catch { cachedDesignSpec = null }
@@ -291,11 +448,22 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     })
   }
 
-  async function updateTask(id: string, updates: Record<string, unknown>) {
+  async function updateTask(
+    id: string,
+    updates: Record<string, unknown>,
+    opts: { guard?: (task: Record<string, unknown>) => string | null } = {},
+  ) {
     return withTaskLock(async () => {
       const data = getTasksSnapshot()
       const task = data.tasks.find((t: any) => t.id === id)
       if (!task) return { error: 'Task not found' }
+      // Run the caller's guard against the task as it exists NOW, under the
+      // lock. The HTTP/MCP boundaries validate transitions before queuing,
+      // but that check races concurrent updates — this one can't.
+      if (opts.guard) {
+        const reason = opts.guard(task)
+        if (reason) return { error: 'Invalid transition', reason }
+      }
       Object.assign(task, updates, { updatedAt: Date.now() })
       let screenshotToUnlink: unknown = null
       let sidecarsToClean: string | null = null
@@ -306,12 +474,49 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
       }
       const flushed = queueFlushTasks(data)
       // Unlink after the write succeeds so the screenshot isn't deleted if
-      // the write fails. Chained off the flush, but not awaited — response
-      // goes out as soon as the in-memory state is consistent.
-      if (screenshotToUnlink) void flushed.then(() => unlinkScreenshot(screenshotToUnlink))
-      if (sidecarsToClean) void flushed.then(() => cleanTaskSidecars(sidecarsToClean!))
+      // the write fails. Appended to the flush chain (not awaited here) — the
+      // response goes out as soon as the in-memory state is consistent, but
+      // flush() still covers the cleanup's disk work.
+      if (screenshotToUnlink || sidecarsToClean) {
+        taskFlushChain = flushed.then(async () => {
+          if (screenshotToUnlink) await unlinkScreenshot(screenshotToUnlink)
+          if (sidecarsToClean) {
+            await cleanTaskSidecars(sidecarsToClean)
+            options.onTaskRemoved?.(sidecarsToClean)
+          }
+        }).catch(() => { /* cleanup is best-effort */ })
+      }
       broadcast('tasks:updated', data)
       return task
+    })
+  }
+
+  async function addTaskUsage(id: string, usage: Partial<TokenUsage>): Promise<TokenUsage | null> {
+    return withTaskLock(async () => {
+      const data = getTasksSnapshot()
+      const task = data.tasks.find((t: any) => t.id === id)
+      if (!task) return null
+      const prev: TokenUsage = task.tokenUsage ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        turns: 0,
+        lastUpdated: 0,
+      }
+      const next: TokenUsage = {
+        inputTokens: prev.inputTokens + clampNonNeg(usage.inputTokens),
+        outputTokens: prev.outputTokens + clampNonNeg(usage.outputTokens),
+        cacheReadTokens: prev.cacheReadTokens + clampNonNeg(usage.cacheReadTokens),
+        cacheCreationTokens: prev.cacheCreationTokens + clampNonNeg(usage.cacheCreationTokens),
+        turns: prev.turns + 1,
+        lastUpdated: Date.now(),
+      }
+      task.tokenUsage = next
+      task.updatedAt = Date.now()
+      void queueFlushTasks(data)
+      broadcast('tasks:updated', data)
+      return next
     })
   }
 
@@ -323,8 +528,11 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
       const screenshotToUnlink = task.screenshot
       data.tasks = data.tasks.filter((t: any) => t.id !== id)
       const flushed = queueFlushTasks(data)
-      if (screenshotToUnlink) void flushed.then(() => unlinkScreenshot(screenshotToUnlink))
-      void flushed.then(() => cleanTaskSidecars(id))
+      taskFlushChain = flushed.then(async () => {
+        if (screenshotToUnlink) await unlinkScreenshot(screenshotToUnlink)
+        await cleanTaskSidecars(id)
+        options.onTaskRemoved?.(id)
+      }).catch(() => { /* cleanup is best-effort */ })
       broadcast('tasks:updated', data)
       return { deleted: id }
     })
@@ -345,6 +553,90 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     perfSnapshot = data
     const run = perfLock.then(() => atomicWrite(perfPath, JSON.stringify(data, null, 2)))
     perfLock = run.catch(() => {})
+  }
+
+  // ── Agent configs (.annotask/agents.json) ──
+  const agentConfigStore = createAgentConfigStore(projectRoot)
+
+  // ── Wireframe document (.annotask/wireframe.json) ──
+  const wireframeStore = createWireframeStore(projectRoot)
+  // Watcher fires on our own rename; skip events within this window after a self-write.
+  let wireframeSelfWriteUntil = 0
+
+  // Boot-time GC for canvas snapshot PNGs: failed uploads, crashed sessions,
+  // and recapture races strand files no doc references. Boot is the only safe
+  // moment (no in-flight upload can race a fresh process); the mtime guard
+  // keeps anything recent enough to plausibly belong to a just-written doc.
+  void (async () => {
+    const dir = path.join(projectRoot, '.annotask', 'wireframe-snapshots')
+    let names: string[]
+    try { names = await fsp.readdir(dir) } catch { return }
+    if (names.length === 0) return
+    // Read the doc RAW: the store's get() falls back to an EMPTY document on
+    // a malformed file, and "empty references" would let the sweep nuke every
+    // legitimately-referenced PNG. A doc that exists but doesn't validate
+    // aborts the GC; a doc that doesn't exist leaves only true orphans.
+    const referenced = new Set<string>()
+    try {
+      const raw = await fsp.readFile(path.join(projectRoot, '.annotask', 'wireframe.json'), 'utf-8')
+      let doc: unknown
+      try { doc = JSON.parse(raw) } catch { return }
+      if (!isWireframeDocument(doc)) return
+      for (const route of doc.routes) {
+        if (!route.canvas) continue
+        for (const b of route.canvas.blocks) if (b.image) referenced.add(b.image)
+        if (route.canvas.fullImage) referenced.add(route.canvas.fullImage)
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return
+      // No doc at all → every PNG is an orphan; the mtime guard still applies.
+    }
+    const cutoff = Date.now() - 60 * 60 * 1000
+    let removed = 0
+    for (const name of names) {
+      if (referenced.has(name) || !name.endsWith('.png')) continue
+      const p = path.join(dir, name)
+      try {
+        const st = await fsp.stat(p)
+        if (st.mtimeMs >= cutoff) continue
+        await fsp.unlink(p)
+        removed++
+      } catch { /* best effort */ }
+    }
+    if (removed > 0) console.warn(`[Annotask] wireframe-snapshot GC removed ${removed} orphaned file(s)`)
+  })()
+
+  async function setWireframe(doc: WireframeDocument): Promise<WireframeDocument> {
+    wireframeSelfWriteUntil = Date.now() + 500
+    const saved = await wireframeStore.set(doc)
+    wireframeSelfWriteUntil = Date.now() + 500
+    // Notify live listeners (other shells/tabs) so they re-load without polling.
+    broadcast('wireframe:updated', saved)
+    return saved
+  }
+
+  // ── Design-session journal (.annotask/design-session.json) ──
+  const sessionStore = createSessionStore(projectRoot)
+  let sessionSelfWriteUntil = 0
+
+  async function setDesignSession(doc: DesignSessionDocument): Promise<DesignSessionDocument> {
+    sessionSelfWriteUntil = Date.now() + 500
+    const saved = await sessionStore.set(doc)
+    sessionSelfWriteUntil = Date.now() + 500
+    broadcast('session:updated', saved)
+    return saved
+  }
+
+  async function clearDesignSession(): Promise<DesignSessionDocument> {
+    sessionSelfWriteUntil = Date.now() + 500
+    const fresh = emptyDesignSessionDocument(`ds-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`)
+    fresh.startedAt = Date.now()
+    fresh.updatedAt = Date.now()
+    // Server-owned reset — bypasses CAS so discard works from any tab state.
+    const saved = await sessionStore.replace(fresh)
+    sessionSelfWriteUntil = Date.now() + 500
+    broadcast('session:updated', saved)
+    return saved
   }
 
   // ── Runtime endpoint catalog ──
@@ -380,6 +672,7 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     getTasks: getTasksSnapshot,
     addTask,
     updateTask,
+    addTaskUsage,
     deleteTask,
     saveInteractionHistory,
     readInteractionHistory,
@@ -390,7 +683,19 @@ export function createProjectState(projectRoot: string, broadcast: (event: strin
     ingestNetworkCalls,
     getRuntimeEndpointCatalog,
     clearRuntimeEndpoints,
+    getAgentConfigs: agentConfigStore.get,
+    setAgentConfig: agentConfigStore.set,
+    getWireframe: wireframeStore.get,
+    setWireframe,
+    getDesignSession: sessionStore.get,
+    setDesignSession,
+    clearDesignSession,
     flush,
+    getPersistenceHealth: () => ({
+      ok: flushFailureCount === 0,
+      consecutiveFailures: flushFailureCount,
+      lastError: lastFlushError,
+    }),
     dispose,
   }
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import Icon from './Icon.vue'
+import { inferWidget, enumValues, parseDefault } from '../utils/propWidgets'
 
 interface PreviewProp {
   name: string
@@ -44,26 +45,6 @@ const copyOk = ref(false)
 type PropsViewMode = 'table' | 'json' | 'yaml'
 const propsView = ref<PropsViewMode>('table')
 
-// Parse a single-line default-value expression (e.g. `'small'`, `true`, `42`) into a real JS value.
-// Falls back to the raw string if parsing fails. Keeps initial values honest to the extracted type.
-function parseDefault(raw: unknown, type: string | null): unknown {
-  if (raw == null) return undefined
-  const s = String(raw).trim()
-  if (!s || s === 'undefined' || s === 'null') return undefined
-  if (s === 'true') return true
-  if (s === 'false') return false
-  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s)
-  // Quoted string
-  const m = s.match(/^['"`](.*)['"`]$/)
-  if (m) return m[1]
-  // For enum types like 'a' | 'b', use the first
-  if (type && /'[^']+'/.test(type)) {
-    const first = type.match(/'([^']+)'/)
-    if (first) return first[1]
-  }
-  return s
-}
-
 function initialPropsFor(comp: PreviewComponent): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const p of comp.props) {
@@ -73,21 +54,6 @@ function initialPropsFor(comp: PreviewComponent): Record<string, unknown> {
     }
   }
   return out
-}
-
-function inferWidget(p: PreviewProp): 'boolean' | 'number' | 'enum' | 'string' | 'json' {
-  const t = (p.type || '').toLowerCase()
-  if (t === 'boolean' || t === 'bool') return 'boolean'
-  if (t === 'number' || t === 'int' || t === 'float') return 'number'
-  if (/^(['"][\w-]+['"]\s*\|\s*)+['"][\w-]+['"]\s*$/.test(p.type || '')) return 'enum'
-  if (t === 'string' || t.startsWith('string')) return 'string'
-  // Complex types (objects, arrays, functions) — give the user a JSON escape hatch
-  return 'json'
-}
-
-function enumValues(p: PreviewProp): string[] {
-  if (!p.type) return []
-  return [...p.type.matchAll(/'([^']+)'/g)].map(m => m[1])
 }
 
 function jsonFor(value: unknown): string {

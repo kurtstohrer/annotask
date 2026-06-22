@@ -265,13 +265,6 @@ function libraryTooltip(lib: { name: string; version?: string; detected_patterns
   return lines.join('\n')
 }
 
-const showCreateForm = ref(false)
-const createDesired = ref('')
-const createDescription = ref('')
-const createRationale = ref('')
-const createError = ref<string | null>(null)
-const createSuccessId = ref<string | null>(null)
-
 function kindLabel(kind: DataSource['kind']): string {
   switch (kind) {
     case 'composable': return 'hook'
@@ -297,37 +290,6 @@ const selectedSchemaBadge = computed(() => {
   return { text: 'external', tone: 'warn' as const }
 })
 
-function openCreate() {
-  createDesired.value = ''
-  createDescription.value = ''
-  createRationale.value = ''
-  createError.value = null
-  createSuccessId.value = null
-  showCreateForm.value = true
-}
-
-async function submitCreate() {
-  createError.value = null
-  if (!createDesired.value.trim() || !createDescription.value.trim()) {
-    createError.value = 'Description and desired change are required'
-    return
-  }
-  const res = await ds.createApiUpdateTask({
-    description: createDescription.value.trim(),
-    desired_change: createDesired.value.trim(),
-    rationale: createRationale.value.trim() || undefined,
-  })
-  if (res.ok) {
-    createSuccessId.value = res.id
-    showCreateForm.value = false
-  } else {
-    createError.value = res.error
-  }
-}
-
-function cancelCreate() {
-  showCreateForm.value = false
-}
 </script>
 
 <template>
@@ -605,36 +567,6 @@ function cancelCreate() {
               <span v-if="selectedSchemaBadge" class="item-badge" :class="{ warn: selectedSchemaBadge.tone === 'warn' }">
                 {{ selectedSchemaBadge.text }}
               </span>
-            </div>
-            <div v-if="ds.selectedSchemaLink.value?.schema_in_repo" class="detail-actions">
-              <button data-testid="btn-create-api-task" class="data-btn primary" @click="openCreate">Create API Update Task</button>
-            </div>
-            <div v-else-if="ds.selectedSchemaLink.value && !ds.selectedSchemaLink.value.schema_in_repo" class="detail-note">
-              External API — schema cannot be edited from here.
-            </div>
-          </div>
-
-          <div v-if="createSuccessId" class="detail-success">
-            Created <code>{{ createSuccessId }}</code> with type <code>api_update</code>.
-          </div>
-
-          <div v-if="showCreateForm" class="create-form">
-            <label>
-              <span>Task description (markdown)</span>
-              <textarea v-model="createDescription" rows="2" placeholder="e.g. Add expires_at to the Cat response so the badge can show expiration." />
-            </label>
-            <label>
-              <span>Desired change</span>
-              <textarea v-model="createDesired" rows="2" placeholder="e.g. Add nullable `expires_at: string` (ISO date) to the Cat response schema and the backend handler." />
-            </label>
-            <label>
-              <span>Rationale (optional)</span>
-              <textarea v-model="createRationale" rows="1" placeholder="Why is this change needed?" />
-            </label>
-            <div v-if="createError" class="create-error">{{ createError }}</div>
-            <div class="create-actions">
-              <button data-testid="btn-submit-api-task" class="data-btn primary" @click="submitCreate">Create task</button>
-              <button class="data-btn" @click="cancelCreate">Cancel</button>
             </div>
           </div>
 

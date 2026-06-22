@@ -161,10 +161,16 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
         }
       }
     } else {
-      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}) }
+      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}), ...(data.instance_id ? { instanceId: data.instance_id } : {}) }
       selectedEids.value = [eid]
-      const group = await iframe.findTemplateGroup(file, line, tagName)
-      templateGroupEids.value = group.eids
+      if (data.instance_id) {
+        // A placement has no source anchor — there is no template group to
+        // resolve and group fan-out would target unrelated elements.
+        templateGroupEids.value = []
+      } else {
+        const group = await iframe.findTemplateGroup(file, line, tagName)
+        templateGroupEids.value = group.eids
+      }
       // Default: a single click selects exactly one element. Shift+click adds
       // more. The template-group is still tracked so the style editor's
       // "apply to all instances" toggle can opt into fan-out when useful.

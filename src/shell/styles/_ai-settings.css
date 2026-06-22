@@ -1,0 +1,232 @@
+/*
+ * Shared visual language for the AI / Providers settings panels.
+ *
+ * Both `AISettingsPanel.vue` and `ProviderSettingsPanel.vue` consume these
+ * classes so the two surfaces feel like one settings system. New AI-adjacent
+ * panels (model picker, transcript drawer headers, etc.) should reuse the
+ * same primitives before inventing a parallel one.
+ */
+
+.ai-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 560px;
+}
+
+.ai-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-section-head { display: flex; flex-direction: column; gap: 2px; }
+
+.ai-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+  letter-spacing: 0.005em;
+}
+
+.ai-section-desc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.ai-section-desc code,
+.ai-section-desc strong { color: var(--text); }
+
+.ai-section-desc code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 1px 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.ai-field { display: flex; flex-direction: column; gap: 6px; }
+
+.ai-field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.ai-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ai-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.ai-input-row:focus-within { border-color: var(--accent); }
+.ai-input-row-narrow { padding: 0 8px 0 10px; max-width: 160px; }
+
+.ai-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 8px 0;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--text);
+  min-width: 0;
+}
+
+.ai-input::placeholder { color: var(--text-muted); opacity: 0.7; }
+
+.ai-input-narrow {
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  width: 80px;
+}
+
+.ai-prefix {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ai-icon-btn:hover { background: var(--surface-3, var(--surface-2)); color: var(--text); }
+
+.ai-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.ai-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.ai-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  text-decoration: none;
+  transition: opacity 120ms ease, border-color 120ms ease;
+  font-family: inherit;
+}
+
+.ai-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ai-btn-primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+}
+
+.ai-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent));
+  border-color: var(--accent-hover, var(--accent));
+}
+
+.ai-btn-ghost { background: var(--surface-2); color: var(--text); }
+.ai-btn-ghost:hover { border-color: var(--text-muted); }
+
+.ai-validation {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 6px;
+  align-self: flex-start;
+  line-height: 1.4;
+}
+
+.ai-validation.tone-success {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.ai-validation.tone-danger {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.ai-validation.tone-warning {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+}
+
+.ai-validation.tone-info {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.ai-validation.tone-muted {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.ai-model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.ai-model-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms ease;
+  color: var(--text);
+  font: inherit;
+}
+
+.ai-model-card:hover { border-color: var(--text-muted); }
+
+.ai-model-card.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+}
+
+.ai-model-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+
+.ai-model-rate {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}

@@ -13,15 +13,26 @@
 <link rel="icon" href="../favicon.ico" />
 <style>
   :root {
-    --bg: #0a0c12;
-    --panel: #161a24;
-    --border: #2a3142;
-    --fg: #e8ecf4;
-    --muted: #98a0b4;
-    --accent: #62dcae;
-    --accent-ink: #0a0c12;
+    --bg: #0a0a0a;
+    --panel: #141414;
+    --border: #2a2a2a;
+    --fg: #e4e4e7;
+    --muted: #71717a;
+    --accent: #3b82f6;
+    --accent-ink: #fff;
     --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
     --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f8f9fa;
+      --panel: #ffffff;
+      --border: #d4d6db;
+      --fg: #1a1a1a;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --accent-ink: #fff;
+    }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
@@ -71,10 +82,17 @@
   .card p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.55; }
 
   .install { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-  pre { background: #0d1118; border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 14px; color: var(--fg); margin: 0; }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 14px; color: var(--fg); margin: 0; }
   pre code .k { color: #c084fc; }
   pre code .s { color: var(--accent); }
   pre code .c { color: var(--muted); }
+  @media (prefers-color-scheme: light) {
+    pre code .k { color: #7e22ce; }
+  }
+
+  .feature-shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 24px; }
+  .feature-shots img { width: 100%; border-radius: 10px; border: 1px solid var(--border); }
+  @media (max-width: 800px) { .feature-shots { grid-template-columns: 1fr; } }
 
   .stack-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .pill { display: inline-block; padding: 6px 12px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border); color: var(--muted); font-size: 13px; }
@@ -114,7 +132,7 @@
       <a class="btn ghost" href="#demo">Watch the demo</a>
     </div>
     <div class="hero-shot">
-      <img src="media/hero.png" alt="Annotate a low-contrast button. Agent applies the a11y fix. Re-render passes." />
+      <img src="media/screenshots/shell-overview.png" alt="Annotask shell showing annotation toolbar, app iframe, and task sidebar" />
     </div>
   </div>
 
@@ -133,7 +151,7 @@
     <div class="grid-3">
       <div class="card">
         <h3>Annotate</h3>
-        <p>Pins, arrows, drawn sections, text highlights, screenshots, route-aware tasks, viewport capture. Every annotation becomes a structured task with grounded context.</p>
+        <p>Pins, arrows, text highlights, screenshots, route-aware tasks, viewport capture. Every annotation becomes a structured task with grounded context. Sections are drawn on the wireframe canvas.</p>
       </div>
       <div class="card">
         <h3>Design</h3>
@@ -143,6 +161,11 @@
         <h3>Audit</h3>
         <p>Local axe-core a11y scanning, runtime endpoint monitoring, console error capture, performance findings — each becomes a one-click fix task with full context.</p>
       </div>
+    </div>
+    <div class="feature-shots">
+      <img src="media/screenshots/annotate-pins.png" alt="Pin annotations" loading="lazy" />
+      <img src="media/screenshots/design-inspector.png" alt="Live style inspector" loading="lazy" />
+      <img src="media/screenshots/audit-a11y.png" alt="Accessibility scanner" loading="lazy" />
     </div>
   </section>
 

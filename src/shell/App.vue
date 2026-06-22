@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useStyleEditor } from './composables/useStyleEditor'
+import { useDesignSession } from './composables/useDesignSession'
 import { useInteractionMode } from './composables/useInteractionMode'
+import { useWireframeMode } from './composables/useWireframeMode'
+import { useComponentGenerator } from './composables/useComponentGenerator'
+import { useWorkspace } from './composables/useWorkspace'
+import type { PaletteDragItem } from './composables/usePaletteDrag'
 import { useDesignSpec, setActiveColorScheme } from './composables/useDesignSpec'
 import { useLayoutOverlay } from './composables/useLayoutOverlay'
 import { useAnnotations } from './composables/useAnnotations'
@@ -17,9 +22,9 @@ import type { A11yViolation } from './composables/useA11yScanner'
 // Annotation overlays (still used inline in canvas area)
 import PinOverlay from './components/PinOverlay.vue'
 import ArrowOverlay from './components/ArrowOverlay.vue'
-import DrawnSectionOverlay from './components/DrawnSectionOverlay.vue'
 import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
+import WireframeCanvas from './components/WireframeCanvas.vue'
 // Panels + Overlays + Modals (extracted components)
 import AppToolbar from './components/AppToolbar.vue'
 import AppBanners from './components/AppBanners.vue'
@@ -31,8 +36,16 @@ import A11yPanel from './components/A11yPanel.vue'
 import AuditPanel from './components/AuditPanel.vue'
 import DataSourcesPage from './components/DataSourcesPage.vue'
 import ComponentsPage from './components/ComponentsPage.vue'
+import OverlayLegend from './components/OverlayLegend.vue'
 import HelpOverlay from './components/HelpOverlay.vue'
 import SettingsOverlay from './components/SettingsOverlay.vue'
+import InitWizard from './components/InitWizard.vue'
+import { useInitFlow } from './composables/useInitFlow'
+import { useProviderSettings } from './composables/useProviderSettings'
+import { useAgentModels } from './composables/useAgentModels'
+import { useAgentMode } from './composables/useAgentMode'
+import { startAutoRunDriver } from './composables/useAutoRunDriver'
+import { useAgentDetect, fetchAgentDetect } from './composables/useTaskThread'
 import A11yDetailDrawer from './components/A11yDetailDrawer.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import ReportViewer from './components/ReportViewer.vue'
@@ -61,6 +74,7 @@ import { useBridgeEventHandlers } from './composables/useBridgeEventHandlers'
 import { useShellLifecycle } from './composables/useShellLifecycle'
 import { useInteractionModeSync } from './composables/useInteractionModeSync'
 import { normalizeRoute } from './utils/routes'
+import { useWireframeCanvas } from './composables/useWireframeCanvas'
 import { navigateIframe as navigateIframeUtil, useAppUrl, useIframeStyle } from './utils/iframeNavigation'
 
 const shellTheme = useShellTheme()
@@ -104,6 +118,7 @@ const { shellView, designSection, developSection, activePanel } = useShellNaviga
 const layoutOverlay = useLayoutOverlay(iframeRef)
 const iframe = useIframeManager(iframeRef)
 const { currentRoute } = iframe
+
 // Keep the shared active-theme signal in sync with the iframe so views that
 // don't see iframe.colorScheme directly (e.g. the token palette popover) can
 // still resolve the iframe's current design-spec variant.
@@ -111,13 +126,13 @@ watch(iframe.colorScheme, (cs) => setActiveColorScheme(cs), { immediate: true })
 const arrowColor = useLocalStorageRef('annotask:arrowColor', '#ef4444')
 const highlightColor = useLocalStorageRef('annotask:highlightColor', '#f59e0b')
 const canvas = useCanvasDrawing(annotations, (x: number, y: number) => iframe.resolveElementAt(x, y), () => interactionMode.value, (arrowId, fromCtx, toCtx) => onArrowCreated(arrowId, fromCtx, toCtx), () => arrowColor.value, () => discardUncommittedAnnotations())
-const { drawingArrow, drawingRect, hoverElement: arrowHoverElement, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
+const { drawingArrow, hoverElement: arrowHoverElement, onCanvasPointerDown, onCanvasPointerMove, onCanvasPointerUp } = canvas
 
 const showWarning = ref(false)
 const showReportPanel = ref(false)
 const annotaskVersion = typeof __ANNOTASK_VERSION__ !== 'undefined' ? __ANNOTASK_VERSION__ : 'dev'
 // Markup visibility toggles
-const showMarkup = ref({ pins: true, arrows: true, sections: true, highlights: true, inspector: true })
+const showMarkup = ref({ pins: true, arrows: true, highlights: true, inspector: true })
 const includeHistory = useLocalStorageBool('annotask:includeHistory', false)
 // Intentionally non-persistent: every session starts with rendered HTML off so
 // tasks don't accidentally carry a large outerHTML blob from a prior opt-in.
@@ -130,11 +145,65 @@ const includeDataContext = ref(false)
 const screenshots = useScreenshots(iframe)
 const { snipActive, snipRect, pendingScreenshot, startSnip, onSnipDown, onSnipMove, onSnipUp, cancelSnip, removeScreenshot } = screenshots
 const showThemeEditor = ref(false)
+const initFlow = useInitFlow()
 const helpSection = ref<'overview' | 'annotate' | 'design' | 'audit' | 'context' | 'tasks' | 'agent' | 'skills' | 'apply-skill' | 'init-skill' | 'settings'>('overview')
 const {
   showShortcuts, showSettings,
   toggleShortcuts, toggleSettings,
 } = useOverlayToggles()
+
+// Kick off the local-CLI probe at shell mount and mirror the result into
+// the provider-settings singleton. The probe used to live inside the
+// Settings panel, which meant `providerSettings.ready` was false for every
+// local-CLI provider until the user opened Settings — masking auto-run
+// and Run-with-agent. App.vue is always mounted, so the probe always fires.
+const providerSettings = useProviderSettings()
+const agentDetect = useAgentDetect()
+fetchAgentDetect()
+
+// Dev-side session reset. The playground justfile's `clear-init` target
+// writes `.annotask/.session-reset` on disk so the shell can self-clear
+// browser-side state (localStorage) the next time it loads — no DevTools
+// paste required. The server includes `sessionReset: true` in the status
+// payload until we DELETE the sentinel below.
+async function consumeSessionResetIfAny() {
+  try {
+    const r = await fetch('/__annotask/api/status')
+    if (!r.ok) return
+    const { sessionReset } = await r.json()
+    if (!sessionReset) return
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('annotask:')) localStorage.removeItem(k)
+    }
+    await fetch('/__annotask/api/session-reset', { method: 'DELETE' })
+    location.reload()
+  } catch { /* server offline — nothing to do */ }
+}
+void consumeSessionResetIfAny()
+
+// Warm the model-catalog cache for the primary providers at shell load so
+// every dropdown (Settings → Providers, InitWizard, AgentDirectionsPanel)
+// shows the live list immediately when opened. The composable honors a
+// 5-min localStorage TTL, so refreshes are free when warm.
+void useAgentModels().preload(['claude-local', 'codex-local', 'opencode-local', 'copilot-local'])
+watch(
+  () => agentDetect.snapshot.value,
+  (snap) => {
+    if (!snap) return
+    providerSettings.setLocalCliProbe({
+      'claude-local': !!(snap['claude-local'].found && snap['claude-local'].loggedIn),
+      'codex-local': !!(snap['codex-local'].found && snap['codex-local'].loggedIn),
+      'opencode-local': !!(snap['opencode-local'].found && snap['opencode-local'].loggedIn),
+      'copilot-local': !!(snap['copilot-local']?.found && snap['copilot-local']?.loggedIn),
+    })
+  },
+  { immediate: true },
+)
+
+// Agent-mode auto-run queue lives at module scope (singleton); the watcher
+// that routes a queued id into the detail modal is set up further down,
+// once `detailTaskId` is in scope.
+const agentMode = useAgentMode()
 
 
 
@@ -368,7 +437,7 @@ const dataHighlightActive = computed(() =>
   (shellView.value === 'design' && designSection.value === 'components'))
 const dataHighlights = useDataHighlights({ iframe, active: dataHighlightActive })
 
-function rectClass(h: { eid: string; sourceName: string; ownerSources?: string[]; confidence?: 'precise' | 'fallback' | 'runtime-only' }) {
+function rectClass(h: { eid: string; sourceName: string; ownerSources?: string[]; confidence?: 'precise' | 'fallback' | 'runtime-only'; encoding?: 'identity' | 'latency' }) {
   const fEid = dataHighlights.focusedEid.value
   const fName = dataHighlights.focusedName.value
   const owners = h.ownerSources ?? [h.sourceName]
@@ -381,6 +450,8 @@ function rectClass(h: { eid: string; sourceName: string; ownerSources?: string[]
     dimmed: hasFocus && !isFocused,
     'hover-only': shellView.value === 'design' && designSection.value === 'components',
     fallback: h.confidence === 'fallback',
+    'runtime-only': h.confidence === 'runtime-only',
+    latency: h.encoding === 'latency',
     multi: owners.length > 1,
   }
 }
@@ -451,9 +522,18 @@ iframe.onBridgeEvent('data:hover', (payload: DataHoverPayload) => {
   const iframeRect = iframeEl?.getBoundingClientRect()
   const offX = iframeRect?.left ?? 0
   const offY = iframeRect?.top ?? 0
+  // Clamp/flip the fixed-position tooltip to the viewport so it never renders
+  // off-screen at the iframe's right/bottom edges (where dense overlays cluster).
+  const ttW = Math.min(280, 34 + hit.label.length * 7) // estimate before paint
+  const ttH = 26
+  let ttX = offX + payload.clientX + 12
+  let ttY = offY + payload.clientY + 14
+  if (ttX + ttW > window.innerWidth - 8) ttX = offX + payload.clientX - ttW - 12 // flip left
+  ttX = Math.max(8, Math.min(ttX, window.innerWidth - ttW - 8))
+  ttY = Math.max(8, Math.min(ttY, window.innerHeight - ttH - 8))
   dataTooltip.value = {
-    x: offX + payload.clientX + 12,
-    y: offY + payload.clientY + 14,
+    x: ttX,
+    y: ttY,
     label: hit.label,
     color: hit.color,
   }
@@ -498,17 +578,136 @@ const {
   denyingTaskId, denyFeedbackText,
   detailTaskId, detailTask,
   confirmDeleteTaskId,
-  sectionTaskMap, arrowDragTargetRect,
+  arrowDragTargetRect,
   restoredTaskIds,
   discardUncommittedAnnotations, removeTaskAnnotations, executeDeleteTask,
   acceptTask, submitDeny, submitNewTask,
   createRouteTask,
-  onSectionSubmit,
   onArrowDragMove, onArrowDragEnd,
   describeElement, onArrowCreated,
   submitPendingTask, cancelPendingTask,
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
 } = taskWorkflows
+
+// ── Wireframe canvas (palette drop pipeline + Build) ──
+// Initialized after taskWorkflows because Build creates its task through
+// createRouteTask (route/viewport/color-scheme enrichment).
+const {
+  paletteDrag, wireframeDoc,
+  dropIndicator,
+  onPaletteDragOver, onPaletteDragLeave, onPaletteDrop,
+  wireframePlacements,
+  buildWireframeRoute, deletePlacement,
+} = useWireframeCanvas({ iframe, createRouteTask })
+
+// Keep the design-session journal stamped with the current iframe route so
+// entries recorded by the style-editor façade carry the route they happened on.
+const designSession = useDesignSession()
+watch(iframe.currentRoute, (r) => { designSession.sessionRoute.value = normalizeRoute(r) }, { immediate: true })
+
+// ── Wireframe mode (snapshot canvas over the live iframe) ──
+const wireframeMode = useWireframeMode({ iframe, interactionMode, shellView })
+
+// Place-first component flow: a drop/click mints the block immediately and the
+// snapshot fills in the background; the user configures it in place via the
+// inline popover. surfaceMfe stamps placed blocks so apply-time codegen imports
+// from the right package in a multi-MFE workspace.
+const workspace = useWorkspace()
+void workspace.load()
+const componentGenerator = useComponentGenerator({
+  iframe,
+  wireframe: wireframeMode,
+  surfaceMfe: () => workspace.currentMfe.value,
+})
+
+// Palette drops land on the canvas natively (no iframe shield in the way);
+// the drag item rides usePaletteDrag, not the DataTransfer.
+// Place-first goes through selection.select directly (not the canvas's select()
+// wrapper that focuses on click), so neither drop nor click focuses the canvas —
+// focus it after the block lands so Delete/Escape/arrow-nudge work right away.
+const wireframeCanvasRef = ref<InstanceType<typeof WireframeCanvas> | null>(null)
+function focusWireframeCanvasSoon() {
+  void nextTick(() => wireframeCanvasRef.value?.focusStage())
+}
+
+function onWireframePaletteDrop(at: { x: number; y: number }) {
+  const item = paletteDrag.draggingItem.value
+  paletteDrag.endDrag()
+  if (!item) return
+  if (item.kind === 'component' && item.componentName) {
+    // Place-first: the block lands now and configures in place on the canvas.
+    componentGenerator.placeComponent(item, at)
+    focusWireframeCanvasSoon()
+  } else {
+    void wireframeMode.dropPaletteItem(item, at)
+  }
+}
+
+// Palette CLICK path (wireframe mode only): place at a small cascade so repeated
+// clicks don't stack exactly on top of each other. Drag is the primary path.
+const clickCascade = ref(0)
+function onWireframeGenerateComponent(item: PaletteDragItem) {
+  if (!item.componentName) return
+  const vp = wireframeMode.canvas.value?.viewport
+  const baseX = vp ? Math.max(20, Math.round(vp.width / 2 - 160)) : 40
+  const step = clickCascade.value
+  clickCascade.value = (clickCascade.value + 1) % 6
+  componentGenerator.placeComponent(item, { x: baseX + step * 24, y: 80 + step * 24 })
+  focusWireframeCanvasSoon()
+}
+
+// "Implement this wireframe" mints the task through the existing apply loop,
+// then rides the same auto-run path as Apply now / Build. Any open generate
+// session is cancelled first — the sketch is about to lock, and a pending
+// ghost placement must not mutate it mid-implement.
+async function onImplementWireframe() {
+  componentGenerator.cancel()
+  const result = await wireframeMode.implementWireframe()
+  if (result?.taskId) onApplyRunAgent(result.taskId)
+}
+
+// Auto-mode runs silently: no modal hijack, no forced switch to the
+// Conversation tab. The dedicated driver claims queued ids and runs the
+// embedded agent headlessly; the task card surfaces status (in_progress)
+// and a live-activity dot. Users open the modal only if they want to
+// watch the work-stream.
+startAutoRunDriver()
+
+// Batch-run handler — surfaced by the Tasks panel header when agentMode
+// is auto or manual AND a provider is ready AND there's at least one
+// pending task. Enqueues every pending task; the watcher above opens the
+// most-recent one and the Conversation tab drains the queue on mount.
+const pendingTasksCount = computed(
+  () => routeTasks.value.filter((t) => t.status === 'pending' || t.status === 'denied').length,
+)
+const canBatchRunAgent = computed(
+  () =>
+    providerSettings.settings.value.embeddedAgentEnabled === true
+    && providerSettings.ready.value
+    && providerSettings.settings.value.agentMode !== 'off'
+    && pendingTasksCount.value > 0,
+)
+// "Apply now" minted a wireframe_apply task — run the embedded agent on it
+// when a provider is configured; otherwise it waits in Tasks for an external
+// agent (same contract as Build).
+function onApplyRunAgent(taskId: string) {
+  if (
+    providerSettings.settings.value.embeddedAgentEnabled === true
+    && providerSettings.ready.value
+    && providerSettings.settings.value.agentMode !== 'off'
+  ) {
+    agentMode.requestAutoRun(taskId)
+  }
+}
+
+function runPendingAgentBatch() {
+  if (!canBatchRunAgent.value) return
+  for (const t of routeTasks.value) {
+    if (t.status === 'pending' || t.status === 'denied') {
+      agentMode.requestAutoRun(t.id)
+    }
+  }
+}
 
 // ── Change history (undo / clear / commit-as-task) ──
 // Needs createRouteTask from taskWorkflows, so initialized after it.
@@ -522,7 +721,19 @@ const { selectionChanges, doUndo, doClearChanges, commitChangesAsTask } = useCha
   shellView,
   readLiveStyles,
   createRouteTask,
+  deletePlacement,
 })
+
+// Undo/redo dispatch: the wireframe canvas owns its own history while active
+// (no-op while building); everywhere else falls back to the design-session
+// style/class/placement undo. Redo only exists for the wireframe canvas today.
+function onUndo(): void {
+  if (wireframeMode.active.value) { wireframeMode.undo(); return }
+  void doUndo()
+}
+function onRedo(): void {
+  if (wireframeMode.active.value) { wireframeMode.redo(); return }
+}
 
 // ── Bridge event handlers (needs doUndo from useChangeHistory) ──
 const { setup: setupBridgeEvents } = useBridgeEventHandlers({
@@ -535,7 +746,7 @@ const { setup: setupBridgeEvents } = useBridgeEventHandlers({
   describeElement, discardUncommittedAnnotations,
   restoreAnnotationsFromTasks, resolveSelectTaskEids,
   contextMenu, currentRoute,
-  doUndo, scheduleAutoScan,
+  doUndo: onUndo, scheduleAutoScan,
 })
 
 // ── Keyboard Shortcuts (composable handles mount/unmount) ──
@@ -551,7 +762,8 @@ useKeyboardShortcuts({
   selectionRects,
   groupRects,
   activePanel,
-  doUndo,
+  doUndo: onUndo,
+  doRedo: onRedo,
   cancelSnip,
   cancelPendingTask,
   layoutOverlayToggle: () => layoutOverlay.toggle(),
@@ -592,6 +804,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       :develop-section="developSection"
       :current-route="currentRoute"
       :layout-overlay-active="layoutOverlay.showOverlay.value"
+      :wireframe-active="wireframeMode.active.value"
+      :wireframe-capturing="wireframeMode.capturing.value"
       :a11y-loading="a11yLoading"
       :a11y-violations-count="a11yViolations.length"
       :tab-order-enabled="tabOrder.enabled.value"
@@ -613,6 +827,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       @switch-design-section="designSection = $event; activePanel = 'inspector'"
       @switch-develop-section="developSection = $event; activePanel = 'inspector'"
       @toggle-layout-overlay="layoutOverlay.toggle()"
+      @toggle-wireframe="wireframeMode.active.value ? wireframeMode.exit() : wireframeMode.enter()"
       @scan-a11y="activePanel = 'inspector'; scanA11y('page')"
       @toggle-tab-order="tabOrder.toggle()"
       @start-perf-recording="startPerfRecording"
@@ -624,7 +839,9 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
     />
 
     <!-- Banners -->
-    <AppBanners :show-warning="showWarning" :config-initialized="configInitialized" />
+    <AppBanners :show-warning="showWarning" :config-initialized="configInitialized"
+      :wireframe-error="(!wireframeMode.active.value && !wireframeMode.capturing.value) ? wireframeMode.error.value : null"
+      @dismiss-wireframe-error="wireframeMode.error.value = null" />
 
     <!-- Snipping overlay -->
     <SnippingOverlay v-if="snipActive" :snip-rect="snipRect"
@@ -638,6 +855,55 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         @pointermove="shellView === 'editor' ? onCanvasPointerMove($event) : undefined"
         @pointerup="shellView === 'editor' ? onCanvasPointerUp($event) : undefined">
         <iframe ref="iframeRef" :src="appUrl" class="app-iframe" :style="iframeStyle" />
+
+        <!-- Wireframe palette drop catcher. HTML5 drag events don't reach the
+             parent document while the cursor is over the iframe, so a
+             transparent shield over the iframe receives dragover/drop. It is
+             always present but pointer-events:none until a palette drag starts
+             (toggling a class avoids a mid-drag mount race; v-if would miss the
+             first dragover). dragover MUST preventDefault or drop never fires;
+             resolveElementAt still hit-tests through it. -->
+        <div class="palette-drop-shield" :class="{ active: !!paletteDrag.draggingItem.value && !wireframeMode.active.value }"
+          @dragenter.prevent
+          @dragover.prevent="onPaletteDragOver"
+          @drop.prevent="onPaletteDrop"
+          @dragleave="onPaletteDragLeave" />
+
+        <!-- Wireframe mode: an opaque sketch canvas OVER the live iframe. The
+             iframe stays mounted (bridge alive for component snapshots), so
+             exiting is lossless — remove the overlay, the app is still there. -->
+        <WireframeCanvas v-if="wireframeMode.active.value || wireframeMode.capturing.value"
+          ref="wireframeCanvasRef"
+          :canvas="wireframeMode.canvas.value"
+          :capturing="wireframeMode.capturing.value"
+          :progress="wireframeMode.progress.value"
+          :error="wireframeMode.error.value"
+          :image-src="wireframeMode.imageSrc"
+          :deleted-blocks="wireframeMode.deletedBlocks.value"
+          :building="wireframeMode.building.value"
+          :implementing="wireframeMode.implementing.value"
+          :selection="wireframeMode.selection"
+          :history="wireframeMode.history"
+          :generator="componentGenerator"
+          :generating-ids="wireframeMode.generatingIds.value"
+          @exit="wireframeMode.exit()"
+          @recapture="wireframeMode.recapture()"
+          @implement="onImplementWireframe"
+          @undo-implementation="wireframeMode.undoImplementation()"
+          @explode-block="wireframeMode.explodeBlock"
+          @update-rect="wireframeMode.updateBlockRect"
+          @bring-to-front="wireframeMode.bringToFront"
+          @send-to-back="wireframeMode.sendToBack"
+          @bring-forward="wireframeMode.bringForward"
+          @send-backward="wireframeMode.sendBackward"
+          @delete-block="wireframeMode.deleteBlock"
+          @undelete-block="wireframeMode.undeleteBlock"
+          @duplicate-block="wireframeMode.duplicateBlock"
+          @set-note="wireframeMode.setNote"
+          @set-md="wireframeMode.setBlockMd"
+          @set-data="wireframeMode.setBlockData"
+          @add-placeholder="wireframeMode.addPlaceholderBlock"
+          @palette-drop="onWireframePaletteDrop" />
 
         <!-- Hover + selection overlays (editor, design tokens/inspector) -->
         <template v-if="shellView === 'editor' ? showMarkup.inspector : (shellView === 'design' && designSection !== 'components')">
@@ -687,7 +953,23 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
               :data-impact="h.impact"
               :style="overlayStyle(h.rect)" />
           </template>
+
+          <!-- Live wireframe drop indicator (where a dragged palette item will land). -->
+          <div v-if="dropIndicator" class="drop-indicator" :class="dropIndicator.position"
+            :style="overlayStyle(dropIndicator)" />
         </div>
+
+        <!-- On-canvas legend: decode rect colors without looking at the sidebar.
+             Hovering an identity row focuses that source's rects; the Network
+             tab switches it to a latency-bucket key. -->
+        <OverlayLegend
+          v-if="dataHighlightActive && dataHighlights.sources.value.length"
+          :sources="dataHighlights.sources.value"
+          :focused-name="dataHighlights.focusedName.value"
+          :truncated="dataHighlights.truncated.value"
+          :shown="dataHighlights.rects.value.length"
+          :total="dataHighlights.totalResolved.value"
+          @focus="dataHighlights.setFocus($event)" />
 
         <!-- Tab/focus order overlay — numbered badges. Only rendered while
              the user has opted in via the panel toggle. -->
@@ -695,7 +977,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
 
         <!-- Editor-only overlays -->
         <template v-if="shellView === 'editor'">
-          <div v-if="interactionMode === 'arrow' || interactionMode === 'draw'" class="drawing-shield" :class="interactionMode" />
+          <div v-if="interactionMode === 'arrow'" class="drawing-shield" :class="interactionMode" />
           <template v-if="interactionMode !== 'interact'">
             <div v-for="te in taskElementRects" :key="'te-' + te.taskId" class="highlight task-element"
               :style="{ left: te.rect.x + 'px', top: te.rect.y + 'px', width: te.rect.width + 'px', height: te.rect.height + 'px' }" />
@@ -719,17 +1001,6 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
               @drag-move="onArrowDragMove"
               @drag-end="onArrowDragEnd"
             />
-            <DrawnSectionOverlay v-if="showMarkup.sections"
-              :sections="annotations.routeSections.value"
-              :selectedId="annotations.selectedSectionId.value"
-              :drawingRect="drawingRect"
-              :sectionTaskMap="sectionTaskMap"
-              @select="annotations.selectedSectionId.value = $event"
-              @remove="annotations.removeDrawnSection"
-              @update-prompt="(id, prompt) => annotations.updateDrawnSection(id, { prompt })"
-              @update-rect="(id, rect) => annotations.updateDrawnSection(id, { x: rect.x, y: rect.y, width: rect.width, height: rect.height })"
-              @submit="onSectionSubmit"
-            />
             <TextHighlightOverlay v-if="showMarkup.highlights"
               :highlights="annotations.routeHighlights.value"
               :selectedId="annotations.selectedHighlightId.value"
@@ -744,7 +1015,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
       </div>
 
       <!-- Design panel (tokens/inspector sub-sections of the Design view) -->
-      <aside v-if="shellView === 'design' && designSection !== 'components' && activePanel !== 'tasks'" class="theme-panel">
+      <aside v-if="shellView === 'design' && (designSection === 'tokens' || designSection === 'inspector') && activePanel !== 'tasks'" class="theme-panel">
         <DesignPanel
           :section="designSection"
           :iframeRef="iframeRef"
@@ -804,6 +1075,9 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :include-rendered-html="includeRenderedHtml"
         :include-data-context="includeDataContext"
         :data-context-probe="dataContextProbe"
+        :can-batch-run="canBatchRunAgent"
+        :pending-count="pendingTasksCount"
+        @run-pending="runPendingAgentBatch"
         @update:showReportPanel="showReportPanel = $event"
         @update:newTaskText="newTaskText = $event"
         @update:denyFeedbackText="denyFeedbackText = $event"
@@ -823,7 +1097,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         @remove-screenshot="removeScreenshot"
       />
 
-      <!-- Audit > Data: sources + API schemas + api_update task creation -->
+      <!-- Audit > Data: data-source + API-schema browser (read-only — creates no tasks) -->
       <DataSourcesPage v-else-if="shellView === 'develop' && developSection === 'data'"
         key="data-sources-data"
         variant="data"
@@ -831,19 +1105,19 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         :currentRoute="currentRoute"
       />
 
-      <!-- Audit > Libraries: data-fetching and state libraries detected in package.json -->
-      <DataSourcesPage v-else-if="shellView === 'develop' && developSection === 'libraries'"
-        key="data-sources-libraries"
-        variant="libraries"
-        :highlightRects="dataHighlights.rects.value"
-        :currentRoute="currentRoute"
-      />
-
-      <!-- Design > Components: library components catalog -->
+      <!-- Design > Components: catalog browser + drag-to-place palette + preview -->
       <ComponentsPage v-else-if="shellView === 'design' && designSection === 'components'"
         :iframe="iframe"
         :highlightRects="dataHighlights.rects.value"
         :focusedName="dataHighlights.focusedName.value"
+        :placements="wireframePlacements"
+        :stale-ids="wireframeDoc.staleIds.value"
+        :failed-ids="wireframeDoc.failedIds.value"
+        :wireframe-active="wireframeMode.active.value"
+        @build="buildWireframeRoute"
+        @delete-placement="deletePlacement"
+        @run-agent="onApplyRunAgent"
+        @generate-component="onWireframeGenerateComponent"
       />
 
       <!-- Audit > A11y panel -->
@@ -897,6 +1171,8 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
         @close="showSettings = false"
         @update:showThemeEditor="showThemeEditor = $event"
       />
+
+      <InitWizard v-if="initFlow.open.value" />
     </div>
 
     <!-- Context menu -->
@@ -918,12 +1194,27 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
     <TaskDetailModal
       v-if="detailTask"
       :task="detailTask"
+      :initial-tab="'details'"
       @close="detailTaskId = null"
       @accept="(id) => { acceptTask(id); detailTaskId = null }"
       @deny="(id) => { denyingTaskId = id; denyFeedbackText = ''; detailTaskId = null }"
       @delete="(id) => { removeTaskAnnotations(id); restoredTaskIds.delete(id); taskSystem.deleteTask(id); detailTaskId = null }"
       @update="(id, fields) => { taskSystem.updateTaskStatus(id, detailTask!.status, undefined, fields) }"
-      @reply="(id, answers) => { taskSystem.respondToAgent(id, answers) }"
+      @reply="async (id, answers) => {
+        await taskSystem.respondToAgent(id, answers)
+        // Same auto-retry as deny: hand the now-in_progress task back to
+        // the auto-run driver so the agent picks up the user's answer
+        // without anyone clicking Run. Driver short-circuits if embedded
+        // mode is off or no provider is ready.
+        if (
+          providerSettings.settings.value.embeddedAgentEnabled === true
+          && providerSettings.settings.value.agentMode === 'auto'
+          && providerSettings.ready.value
+        ) {
+          agentMode.requestAutoRun(id)
+        }
+      }"
+      @open-settings="() => { showSettings = true }"
     />
 
     <ConfirmDialog
@@ -962,7 +1253,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   /* Severity */
   --severity-critical: #ef4444; --severity-serious: #ef4444; --severity-moderate: #f59e0b; --severity-minor: #71717a;
   /* Modes */
-  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-draw: #71717a; --mode-highlight: #f59e0b;
+  --mode-interact: #6366f1; --mode-arrow: #ef4444; --mode-highlight: #f59e0b;
   /* Layout viz */
   --layout-flex: #a855f7; --layout-grid: #22c55e;
   /* Roles */
@@ -990,7 +1281,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
   --status-pending: #6b7280; --status-in-progress: #2563eb; --status-review: #d97706;
   --status-denied: #dc2626; --status-accepted: #16a34a; --status-needs-info: #9333ea; --status-blocked: #ea580c;
   --severity-critical: #dc2626; --severity-serious: #dc2626; --severity-moderate: #d97706; --severity-minor: #6b7280;
-  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-draw: #6b7280; --mode-highlight: #d97706;
+  --mode-interact: #4f46e5; --mode-arrow: #dc2626; --mode-highlight: #d97706;
   --layout-flex: #9333ea; --layout-grid: #16a34a;
   --role-container: #16a34a; --role-content: #2563eb; --role-component: #9333ea;
   --syntax-property: #0369a1; --syntax-string: #15803d; --syntax-number: #b45309;
@@ -1047,5 +1338,15 @@ html, body, #app { height: 100%; overflow: hidden; background: var(--bg); color:
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--tt-color, var(--text));
+}
+
+/* Native <option> elements don't inherit Vue scoped styles. Browsers render
+   the dropdown list in OS chrome, which on dark themes ends up white-on-
+   white-ish (Chrome especially). Force theme-aware bg/text globally so any
+   <select> in the shell reads correctly without each component having to
+   repeat the rule. */
+option {
+  background: var(--surface);
+  color: var(--text);
 }
 </style>

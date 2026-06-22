@@ -315,7 +315,13 @@ export function findMatchingStaticEntries<T extends { name: string; method?: str
   for (const entry of staticEntries) {
     if (!entry.endpoint) continue
     if (entry.method && entry.method.toUpperCase() !== ep.method) continue
-    const decomp = decomposeEndpoint(entry.resolved_endpoint || entry.endpoint)
+    // Match on the ORIGINAL endpoint, not the proxy-resolved one. A relative
+    // endpoint (`/api/...`) is a same-origin call from the browser — its origin
+    // is '' and matches the same-origin '' the iframe reports for Vite-proxied
+    // fetches. resolved_endpoint's proxy-target host (e.g. :8888) is a
+    // server-side detail; gating on it makes every proxied same-origin call
+    // miss its static entry (so the Network tab showed only orphans).
+    const decomp = decomposeEndpoint(entry.endpoint)
     if (!decomp.path) continue
     // Path must match either as normalized pattern or as a literal.
     if (decomp.pattern !== ep.pattern && decomp.path !== ep.path) continue
@@ -366,7 +372,12 @@ export function mergeRuntimeOrphansIntoEntries(
   for (const entry of staticEntries) {
     if (!entry.endpoint) continue
     const method = (entry.method || 'GET').toUpperCase()
-    const decomp = decomposeEndpoint(entry.resolved_endpoint || entry.endpoint)
+    // Original endpoint, not proxy-resolved (see findMatchingStaticEntries):
+    // a relative entry's origin is '' so it covers same-origin '' runtime calls
+    // via `relKey` — which is how the iframe reports Vite-proxied fetches. Using
+    // the resolved :PORT host here would orphan every proxied call (duplicate
+    // synthetic rows alongside the real static entry).
+    const decomp = decomposeEndpoint(entry.endpoint)
     if (!decomp.path) continue
     covered.add(`${method}|${decomp.origin}|${decomp.pattern}`)
   }

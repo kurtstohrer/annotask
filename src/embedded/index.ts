@@ -33,15 +33,34 @@ export {
 } from './chat-completions.js'
 
 export { OpenAIProvider, type OpenAIProviderOptions } from './openai-provider.js'
+export { OpenRouterProvider, type OpenRouterProviderOptions } from './openrouter-provider.js'
 export {
   OpenAICompatibleProvider,
   type OpenAICompatibleProviderOptions,
 } from './openai-compatible-provider.js'
-export {
-  CopilotProvider,
-  readOAuthToken,
-  exchangeOAuthForSessionToken,
-  type CopilotProviderOptions,
-  type CopilotSessionToken,
-} from './copilot-provider.js'
 export { PaperclipProvider, type PaperclipProviderOptions } from './paperclip-provider.js'
+export {
+  CliLocalProvider,
+  flattenMessagesAsPrompt,
+  lastUserMessageText,
+  type CliLocalProviderConfig,
+  type ParsedLineResult,
+  type SpawnRequest,
+} from './cli-local-provider.js'
+export {
+  ClaudeLocalProvider,
+  mapClaudeEvent,
+  type ClaudeLocalProviderOptions,
+} from './claude-local-provider.js'
+export {
+  CodexLocalProvider,
+  mapCodexEvent,
+  type CodexLocalProviderOptions,
+} from './codex-local-provider.js'
+export {
+  OpencodeLocalProvider,
+  mapOpencodeEvent,
+  type OpencodeLocalProviderOptions,
+} from './opencode-local-provider.js'
+
+export { makeProvider, type MakeProviderContext } from './provider-factory.js'

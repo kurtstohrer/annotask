@@ -3,6 +3,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PlanetCard from '../components/PlanetCard.vue'
 import PlanetDetail from '../components/PlanetDetail.vue'
+import Button from 'primevue/button'
+import Tag from 'primevue/tag'
 import { usePlanets } from '../composables/usePlanets'
 import type { Planet, PlanetType } from '../types'
 
@@ -52,6 +54,12 @@ const filtered = computed(() => {
   return out
 })
 
+function resetFilters() {
+  search.value = ''
+  typeFilter.value = ''
+  sortBy.value = 'distance_from_sun_mkm'
+}
+
 function select(planet: Planet) {
   selected.value = planet
   router.replace({ query: { ...route.query, id: String(planet.id) } })
@@ -79,55 +87,63 @@ watch(
         <h1 class="title">Planets</h1>
         <p class="lede">Click a planet card to view more info.</p>
       </div>
+
     </header>
 
     <p v-if="error" class="error-banner">{{ error }}</p>
 
-    <div class="toolbar">
-      <div class="field">
-        <i class="pi pi-search"></i>
-        <input
-          v-model="search"
-          type="search"
-          placeholder="Search planets…"
-          aria-label="Search planets"
-        />
-      </div>
-      <label class="select">
-        Type
-        <select v-model="typeFilter" aria-label="Filter by type">
-          <option value="">All</option>
-          <option value="Terrestrial">Terrestrial</option>
-          <option value="Gas Giant">Gas Giant</option>
-          <option value="Ice Giant">Ice Giant</option>
-        </select>
-      </label>
-      <label class="select">
-        Sort
-        <select v-model="sortBy" aria-label="Sort planets by">
-          <option value="distance_from_sun_mkm">Distance from Sun</option>
-          <option value="name">Name</option>
-          <option value="radius_km">Radius</option>
-          <option value="moons">Moons</option>
-          <option value="avg_temp_c">Temperature</option>
-        </select>
-      </label>
-    </div>
+    <div class="planets-content">
+      <aside class="controls">
+        <div class="toolbar">
+          <label class="select">
+            Type
+            <select v-model="typeFilter" aria-label="Filter by type">
+              <option value="">All</option>
+              <option value="Terrestrial">Terrestrial</option>
+              <option value="Gas Giant">Gas Giant</option>
+              <option value="Ice Giant">Ice Giant</option>
+            </select>
+          </label>
+          <label class="select">
+            Sort
+            <select v-model="sortBy" aria-label="Sort planets by">
+              <option value="distance_from_sun_mkm">Distance from Sun</option>
+              <option value="name">Name</option>
+              <option value="radius_km">Radius</option>
+              <option value="moons">Moons</option>
+              <option value="avg_temp_c">Temperature</option>
+            </select>
+          </label>
+          <!-- PrimeVue components — exercise component-library discovery + highlights -->
+          <Tag :value="`${filtered.length} planets`" severity="info" rounded />
+          <Button label="Reset" icon="pi pi-times" severity="secondary" size="small" outlined @click="resetFilters" />
+          <div class="field">
+            <i class="pi pi-search"></i>
+            <input
+              v-model="search"
+              type="search"
+              placeholder="Search planets…"
+              aria-label="Search planets"
+            />
+          </div>
+        </div>
+      </aside>
 
-    <div class="layout">
-      <div class="planet-list">
-        <p v-if="loading" class="loading">Loading planets…</p>
-        <p v-else-if="!filtered.length" class="empty">No planets match your filters.</p>
-        <PlanetCard
-          v-for="planet in filtered"
-          v-else
-          :key="planet.id"
-          :planet="planet"
-          :active="selected?.id === planet.id"
-          @select="select"
-        />
+      <div class="layout">
+        <div class="planet-list">
+          <p v-if="loading" class="loading">Loading planets…</p>
+          <p v-else-if="!filtered.length" class="empty">No planets match your filters.</p>
+          <PlanetCard
+            v-for="planet in filtered"
+            v-else
+            :key="planet.id"
+            :planet="planet"
+            :active="selected?.id === planet.id"
+            @select="select"
+          />
+        </div>
+        <PlanetDetail v-if="selected" :planet="selected" @close="close" />
       </div>
-      <PlanetDetail v-if="selected" :planet="selected" @close="close" />
     </div>
   </section>
 </template>
@@ -139,6 +155,19 @@ watch(
 .title { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
 .lede { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
 
+.planets-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  align-items: stretch;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .toolbar {
   display: flex;
   gap: 10px;
@@ -148,8 +177,9 @@ watch(
 
 .field {
   position: relative;
-  flex: 1;
+  flex: 1 1 240px;
   min-width: 220px;
+  max-width: 440px;
 }
 
 .field i {
@@ -204,6 +234,8 @@ watch(
 }
 
 .layout {
+  flex: 1.2;
+  min-width: 0;
   display: flex;
   gap: 20px;
   align-items: flex-start;

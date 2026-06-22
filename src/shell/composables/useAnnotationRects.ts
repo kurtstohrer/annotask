@@ -38,9 +38,6 @@ export function useAnnotationRects(deps: {
       for (const h of annotations.highlights.value) {
         if (h.eid) addEid(h.eid, { type: 'highlight', id: h.id, field: 'rect' })
       }
-      for (const s of annotations.drawnSections.value) {
-        if (s.nearEid) addEid(s.nearEid, { type: 'section', id: s.id, field: 'near' })
-      }
       const currentRoute = annotations.activeRoute.value
       for (const t of taskSystem.tasks.value) {
         const v = t.visual as any
@@ -101,30 +98,56 @@ export function useAnnotationRects(deps: {
               // per-line rects (which describe text runs, not the element box) by
               // the same delta. Don't overwrite hl.rect with the element rect.
               const prev = (hl as any)._anchorRect as typeof rect | undefined
-              if (prev) {
-                const dx = rect.x - prev.x
-                const dy = rect.y - prev.y
-                if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-                  hl.rects = hl.rects.map(r => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }))
-                  if (hl.rect) hl.rect = { x: hl.rect.x + dx, y: hl.rect.y + dy, width: hl.rect.width, height: hl.rect.height }
-                  ;(hl as any)._anchorRect = rect
-                }
-              } else {
+              if (!prev) {
                 ;(hl as any)._anchorRect = rect
+              } else {
+                const sizeChanged = Math.abs(rect.width - prev.width) > 0.5 || Math.abs(rect.height - prev.height) > 0.5
+                if (sizeChanged) {
+                  // Element resized — text likely reflowed, so line breaks may
+                  // have shifted. Re-measure the actual Range from the iframe;
+                  // delta translation can't track reflow. Fire-and-forget so the
+                  // rAF tick stays cheap.
+                  const targetEid = eids[i]
+                  const hlId = hl.id
+                  const fallbackPrev = prev
+                  iframe.getTextRangeRects(targetEid, hl.selectedText).then(fresh => {
+                    const h2 = annotations.highlights.value.find(x => x.id === hlId)
+                    if (!h2 || h2.eid !== targetEid) return
+                    if (fresh && fresh.length) {
+                      h2.rects = fresh.map(r => ({ x: r.x, y: r.y, width: r.width, height: r.height }))
+                      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+                      for (const r of fresh) {
+                        if (r.x < minX) minX = r.x
+                        if (r.y < minY) minY = r.y
+                        if (r.x + r.width > maxX) maxX = r.x + r.width
+                        if (r.y + r.height > maxY) maxY = r.y + r.height
+                      }
+                      h2.rect = { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+                    } else {
+                      // Re-measure failed (text moved out of the anchor or
+                      // mismatched after reflow) — fall back to translation so
+                      // the overlay at least follows the element.
+                      const dx = rect.x - fallbackPrev.x, dy = rect.y - fallbackPrev.y
+                      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                        h2.rects = h2.rects!.map(r => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }))
+                        if (h2.rect) h2.rect = { x: h2.rect.x + dx, y: h2.rect.y + dy, width: h2.rect.width, height: h2.rect.height }
+                      }
+                    }
+                  })
+                  ;(hl as any)._anchorRect = rect
+                } else {
+                  const dx = rect.x - prev.x
+                  const dy = rect.y - prev.y
+                  if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+                    hl.rects = hl.rects.map(r => ({ x: r.x + dx, y: r.y + dy, width: r.width, height: r.height }))
+                    if (hl.rect) hl.rect = { x: hl.rect.x + dx, y: hl.rect.y + dy, width: hl.rect.width, height: hl.rect.height }
+                    ;(hl as any)._anchorRect = rect
+                  }
+                }
               }
             } else {
               hl.rect = rect
             }
-          } else if (entry.type === 'section') {
-            const section = annotations.drawnSections.value.find(s => s.id === entry.id)
-            if (!section) continue
-            const prevRect = (section as any)._nearRect as typeof rect | undefined
-            if (prevRect) {
-              const dx = rect.x - prevRect.x, dy = rect.y - prevRect.y
-              if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-                section.x += dx; section.y += dy; (section as any)._nearRect = rect
-              }
-            } else { (section as any)._nearRect = rect }
           } else if (entry.type === 'task') {
             newTaskRects.push({ taskId: entry.id, rect })
           }
@@ -142,7 +165,6 @@ export function useAnnotationRects(deps: {
     function tick() {
       const hasWork = annotations.arrows.value.some(a => a.fromEid || a.toEid)
         || annotations.highlights.value.some(h => h.eid)
-        || annotations.drawnSections.value.some(s => s.nearEid)
         || taskSystem.tasks.value.some(t => { const v = t.visual as any; return v?.kind === 'select' && (v.eids?.length || v.eid) && t.status !== 'accepted' })
       if (!hasWork) { loopRunning = false; return }
       // Skip work while the tab is hidden — the browser still fires rAF at reduced rate,
@@ -158,7 +180,7 @@ export function useAnnotationRects(deps: {
   }
 
   // Start annotation loop when annotations or tasks exist
-  watch([annotations.arrows, annotations.highlights, annotations.drawnSections, taskSystem.tasks], () => {
+  watch([annotations.arrows, annotations.highlights, taskSystem.tasks], () => {
     startAnnotationLoop()
   }, { deep: true })
 

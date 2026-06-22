@@ -35,9 +35,15 @@
             @click="onInspectClick" title="Inspect (V)">
             <Icon name="search" />
           </button>
+          <button data-testid="tool-wireframe" :class="['mode-btn mode-wireframe', { active: wireframeActive }]"
+            :disabled="wireframeCapturing"
+            @click="$emit('toggle-wireframe')" title="Wireframe — freeze the route into a manipulable sketch">
+            <Icon name="frame" />
+          </button>
         </div>
         <button v-if="designSection !== 'components'"
-          :class="['tool-btn', { active: layoutOverlayActive }]" @click="$emit('toggle-layout-overlay')" title="Show Layout (L)">
+          :class="['tool-btn', { active: layoutOverlayActive }]" :disabled="wireframeActive"
+          @click="$emit('toggle-layout-overlay')" title="Show Layout (L)">
           <Icon name="layout-dashboard" />
         </button>
       </template>
@@ -114,7 +120,7 @@
             Inspector
           </button>
           <button data-testid="design-components" :class="['toggle-btn', { active: designSection === 'components' && activePanel !== 'tasks' }]"
-            @click="$emit('switch-design-section', 'components')" title="Browse project components">
+            @click="$emit('switch-design-section', 'components')" title="Browse + drag components onto the live app">
             <Icon name="grid-2x2" :size="12" />
             Components
           </button>
@@ -127,7 +133,7 @@
         </div>
       </template>
 
-      <!-- Audit sub-section: Accessibility / Data / Libraries / Performance / Errors + Tasks -->
+      <!-- Audit sub-section: Accessibility / Data / Performance / Errors + Tasks -->
       <template v-else-if="shellView === 'develop'">
         <div class="panel-toggle">
           <button data-testid="audit-a11y" :class="['toggle-btn', { active: developSection === 'a11y' && activePanel !== 'tasks' }]"
@@ -140,11 +146,6 @@
             @click="$emit('switch-develop-section', 'data')" title="Browse data sources and API schemas">
             <Icon name="database" :size="12" />
             Data
-          </button>
-          <button data-testid="audit-libraries" :class="['toggle-btn', { active: developSection === 'libraries' && activePanel !== 'tasks' }]"
-            @click="$emit('switch-develop-section', 'libraries')" title="Browse detected data-fetching and state libraries">
-            <Icon name="library" :size="12" />
-            Libraries
           </button>
           <button data-testid="audit-perf" :class="['toggle-btn', { active: developSection === 'perf' && activePanel !== 'tasks' }]"
             @click="$emit('switch-develop-section', 'perf')" title="Web Vitals and page performance">
@@ -198,6 +199,8 @@ interface Props {
   developSection: DevelopSection
   currentRoute: string
   layoutOverlayActive: boolean
+  wireframeActive: boolean
+  wireframeCapturing: boolean
   a11yLoading: boolean
   a11yViolationsCount: number
   tabOrderEnabled: boolean
@@ -223,6 +226,7 @@ const emit = defineEmits<{
   (e: 'switch-design-section', value: DesignSection): void
   (e: 'switch-develop-section', value: DevelopSection): void
   (e: 'toggle-layout-overlay'): void
+  (e: 'toggle-wireframe'): void
   (e: 'scan-a11y'): void
   (e: 'toggle-tab-order'): void
   (e: 'start-perf-recording'): void

@@ -7,7 +7,7 @@
     "dev": "astro dev"
   },
   "dependencies": {
-    "astro": "^5.0.0"
+    "astro": "^6.0.0"
   },
   "devDependencies": {
     "annotask": "workspace:*"

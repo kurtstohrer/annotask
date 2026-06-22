@@ -30,8 +30,11 @@ Current error codes:
 - `validation_failed`
 - `invalid_transition`
 - `forbidden_origin`
+- `origin_port_mismatch` (agent spawn routes only — origin must match the server's own port)
 - `not_found`
 - `missing_field`
+- `invalid_id`
+- `invalid_body`
 
 ## Task Model
 
@@ -44,7 +47,9 @@ Canonical task types:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `api_update`
+- `wireframe_apply` — created by the wireframe palette's "Build this route" or by the design-session apply path ("Apply now" / "Implement this wireframe"). `context.wireframe` carries `{ route, instances[] }`; each instance has an `anchor` (`file`, `line`, `position`, `component`, `targetTag`) and an `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`). `context.session` (when present) carries `{ session_id, entries[] }` — the design-session edits and/or wireframe directions. Applied via the `WIREFRAME_APPLY.md` companion playbook.
+
+There is no dedicated task type for backend-contract work; it surfaces as `annotation` tasks grounded with `data_context` and runtime-endpoint evidence.
 
 Statuses:
 
@@ -79,11 +84,16 @@ pending -> in_progress -> review -> accepted | denied
 | `GET` | `/__annotask/api/design-spec` | current design spec |
 | `GET` | `/__annotask/api/performance` | latest stored performance snapshot |
 | `POST` | `/__annotask/api/performance` | store a performance snapshot |
+| `GET` | `/__annotask/api/system-prompt` | composed embedded-agent system prompt (`?task_type=` adds the matching companion playbook) |
+| `GET` | `/__annotask/api/style-guide` | contents of `.annotask/STYLE_GUIDE.md` (init wizard review step) |
+| `GET` | `/__annotask/api/read-file` | read one project file by relative `?path=` (traversal-guarded to the project root) |
+| `DELETE` | `/__annotask/api/session-reset` | clear the `.annotask/.session-reset` sentinel after the shell wipes localStorage |
 
 Notes:
 
 - `report` supports `?mfe=NAME`
 - `report` can include `performance` when a snapshot exists
+- `status` reports `sessionReset: true` while the `.session-reset` sentinel exists on disk
 
 ### Tasks
 
@@ -246,6 +256,70 @@ Useful query params:
 - `schema_location`
 - `url`
 
+### Wireframe
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/wireframe` | full multi-route wireframe document, or one route's slice with `?route=PATH` |
+| `PUT` | `/__annotask/api/wireframe` | replace the whole document (the shell owns the in-memory merge) |
+| `POST` | `/__annotask/api/wireframe-snapshots` | upload a canvas block PNG (`{id, data}`; id-addressed, 4MB cap) |
+| `GET` | `/__annotask/wireframe-snapshots/:filename` | serve a canvas snapshot PNG (containment-guarded) |
+| `DELETE` | `/__annotask/api/wireframe-snapshots/:filename` | drop a canvas snapshot PNG |
+| `GET` `PUT` `DELETE` | `/__annotask/api/design-session` | design-session journal (CAS on `rev`, 409 on stale writes); DELETE discards the journal, session-created placements, and every route's canvas sketch |
+| `POST` | `/__annotask/api/design-session/apply` | snapshot the touched files and mint one `wireframe_apply` task (placements + design-session edits/directions); the embedded agent then writes source |
+| `POST` | `/__annotask/api/design-session/undo-batch` | restore the newest apply batch's pre-apply bytes (hash-guarded) |
+| `POST` | `/__annotask/api/design-session/detach-file` | diverged-file resolution: keep the disk bytes, drop the file from the session |
+| `GET` | `/__annotask/api/design-session/snapshots` | snapshot-engine state (touched files, divergence, apply batches) |
+
+The document persists to `.annotask/wireframe.json` and is shape-validated (`{ version: "1.0", updatedAt, routes[] }`) on PUT. Snapshot PNGs live in `.annotask/wireframe-snapshots/` (orphans GC'd at boot). The design-session journal persists to `.annotask/design-session.json`; "Apply now" / "Implement this wireframe" snapshots the touched files first so undo/discard stays byte-exact — the agent writes source, the tool only snapshots and restores.
+
+### Agent Configs
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/agent-configs` | per-persona project directions and provider preferences from `.annotask/agents.json` |
+| `PATCH` | `/__annotask/api/agent-configs/:id` | update one persona's `projectDirections`, `providerId`, `model`, or `effort` |
+
+### Embedded Agent
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/__annotask/api/agent/spawn` | spawn an allow-listed local CLI (claude / codex / opencode / copilot) and stream stdout/stderr back as SSE |
+| `DELETE` | `/__annotask/api/agent/spawn/:runId` | abort a running spawn by run id |
+| `GET` | `/__annotask/api/agent/detect` | detect which local CLIs are installed and logged in |
+| `GET` | `/__annotask/api/agent/models` | per-provider model catalog for `?cli=ID` (`?refresh=1` bypasses the 5-min cache) |
+
+The spawn routes enforce a stricter same-port origin check on top of the general localhost gate — a page on a different localhost port cannot spawn CLIs that have credential access (`origin_port_mismatch`). When `ANNOTASK_MAX_PERMISSION` is set to `plan` or `default`, the server refuses any spawn that exceeds it. The default is no ceiling (`bypass`).
+
+### Task Conversations
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/tasks/:id/messages` | full per-task conversation snapshot (optional `?after=<id>`) |
+| `POST` | `/__annotask/api/tasks/:id/messages` | append a message; broadcasts to subscribers |
+| `GET` | `/__annotask/api/tasks/:id/messages/stream` | SSE stream; honours `Last-Event-ID` for resume |
+| `PATCH` | `/__annotask/api/tasks/:id/messages/:msgId` | update a message in place (used to flush a partial assistant turn while it streams) |
+
+Threads persist as append-only JSONL at `.annotask/conversations/<taskId>.jsonl`.
+
+### Usage
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/usage` | aggregate token-usage totals, per-scope and per-provider, from `.annotask/usage.jsonl` |
+| `GET` | `/__annotask/api/usage/recent` | most recent usage entries, newest first (`?limit=N`, default 50, max 500) |
+
+### Init Wizard
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/__annotask/api/init/state` | current init-runner state |
+| `GET` | `/__annotask/api/init/scan-targets` | existence + mtime of the durable scan artifacts (`design-spec.json`, `agents.json`) |
+| `POST` | `/__annotask/api/init/start` | start an init scan (body can skip individual scanners and pin provider/model/effort) |
+| `POST` | `/__annotask/api/init/cancel` | cancel a running scan |
+| `POST` | `/__annotask/api/init/skip` | mark the project initialized without committing token data |
+| `POST` | `/__annotask/api/init/commit` | commit the reviewed spec (and optionally a style guide) to `.annotask/` |
+
 ## WebSocket
 
 Connect to `ws://localhost:<port>/__annotask/ws`.
@@ -261,6 +335,11 @@ Server-to-client events:
 | `changes:cleared` | `null` |
 | `tasks:updated` | task list payload |
 | `designspec:updated` | `null` |
+| `components:updated` | `{ scannedAt }` — a background component scan landed a fresh catalog |
+| `init:progress` | init-runner step state for the wizard |
+| `runtime-endpoints:updated` | current runtime endpoint catalog |
+| `wireframe:updated` | saved wireframe document (`null` when invalidated from disk) |
+| `session:updated` | `null` — broadcast when `.annotask/design-session.json` changes |
 
 Client-to-server events:
 
@@ -297,6 +376,13 @@ Current tool surface:
 - `annotask_resolve_endpoint`
 - `annotask_get_data_source_examples`
 - `annotask_get_data_source_details`
+- `annotask_get_source_excerpt`
+- `annotask_get_binding_classification`
+- `annotask_get_playbook`
+- `annotask_get_agent_directions`
+- `annotask_conversation_read`
+- `annotask_conversation_post`
+- `annotask_conversation_subscribe`
 
 Behavior differences from raw HTTP:
 
@@ -312,11 +398,11 @@ The live report's `changes[]` union currently includes:
 - `style_update`
 - `class_update`
 - `scoped_style_update` experimental
-- `prop_update` experimental
+- `component_prop_update` experimental
 - `component_insert`
-- `component_move`
+- `component_move` legacy — no longer emitted (the Reposition tool was removed); agents still apply it from older reports
 - `component_delete` experimental
 - `annotation`
-- `section_request`
+- `section_request` legacy — no longer emitted (sections are wireframe sketch material riding `wireframe_apply` add directions)
 
 The canonical definitions live in `src/schema.ts`.

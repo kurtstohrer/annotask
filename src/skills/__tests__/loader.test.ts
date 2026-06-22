@@ -16,6 +16,7 @@ function mkTmpSkills(): string {
   fs.writeFileSync(path.join(root, 'annotask-apply', 'SKILL.md'), '# annotask-apply\n\nBody.\n')
   fs.writeFileSync(path.join(root, 'annotask-apply', 'A11Y_RULES.md'), '# A11Y\n\nRules.\n')
   fs.writeFileSync(path.join(root, 'annotask-apply', 'THEME_UPDATE.md'), '# Theme\n\nUpdate.\n')
+  fs.writeFileSync(path.join(root, 'annotask-apply', 'WIREFRAME_APPLY.md'), '# Wireframe Apply\n\nPlace.\n')
   fs.writeFileSync(path.join(root, 'annotask-apply', 'notes.txt'), 'ignored')
   fs.mkdirSync(path.join(root, 'annotask-init'), { recursive: true })
   fs.writeFileSync(path.join(root, 'annotask-init', 'SKILL.md'), '# annotask-init\n')
@@ -81,6 +82,11 @@ describe('skills/loader', () => {
     expect(prompt).toContain('# Theme')
   })
 
+  it('getSystemPrompt appends WIREFRAME_APPLY for wireframe_apply', () => {
+    const prompt = getSystemPrompt({ root, taskType: 'wireframe_apply' })
+    expect(prompt).toContain('# Wireframe Apply')
+  })
+
   it('getSystemPrompt ignores unknown task types', () => {
     const prompt = getSystemPrompt({ root, taskType: 'something_else' })
     expect(prompt).not.toContain('# A11Y')
@@ -109,5 +115,13 @@ describe('skills/loader', () => {
     const prompt = getSystemPrompt()
     expect(prompt.length).toBeGreaterThan(0)
     expect(prompt).toMatch(/annotask-apply/i)
+  })
+
+  it('ships the real WIREFRAME_APPLY playbook for wireframe_apply (no override)', () => {
+    // Proves the TASK_TYPE_COMPANIONS registration + the bundled file ship
+    // together end-to-end via the same path the embedded runner uses.
+    const prompt = getSystemPrompt({ taskType: 'wireframe_apply' })
+    expect(prompt).toContain('# Wireframe Apply')
+    expect(prompt).toContain('annotask_get_component_examples')
   })
 })

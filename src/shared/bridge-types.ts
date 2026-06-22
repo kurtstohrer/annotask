@@ -53,6 +53,11 @@ export interface ResolvedElement {
   classes: string
   /** Visible label text (aria-label/title/textContent, normalized, <=200 chars). */
   text?: string
+  /** Set when the point sits inside an annotask-mounted wireframe placement
+   *  ([data-annotask-instance]). The eid is the placement CONTAINER's eid and
+   *  any file/line describe the mounted component's internals — selection must
+   *  treat this as "the placement", not a source element. */
+  instance_id?: string
 }
 
 export interface ResolveTemplateGroupPayload {
@@ -329,6 +334,56 @@ export interface ClassUndoPayload {
   classes: string
 }
 
+// ── Wireframe Capture ────────────────────────────────────
+
+export interface WireframeCapturePayload {
+  /** Capture children of this element instead of the page (W4 explode). */
+  rootEid?: string
+  /** Rasterization scale; default min(devicePixelRatio, 2), capped at 3. */
+  scale?: number
+}
+
+export interface WireframeCaptureBlock {
+  eid: string
+  /** Source anchor from data-annotask-* — '' when unstamped (honest no-chip). */
+  file: string
+  line: string
+  component: string
+  source_tag: string
+  tag: string
+  /** First class name — the human-distinct label ('toolbar', 'layout'). */
+  cls: string
+  /** 'header' | 'nav' | 'footer' | 'aside' | 'content' from block discovery. */
+  role: string
+  /** Document CSS px (captured at scroll 0,0). */
+  rect: BridgeRect
+  /** PNG dataUrl at `scale`x; null when this block's capture failed. */
+  dataUrl: string | null
+  error?: string
+  /** Block was taller than the 4000px cap — only the top is in the image. */
+  clipped?: boolean
+}
+
+export interface WireframeCaptureResult {
+  viewport?: { width: number; height: number; docWidth: number; docHeight: number; scale: number }
+  /** Block discovery hit the 24-block cap. */
+  truncated?: boolean
+  /** Full-document capture at scale 1 — the "before" composite source. */
+  fullDataUrl?: string
+  /** Explode (rootEid) only: the root's own pixels with the captured child
+   *  blocks hidden — the container's surface, no ghost children. */
+  shellDataUrl?: string
+  blocks?: WireframeCaptureBlock[]
+  error?: string
+}
+
+/** Pushed per block during a capture (then once for the full-page pass). */
+export interface WireframeCaptureProgress {
+  index: number
+  total: number
+  label: string
+}
+
 // ── Layout ──────────────────────────────────────────────
 
 export interface LayoutContainerData {
@@ -400,6 +455,9 @@ export interface ClickElementEvent {
   clientY: number
   /** Visible label text (aria-label/title/textContent, normalized, <=200 chars). */
   text?: string
+  /** Set when the click landed inside an annotask-mounted wireframe placement —
+   *  see ResolvedElement.instance_id. The eid is the placement container's eid. */
+  instance_id?: string
 }
 
 export interface RouteChangedEvent {
@@ -428,7 +486,7 @@ export interface KeyDownEvent {
 
 // ── Mode ────────────────────────────────────────────────
 
-export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'draw' | 'highlight'
+export type InteractionMode = 'select' | 'interact' | 'pin' | 'arrow' | 'highlight'
 
 export interface ModeSetPayload {
   mode: InteractionMode
@@ -498,16 +556,14 @@ export interface InsertPlaceholderPayload {
   category?: string
   library?: string
   defaultProps?: Record<string, unknown>
+  /** Wireframe instance id — stamped on the placeholder as
+   *  `data-annotask-instance` for placement identity (click/selection,
+   *  drop-target refusal, capture exclusion, reapply idempotency). */
+  instanceId?: string
 }
 
 export interface InsertPlaceholderResult {
   placeholderEid: string
-}
-
-export interface MoveElementPayload {
-  eid: string
-  targetEid: string
-  position: 'before' | 'after' | 'append' | 'prepend'
 }
 
 export interface InsertComponentPayload {
@@ -515,17 +571,69 @@ export interface InsertComponentPayload {
   position: 'before' | 'after' | 'append' | 'prepend'
   componentName: string
   props?: Record<string, unknown>
+  /** Import specifier for on-demand loading when the component isn't already
+   *  registered on the current route (e.g. "primevue/button"). */
+  module?: string
+  /** Wireframe instance id — stamped on the mounted container as
+   *  `data-annotask-instance` for placement identity (click/selection,
+   *  drop-target refusal, capture exclusion, reapply idempotency). */
+  instanceId?: string
 }
+
+/** Why a component mount did not produce a real, in-context render. */
+export type MountReason =
+  | 'not-registered'
+  | 'threw'
+  | 'rendered-empty'
+  | 'no-runtime'
+  | 'async-pending'
+
+/** How faithfully the dropped component is rendered on the canvas. */
+export type MountFidelity = 'live' | 'isolated-preview' | 'placeholder'
 
 export interface InsertComponentResult {
   eid: string
   mounted: boolean
+  /** Present whenever the mount was not a clean in-context render. */
+  reason?: MountReason | null
+  /** `live` = Vue in real app context, `isolated-preview` = detached
+   *  React/Svelte/Solid (no provider tree), `placeholder` = could not render. */
+  fidelity?: MountFidelity
 }
 
 /** @deprecated Use InsertComponentPayload */
 export type InsertVueComponentPayload = InsertComponentPayload
 /** @deprecated Use InsertComponentResult */
 export type InsertVueComponentResult = InsertComponentResult
+
+export interface PreviewComponentPayload {
+  componentName: string
+  props?: Record<string, unknown>
+  /** Import specifier for on-demand loading (e.g. "primevue/button"). */
+  module?: string
+  /** Render width for the offscreen snapshot (px). */
+  width?: number
+  /** Mount this many copies (a list/loop binding) into one snapshot. Default 1. */
+  repeat?: number
+  /** Per-instance prop overlays for a repeated render — instance i merges
+   *  `{ ...props, ...instanceProps[i] }` (falls back to instanceProps[0]). Used
+   *  to show bound data values per row. */
+  instanceProps?: Record<string, unknown>[]
+}
+
+export interface PreviewComponentResult {
+  mounted: boolean
+  fidelity?: MountFidelity
+  reason?: MountReason | null
+  /** The actual render error message when reason === 'threw'. */
+  detail?: string | null
+  /** PNG data URL of the rendered component, when it rendered + snapshotted. */
+  dataUrl?: string
+  width?: number
+  height?: number
+  /** Set when the mount succeeded but the snapshot itself failed. */
+  error?: string
+}
 
 // ── Component Library ──────────────────────────────────
 

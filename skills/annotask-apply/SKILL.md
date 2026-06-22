@@ -1,6 +1,13 @@
+---
+name: annotask-apply
+description: Apply pending Annotask design tasks to the source code. Use when the user asks to apply Annotask changes, apply design changes, sync Annotask, or runs /annotask-apply.
+---
+
 # annotask-apply
 
 Apply pending Annotask design tasks to the source code.
+
+> **For editor agents (Claude Code, Cursor, Windsurf).** Annotask's built-in agent runs apply directly through the shell — the user runs a task from the Conversation tab and the local-CLI provider edits files in place. This skill exists when the user prefers to drive apply from their own editor agent instead.
 
 ## When to use
 
@@ -12,7 +19,7 @@ Use this skill when the user says:
 
 ## How it works
 
-Annotask is a visual markup tool that integrates with Vite and Webpack. The user annotates the page with pins, sticky notes, arrows, text highlights, and drawn sections. These become **tasks** stored in `.annotask/tasks.json` and served via API. This skill fetches pending tasks, applies them, and marks them for review.
+Annotask is a visual markup tool that integrates with Vite and Webpack. The user annotates the page with pins, sticky notes, arrows, and text highlights (sections are wireframe sketch material — they arrive as `wireframe_apply` add directions, not Annotate tasks). These become **tasks** stored in `.annotask/tasks.json` and served via API. This skill fetches pending tasks, applies them, and marks them for review.
 
 ## MCP preference
 
@@ -196,18 +203,18 @@ Read the task type and apply accordingly:
 
 - **`style_update`**: Apply CSS property changes. The `context.changes` array contains each change with `property`, `before`, and `after` values. Use scoped styles, inline styles, or Tailwind classes based on project patterns.
 
-- **`section_request`**: Create a new section in the template near the referenced element. The `description` field describes what content to create. `placement` gives spatial hints. Use the design spec (step b) and the relevant step-c lookups before writing custom HTML.
+  The same `context.changes` array may also carry these three **legacy** types — the current UI no longer emits them, but apply them per these rules when they appear in older tasks:
+  - `{"type": "component_prop_update", "element", "prop", "before", "after", "binding", "prop_type"?, "file", "line"}` — one prop value change at a component **usage site** (`file:line` is where `<Element …>` is written). Respect `binding`: `"literal"` means rewrite the plain attribute value (`label="Reset"` → `label="Clear"`); `"expression-literal"` means the literal is written through binding syntax — **keep the syntax** (`:count="3"` → `:count="4"`, `count={3}` → `count={4}`); `"new"` means the prop isn't present at the usage site — add it using the framework's idiomatic form for `prop_type`. Bound expressions never appear here (the UI refuses them) — if `before` doesn't match what you find in source, re-anchor via `annotask_get_code_context` instead of guessing, and never rewrite an expression that references variables.
+  - `{"type": "text_update", "element", "before", "after", "file", "line"}` — a literal text-content change. The element at `file:line` has a single literal text run equal to `before`; replace it with `after`. If the text there is an interpolation/expression or doesn't match `before`, the source drifted — re-anchor or ask, never overwrite a binding.
+  - `{"type": "component_move", "element": {"tag", "component"?, "from_file", "from_line"}, "move_to": {"target_file", "target_line", "position"}}` — relocate the element's source block from `from_file:from_line` to the given position (`before`/`after`/`append`/`prepend`) relative to `target_file:target_line`. Move the markup intact (including its bindings and children); adjust imports only if the move crosses files.
+
+- **`section_request`** (**legacy** — the current UI no longer emits these; sections now arrive as `wireframe_apply` `add` directions with an `md` body. Apply this rule when older task files carry one): Create a new section in the template near the referenced element. The `description` field describes what content to create. `placement` gives spatial hints. Use the design spec (step b) and the relevant step-c lookups before writing custom HTML.
 
 - **`a11y_fix`**: Fix an accessibility violation. Read `A11Y_RULES.md` in this skill directory before applying the change. If you are working through multiple a11y tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: prefer pattern fixes over instance fixes, expect layout/head rules to live in root or layout files, and fetch the screenshot first when the issue is visual (contrast, focus ring, hidden text, similar).
 
 - **`theme_update`**: Apply batched design-token edits from the Theme page. Read `THEME_UPDATE.md` in this skill directory before applying the change. If you are working through multiple theme tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: one task may include many edits, update source files before `.annotask/design-spec.json`, and land `theme_update` before dependent `style_update` tasks.
 
-- **`api_update`**: Do **not** edit the API in this skill. Instead, inspect the task context and tell the user exactly what would need to change for the request to work. Open `context.schema_location`, inspect the referenced operation (`context.operation.method` + `context.operation.path`, or find it by `endpoint`), and identify:
-  - the schema change required
-  - the backend handler or router that would need updating
-  - any frontend data source or caller that would need follow-up changes if the contract changed
-
-  Then mark the task `blocked` with a concise explanation naming the schema location, operation, and required contract change. If the API is external, block it immediately and say Annotask cannot change APIs outside the repo.
+- **`wireframe_apply`**: Implement the user's wireframe — snapshot-sketch directions (`context.session` entries with `change.type: 'wireframe_direction'`) and/or palette placements (`context.wireframe.instances[]`) — in real source. Read `WIREFRAME_APPLY.md` in this skill directory before applying the change. If you are working through multiple wireframe tasks in one run, read it once for the batch, not once per task. Keep three defaults in mind even before you open the playbook: pixel geometry is a hint and the direction's `relations` are the contract (implement intent with idiomatic layout, never absolute positioning); placements/directions carry durable `anchor`s (`file`/`line`) — resolve component imports via `annotask_get_component_examples` rather than guessing; and never fabricate handlers/children/data — placeholders stay visibly placeholders.
 
 - **`annotation` with cross-boundary API edits**: Some frontend requests turn out to depend on backend work (for example, a field is not returned by the current response schema). Do **not** edit the backend and do **not** ask for permission to do so. If there is a meaningful frontend-only fallback, apply it and explain the missing backend support in the resolution note. Otherwise, mark the task `blocked` and tell the user which API/schema change would be required.
 

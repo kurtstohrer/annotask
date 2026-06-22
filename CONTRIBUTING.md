@@ -90,7 +90,9 @@ Current change types in live reports:
 Schema-only experimental change types still present in the contract:
 
 - `scoped_style_update`
-- `prop_update`
+- `component_prop_update`
+- `text_update`
+- `wireframe_direction`
 - `component_delete`
 
 Current task types:
@@ -102,7 +104,7 @@ Current task types:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `api_update`
+- `wireframe_apply`
 
 Current statuses:
 

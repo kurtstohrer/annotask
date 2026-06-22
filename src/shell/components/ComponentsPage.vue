@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, nextTick, useTemplateRef } from 'vue'
+import { computed, onMounted, ref, watch, nextTick, useTemplateRef } from 'vue'
 import { useComponentLibrary, colorForLibrary, type LibraryComponent } from '../composables/useProjectComponents'
 import { useWorkspace } from '../composables/useWorkspace'
+import { usePaletteDrag, type PaletteDragItem } from '../composables/usePaletteDrag'
+import { HTML_CATALOG, LAYOUT_PRESETS, type CatalogItem } from '../types'
 import type { useIframeManager } from '../composables/useIframeManager'
+import type { PreviewComponentResult } from '../../shared/bridge-types'
+import type { WireframeInstance, WireframeInstanceStatus } from '../../shared/wireframe-types'
 import Icon from './Icon.vue'
 import MfeFilterDropdown from './MfeFilterDropdown.vue'
+import DesignSessionPanel from './DesignSessionPanel.vue'
 
 const props = defineProps<{
   iframe: ReturnType<typeof useIframeManager>
@@ -12,10 +17,168 @@ const props = defineProps<{
   /** Component name currently emphasized via `dataHighlights.focusedName` —
    *  driven by both list-row hover and iframe element hover. */
   focusedName?: string | null
+  /** Placements persisted on the current route — drives the placements panel
+   *  and "Build this route" (which only batches the 'placed' ones). */
+  placements?: WireframeInstance[]
+  /** Instance ids whose durable anchor no longer resolves (source drifted). */
+  staleIds?: string[]
+  /** Instance ids whose last re-mount attempt threw. */
+  failedIds?: string[]
+  /** Wireframe mode is active — clicking a component opens the generate
+   *  panel instead of the detail preview (which stays behind the info icon). */
+  wireframeActive?: boolean
 }>()
+
+const emit = defineEmits<{ build: []; deletePlacement: [id: string]; runAgent: [taskId: string]; generateComponent: [item: PaletteDragItem] }>()
+
+// ── Placements panel (current route's wireframe instances) ──
+function placementStatus(i: WireframeInstance): WireframeInstanceStatus {
+  return i.status ?? 'placed' // legacy instances predate the field
+}
+const placedCount = computed(() => (props.placements ?? []).filter((i) => placementStatus(i) === 'placed').length)
+const buildingCount = computed(() => (props.placements ?? []).filter((i) => placementStatus(i) === 'building').length)
+const appliedCount = computed(() => (props.placements ?? []).filter((i) => placementStatus(i) === 'applied').length)
+
+function placementName(i: WireframeInstance): string {
+  return i.kind === 'component' ? (i.inserted.componentName ?? i.inserted.tag) : i.inserted.tag
+}
+
+function placementTooltip(i: WireframeInstance): string {
+  const lines = [
+    `${placementName(i)} — ${i.kind}`,
+    `${i.anchor.position} ${i.anchor.component || i.anchor.targetTag || 'target'} (${i.anchor.file}:${i.anchor.line})`,
+  ]
+  if (i.taskId) lines.push(`Task: ${i.taskId}`)
+  return lines.join('\n')
+}
 
 const cl = useComponentLibrary(props.iframe)
 const ws = useWorkspace()
+const paletteDrag = usePaletteDrag()
+
+// ── Palette drag (drag a catalog item onto the live app) ──
+function fidelityLabel(hint: LibraryComponent['fidelityHint']): string {
+  if (hint === 'live') return 'live'
+  if (hint === 'isolated-preview') return 'preview'
+  if (hint === 'placeholder') return 'placeholder'
+  return ''
+}
+
+// Synthesize minimum-viable props so a component renders with visible content
+// instead of empty (a Button with no `label` is an empty box). Display-only —
+// these are NOT persisted as the placed component's real props.
+// 'text'/'name' are intentionally excluded — in many UI libs `text` is a
+// boolean style flag (text/link button) and `name` is a form field id, not
+// display content.
+const CONTENT_PROP_KEYS = new Set(['label', 'value', 'title', 'header', 'content', 'caption', 'placeholder', 'message', 'description'])
+function sampleProps(c: LibraryComponent): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const p of c.props) {
+    const name = p.name
+    const t = (p.type || '').toLowerCase()
+    const stringish = t.includes('string') || t === ''
+    if (p.options && p.options.length) { out[name] = p.options[0]; continue }
+    // Only fill content props that are actually string-typed, so a boolean
+    // `text`/`value` flag isn't turned into a label.
+    if (stringish && CONTENT_PROP_KEYS.has(name.toLowerCase())) { out[name] = c.name; continue }
+    if (!p.required) continue
+    if (t.includes('bool')) out[name] = true
+    else if (t.includes('number')) out[name] = 1
+    else if (t.includes('[]') || t.includes('array')) out[name] = []
+    else if (t.includes('string') || t === '' || t.includes('|')) out[name] = c.name
+    else out[name] = {} // object/unknown required prop → empty obj avoids undefined-access throws
+  }
+  return out
+}
+
+/** Per-component MFE renderability on the current surface, computed once per
+ *  catalog change. Drives draggability, the unavailable chip/tooltip, and the
+ *  block's MFE stamp. */
+const renderInfoByKey = computed(() => {
+  const m = new Map<string, { renderable: boolean; owningMfe: string | null }>()
+  for (const lib of cl.filteredLibraries.value) {
+    for (const c of lib.components) m.set(`${lib.name}:::${c.name}`, cl.surfaceRenderInfo(lib.name, c))
+  }
+  return m
+})
+function rinfo(libName: string, name: string): { renderable: boolean; owningMfe: string | null } {
+  return renderInfoByKey.value.get(`${libName}:::${name}`) ?? { renderable: true, owningMfe: null }
+}
+
+function componentDragItem(libName: string, c: LibraryComponent): PaletteDragItem {
+  const info = rinfo(libName, c.name)
+  const mfe = info.owningMfe ?? ws.currentMfe.value ?? undefined
+  return {
+    kind: 'component', componentName: c.name, tag: c.name, label: c.name, library: libName,
+    module: c.module, fidelityHint: c.fidelityHint ?? 'unknown', previewProps: sampleProps(c),
+    ...(mfe ? { mfe } : {}),
+  }
+}
+
+function catalogDragItem(item: CatalogItem): PaletteDragItem {
+  return {
+    kind: item.category === 'layout-preset' ? 'layout-preset' : 'html',
+    componentName: item.tag, tag: item.tag, label: item.label,
+    props: item.defaultProps, classes: item.defaultClasses, textContent: item.defaultTextContent, category: item.category,
+  }
+}
+
+function onDragStart(e: DragEvent, item: PaletteDragItem) {
+  paletteDrag.startDrag(item)
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'copy'
+    e.dataTransfer.setData('application/x-annotask-palette', JSON.stringify(item))
+    // Use the rendered snapshot as the drag ghost when we already have one.
+    const url = item.kind === 'component' ? previewCache.get(item.componentName)?.dataUrl : undefined
+    if (url) {
+      const img = new Image()
+      img.src = url
+      e.dataTransfer.setDragImage(img, 20, 16)
+    }
+  }
+}
+
+function onDragEnd() {
+  paletteDrag.endDrag()
+}
+
+// Filter the HTML/layout groups by the same search box (usage filters don't apply).
+const q = computed(() => cl.filterText.value.trim().toLowerCase())
+const layoutItems = computed(() => LAYOUT_PRESETS.filter((i) => !q.value || i.label.toLowerCase().includes(q.value)))
+const htmlItems = computed(() => HTML_CATALOG.filter((i) => !q.value || i.label.toLowerCase().includes(q.value)))
+
+// ── Component preview (offscreen render → snapshot) ──
+const previewCache = new Map<string, PreviewComponentResult>()
+const previewState = ref<{ loading: boolean; result: PreviewComponentResult | null }>({ loading: false, result: null })
+
+async function loadPreview(c: LibraryComponent): Promise<void> {
+  const name = c.name
+  const cached = previewCache.get(name)
+  if (cached) { previewState.value = { loading: false, result: cached }; return }
+  previewState.value = { loading: true, result: null }
+  const result = await props.iframe.previewComponent(name, sampleProps(c), c.module, 320)
+  previewCache.set(name, result)
+  // Ignore a stale response if the user moved on to another component.
+  if (cl.selectedComponent.value?.name === name) previewState.value = { loading: false, result }
+}
+
+watch(() => cl.selectedComponent.value?.name, (name) => {
+  previewState.value = { loading: false, result: null }
+  const c = cl.selectedComponent.value
+  if (name && c) void loadPreview(c)
+}, { immediate: true })
+
+function previewPlaceholderText(r: PreviewComponentResult | null): string {
+  if (!r) return 'No preview available.'
+  if (r.reason === 'not-registered') return 'Not loadable on this route — couldn’t resolve its module.'
+  if (r.reason === 'threw') {
+    if (/slot|children/i.test(r.detail || '')) return 'Container component — it needs child content (e.g. tabs/panels) to render.'
+    return 'Couldn’t render standalone — it needs specific props or context.'
+  }
+  if (r.reason === 'rendered-empty') return 'Rendered nothing with sample props — needs real data or content.'
+  if (r.error) return `Couldn’t snapshot the render (${r.error}).`
+  return 'No preview available.'
+}
 
 const COLLAPSED_KEY = 'annotask:componentsCollapsedLibs'
 const collapsedLibs = ref<Set<string>>(new Set())
@@ -71,6 +234,10 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   lines.push(`${c.props.length} prop${c.props.length === 1 ? '' : 's'}` + (c.slots?.length ? ` · ${c.slots.length} slot${c.slots.length === 1 ? '' : 's'}` : '') + (c.events?.length ? ` · ${c.events.length} event${c.events.length === 1 ? '' : 's'}` : ''))
   if (cl.isOnPageInLib(lib, c.name)) lines.push('● on this page')
   else if (cl.isUsedInLib(lib, c.name)) lines.push('✓ used in this project')
+  const info = rinfo(lib, c.name)
+  if (!info.renderable && info.owningMfe) {
+    lines.push(`⊘ lives in MFE "${info.owningMfe}" — can't render on this surface (predicted)`)
+  }
   return lines.join('\n')
 }
 </script>
@@ -111,6 +278,19 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
       </div>
       <MfeFilterDropdown v-if="ws.hasAnyMfes.value" label="Components" />
       <button
+        v-if="props.placements?.length"
+        class="components-btn build"
+        data-testid="palette-build-route"
+        :disabled="placedCount === 0"
+        :title="placedCount === 0
+          ? 'No new placements to build — the listed ones are already building or applied'
+          : 'Create a wireframe_apply task for this route\'s new placements'"
+        @click="emit('build')"
+      >
+        <Icon name="wand" :size="13" />
+        Build<span class="build-count">{{ placedCount }}</span>
+      </button>
+      <button
         class="components-btn icon"
         :title="cl.isLoading.value ? 'Loading…' : 'Reload components'"
         :aria-label="cl.isLoading.value ? 'Loading components' : 'Reload components'"
@@ -122,6 +302,35 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
     </div>
 
     <div v-if="cl.loadError.value" class="components-error">{{ cl.loadError.value }}</div>
+
+    <!-- Placements on this route: lifecycle chips + per-instance delete. The
+         placed/building/applied split mirrors the Build button — only the
+         'placed' ones go into the next wireframe_apply task. -->
+    <div v-if="props.placements?.length" class="placements-panel" data-testid="palette-placements">
+      <div class="placements-head">
+        <span class="placements-title">Placements on this route</span>
+        <span v-if="buildingCount" class="placements-summary">{{ buildingCount }} building</span>
+        <span v-if="appliedCount" class="placements-summary">{{ appliedCount }} applied</span>
+      </div>
+      <div v-for="i in props.placements" :key="i.id" class="placement-row" :title="placementTooltip(i)">
+        <span class="placement-name">{{ placementName(i) }}</span>
+        <span class="placement-status" :data-status="placementStatus(i)">{{ placementStatus(i) }}</span>
+        <span class="placement-fidelity" :class="'fid-' + i.fidelity">{{ i.fidelity === 'isolated-preview' ? 'preview' : i.fidelity }}</span>
+        <span v-if="props.staleIds?.includes(i.id)" class="placement-stale" title="The anchor element no longer exists in the source — delete this placement">stale</span>
+        <span v-else-if="props.failedIds?.includes(i.id)" class="placement-stale" title="The last re-mount attempt failed — see the console for details">failed</span>
+        <button
+          class="placement-delete"
+          :title="`Delete placement ${placementName(i)}`"
+          :aria-label="`Delete placement ${placementName(i)}`"
+          @click="emit('deletePlacement', i.id)"
+        >
+          <Icon name="trash" :size="12" />
+        </button>
+      </div>
+    </div>
+
+    <!-- Design session: pending/applied panel edits + apply/undo/discard. -->
+    <DesignSessionPanel @run-agent="emit('runAgent', $event)" />
 
     <div class="components-split">
       <!-- LIST view — visible when no component is selected. -->
@@ -163,16 +372,26 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
                 selected: cl.selectedKey.value === `${lib.name}:::${c.name}`,
                 focused: focusedName === cl.sourceName(lib.name, c.name),
                 'on-page': cl.isOnPageInLib(lib.name, c.name),
+                unavailable: !rinfo(lib.name, c.name).renderable,
               }"
               :data-component-name="c.name"
-              :title="componentTooltip(lib.name, c)"
-              @click="cl.select(lib.name, c.name)"
+              :title="componentTooltip(lib.name, c) + (rinfo(lib.name, c.name).renderable ? (props.wireframeActive ? '\n↳ click to generate, or drag onto the canvas' : '\n↳ drag onto the app to place') : '')"
+              :draggable="rinfo(lib.name, c.name).renderable"
+              @dragstart="onDragStart($event, componentDragItem(lib.name, c))"
+              @dragend="onDragEnd"
+              @click="rinfo(lib.name, c.name).renderable && props.wireframeActive ? emit('generateComponent', componentDragItem(lib.name, c)) : cl.select(lib.name, c.name)"
               @mouseenter="cl.isOnPageInLib(lib.name, c.name) && cl.setFocus(cl.sourceName(lib.name, c.name))"
               @mouseleave="focusedName === cl.sourceName(lib.name, c.name) && cl.setFocus(null)"
             >
               <div class="item-row">
                 <span class="item-swatch" :style="{ background: colorForLibrary(lib.name) }" />
                 <span class="item-name" :class="{ deprecated: c.deprecated }">{{ c.name }}</span>
+                <button v-if="props.wireframeActive" class="item-info-btn" :title="`Open the ${c.name} detail preview`"
+                  @click.stop="cl.select(lib.name, c.name)">
+                  <Icon name="info" :size="11" />
+                </button>
+                <span v-if="fidelityLabel(c.fidelityHint)" class="item-fidelity" :class="'fid-' + c.fidelityHint" :title="c.providerSignals && c.providerSignals.length ? 'Uses: ' + c.providerSignals.join(', ') : ''">{{ fidelityLabel(c.fidelityHint) }}</span>
+                <span v-if="!rinfo(lib.name, c.name).renderable" class="item-mfe-na" :title="`Lives in MFE ${rinfo(lib.name, c.name).owningMfe} — can't render on this surface`">⊘ {{ rinfo(lib.name, c.name).owningMfe }}</span>
                 <span v-if="cl.isOnPageInLib(lib.name, c.name)" class="item-onpage" title="Rendered on the current route">on page</span>
                 <span v-else-if="cl.isUsedInLib(lib.name, c.name)" class="item-used" title="Referenced somewhere in this project">used</span>
                 <span v-if="matchCount(cl.sourceName(lib.name, c.name)) > 0" class="item-match">
@@ -181,6 +400,48 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
                 <span v-if="c.category" class="item-category">{{ c.category }}</span>
               </div>
               <div v-if="c.description" class="item-desc">{{ c.description }}</div>
+            </button>
+          </div>
+        </template>
+
+        <!-- Building blocks: HTML elements + layout presets (drag to place).
+             Shown in 'all' mode (the usage filters apply only to library
+             components). -->
+        <template v-if="cl.filterMode.value === 'all'">
+          <div v-if="layoutItems.length" class="lib-group">
+            <div class="lib-group-head static"><span class="lib-group-name">Layout</span><span class="lib-group-count">{{ layoutItems.length }}</span></div>
+            <button
+              v-for="item in layoutItems"
+              :key="'layout-' + item.label"
+              class="components-list-item"
+              draggable="true"
+              :title="item.defaultClasses + '\n↳ drag onto the app to place'"
+              @dragstart="onDragStart($event, catalogDragItem(item))"
+              @dragend="onDragEnd"
+            >
+              <div class="item-row">
+                <Icon name="grid-2x2" :size="13" class="item-glyph" />
+                <span class="item-name">{{ item.label }}</span>
+                <code class="item-meta">{{ item.defaultClasses }}</code>
+              </div>
+            </button>
+          </div>
+          <div v-if="htmlItems.length" class="lib-group">
+            <div class="lib-group-head static"><span class="lib-group-name">Elements</span><span class="lib-group-count">{{ htmlItems.length }}</span></div>
+            <button
+              v-for="item in htmlItems"
+              :key="'html-' + item.label"
+              class="components-list-item"
+              draggable="true"
+              :title="'<' + item.tag + '>\n↳ drag onto the app to place'"
+              @dragstart="onDragStart($event, catalogDragItem(item))"
+              @dragend="onDragEnd"
+            >
+              <div class="item-row">
+                <Icon name="code" :size="13" class="item-glyph" />
+                <span class="item-name">{{ item.label }}</span>
+                <code class="item-meta">&lt;{{ item.tag }}&gt;</code>
+              </div>
             </button>
           </div>
         </template>
@@ -209,6 +470,32 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
             <div v-if="cl.selectedComponent.value.module"><strong>Import:</strong> <code>{{ cl.selectedComponent.value.module }}</code></div>
             <div v-if="cl.selectedComponent.value.category"><strong>Category:</strong> {{ cl.selectedComponent.value.category }}</div>
             <div v-if="cl.selectedComponent.value.sourceFile"><strong>Source:</strong> <code>{{ cl.selectedComponent.value.sourceFile }}</code></div>
+          </div>
+        </div>
+
+        <!-- Live preview — offscreen render snapshot. Draggable to place. -->
+        <div class="detail-section">
+          <div class="ds-label">Preview</div>
+          <div
+            class="detail-preview"
+            draggable="true"
+            title="Drag onto the app to place"
+            @dragstart="onDragStart($event, componentDragItem(cl.selectedLibrary.value ?? '', cl.selectedComponent.value))"
+            @dragend="onDragEnd"
+          >
+            <div v-if="previewState.loading" class="detail-preview-state">Rendering preview…</div>
+            <img
+              v-else-if="previewState.result?.dataUrl"
+              class="detail-preview-img"
+              :src="previewState.result.dataUrl"
+              :alt="`Preview of ${cl.selectedComponent.value.name}`"
+            />
+            <div v-else class="detail-preview-state placeholder">
+              <Icon name="package" :size="20" />
+              <div class="dp-name">{{ cl.selectedComponent.value.name }}</div>
+              <div class="dp-reason">{{ previewPlaceholderText(previewState.result) }}</div>
+            </div>
+            <div class="detail-preview-hint"><Icon name="mouse-pointer" :size="11" /> Drag onto the app to place</div>
           </div>
         </div>
 
@@ -478,9 +765,10 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   border-bottom: 1px solid var(--border);
   background: transparent;
   color: var(--text);
-  cursor: pointer;
+  cursor: grab;
   font-size: 12px;
 }
+.components-list-item:active { cursor: grabbing; }
 .components-list-item:hover { background: var(--surface-2); }
 .components-list-item.selected { background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .components-list-item.focused {
@@ -510,6 +798,16 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   text-decoration: line-through;
   color: var(--text-muted);
 }
+.item-info-btn {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.item-info-btn:hover { color: var(--text); }
 .item-used {
   font-size: 9px;
   padding: 1px 4px;
@@ -792,5 +1090,209 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
   background: var(--surface-2);
   padding: 1px 5px;
   border-radius: 3px;
+}
+
+/* ── Palette merge: build button, drag affordances, fidelity badges ── */
+.components-btn.build {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--text-on-accent, #fff);
+  font-weight: 600;
+}
+.components-btn.build:hover:not(:disabled) { background: var(--accent-hover, var(--accent)); }
+.build-count {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #000 22%, transparent);
+  font-size: 10px;
+  text-align: center;
+}
+
+/* ── Placements panel (lifecycle of this route's wireframe instances) ── */
+.placements-panel {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.placements-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px 4px;
+}
+.placements-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.placements-summary {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.placement-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  font-size: 11px;
+}
+.placement-row:hover { background: var(--surface-2); }
+.placement-name {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.placement-status {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.placement-status[data-status="placed"] {
+  background: color-mix(in srgb, var(--status-pending) 20%, transparent);
+  color: var(--status-pending);
+}
+.placement-status[data-status="building"] {
+  background: color-mix(in srgb, var(--status-in-progress) 20%, transparent);
+  color: var(--status-in-progress);
+}
+.placement-status[data-status="applied"] {
+  background: color-mix(in srgb, var(--status-accepted) 20%, transparent);
+  color: var(--status-accepted);
+}
+.placement-fidelity {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.placement-stale {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.placement-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.placement-delete:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.lib-group-head.static {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  cursor: default;
+}
+
+.item-glyph { color: var(--text-muted); flex: 0 0 auto; }
+.item-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50%;
+}
+
+.item-fidelity {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 6px;
+  color: var(--text-on-accent, #fff);
+}
+.item-fidelity.fid-live { background: var(--success); }
+.item-fidelity.fid-isolated-preview { background: var(--warning); }
+.item-fidelity.fid-placeholder,
+.item-fidelity.fid-unknown { background: var(--role-component); }
+
+/* Component lives in another MFE — can't render a live snapshot here. */
+.item-mfe-na {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  color: var(--text-muted);
+}
+.components-list-item.unavailable { opacity: 0.55; cursor: not-allowed; }
+.components-list-item.unavailable:hover { border-color: var(--border); }
+
+/* Detail live preview */
+.detail-preview {
+  position: relative;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background:
+    linear-gradient(45deg, var(--surface-2) 25%, transparent 25%, transparent 75%, var(--surface-2) 75%) 0 0 / 16px 16px,
+    var(--surface);
+  padding: 12px;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+.detail-preview:active { cursor: grabbing; }
+.detail-preview-img {
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 4px;
+  box-shadow: 0 1px 6px var(--shadow, rgba(0,0,0,0.2));
+  background: #fff;
+}
+.detail-preview-state {
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 11px;
+}
+.detail-preview-state.placeholder { display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--text-muted); }
+.dp-name { font-size: 12px; font-weight: 600; color: var(--text); }
+.dp-reason { max-width: 260px; line-height: 1.4; }
+.detail-preview-hint {
+  position: absolute;
+  bottom: 4px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  color: var(--text-muted);
+  opacity: 0.8;
 }
 </style>

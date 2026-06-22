@@ -1,6 +1,8 @@
 import type { Plugin, ViteDevServer } from 'vite'
 import fs from 'node:fs'
-import { transformFile, transformHTML } from './transform.js'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
+import { transformFile, transformHTML, injectComponentRegistry } from './transform.js'
 import { bridgeClientScript } from './bridge-client.js'
 import { createAnnotaskServer } from '../server/index.js'
 import { writeServerInfo, writeMfeServerInfo } from '../server/discovery.js'
@@ -70,8 +72,13 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
       if (!fs.existsSync(id)) return null
 
       const raw = fs.readFileSync(id, 'utf-8')
-      const annotated = transformFile(raw, id, projectRoot, mfe)
-      return annotated ?? raw
+      const annotated = transformFile(raw, id, projectRoot, mfe) ?? raw
+      // Keystone: register this file's imported components into
+      // window.__ANNOTASK_COMPONENTS__ so the bridge can live-mount real project
+      // components (Vue/React/local + library) when a wireframe/insert drops one.
+      // The Vite plugin previously injected the framework runtimes but never the
+      // component map — so only globally-registered Vue components could mount.
+      return injectComponentRegistry(annotated, id)
     },
 
     transform(code, id) {
@@ -119,10 +126,45 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
     apply: 'serve',
 
     configureServer(server: ViteDevServer) {
+      // Hosts beyond localhost / IP literals that may reach /__annotask/*
+      // (the API middleware's DNS-rebinding gate). Seeded from Vite's own
+      // `server.allowedHosts` and the host the server actually announces, so
+      // Annotask is never stricter than the app it's embedded in. Mutable
+      // array + getter because the bind address is only known on 'listening'.
+      const extraAllowedHosts: string[] = []
+      const viteAllowed = server.config.server.allowedHosts
+      if (viteAllowed === true) extraAllowedHosts.push('*')
+      else if (Array.isArray(viteAllowed)) extraAllowedHosts.push(...viteAllowed)
+      const cfgHost = server.config.server.host
+      if (typeof cfgHost === 'string' && cfgHost.length > 0) extraAllowedHosts.push(cfgHost)
+
       const uiServer = createAnnotaskServer({
         projectRoot,
         apiSchemaUrls: options.apiSchemaUrls,
         apiSchemaFiles: options.apiSchemaFiles,
+        allowedHosts: () => extraAllowedHosts,
+      })
+
+      // Resolve a bare module specifier (e.g. "primevue/button") to the RAW
+      // source file as an /@fs/ URL so the iframe can dynamically import an
+      // off-route catalog component for preview/placement. We deliberately
+      // resolve the raw file (via Node, not Vite's optimizer) so importing it
+      // serves+transforms a single module whose sub-deps map to already-
+      // optimized chunks — avoiding a dep re-optimization full-page reload.
+      const requireFromRoot = createRequire(pathToFileURL(projectRoot + '/package.json').href)
+      server.middlewares.use((req, res, next) => {
+        if (!req.url || !req.url.startsWith('/__annotask/preview-module')) return next()
+        res.setHeader('Content-Type', 'application/json')
+        const spec = new URL(req.url, 'http://localhost').searchParams.get('spec')
+        if (!spec) { res.statusCode = 400; res.end('{"error":"missing spec"}'); return }
+        try {
+          const abs = requireFromRoot.resolve(spec).replace(/\\/g, '/')
+          const root = projectRoot.replace(/\\/g, '/')
+          const url = abs.startsWith(root + '/') ? abs.slice(root.length) : '/@fs/' + abs.replace(/^\//, '')
+          res.end(JSON.stringify({ url }))
+        } catch (e) {
+          res.statusCode = 404; res.end(JSON.stringify({ error: String((e as Error)?.message || e) }))
+        }
       })
 
       // Mount middleware on Vite's connect instance
@@ -141,6 +183,23 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         const port = typeof addr === 'object' && addr ? addr.port : 5173
         const host = typeof addr === 'object' && addr ? addr.address : undefined
         writeServerInfo(projectRoot, port, host, mfe)
+        // The announced host must also pass the Host gate — skills/CLI built
+        // from server.json send it verbatim in their Host header.
+        if (host) extraAllowedHosts.push(host)
+        // Loud warning when bound beyond loopback (e.g. `vite --host`): the
+        // Annotask API is unauthenticated and can spawn agents that write source
+        // + run shell at the project root. On a non-loopback bind, anyone on the
+        // LAN can reach it. See SECURITY.md. (Loopback binds stay quiet.)
+        const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost'])
+        if (host && !loopback.has(host)) {
+          console.warn(
+            `[Annotask] ⚠ SECURITY: bound to ${host}:${port} (beyond localhost). ` +
+            `The Annotask dev API is UNAUTHENTICATED and can run your agent CLI ` +
+            `with file-write + shell access at the project root — anyone on this ` +
+            `network can reach it. Set ANNOTASK_MAX_PERMISSION=plan|default to cap ` +
+            `it, and prefer an SSH tunnel over --host. See SECURITY.md.`,
+          )
+        }
       })
 
       console.log('[Annotask] Design tool available at /__annotask/')

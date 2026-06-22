@@ -1,3 +1,8 @@
+---
+name: annotask-watch
+description: Watch for Annotask design changes in real-time and describe what the user is doing. Use when the user asks to watch or monitor Annotask design changes live.
+---
+
 # annotask-watch
 
 Watch for Annotask design changes in real-time and describe what the user is doing.

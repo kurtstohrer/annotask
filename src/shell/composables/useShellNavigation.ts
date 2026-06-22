@@ -4,12 +4,12 @@ import type { InteractionMode } from './useInteractionMode'
 
 export type ShellView = 'editor' | 'design' | 'develop'
 export type DesignSection = 'tokens' | 'inspector' | 'components'
-export type DevelopSection = 'a11y' | 'data' | 'libraries' | 'perf' | 'errors'
+export type DevelopSection = 'a11y' | 'data' | 'perf' | 'errors'
 export type ActivePanel = 'tasks' | 'inspector'
 
 const SHELL_VIEWS: ShellView[] = ['editor', 'design', 'develop']
 const DESIGN_SECTIONS: DesignSection[] = ['tokens', 'inspector', 'components']
-const DEVELOP_SECTIONS: DevelopSection[] = ['a11y', 'data', 'libraries', 'perf', 'errors']
+const DEVELOP_SECTIONS: DevelopSection[] = ['a11y', 'data', 'perf', 'errors']
 const ACTIVE_PANELS: ActivePanel[] = ['tasks', 'inspector']
 
 const SHELL_VIEW_KEY = 'annotask:shellView'
@@ -25,6 +25,14 @@ function migrateLegacyNavigation(): void {
   try {
     const legacyView = localStorage.getItem(SHELL_VIEW_KEY)
     const legacyPerf = localStorage.getItem(LEGACY_PERF_SECTION_KEY)
+    const legacyDevelop = localStorage.getItem(DEVELOP_SECTION_KEY)
+    if (legacyDevelop === 'libraries') {
+      localStorage.setItem(DEVELOP_SECTION_KEY, 'data')
+    }
+    // The standalone Palette section was merged into Components.
+    if (localStorage.getItem(DESIGN_SECTION_KEY) === 'palette') {
+      localStorage.setItem(DESIGN_SECTION_KEY, 'components')
+    }
     if (!legacyView && !legacyPerf) return
 
     if (legacyView === 'theme') {

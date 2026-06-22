@@ -1,7 +1,6 @@
 /**
  * State + fetching for the Data view: project data sources, discovered API
- * schemas, and per-source definition details. Creates `api_update` tasks for
- * in-repo data sources; external sources are exposed but non-editable.
+ * schemas, and per-source definition details.
  */
 import { ref, computed } from 'vue'
 import { on as wsOn } from '../services/wsClient'
@@ -351,6 +350,9 @@ function buildNetworkHighlightSources(): DataHighlightSource[] {
       sites,
       defaultLabel: label,
       color,
+      // Network color is a latency bucket, not an identity hue — tag it so the
+      // overlay draws a distinct (solid) border and the legend can say so.
+      encoding: 'latency',
     })
   }
   return out
@@ -437,8 +439,12 @@ function buildApiHighlightSources(): DataHighlightSource[] {
     try { return new URL(raw).origin } catch { return null }
   }
   const pathOf = (raw: string): string => {
-    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
-    try { return new URL(raw).pathname } catch { return raw }
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      try { return new URL(raw).pathname } catch { return raw }
+    }
+    // Relative path — strip the query string / fragment so an endpoint like
+    // `/api/solar/planets?sort_by=x` still matches the schema op `/api/solar/planets`.
+    return raw.split(/[?#]/)[0]
   }
   // An entry's origin comes from its resolved_endpoint (proxy-aware) first,
   // falling back to a literal absolute URL in `endpoint`. We also pre-compute
@@ -456,14 +462,19 @@ function buildApiHighlightSources(): DataHighlightSource[] {
     const seen = new Set<string>()
     for (const entry of cat.project_entries) {
       if (!entry.endpoint) continue
-      const entryUrl = entry.resolved_endpoint ?? entry.endpoint
-      const entryOrigin = originOf(entryUrl)
-      // Strict origin match when both sides know their origin.
+      // Use the ORIGINAL endpoint for the origin. A relative endpoint
+      // (`/api/...`) is a same-origin (often Vite-proxied) call — match it by
+      // PATH against any schema. resolved_endpoint's proxy-target host
+      // (e.g. :8888) is a server-side detail; gating on it dropped every proxied
+      // entry from the schema (whose origin is the browser-visible dev-server
+      // origin), so the APIs tab highlighted nothing.
+      const entryOrigin = entry.endpoint.startsWith('/') ? null : originOf(entry.endpoint)
+      // Strict origin match only when the entry itself is an absolute URL.
       if (schemaOrigin && entryOrigin && schemaOrigin !== entryOrigin) continue
-      // When the entry has a known origin but this schema doesn't, skip if
-      // another schema covers the entry's origin — that's the right owner.
+      // When the entry has a known (absolute) origin but this schema doesn't,
+      // skip if another schema covers that origin — that's the right owner.
       if (!schemaOrigin && entryOrigin && schemaOrigins.has(entryOrigin)) continue
-      const entryPath = pathOf(entryUrl)
+      const entryPath = pathOf(entry.endpoint)
       const match = schema.operations.find(op => matchesOpPath(op.path, entryPath))
       if (!match) continue
       const graph = bindingsByName.value.get(entryBindingKey(entry))
@@ -640,7 +651,7 @@ async function loadLibraryUsages(lib: DataSourceLibrary): Promise<void> {
 /**
  * Find the API schema that most likely backs a data-source, by matching on
  * endpoint / path heuristics. Used to expose `schema_in_repo` on the detail
- * pane and wire the `Create API Update Task` button.
+ * pane.
  */
 function matchSchemaForEntry(entry: ProjectDataEntry, all: ApiSchema[]): { schema: ApiSchema; operation?: ApiSchema['operations'][number] } | null {
   if (!entry.endpoint) return null
@@ -649,8 +660,12 @@ function matchSchemaForEntry(entry: ProjectDataEntry, all: ApiSchema[]): { schem
     try { return new URL(raw).origin } catch { return null }
   }
   const pathOf = (raw: string): string => {
-    if (!raw.startsWith('http://') && !raw.startsWith('https://')) return raw
-    try { return new URL(raw).pathname } catch { return raw }
+    if (raw.startsWith('http://') || raw.startsWith('https://')) {
+      try { return new URL(raw).pathname } catch { return raw }
+    }
+    // Relative path — strip the query string / fragment so an endpoint like
+    // `/api/solar/planets?sort_by=x` still matches the schema op `/api/solar/planets`.
+    return raw.split(/[?#]/)[0]
   }
   const entryOrigin = originOf(entry.endpoint)
   const entryPath = pathOf(entry.endpoint)
@@ -836,7 +851,7 @@ const selectedItem = computed<DataListItem | null>(() => {
 /**
  * For the currently selected data-source, find the matching schema (if any)
  * and return `{ schema_in_repo, schema, operation }` so the detail pane can
- * decide whether to show the "Create API Update Task" button.
+ * surface in-repo / external badges.
  */
 const selectedSchemaLink = computed<
   { schema_in_repo: boolean; schema: ApiSchema; operation?: ApiSchema['operations'][number] } | null
@@ -882,54 +897,6 @@ function clearSelection(): void {
   selectedId.value = null
   details.value = null
   highlightsAdapter?.setFocus(null)
-}
-
-async function createApiUpdateTask(args: {
-  description: string
-  desired_change: string
-  rationale?: string
-}): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
-  const item = selectedItem.value
-  if (!item || item.kind !== 'data-source') {
-    return { ok: false, error: 'No data source selected' }
-  }
-  const link = selectedSchemaLink.value
-  if (!link || !link.schema_in_repo) {
-    return { ok: false, error: 'Selected source is not backed by an in-repo schema' }
-  }
-  const context: Record<string, unknown> = {
-    data_source_name: item.name,
-    data_source_kind: item.dataKind,
-    schema_location: link.schema.location,
-    schema_kind: link.schema.kind,
-    desired_change: args.desired_change,
-  }
-  if (item.endpoint) context.endpoint = item.endpoint
-  if (link.operation) {
-    context.operation = { method: link.operation.method, path: link.operation.path }
-  }
-  if (args.rationale) context.rationale = args.rationale
-  try {
-    const res = await fetch('/__annotask/api/tasks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'api_update',
-        description: args.description,
-        file: item.file,
-        line: item.line ?? 1,
-        context,
-      }),
-    })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      return { ok: false, error: data?.error?.message ?? `HTTP ${res.status}` }
-    }
-    const created = await res.json()
-    return { ok: true, id: created.id }
-  } catch (err) {
-    return { ok: false, error: (err as Error).message ?? 'Network error' }
-  }
 }
 
 let initialized = false
@@ -989,7 +956,6 @@ export function useDataSources() {
     select,
     clearSelection,
     reload: loadAll,
-    createApiUpdateTask,
     colorForEntry,
     colorForSchema,
     bindingConfidenceFor,

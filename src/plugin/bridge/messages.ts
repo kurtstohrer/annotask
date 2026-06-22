@@ -12,6 +12,35 @@ export function bridgeMessages(): string {
   //   3. Sniff explicit DOM markers (class / data-attr). A recognized marker
   //      overrides luminance when unambiguous ('dark'/'light'), since explicit
   //      dev intent should win over a heuristic.
+  function readBg(el) {
+    if (!el) return null;
+    var bg = '';
+    try { bg = window.getComputedStyle(el).backgroundColor || ''; } catch(e) { return null; }
+    if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return null;
+    var parts = bg.match(/[0-9.]+/g);
+    if (!parts || parts.length < 3) return null;
+    var alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
+    if (!alpha) return null;
+    return { r: parseFloat(parts[0]), g: parseFloat(parts[1]), b: parseFloat(parts[2]) };
+  }
+
+  // App-true preview surface: the background the app actually paints (body
+  // first — content sits on it — then html; deliberately the opposite order
+  // of detectColorScheme's viewport probe), plus a contrast-safe text color
+  // from its luminance. Scheme-derived fallback when both are transparent.
+  function resolveAppSurface() {
+    var bg = readBg(document.body) || readBg(document.documentElement);
+    if (bg) {
+      var lum = (0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b) / 255;
+      return {
+        background: 'rgb(' + Math.round(bg.r) + ', ' + Math.round(bg.g) + ', ' + Math.round(bg.b) + ')',
+        color: lum < 0.5 ? '#f5f5f5' : '#111111'
+      };
+    }
+    var dark = detectColorScheme().scheme === 'dark';
+    return { background: dark ? '#111827' : '#ffffff', color: dark ? '#f5f5f5' : '#111111' };
+  }
+
   function detectColorScheme() {
     var scheme = 'light';
     var source = 'fallback';
@@ -20,18 +49,6 @@ export function bridgeMessages(): string {
     try {
       var html = document.documentElement;
       var body = document.body;
-
-      function readBg(el) {
-        if (!el) return null;
-        var bg = '';
-        try { bg = window.getComputedStyle(el).backgroundColor || ''; } catch(e) { return null; }
-        if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') return null;
-        var parts = bg.match(/[0-9.]+/g);
-        if (!parts || parts.length < 3) return null;
-        var alpha = parts.length >= 4 ? parseFloat(parts[3]) : 1;
-        if (!alpha) return null;
-        return { r: parseFloat(parts[0]), g: parseFloat(parts[1]), b: parseFloat(parts[2]) };
-      }
 
       var bg = readBg(html) || readBg(body);
       if (bg) {
@@ -119,7 +136,17 @@ export function bridgeMessages(): string {
   window.addEventListener('message', function(event) {
     var msg = event.data;
     if (!msg || msg.source !== 'annotask-shell') return;
-    if (shellOrigin === '*' && event.origin) shellOrigin = event.origin;
+    // Origin gate: only local origins may drive the bridge, and the first
+    // validated sender locks shellOrigin for the session. msg.source alone
+    // is spoofable by any page that iframes the dev app — without this
+    // check such a page could read outerHTML, set styles, and mount
+    // components cross-origin. Post-lock, even local-but-different origins
+    // are rejected so a second hostile localhost context can't hijack an
+    // established session. Locking happens BEFORE dispatch so responses
+    // (and the flushed pre-lock queue) post to the validated origin only.
+    if (!isLocalBridgeOrigin(event.origin)) return;
+    if (shellOrigin === null) lockShellOrigin(event.origin);
+    else if (event.origin !== shellOrigin) return;
 
     var type = msg.type;
     var payload = msg.payload || {};
@@ -170,6 +197,25 @@ export function bridgeMessages(): string {
       var el = document.elementFromPoint(payload.x, payload.y);
       if (!el || el === document.documentElement || el === document.body) {
         respond(id, null);
+        return;
+      }
+      // A point inside an annotask-mounted placement resolves to the PLACEMENT,
+      // never to the mounted component's internals — their data-annotask-*
+      // attrs describe the component's own source (e.g. PlanetCard.vue), which
+      // is the wrong identity for selection and a wrong anchor for drops.
+      var rapInst = el.closest ? el.closest('[data-annotask-instance]') : null;
+      if (rapInst) {
+        respond(id, {
+          eid: getEid(rapInst),
+          instance_id: rapInst.getAttribute('data-annotask-instance'),
+          file: '',
+          line: '',
+          component: rapInst.getAttribute('data-annotask-component-name') || '',
+          tag: rapInst.tagName.toLowerCase(),
+          rect: getRect(rapInst),
+          classes: typeof rapInst.className === 'string' ? rapInst.className : '',
+          text: getVisibleText(rapInst, 200)
+        });
         return;
       }
       var src = findSourceElement(el);
@@ -236,6 +282,87 @@ export function bridgeMessages(): string {
         results.push((r1.width > 0 && r1.height > 0) ? r1 : null);
       }
       respond(id, { rects: results });
+      return;
+    }
+
+    if (type === 'resolve:text-rects') {
+      // Re-measure a text selection's per-line rects by locating the selected
+      // substring inside the anchor element's text nodes and building a Range.
+      // Lets the shell refresh highlight overlays after text reflow (window
+      // resize, container size change) — translation alone misaligns when the
+      // line breaks shift.
+      var teEl = getEl(payload.eid);
+      if (!teEl || !teEl.isConnected) { respond(id, null); return; }
+      var needle = String(payload.text || '');
+      if (!needle) { respond(id, null); return; }
+      var nodes = [];
+      var concat = '';
+      try {
+        var walker = document.createTreeWalker(teEl, NodeFilter.SHOW_TEXT, null);
+        var tn;
+        while ((tn = walker.nextNode())) {
+          var tv = tn.nodeValue || '';
+          if (!tv) continue;
+          nodes.push({ node: tn, start: concat.length, end: concat.length + tv.length });
+          concat += tv;
+        }
+      } catch (_e) { respond(id, null); return; }
+      if (nodes.length === 0) { respond(id, null); return; }
+      var startIdx = concat.indexOf(needle);
+      if (startIdx < 0) {
+        // Whitespace-normalized fallback: collapsing runs of whitespace lets
+        // us match selections whose newlines/tabs the iframe normalized away.
+        var normNeedle = needle.replace(/\\s+/g, ' ').trim();
+        if (normNeedle) {
+          // Build a parallel index map: position in collapsed -> position in original.
+          var mapToOrig = [];
+          var collapsed = '';
+          var inWs = false;
+          for (var pi = 0; pi < concat.length; pi++) {
+            var ch = concat.charCodeAt(pi);
+            var isWs = ch === 32 || ch === 9 || ch === 10 || ch === 13;
+            if (isWs) {
+              if (!inWs) { mapToOrig.push(pi); collapsed += ' '; inWs = true; }
+            } else { mapToOrig.push(pi); collapsed += concat.charAt(pi); inWs = false; }
+          }
+          mapToOrig.push(concat.length);
+          var collIdx = collapsed.indexOf(normNeedle);
+          if (collIdx >= 0) {
+            startIdx = mapToOrig[collIdx] != null ? mapToOrig[collIdx] : -1;
+            if (startIdx >= 0) {
+              var collEnd = collIdx + normNeedle.length;
+              var origEnd = mapToOrig[collEnd] != null ? mapToOrig[collEnd] : concat.length;
+              needle = concat.substring(startIdx, origEnd);
+            }
+          }
+        }
+      }
+      if (startIdx < 0) { respond(id, null); return; }
+      var endIdx = startIdx + needle.length;
+      function pickNode(idx) {
+        for (var ni = 0; ni < nodes.length; ni++) {
+          if (idx >= nodes[ni].start && idx <= nodes[ni].end) {
+            return { node: nodes[ni].node, offset: idx - nodes[ni].start };
+          }
+        }
+        return null;
+      }
+      var startPos = pickNode(startIdx);
+      var endPos = pickNode(endIdx);
+      if (!startPos || !endPos) { respond(id, null); return; }
+      var range;
+      try {
+        range = document.createRange();
+        range.setStart(startPos.node, startPos.offset);
+        range.setEnd(endPos.node, endPos.offset);
+      } catch (_e) { respond(id, null); return; }
+      var crs = range.getClientRects();
+      var out = [];
+      for (var ki = 0; ki < crs.length; ki++) {
+        var cr = crs[ki];
+        if (cr.width > 0 && cr.height > 0) out.push({ x: cr.x, y: cr.y, width: cr.width, height: cr.height });
+      }
+      respond(id, { rects: out });
       return;
     }
 
@@ -926,6 +1053,369 @@ export function bridgeMessages(): string {
       return;
     }
 
+    if (type === 'wireframe:capture') {
+      // Rasterize the current route into per-block images for the snapshot
+      // wireframe canvas. Sequential captures (html2canvas costs 100-500ms per
+      // block) with progress pushes; one full-document pass at the end is the
+      // honest "before" the apply composite needs. Rects are document CSS px:
+      // we capture at scroll (0,0) so viewport rects equal document rects and
+      // fixed/sticky elements can't mis-crop.
+      var wfScale = Math.min(window.devicePixelRatio || 1, 2);
+      if (payload && typeof payload.scale === 'number' && payload.scale > 0) wfScale = Math.min(payload.scale, 3);
+      var wfSavedX = window.scrollX || 0;
+      var wfSavedY = window.scrollY || 0;
+
+      function wfQualifies(el) {
+        if (!el || el.nodeType !== 1) return false;
+        var t = el.tagName;
+        if (t === 'SCRIPT' || t === 'STYLE' || t === 'LINK' || t === 'TEMPLATE' || t === 'NOSCRIPT') return false;
+        if (el.hasAttribute('data-annotask-instance') || el.hasAttribute('data-annotask-preview')) return false;
+        var cs = window.getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        var r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      }
+
+      function wfChildren(el) {
+        var out = [];
+        for (var i = 0; i < el.children.length; i++) {
+          if (wfQualifies(el.children[i])) out.push(el.children[i]);
+        }
+        return out;
+      }
+
+      function wfHeight(el) { return el.getBoundingClientRect().height; }
+
+      // Content root: start at the semantic main when present, then unwrap
+      // single-child wrappers while the lone child covers most of its parent's
+      // HEIGHT. Height, not area: a centered max-width page column at a wide
+      // viewport is exactly the wrapper that must unwrap, and its horizontal
+      // margins would fail an area test. The unwrap applies to main too — a
+      // router outlet usually renders ONE page wrapper inside it, and the
+      // page's sections are what the user wants as blocks.
+      function wfContentRoot(root) {
+        var main = root.querySelector('main, [role="main"]');
+        var cur = (main && wfQualifies(main)) ? main : root;
+        for (var depth = 0; depth < 6; depth++) {
+          var kids = wfChildren(cur);
+          if (kids.length === 1 && wfHeight(cur) > 0 && wfHeight(kids[0]) >= wfHeight(cur) * 0.8) { cur = kids[0]; continue; }
+          break;
+        }
+        return cur;
+      }
+
+      function wfFinishError(message) {
+        window.scrollTo(wfSavedX, wfSavedY);
+        respond(id, { error: message });
+      }
+
+      window.scrollTo(0, 0);
+
+      var wfRoot = payload && payload.rootEid ? getEl(payload.rootEid) : document.body;
+      if (!wfRoot) { wfFinishError('root element not found'); return; }
+      var wfContent = wfContentRoot(wfRoot);
+
+      // Chrome pass: page furniture outside the content root, outermost only.
+      var wfChrome = [];
+      var wfChromeCandidates = wfRoot.querySelectorAll('header, nav, footer, aside');
+      for (var wci = 0; wci < wfChromeCandidates.length; wci++) {
+        var wcEl = wfChromeCandidates[wci];
+        if (!wfQualifies(wcEl)) continue;
+        if (wfContent !== wfRoot && wfContent.contains(wcEl) && wfContent !== wcEl) continue;
+        var wcContained = false;
+        for (var wcj = 0; wcj < wfChrome.length; wcj++) {
+          if (wfChrome[wcj].contains(wcEl)) { wcContained = true; break; }
+        }
+        if (!wcContained) wfChrome.push(wcEl);
+      }
+
+      // Content pass: direct qualifying children of the content root with a
+      // minimum footprint; when a level has only one (undersized) child,
+      // descend and retry so thin wrappers don't yield a single page block.
+      var wfContentKids = [];
+      var wfCursor = wfContent;
+      for (var wfDepth = 0; wfDepth < 5; wfDepth++) {
+        var wfRaw = wfChildren(wfCursor);
+        wfContentKids = [];
+        for (var wki = 0; wki < wfRaw.length; wki++) {
+          var wkr = wfRaw[wki].getBoundingClientRect();
+          if (wkr.width >= 48 && wkr.height >= 24) wfContentKids.push(wfRaw[wki]);
+        }
+        if (wfContentKids.length === 0 && wfRaw.length === 1) { wfCursor = wfRaw[0]; continue; }
+        break;
+      }
+      if (wfContentKids.length === 0) {
+        // Fall back to one block = the content root itself (still anchored).
+        if (wfQualifies(wfCursor)) wfContentKids = [wfCursor];
+        else if (wfChrome.length === 0) { wfFinishError('nothing to capture'); return; }
+      }
+
+      // Straggler pass: content OUTSIDE the content root that isn't semantic
+      // chrome — a floating button, banner, or toast mounted as a sibling of
+      // <main> would otherwise appear in the honest full-page "before" but
+      // get no block on the canvas. Walk the root→content-root path; at each
+      // level, every qualifying sibling with a real footprint becomes a
+      // block, unless the chrome pass already covers it.
+      var wfStragglers = [];
+      (function() {
+        var wfPath = [];
+        var wfNode = wfContent;
+        while (wfNode && wfNode !== wfRoot) { wfPath.push(wfNode); wfNode = wfNode.parentElement; }
+        if (wfNode !== wfRoot) return; // content root detached from the capture root
+        wfPath.push(wfRoot);
+        for (var wpi = wfPath.length - 1; wpi >= 1; wpi--) {
+          var wpParent = wfPath[wpi];
+          var wpPathChild = wfPath[wpi - 1];
+          var wpKids = wfChildren(wpParent);
+          for (var wpk = 0; wpk < wpKids.length; wpk++) {
+            var wpKid = wpKids[wpk];
+            if (wpKid === wpPathChild) continue;
+            var wpr = wpKid.getBoundingClientRect();
+            if (wpr.width < 48 || wpr.height < 24) continue;
+            var wpCovered = false;
+            for (var wpc = 0; wpc < wfChrome.length && !wpCovered; wpc++) {
+              // Contains-a-chrome-block counts as covered too: blocking the
+              // wrapper would double-capture the header inside it.
+              if (wfChrome[wpc] === wpKid || wfChrome[wpc].contains(wpKid) || wpKid.contains(wfChrome[wpc])) wpCovered = true;
+            }
+            if (!wpCovered) wfStragglers.push(wpKid);
+          }
+        }
+      })();
+
+      var wfAll = [];
+      for (var wai = 0; wai < wfChrome.length; wai++) wfAll.push(wfChrome[wai]);
+      for (var waj = 0; waj < wfContentKids.length; waj++) {
+        if (wfAll.indexOf(wfContentKids[waj]) === -1) wfAll.push(wfContentKids[waj]);
+      }
+      for (var wak = 0; wak < wfStragglers.length; wak++) {
+        if (wfAll.indexOf(wfStragglers[wak]) === -1) wfAll.push(wfStragglers[wak]);
+      }
+      wfAll.sort(function(a, b) {
+        var pos = a.compareDocumentPosition(b);
+        if (pos & 4) return -1; // a precedes b
+        if (pos & 2) return 1;
+        return 0;
+      });
+      var wfTruncated = false;
+      if (wfAll.length > 24) { wfAll = wfAll.slice(0, 24); wfTruncated = true; }
+
+      var wfMetas = [];
+      for (var wmi = 0; wmi < wfAll.length; wmi++) {
+        var wmEl = wfAll[wmi];
+        var wmSrc = findSourceElement(wmEl);
+        var wmData = getSourceData(wmSrc.sourceEl);
+        var wmRect = wmEl.getBoundingClientRect();
+        var wmTag = wmEl.tagName.toLowerCase();
+        wfMetas.push({
+          eid: getEid(wmEl),
+          file: wmData.file, line: wmData.line, component: wmData.component,
+          source_tag: wmData.source_tag, tag: wmTag,
+          // First class name — the human-distinct identity for direction
+          // labels ('toolbar', 'layout'); component names repeat per page.
+          cls: (wmEl.classList && wmEl.classList[0]) || '',
+          role: (wmTag === 'header' || wmTag === 'nav' || wmTag === 'footer' || wmTag === 'aside') ? wmTag : 'content',
+          rect: { x: wmRect.x + (window.scrollX || 0), y: wmRect.y + (window.scrollY || 0), width: wmRect.width, height: wmRect.height },
+          dataUrl: null
+        });
+      }
+
+      function wfRun(h2c) {
+        var wfIdx = 0;
+        function wfCaptureNext() {
+          if (wfIdx >= wfMetas.length) { wfCaptureFull(); return; }
+          var meta = wfMetas[wfIdx];
+          sendToShell('wireframe:capture-progress', { index: wfIdx, total: wfMetas.length + 1, label: meta.component || meta.source_tag || meta.tag });
+          var capH = Math.min(meta.rect.height, 4000);
+          h2c(document.body, { useCORS: true, allowTaint: true, logging: false, scale: wfScale, x: meta.rect.x, y: meta.rect.y, width: meta.rect.width, height: capH })
+            .then(function(canvas) {
+              meta.dataUrl = canvas.toDataURL('image/png');
+              if (capH < meta.rect.height) meta.clipped = true;
+              wfIdx++; wfCaptureNext();
+            })
+            .catch(function(err) {
+              meta.dataUrl = null;
+              meta.error = (err && err.message) || 'capture failed';
+              wfIdx++; wfCaptureNext();
+            });
+        }
+        function wfCaptureFull() {
+          // Explode captures (rootEid) refine an existing canvas — the
+          // original full-page "before" stays the honest baseline. Instead,
+          // capture the root's SHELL: its own pixels (background, padding,
+          // the surface between children) with the captured child blocks
+          // visibility-hidden in the clone — the container's styling without
+          // ghost children burned in.
+          if (payload && payload.rootEid) {
+            var shellRoot = getEl(payload.rootEid);
+            if (!shellRoot) { wfFinish(null, null); return; }
+            sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'container shell' });
+            for (var smi = 0; smi < wfAll.length; smi++) wfAll[smi].setAttribute('data-annotask-wf-hide', '1');
+            var shellCleanup = function() {
+              for (var sci = 0; sci < wfAll.length; sci++) wfAll[sci].removeAttribute('data-annotask-wf-hide');
+            };
+            var shellRect = shellRoot.getBoundingClientRect();
+            h2c(document.body, {
+              useCORS: true, allowTaint: true, logging: false, scale: wfScale,
+              x: shellRect.x + (window.scrollX || 0), y: shellRect.y + (window.scrollY || 0),
+              width: shellRect.width, height: Math.min(shellRect.height, 4000),
+              onclone: function(docClone) {
+                var hidden = docClone.querySelectorAll('[data-annotask-wf-hide]');
+                for (var shi = 0; shi < hidden.length; shi++) hidden[shi].style.visibility = 'hidden';
+              }
+            }).then(function(canvas) { shellCleanup(); wfFinish(null, canvas.toDataURL('image/png')); })
+              .catch(function() { shellCleanup(); wfFinish(null, null); });
+            return;
+          }
+          sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
+          // Scale 1: the full page only feeds the before/after composite, and
+          // a retina full-document PNG would blow the 4MB upload cap.
+          h2c(document.body, { useCORS: true, allowTaint: true, logging: false, scale: 1 })
+            .then(function(canvas) { wfFinish(canvas.toDataURL('image/png'), null); })
+            .catch(function() { wfFinish(null, null); });
+        }
+        function wfFinish(fullDataUrl, shellDataUrl) {
+          window.scrollTo(wfSavedX, wfSavedY);
+          var result = {
+            viewport: {
+              width: window.innerWidth, height: window.innerHeight,
+              docWidth: document.documentElement.scrollWidth,
+              docHeight: document.documentElement.scrollHeight,
+              scale: wfScale
+            },
+            blocks: wfMetas
+          };
+          if (wfTruncated) result.truncated = true;
+          if (fullDataUrl) result.fullDataUrl = fullDataUrl;
+          if (shellDataUrl) result.shellDataUrl = shellDataUrl;
+          respond(id, result);
+        }
+        wfCaptureNext();
+      }
+
+      function wfResolveH2c() {
+        var h2c = window.html2canvas;
+        if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
+        return (typeof h2c === 'function') ? h2c : null;
+      }
+
+      if (wfResolveH2c()) {
+        wfRun(wfResolveH2c());
+      } else {
+        var wfScript = document.createElement('script');
+        wfScript.src = '/__annotask/vendor/html2canvas.min.js';
+        var wfSavedDefine;
+        if (typeof window.define === 'function' && window.define.amd) {
+          wfSavedDefine = window.define;
+          window.define = undefined;
+        }
+        wfScript.onload = function() {
+          if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
+          var h2c = wfResolveH2c();
+          if (h2c) wfRun(h2c);
+          else wfFinishError('html2canvas not loaded');
+        };
+        wfScript.onerror = function() {
+          if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
+          wfFinishError('failed to load html2canvas — check that /__annotask/ routes are accessible from the app origin');
+        };
+        document.head.appendChild(wfScript);
+      }
+      return;
+    }
+
+    if (type === 'preview:component') {
+      // Render a real component instance OFFSCREEN in the iframe (so it gets
+      // the app's true styles + provider context), snapshot it with
+      // html2canvas, then tear it down. Returns the honest fidelity so the
+      // shell can show a thumbnail or an explicit placeholder. Load the
+      // component on demand first if it isn't on the current route.
+      ensureComponentLoaded(payload.componentName, payload.module).then(function() {
+      // Snapshot on the app's REAL surface, not a hardcoded white card — a
+      // dropped component should look like it belongs on the page behind it.
+      var pvSurface = resolveAppSurface();
+      var pvContainer = document.createElement('div');
+      pvContainer.setAttribute('data-annotask-preview', 'true');
+      pvContainer.style.cssText = 'position:fixed;left:-99999px;top:0;z-index:-1;width:' + (payload.width || 320) + 'px;padding:12px;background:' + pvSurface.background + ';color:' + pvSurface.color + ';box-sizing:border-box;';
+      document.body.appendChild(pvContainer);
+      // Repeat a list/loop binding into N stacked instances so the sketch shows
+      // the real v-for. Each instance mounts into its own point with optional
+      // per-row props; unmounts are composited (a single mount overwrites the
+      // container's __annotask_unmount, so N copies would leak without this).
+      var pvRepeat = Math.max(1, Math.min(payload.repeat || 1, 24));
+      var pvInstanceProps = payload.instanceProps || null;
+      var pvUnmounts = [];
+      var pvFirstPoint = pvContainer;
+      var pvRes = { mounted: false, reason: null, fidelity: undefined, detail: null };
+      var pvWrap = pvContainer;
+      if (pvRepeat > 1) {
+        pvWrap = document.createElement('div');
+        pvWrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+        pvContainer.appendChild(pvWrap);
+      }
+      for (var pvI = 0; pvI < pvRepeat; pvI++) {
+        var pvPoint = pvRepeat > 1 ? document.createElement('div') : pvContainer;
+        if (pvRepeat > 1) pvWrap.appendChild(pvPoint);
+        if (pvI === 0) pvFirstPoint = pvPoint;
+        var pvProps = payload.props || {};
+        var pvOverlay = pvInstanceProps ? (pvInstanceProps[pvI] || pvInstanceProps[0]) : null;
+        if (pvOverlay) {
+          var pvMerged = {};
+          for (var pvK1 in pvProps) { if (Object.prototype.hasOwnProperty.call(pvProps, pvK1)) pvMerged[pvK1] = pvProps[pvK1]; }
+          for (var pvK2 in pvOverlay) { if (Object.prototype.hasOwnProperty.call(pvOverlay, pvK2)) pvMerged[pvK2] = pvOverlay[pvK2]; }
+          pvProps = pvMerged;
+        }
+        var pvOne = tryMountComponent(pvPoint, payload.componentName, pvProps);
+        if (pvI === 0) pvRes = pvOne; // first instance decides reported status/fidelity
+        if (pvOne.mounted && pvPoint.__annotask_unmount) pvUnmounts.push(pvPoint.__annotask_unmount);
+      }
+      function pvCleanup() {
+        for (var pvU = pvUnmounts.length - 1; pvU >= 0; pvU--) { try { pvUnmounts[pvU](); } catch(e) {} }
+        try { pvContainer.remove(); } catch(e) {}
+      }
+      if (!pvRes.mounted) {
+        pvCleanup();
+        respond(id, { mounted: false, reason: pvRes.reason || null, fidelity: pvRes.fidelity, detail: pvRes.detail || null });
+        return;
+      }
+      function pvSnapshot() {
+        var h2c = window.html2canvas;
+        if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
+        if (typeof h2c !== 'function') { pvCleanup(); respond(id, { mounted: true, fidelity: pvRes.fidelity, error: 'html2canvas not loaded' }); return; }
+        // Retina-sharp: render at devicePixelRatio (capped 2x) like the page
+        // capture. The PNG is hi-res but the block keeps its CSS size, so report
+        // the unscaled (CSS) dimensions — else the block would land 2x too big.
+        var pvScale = Math.min(window.devicePixelRatio || 1, 2);
+        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: true, scale: pvScale, backgroundColor: pvSurface.background, width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
+          var dataUrl = canvas.toDataURL('image/png');
+          pvCleanup();
+          respond(id, { mounted: true, fidelity: pvRes.fidelity, dataUrl: dataUrl, width: Math.round(canvas.width / pvScale), height: Math.round(canvas.height / pvScale) });
+        }).catch(function(err) {
+          pvCleanup();
+          respond(id, { mounted: true, fidelity: pvRes.fidelity, error: (err && err.message) || 'snapshot failed' });
+        });
+      }
+      function pvAfterFrames() {
+        // Two frames so async React/Svelte/Solid renders settle before snapshot.
+        requestAnimationFrame(function() { requestAnimationFrame(function() {
+          if (isEmptyMount(pvFirstPoint)) { pvCleanup(); respond(id, { mounted: false, reason: 'rendered-empty', fidelity: 'placeholder' }); return; }
+          pvSnapshot();
+        }); });
+      }
+      if (window.html2canvas) { pvAfterFrames(); }
+      else {
+        var pvScript = document.createElement('script');
+        pvScript.src = '/__annotask/vendor/html2canvas.min.js';
+        var savedDefinePv;
+        if (typeof window.define === 'function' && window.define.amd) { savedDefinePv = window.define; window.define = undefined; }
+        pvScript.onload = function() { if (savedDefinePv !== undefined) window.define = savedDefinePv; pvAfterFrames(); };
+        pvScript.onerror = function() { if (savedDefinePv !== undefined) window.define = savedDefinePv; pvCleanup(); respond(id, { mounted: true, fidelity: pvRes.fidelity, error: 'failed to load html2canvas' }); };
+        document.head.appendChild(pvScript);
+      }
+      });
+      return;
+    }
+
     if (type === 'layout:scan') {
       var layoutResults = [];
       var allEls = document.querySelectorAll('*');
@@ -1050,6 +1540,7 @@ export function bridgeMessages(): string {
       var ipTarget = getEl(payload.targetEid);
       if (!ipTarget) { respond(id, { placeholderEid: '' }); return; }
       var ipEl = createPlaceholder(payload);
+      if (payload.instanceId) ipEl.setAttribute('data-annotask-instance', payload.instanceId);
       var ipRef = ipTarget;
       switch (payload.position) {
         case 'before': ipRef.parentElement && ipRef.parentElement.insertBefore(ipEl, ipRef); break;
@@ -1082,34 +1573,62 @@ export function bridgeMessages(): string {
       return;
     }
 
-    if (type === 'move:element') {
-      var meEl = getEl(payload.eid);
-      var meTarget = getEl(payload.targetEid);
-      if (meEl && meTarget) {
-        switch (payload.position) {
-          case 'before': meTarget.parentElement && meTarget.parentElement.insertBefore(meEl, meTarget); break;
-          case 'after': meTarget.parentElement && meTarget.parentElement.insertBefore(meEl, meTarget.nextSibling); break;
-          case 'append': meTarget.appendChild(meEl); break;
-          case 'prepend': meTarget.insertBefore(meEl, meTarget.firstChild); break;
-        }
-      }
-      respond(id, {});
-      return;
-    }
-
     if (type === 'insert:vue-component' || type === 'insert:component') {
       var vcTarget = getEl(payload.targetEid);
-      if (!vcTarget) { respond(id, { eid: '', mounted: false }); return; }
+      if (!vcTarget) { respond(id, { eid: '', mounted: false, reason: 'no-runtime', fidelity: 'placeholder' }); return; }
+      // Load the component on demand first if it isn't on the current route.
+      ensureComponentLoaded(payload.componentName, payload.module).then(function() {
       var vcContainer = document.createElement('div');
       vcContainer.setAttribute('data-annotask-placeholder', 'true');
+      // Tag the container with its wireframe instance id — placement identity
+      // for click/selection, drop-target refusal, capture exclusion, and
+      // reapply's DOM-idempotency probe.
+      if (payload.instanceId) vcContainer.setAttribute('data-annotask-instance', payload.instanceId);
+      // Placement identity: the click handler reads this for the selection's
+      // component field (placements select as placements, not their internals).
+      vcContainer.setAttribute('data-annotask-component-name', payload.componentName);
       switch (payload.position) {
         case 'before': vcTarget.parentElement && vcTarget.parentElement.insertBefore(vcContainer, vcTarget); break;
         case 'after': vcTarget.parentElement && vcTarget.parentElement.insertBefore(vcContainer, vcTarget.nextSibling); break;
         case 'append': vcTarget.appendChild(vcContainer); break;
         case 'prepend': vcTarget.insertBefore(vcContainer, vcTarget.firstChild); break;
       }
-      var mounted = tryMountComponent(vcContainer, payload.componentName, payload.props);
-      respond(id, { eid: getEid(vcContainer), mounted: mounted });
+      // Layout affordances so a live mount isn't collapsed to zero width in a
+      // flex/grid row (mirrors insert:placeholder). box-sizing keeps padding sane.
+      vcContainer.style.boxSizing = 'border-box';
+      var vcParent = (payload.position === 'append' || payload.position === 'prepend') ? vcTarget : vcTarget.parentElement;
+      if (vcParent) {
+        var vcCs = window.getComputedStyle(vcParent);
+        if ((vcCs.display.indexOf('flex') >= 0 || vcCs.display.indexOf('grid') >= 0) && !vcContainer.style.width) {
+          var vcRow = vcCs.flexDirection === 'row' || vcCs.flexDirection === 'row-reverse' || vcCs.display.indexOf('grid') >= 0;
+          if (vcRow) vcContainer.style.flex = '1';
+        }
+      }
+      var vcRes = tryMountComponent(vcContainer, payload.componentName, payload.props);
+      // Honest fidelity: stamp the container and render a VISIBLY different state
+      // per outcome so a failed mount is never a silent empty div.
+      vcContainer.setAttribute('data-annotask-fidelity', vcRes.fidelity);
+      if (vcRes.reason) vcContainer.setAttribute('data-annotask-mount-reason', vcRes.reason);
+      if (!vcRes.mounted) {
+        renderUnmountedBadge(vcContainer, payload.componentName, vcRes.reason);
+      } else {
+        renderFidelityPill(vcContainer, vcRes.fidelity);
+      }
+      // Settle two frames so async React/Svelte/Solid renders finish and their
+      // scheduleEmptyCheck has run (it may flip fidelity → placeholder + badge).
+      // Then respond with the SETTLED truth read off the container, not the
+      // optimistic pre-settle result — so the drop reports what the preview
+      // snapshot would. Vue mounts synchronously, so this is just a short delay.
+      requestAnimationFrame(function() { requestAnimationFrame(function() {
+        var settledFidelity = vcContainer.getAttribute('data-annotask-fidelity') || vcRes.fidelity;
+        var settledMounted = vcContainer.hasAttribute('data-annotask-mounted');
+        var settledReason = vcContainer.getAttribute('data-annotask-mount-reason') || vcRes.reason || null;
+        // A live mount that measured zero height would be invisible — floor it
+        // so the user actually sees the (real) render.
+        if (settledMounted && vcContainer.offsetHeight === 0) vcContainer.style.minHeight = '24px';
+        respond(id, { eid: getEid(vcContainer), mounted: settledMounted, reason: settledReason, fidelity: settledFidelity });
+      }); });
+      });
       return;
     }
 

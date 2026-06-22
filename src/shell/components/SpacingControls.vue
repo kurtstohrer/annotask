@@ -66,16 +66,16 @@ const margin = computed(() => parseSides(props.computedStyles['margin'] || '0'))
 
 .margin-box {
   padding: 20px 28px;
-  background: rgba(249, 115, 22, 0.08);
-  border: 1px dashed rgba(249, 115, 22, 0.3);
+  background: color-mix(in srgb, var(--orange) 8%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--orange) 30%, transparent);
   border-radius: 6px;
   min-width: 220px;
 }
 
 .padding-box {
   padding: 18px 24px;
-  background: rgba(34, 197, 94, 0.08);
-  border: 1px dashed rgba(34, 197, 94, 0.3);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--success) 30%, transparent);
   border-radius: 4px;
   width: 100%;
 }
@@ -84,7 +84,7 @@ const margin = computed(() => parseSides(props.computedStyles['margin'] || '0'))
   padding: 8px 12px;
   background: var(--accent);
   border-radius: 3px;
-  color: white;
+  color: var(--text-on-accent);
   font-size: 10px;
   font-weight: 600;
   text-align: center;
@@ -99,8 +99,8 @@ const margin = computed(() => parseSides(props.computedStyles['margin'] || '0'))
   opacity: 0.6;
 }
 
-.margin-label { top: 3px; left: 6px; color: #f97316; }
-.padding-label { top: 2px; left: 5px; color: #22c55e; }
+.margin-label { top: 3px; left: 6px; color: var(--orange); }
+.padding-label { top: 2px; left: 5px; color: var(--success); }
 
 .side-input {
   position: absolute;

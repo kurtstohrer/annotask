@@ -56,6 +56,10 @@ describe('VALID_TRANSITIONS / validateTransition', () => {
     expect(validateTransition('review', 'denied')).toBeNull()
   })
 
+  it('allows in_progress → pending (relinquish lock: agent gave up / cancelled / errored)', () => {
+    expect(validateTransition('in_progress', 'pending')).toBeNull()
+  })
+
   it('returns null for unknown current status (legacy compat)', () => {
     expect(validateTransition('unknown', 'in_progress')).toBeNull()
   })

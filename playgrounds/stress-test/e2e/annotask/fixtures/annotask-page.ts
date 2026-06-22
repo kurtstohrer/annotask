@@ -21,12 +21,11 @@ export class AnnotaskShell {
     await this.page.locator(sel).click()
   }
 
-  async activateTool(tool: 'pin' | 'arrow' | 'draw' | 'highlight' | 'select' | 'interact'): Promise<void> {
+  async activateTool(tool: 'pin' | 'arrow' | 'highlight' | 'select' | 'interact'): Promise<void> {
     await this.gotoTab('annotate')
     const map = {
       pin: SEL.toolPin,
       arrow: SEL.toolArrow,
-      draw: SEL.toolDraw,
       highlight: SEL.toolHighlight,
       select: SEL.toolSelect,
       interact: SEL.toolInteract,

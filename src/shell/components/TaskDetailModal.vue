@@ -6,10 +6,16 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import TaskAgentFeedback from './TaskAgentFeedback.vue'
 import TaskInteractionHistory from './TaskInteractionHistory.vue'
 import TaskJsonView from './TaskJsonView.vue'
+import ConversationTab from './ConversationTab.vue'
 import Icon from './Icon.vue'
+import { useProviderSettings } from '../composables/useProviderSettings'
+import { requestAutoRun } from '../composables/useAgentMode'
+import { PERMISSION_MODES, type PermissionMode } from '../../schema'
 
 const props = defineProps<{
   task: Task
+  /** Optional initial tab. Used by agent-mode auto-run to land on Conversation. */
+  initialTab?: 'details' | 'conversation'
 }>()
 
 const emit = defineEmits<{
@@ -19,7 +25,90 @@ const emit = defineEmits<{
   delete: [id: string]
   update: [id: string, fields: Record<string, unknown>]
   reply: [id: string, answers: Array<{ id: string; value: string }>]
+  'open-settings': []
 }>()
+
+type ModalTab = 'details' | 'conversation'
+const activeTab = ref<ModalTab>(props.initialTab ?? 'details')
+
+// Honour late-arriving initialTab changes — App.vue may set it after the
+// modal mounts (e.g. agent-mode auto-run on a task that was already opened).
+// Only react to *upgrades* to 'conversation'. The auto-run queue drains
+// to empty as soon as ConversationTab consumes its entry, which would
+// otherwise flip the prop back to 'details' and reset state the user just
+// chose via the Run-with-agent button or the tab strip.
+watch(
+  () => props.initialTab,
+  (next) => { if (next === 'conversation') activeTab.value = next },
+)
+
+// Agent-mode gating: 'off' hides the Conversation tab entirely and steers
+// the user to the terminal flow (/annotask-apply, MCP). 'manual' shows the
+// tab but the agent only runs when the user clicks Run-with-agent. 'auto'
+// fires on task creation (handled in useTaskWorkflows).
+const providerSettings = useProviderSettings()
+const agentMode = computed(() => providerSettings.settings.value.agentMode)
+const agentReady = computed(() => providerSettings.ready.value)
+// Embedded UI is gated on two things now: the top-level feature toggle
+// (`embeddedAgentEnabled`) and the per-task aggressiveness (`agentMode`).
+// When the user is in skill/MCP mode (`embeddedAgentEnabled !== true`) the
+// Conversation tab and Run-with-agent button never appear, regardless of
+// what `agentMode` is set to.
+const embeddedAgentEnabled = computed(
+  () => providerSettings.settings.value.embeddedAgentEnabled === true,
+)
+const showConversationTab = computed(
+  () => embeddedAgentEnabled.value && agentMode.value !== 'off',
+)
+
+const canManualRun = computed(() =>
+  embeddedAgentEnabled.value
+  && agentMode.value === 'manual'
+  && agentReady.value
+  && (props.task.status === 'pending' || props.task.status === 'denied' || props.task.status === 'needs_info'),
+)
+
+function runWithAgent() {
+  requestAutoRun(props.task.id, 'manual')
+  activeTab.value = 'conversation'
+}
+
+// ── Per-task permission mode override ──
+// Resolved at run time as `task ?? global`. Showing "Inherit" as the default
+// keeps the override sparse — only set on tasks the user wants to treat
+// differently from their global default.
+const PERMISSION_MODE_OPTIONS: ReadonlyArray<{ id: PermissionMode; label: string }> = [
+  { id: 'default', label: 'Default — ask for non-trivial actions' },
+  { id: 'plan',    label: 'Plan — read-only' },
+  { id: 'bypass',  label: 'Bypass — auto-approve everything' },
+]
+if (PERMISSION_MODE_OPTIONS.length !== PERMISSION_MODES.length) {
+  // eslint-disable-next-line no-console
+  console.warn('[annotask] TaskDetailModal PERMISSION_MODE_OPTIONS out of sync')
+}
+
+const taskPermissionMode = computed<string>(() => (props.task as { permissionMode?: PermissionMode }).permissionMode ?? '')
+
+// Reflects the mode the task would run with if the user picks "Inherit".
+// Mirrors the resolver: provider override beats global. Uses the persona's
+// provider when one matches the task type so the dropdown shows what'll
+// actually fire on a Run-with-agent click.
+const inheritedPermissionMode = computed<PermissionMode>(() => {
+  const persona = providerSettings.getPersonaForTaskType(props.task.type)
+  const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+  const providerCfg = providerSettings.settings.value.providers[activeProviderId]
+  const providerMode = (providerCfg as { permissionMode?: PermissionMode }).permissionMode
+  return providerMode ?? providerSettings.settings.value.permissionMode
+})
+
+function setTaskPermissionMode(value: string) {
+  if (value === '') {
+    emit('update', props.task.id, { permissionMode: null })
+    return
+  }
+  if (!(PERMISSION_MODES as readonly string[]).includes(value)) return
+  emit('update', props.task.id, { permissionMode: value })
+}
 
 const previewImage = ref<string | null>(null)
 const editing = ref(false)
@@ -49,6 +138,12 @@ const descriptionHtml = computed(() => safeMd(props.task.description))
 const feedbackHtml = computed(() => safeMd(props.task.feedback || ''))
 
 const blockedReasonHtml = computed(() => safeMd(props.task.blocked_reason || ''))
+
+function formatTokens(n: number): string {
+  if (n < 1000) return n.toString()
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`
+  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`
+}
 
 // ── Selected elements (from context) ──
 interface ElementInfo {
@@ -214,8 +309,53 @@ function onKeydown(e: KeyboardEvent) {
       <!-- JSON view -->
       <TaskJsonView v-if="showJson" :task="task" />
 
+      <!-- Tab strip — Details holds the existing fields; Conversation hosts
+           the embedded chat scoped to this task. -->
+      <nav v-else class="td-tabs" aria-label="Task detail sections">
+        <button
+          type="button"
+          class="td-tab"
+          :class="{ active: activeTab === 'details' }"
+          :aria-current="activeTab === 'details' ? 'page' : undefined"
+          @click="activeTab = 'details'"
+        >Details</button>
+        <button
+          v-if="showConversationTab"
+          type="button"
+          class="td-tab"
+          :class="{ active: activeTab === 'conversation' }"
+          :aria-current="activeTab === 'conversation' ? 'page' : undefined"
+          @click="activeTab = 'conversation'"
+        >
+          <Icon name="bot" :size="12" />
+          <span>Conversation</span>
+        </button>
+
+        <!-- Manual-mode "Run with agent" — flanks the tab strip on the right
+             so it reads as the primary call-to-action for this task. -->
+        <button
+          v-if="canManualRun"
+          type="button"
+          class="td-tab td-tab-run"
+          data-testid="btn-modal-run-agent"
+          title="Open the Conversation tab and start the agent on this task"
+          @click="runWithAgent"
+        >
+          <Icon name="bot" :size="12" />
+          <span>Run with agent</span>
+        </button>
+      </nav>
+
+      <ConversationTab
+        v-if="!showJson && activeTab === 'conversation' && showConversationTab"
+        :task="task"
+        @open-settings="emit('open-settings')"
+        @reply="(taskId, answers) => emit('reply', taskId, answers)"
+        @update="(taskId, fields) => emit('update', taskId, fields)"
+      />
+
       <!-- Body -->
-      <div v-else class="td-body">
+      <div v-else-if="!showJson" class="td-body">
         <!-- Description: rendered markdown → click to edit inline -->
         <section class="td-section">
           <div v-if="editing" class="td-editor">
@@ -238,6 +378,21 @@ function onKeydown(e: KeyboardEvent) {
             </div>
           </div>
           <div v-else class="td-markdown" data-testid="task-detail-description" :class="{ 'td-clickable': isEditable }" v-html="descriptionHtml" @click="isEditable ? startEditing() : undefined" />
+        </section>
+
+        <!-- Permission mode override (per-task). Inherit = use persona/global. -->
+        <section class="td-section td-perm-section">
+          <h4 class="td-label">Permission mode</h4>
+          <select
+            class="td-perm-select"
+            data-testid="task-permission-mode"
+            :value="taskPermissionMode"
+            @change="setTaskPermissionMode(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">Inherit ({{ inheritedPermissionMode }})</option>
+            <option v-for="m in PERMISSION_MODE_OPTIONS" :key="m.id" :value="m.id">{{ m.label }}</option>
+          </select>
+          <p class="td-perm-hint">Controls how the agent approves actions on this task. Wins over the persona and global settings.</p>
         </section>
 
         <!-- Selected Elements -->
@@ -316,6 +471,23 @@ function onKeydown(e: KeyboardEvent) {
         <section v-if="task.resolution" class="td-section">
           <h4 class="td-label">Resolution</h4>
           <div class="td-resolution">{{ task.resolution }}</div>
+        </section>
+
+        <!-- Token usage -->
+        <section v-if="task.tokenUsage && task.tokenUsage.turns > 0" class="td-section">
+          <h4 class="td-label">Token Usage</h4>
+          <div class="td-usage" data-testid="task-token-usage">
+            <span class="td-usage-pill" title="Input tokens">↑ {{ formatTokens(task.tokenUsage.inputTokens) }}</span>
+            <span class="td-usage-pill" title="Output tokens">↓ {{ formatTokens(task.tokenUsage.outputTokens) }}</span>
+            <span
+              v-if="task.tokenUsage.cacheReadTokens > 0 || task.tokenUsage.cacheCreationTokens > 0"
+              class="td-usage-pill td-usage-cache"
+              :title="`Cache read ${task.tokenUsage.cacheReadTokens.toLocaleString()} · write ${task.tokenUsage.cacheCreationTokens.toLocaleString()}`"
+            >
+              ⧉ {{ formatTokens(task.tokenUsage.cacheReadTokens + task.tokenUsage.cacheCreationTokens) }}
+            </span>
+            <span class="td-usage-meta">{{ task.tokenUsage.turns }} turn{{ task.tokenUsage.turns === 1 ? '' : 's' }}</span>
+          </div>
         </section>
 
         <!-- Blocked reason -->
@@ -422,7 +594,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 .td-backdrop {
   position: absolute; inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--overlay);
 }
 .td-drawer {
   position: relative;
@@ -486,6 +658,25 @@ function onKeydown(e: KeyboardEvent) {
 .td-label {
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-muted); margin-bottom: 8px;
+}
+
+/* Permission-mode picker */
+.td-perm-select {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 5px;
+}
+.td-perm-select:focus { outline: none; border-color: var(--accent); }
+.td-perm-hint {
+  margin: 6px 2px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 
 /* Inline editor */
@@ -699,6 +890,46 @@ function onKeydown(e: KeyboardEvent) {
 .td-accept:hover { background: var(--success); color: var(--text-on-accent); }
 .td-deny-btn { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 .td-deny-btn:hover { background: var(--danger); color: var(--text-on-accent); }
+.td-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.td-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: none;
+  padding: 8px 12px;
+  font: inherit; font-size: 12px; font-weight: 500;
+  color: var(--text-muted); cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.td-tab:hover { color: var(--text); }
+.td-tab.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.td-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+/* Run-with-agent CTA — visually distinct from the regular tabs so users
+   read it as an action, not a passive navigation. Pushed to the right. */
+.td-tab.td-tab-run {
+  margin-left: auto;
+  color: var(--accent);
+  font-weight: 700;
+  border-bottom: none;
+}
+.td-tab.td-tab-run:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 4px;
+}
 .td-delete-header-btn {
   width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
   border: none; border-radius: 6px; cursor: pointer; transition: all 0.12s;
@@ -711,6 +942,19 @@ function onKeydown(e: KeyboardEvent) {
   padding: 8px 12px; background: color-mix(in srgb, var(--success) 6%, transparent); border-radius: 6px;
   border-left: 3px solid var(--success); font-size: 12px; color: var(--syntax-string); line-height: 1.5;
 }
+
+/* Token usage */
+.td-usage { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.td-usage-pill {
+  font-size: 11px; font-family: monospace; padding: 2px 6px; border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text); border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.td-usage-pill.td-usage-cache {
+  background: color-mix(in srgb, var(--info) 10%, transparent);
+  border-color: color-mix(in srgb, var(--info) 20%, transparent);
+}
+.td-usage-meta { font-size: 11px; color: var(--text-muted); }
 
 /* Status: needs_info */
 .td-status.needs_info { background: color-mix(in srgb, var(--status-needs-info) 15%, transparent); color: var(--syntax-boolean); }

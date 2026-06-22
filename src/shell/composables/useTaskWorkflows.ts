@@ -11,6 +11,8 @@ import type { SelectionData } from './useSelectionModel'
 import type { Task } from './useTasks'
 import { resolveForSelection, resolveForElement, type DataContextProbeResult } from '../services/dataContextClient'
 import { useComponentContextCapture } from './useComponentContextCapture'
+import { useProviderSettings } from './useProviderSettings'
+import { requestAutoRun } from './useAgentMode'
 
 export interface PendingTaskContext {
   kind: 'pin' | 'arrow' | 'highlight' | 'select'
@@ -54,11 +56,9 @@ export function useTaskWorkflows(deps: {
   const detailTaskId = ref<string | null>(null)
   const confirmDeleteTaskId = ref<string | null>(null)
   const detailTask = computed(() => detailTaskId.value ? deps.taskSystem.tasks.value.find(t => t.id === detailTaskId.value) ?? null : null)
-  const sectionTaskMap = ref<Record<string, string>>({})
   const arrowDragTargetRect = ref<{ x: number; y: number; width: number; height: number } | null>(null)
   let arrowDragResolveTimer: ReturnType<typeof setTimeout> | null = null
   const arrowTaskIds = new Set<string>()
-  const sectionSubmitInFlight = new Set<string>()
   const restoredTaskIds = new Set<string>()
   const componentContextCapture = useComponentContextCapture(deps.iframe)
 
@@ -77,12 +77,6 @@ export function useTaskWorkflows(deps: {
           Math.abs(a.fromX - v.fromX) < 5 && Math.abs(a.fromY - v.fromY) < 5
         )
         if (arrow) deps.annotations.removeArrow(arrow.id)
-      } else if (v.kind === 'section') {
-        if (v.annotationId) deps.annotations.removeDrawnSection(v.annotationId)
-        const section = deps.annotations.drawnSections.value.find((s: any) =>
-          Math.abs(s.x - v.x) < 5 && Math.abs(s.y - v.y) < 5
-        )
-        if (section) deps.annotations.removeDrawnSection(section.id)
       } else if (v.kind === 'highlight') {
         if (v.annotationId) deps.annotations.removeHighlight(v.annotationId)
         const ctx = task.context || {}
@@ -176,9 +170,22 @@ export function useTaskWorkflows(deps: {
       const dc = await resolveForSelection(denyFile, denyLine)
       if (dc) extra.data_context = dc
     }
-    deps.taskSystem.updateTaskStatus(taskId, 'denied', denyFeedbackText.value.trim(), Object.keys(extra).length > 0 ? extra : undefined)
+    await deps.taskSystem.updateTaskStatus(taskId, 'denied', denyFeedbackText.value.trim(), Object.keys(extra).length > 0 ? extra : undefined)
     denyingTaskId.value = null
     denyFeedbackText.value = ''
+    // Auto-mode retry: hand the denied task (now carrying the user's
+    // feedback) back to the auto-run driver so the agent gets another
+    // pass without the user having to click anything. Same readiness gate
+    // as the create path — if embedded mode is off, agentMode is manual,
+    // or no provider is ready, the deny just sits there for manual retry.
+    const providerSettings = useProviderSettings()
+    if (
+      providerSettings.settings.value.embeddedAgentEnabled === true
+      && providerSettings.settings.value.agentMode === 'auto'
+      && providerSettings.ready.value
+    ) {
+      requestAutoRun(taskId)
+    }
   }
 
   function submitNewTask() {
@@ -274,41 +281,21 @@ export function useTaskWorkflows(deps: {
           body: JSON.stringify({ html: frag.rendered }),
         }).catch(() => { /* best-effort */ })
       }
+      // Agent-mode auto-run. Only `auto` mode hands tasks off automatically;
+      // `manual` waits for the user to click Run-with-agent, and `off`
+      // hides the in-shell chat entirely (terminal/MCP only). The send()
+      // fires inside ConversationTab.vue once it mounts — we just enqueue
+      // the id here so the watcher in App.vue opens the right modal.
+      const providerSettings = useProviderSettings()
+      if (
+        providerSettings.settings.value.embeddedAgentEnabled === true
+        && providerSettings.settings.value.agentMode === 'auto'
+        && providerSettings.ready.value
+      ) {
+        requestAutoRun(task.id)
+      }
     }
     return task
-  }
-
-  async function onSectionSubmit(id: string) {
-    if (sectionSubmitInFlight.has(id)) return
-    const section = deps.annotations.drawnSections.value.find(s => s.id === id)
-    if (!section || !section.prompt.trim()) return
-    sectionSubmitInFlight.add(id)
-    try {
-      const existingTaskId = sectionTaskMap.value[id]
-      if (existingTaskId) {
-        await deps.taskSystem.updateTask(existingTaskId, { description: section.prompt.trim() })
-        return
-      }
-      deps.styleEditor.recordAnnotation({
-        file: section.nearFile || '',
-        line: String(section.nearLine || 0),
-        component: section.nearComponent || '',
-        intent: section.prompt.trim(),
-        action: 'section_request',
-      })
-      const task = await createRouteTask({
-        type: 'section_request',
-        description: section.prompt.trim(),
-        file: section.nearFile || undefined,
-        line: section.nearLine || undefined,
-        component: section.nearComponent || undefined,
-        placement: section.placement || undefined,
-        visual: { kind: 'section', annotationId: section.id, x: Math.round(section.x), y: Math.round(section.y), width: Math.round(section.width), height: Math.round(section.height), nearEid: section.nearEid },
-      })
-      if (task) sectionTaskMap.value = { ...sectionTaskMap.value, [id]: task.id }
-    } finally {
-      sectionSubmitInFlight.delete(id)
-    }
   }
 
   function onArrowDragMove(x: number, y: number) {
@@ -372,13 +359,10 @@ export function useTaskWorkflows(deps: {
     return `<${tag}>${label}`
   }
 
-  /** Remove any uncommitted annotation (pending pin/arrow/highlight or orphan section). */
+  /** Remove any uncommitted annotation (pending pin/arrow/highlight). */
   function discardUncommittedAnnotations() {
     if (pendingTaskCreation.value && pendingTaskCreation.value.kind !== 'select') {
       cancelPendingTask()
-    }
-    for (const s of [...deps.annotations.drawnSections.value]) {
-      if (!sectionTaskMap.value[s.id]) deps.annotations.removeDrawnSection(s.id)
     }
   }
 
@@ -413,10 +397,10 @@ export function useTaskWorkflows(deps: {
     pendingTaskText.value = ''
   }
 
-  async function submitPendingArrowTask(id: string, description: string) {
+  async function submitPendingArrowTask(id: string, description: string): Promise<Task | null> {
     const arrow = deps.annotations.arrows.value.find(a => a.id === id)
-    if (!arrow || !description.trim()) return
-    if (arrowTaskIds.has(id)) return
+    if (!arrow || !description.trim()) return null
+    if (arrowTaskIds.has(id)) return null
     arrowTaskIds.add(id)
 
     deps.annotations.updateArrow(id, { label: description.trim() })
@@ -434,7 +418,7 @@ export function useTaskWorkflows(deps: {
     const toText = (meta.toText as string) || ''
     const fromCC = arrow.fromEid ? await componentContextCapture.capture(arrow.fromEid) : {}
     const toCC = arrow.toEid ? await componentContextCapture.capture(arrow.toEid) : {}
-    createRouteTask({
+    const task = await createRouteTask({
       type: 'annotation',
       description: description.trim(),
       file: arrow.fromFile || '',
@@ -460,6 +444,10 @@ export function useTaskWorkflows(deps: {
 
       },
     })
+    // Failed creation (400/network): release the dedup guard so the user can
+    // retry the same arrow after fixing whatever the server rejected.
+    if (!task) arrowTaskIds.delete(id)
+    return task
   }
 
   async function submitPendingTask() {
@@ -470,6 +458,11 @@ export function useTaskWorkflows(deps: {
 
     submittingPendingTask.value = true
     try {
+      // Track the created task per branch — a null result (server 400 or
+      // network failure) must keep the user's typed draft in the panel so
+      // they can retry without retyping. useTasks().lastError carries the
+      // reason for the UI to surface.
+      let created: Task | null = null
       if (ctx.kind === 'pin') {
         const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number; elementText?: string; elementSourceTag?: string }
         deps.annotations.updatePinNote(ctx.annotationId!, description)
@@ -478,7 +471,7 @@ export function useTaskWorkflows(deps: {
           intent: description,
           elementTag: meta.elementTag, elementClasses: meta.elementClasses,
         })
-        await createRouteTask({
+        created = await createRouteTask({
           type: 'annotation',
           description,
           file: ctx.file, line: parseInt(String(ctx.line)) || 0, component: ctx.component,
@@ -491,7 +484,7 @@ export function useTaskWorkflows(deps: {
           },
         })
       } else if (ctx.kind === 'arrow') {
-        await submitPendingArrowTask(ctx.annotationId!, description)
+        created = await submitPendingArrowTask(ctx.annotationId!, description)
       } else if (ctx.kind === 'highlight') {
         const meta = ctx.meta as { selectedText: string; elementTag: string; elementSourceTag?: string }
         deps.annotations.updateHighlight(ctx.annotationId!, { prompt: description })
@@ -501,7 +494,7 @@ export function useTaskWorkflows(deps: {
           file: ctx.file, line: String(ctx.line), component: ctx.component,
           intent, action: 'text_edit', elementTag: meta.elementTag,
         })
-        await createRouteTask({
+        created = await createRouteTask({
           type: 'annotation', description: intent, file: ctx.file, line: parseInt(String(ctx.line)) || 0,
           component: ctx.component, action: 'text_edit',
           visual: { kind: 'highlight', annotationId: ctx.annotationId, eid: hl?.eid, rect: hl?.rect, rects: hl?.rects, color: hl?.color },
@@ -530,10 +523,15 @@ export function useTaskWorkflows(deps: {
           deps.taskElementRects.value = [...deps.taskElementRects.value, ...currentRects.map(rect => ({ taskId: task.id, rect }))]
           deps.startAnnotationLoop()
         }
+        created = task
       }
 
-      pendingTaskCreation.value = null
-      pendingTaskText.value = ''
+      // Only a successful creation clears the draft and closes the panel.
+      // On failure the annotation + typed description stay put for a retry.
+      if (created) {
+        pendingTaskCreation.value = null
+        pendingTaskText.value = ''
+      }
     } finally {
       submittingPendingTask.value = false
     }
@@ -652,16 +650,6 @@ export function useTaskWorkflows(deps: {
           ...(toEl.file ? { toFile: toEl.file as string } : {}),
           ...(toEl.line ? { toLine: toEl.line as number } : {}),
         })
-      } else if (v.kind === 'section') {
-        const section = deps.annotations.addDrawnSection(v.x, v.y, v.width, v.height)
-        section.route = taskRoute
-        if ((task as any).prompt || task.description) {
-          deps.annotations.updateDrawnSection(section.id, {
-            prompt: (task as any).prompt || task.description,
-            nearFile: task.file, nearLine: task.line,
-          })
-        }
-        sectionTaskMap.value = { ...sectionTaskMap.value, [section.id]: task.id }
       } else if (v.kind === 'highlight') {
         const ctx = (task as any).context || {}
         const hl = deps.annotations.addHighlight(
@@ -685,9 +673,6 @@ export function useTaskWorkflows(deps: {
     for (const a of deps.annotations.arrows.value) {
       if (!a.fromEid && a.fromFile && a.fromLine) return true
       if (!a.toEid && a.toFile && a.toLine) return true
-    }
-    for (const s of deps.annotations.drawnSections.value) {
-      if (!s.nearEid && s.nearFile && s.nearLine) return true
     }
     for (const h of deps.annotations.highlights.value) {
       if (!h.eid && h.file && h.line) return true
@@ -732,16 +717,6 @@ export function useTaskWorkflows(deps: {
             toEid: g.eids[0],
             ...(rect ? { toRect: rect as BridgeRect } : {}),
           })
-        }
-      }
-    }
-
-    // Restored drawn sections
-    for (const section of deps.annotations.drawnSections.value) {
-      if (!section.nearEid && section.nearFile && section.nearLine) {
-        const g = await deps.iframe.findTemplateGroup(section.nearFile, String(section.nearLine), '')
-        if (g.eids.length > 0) {
-          deps.annotations.updateDrawnSection(section.id, { nearEid: g.eids[0] })
         }
       }
     }
@@ -806,13 +781,12 @@ export function useTaskWorkflows(deps: {
     denyingTaskId, denyFeedbackText,
     detailTaskId, detailTask,
     confirmDeleteTaskId,
-    sectionTaskMap, arrowDragTargetRect,
+    arrowDragTargetRect,
     restoredTaskIds,
     discardUncommittedAnnotations,
     removeTaskAnnotations, executeDeleteTask,
     acceptTask, submitDeny, submitNewTask,
     createRouteTask,
-    onSectionSubmit,
     onArrowDragMove, onArrowDragEnd,
     describeElement, onArrowCreated,
     submitPendingTask, cancelPendingTask,

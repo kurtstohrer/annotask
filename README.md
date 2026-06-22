@@ -45,11 +45,38 @@ Review in the task drawer        <--> Answers questions / retries denied work
 Accept or deny changes
 ```
 
+The coding agent can be **external** (your editor's agent, reading tasks over MCP/CLI/HTTP) or **embedded** — see below.
+
+## Embedded agents
+
+Annotask can run a coding agent in-shell. Point it at a local CLI (claude, codex,
+opencode, copilot) or an HTTP provider (Anthropic, OpenAI-compatible, OpenRouter)
+in Settings, and the agent applies tasks without leaving the browser. Runs stream
+into a per-task conversation thread (persisted to `.annotask/conversations/`),
+are gated to the same origin/port, respect an optional `ANNOTASK_MAX_PERMISSION`
+ceiling, and are bounded by idle/duration watchdogs. The agent — never the tool —
+writes application source.
+
+## Wireframing
+
+Freeze the current route into a manipulable snapshot canvas, then sketch: drag,
+resize, multi-select and nudge, soft-delete, duplicate, drop palette components
+(configured in place with props), and draw sections with a markdown spec. Hit **Implement
+this wireframe** and Annotask diffs the sketch into anchored directions, snapshots
+every file it touches, and drives the embedded agent through the apply loop —
+spatial relations are the contract, pixels are hints. **Undo last apply**
+restores that batch's pre-apply bytes and **Discard session** restores every
+touched file to its session base, both hash-guarded so a file you edited
+outside Annotask is never clobbered. In git projects the reversal is byte-exact
+across the whole apply footprint — the engine baselines off `git stash-create`,
+auto-extends via `git show`, and recreates agent-deleted files — while non-git
+projects fall back to reverting the predicted anchor files only.
+
 ## What it does
 
 Annotask has three user-facing surfaces.
 
-- **Annotate**: pins, arrows, drawn sections, text highlights, screenshots, route-aware tasks, viewport capture.
+- **Annotate**: pins, arrows, text highlights, screenshots, route-aware tasks, viewport capture. (Sections are wireframe sketch material — draw them on the wireframe canvas.)
 - **Design**: tokens, live inspector, layout overlay, detected component catalogs, in-repo component examples.
 - **Audit**: accessibility, data sources, API schemas, detected data/state libraries, performance findings, console errors.
 
@@ -110,8 +137,8 @@ npx annotask init-skills
 
 ## Agent surfaces
 
-- **MCP**: `POST /__annotask/mcp` with 21 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, and rendered HTML.
-- **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `runtime-endpoints`, `interaction-history`, `rendered-html`, `api-schemas`, `resolve-endpoint`, `init-mcp`, `init-skills`, `mcp`, and more.
+- **MCP**: `POST /__annotask/mcp` with 28 tools for tasks, design spec, components, screenshots, code context, data context, data sources, API schemas, runtime endpoints, interaction history, rendered HTML, playbooks, and per-task conversations.
+- **CLI**: `annotask status`, `tasks`, `task`, `design-spec`, `components`, `component-examples`, `data-context`, `data-sources`, `runtime-endpoints`, `interaction-history`, `rendered-html`, `api-schemas`, `resolve-endpoint`, `source-excerpt`, `playbook`, `agent-directions`, `init-mcp`, `init-skills`, `mcp`, and more.
 - **HTTP + WebSocket**: local API under `/__annotask/api/*` and live updates on `/__annotask/ws`.
 
 ## Task model
@@ -125,7 +152,7 @@ Canonical task types live in `src/schema.ts`:
 - `a11y_fix`
 - `error_fix`
 - `perf_fix`
-- `api_update`
+- `wireframe_apply` — wireframe palette placements ("Build this route"); `context.wireframe` carries `{ route, instances[] }` with a per-instance `anchor` (`file`, `line`, `position`, `component`, `targetTag`) and `inserted` payload (`tag`, `componentName`, `library`, `module`, `props`, `classes`, `text_content`)
 
 Statuses:
 
@@ -150,6 +177,8 @@ pending -> in_progress -> review -> accepted | denied
 
 ## Current highlights
 
+- Embedded agent mode — apply tasks in-shell via a local CLI or HTTP provider, with a per-task conversation thread
+- Snapshot wireframing with byte-exact, hash-guarded undo/discard of every agent apply
 - Route-aware task filtering and editable route bar
 - Screenshot uploads and automatic cleanup on acceptance
 - Variant-aware design spec with `themes[]`, `defaultTheme`, and per-theme token values
@@ -163,7 +192,7 @@ pending -> in_progress -> review -> accepted | denied
 - Performance snapshots, findings, and session recording
 - Console error and warning capture with one-click fix tasks
 - Always-captured interaction history and rendered-HTML sidecars per task
-- 18 built-in shell themes plus custom theme editing across 63 CSS variables
+- 18 built-in shell themes plus custom theme editing across 62 CSS variables
 
 ## Framework support
 
@@ -178,6 +207,16 @@ pending -> in_progress -> review -> accepted | denied
 | htmx | Yes | No |
 
 Annotask is dev-only. It does not run in production builds.
+
+## Security
+
+Annotask runs an **unauthenticated** dev API on your local server, and the embedded agent can write source files and run shell commands at your project root. By default there is no permission ceiling. Treat it like any other local dev tool:
+
+- Run it only on code (and dependencies) you trust — same-origin app code can reach the API.
+- Don't expose the dev server beyond `localhost`. `vite --host` opens it to your LAN; prefer an SSH tunnel, and Annotask prints a loud warning when it binds non-loopback.
+- In shared / CI / locked-down setups, set `ANNOTASK_MAX_PERMISSION=plan` (read-only) or `default` to cap what a spawned agent can do.
+
+See [SECURITY.md](./SECURITY.md) for the full model.
 
 ## Monorepos and MFEs
 

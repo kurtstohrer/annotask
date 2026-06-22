@@ -186,7 +186,7 @@ const STATUS_FILTERS: Array<WorkflowStatus | 'all'> = [
   <HealthDashboard v-if="view === 'health'" />
   <NConfigProvider v-else :theme="naiveTheme">
     <NLayout style="background: var(--stress-bg); min-height: 100%">
-      <NLayoutContent content-style="padding: 32px 40px;">
+      <NLayoutContent style="background-color: var(--stress-bg)" content-style="padding: 32px 40px;">
         <header class="header">
           <h1>Vue Data Lab</h1>
           <p class="sub">

@@ -58,7 +58,6 @@ function deriveDefaults(core: ThemeCoreColors, overrides?: Partial<ShellThemeCol
     // Modes — arrow and highlight are fixed across all themes for consistency
     'mode-interact': core.indigo,
     'mode-arrow': '#ef4444',
-    'mode-draw': core['text-muted'],
     'mode-highlight': '#f59e0b',
 
     // Layout viz

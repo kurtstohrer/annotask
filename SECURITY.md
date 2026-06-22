@@ -21,6 +21,17 @@ Annotask assumes a **trusted local environment**: the developer's machine, runni
 - **Screenshot file names:** uploads use `crypto.randomBytes(8)` filenames (16 hex chars). The `annotask_get_screenshot` MCP tool also routes `task.screenshot` through `isSafeScreenshot` before touching the filesystem, closing a path-traversal hole for maliciously constructed task records.
 - **`server.json` permissions:** written with mode `0o600` so other users on shared machines cannot read the live PID and port.
 
+### Localhost threat model and embedded agents
+
+Any code running on the same machine — including the app being developed, its dependencies, and any other page served from `localhost` — shares the trust boundary with Annotask. In particular, same-origin app code can reach the Annotask API, including the agent spawn endpoint, since it runs on the same dev server. The mitigations are layered, not absolute:
+
+- **Spawn routes are same-port-origin-gated.** `POST /api/agent/spawn` and `DELETE /api/agent/spawn/:runId` require the request `Origin` to match the server's own port (`origin_port_mismatch` otherwise), so a page on a *different* localhost port cannot spawn CLIs that have credential access. A page on the *same* origin still can — that is inherent to running an unauthenticated dev tool inside the app's own server.
+- **`ANNOTASK_MAX_PERMISSION` is the server-side floor.** Spawned CLIs run with a permission mode (`plan` / `default` / `bypass`); the server refuses any spawn whose argv requests more than the configured ceiling, regardless of what the client asked for. **The default is no ceiling (`bypass`)** — and the local CLIs apply tasks headless, with claude/opencode defaulting to `--dangerously-skip-permissions`. So out of the box, any code that can reach the spawn endpoint (i.e. same-origin app code) can drive an agent that writes files and runs shell commands at the project root. In any shared, CI, or otherwise-not-fully-trusted environment, set `ANNOTASK_MAX_PERMISSION=plan` (read-only) or `default` so a compromised page cannot request `bypass`.
+- **All `/__annotask/*` requests are Host-gated:** the middleware validates the `Host` header against local hostnames (and `ANNOTASK_ALLOWED_HOSTS`) before any other handling, narrowing DNS-rebinding-style access.
+- **Spawned binaries are allow-listed** (`claude`, `codex`, `opencode`, `copilot`); free-form binary names and absolute paths are rejected, processes start with `shell: false`, cwd is pinned to the project root, and `PATH`/`HOME` overrides are dropped.
+
+None of this makes the dev server safe to expose beyond the developer's machine. If untrusted code runs in the app you are annotating, assume it can read Annotask state and drive agents up to the configured permission ceiling.
+
 ## Recommendations
 
 - Do not expose the dev server to untrusted networks.

@@ -1,0 +1,184 @@
+/* ── Annotask Marketing Page ─────────────────────────────────────── */
+
+/* ── Design tokens (dark default, Annotask Dark theme) ─────────── */
+:root {
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface-2: #1e1e1e;
+  --surface-3: #262626;
+  --border: #2a2a2a;
+  --border-strong: #404040;
+  --fg: #e4e4e7;
+  --muted: #71717a;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-muted: rgba(59, 130, 246, 0.15);
+  --danger: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --text-on-accent: #fff;
+  --text-link: #60a5fa;
+  --overlay: rgba(0, 0, 0, 0.5);
+  --shadow: rgba(0, 0, 0, 0.4);
+  --code-bg: #141414;
+  --code-property: #7dd3fc;
+  --code-string: #86efac;
+  --code-keyword: #c084fc;
+  --code-comment: #71717a;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+/* ── Light mode (Annotask Light theme) ─────────────────────────── */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f8f9fa;
+    --surface: #ffffff;
+    --surface-2: #f0f1f3;
+    --surface-3: #e5e7eb;
+    --border: #d4d6db;
+    --border-strong: #9ca3af;
+    --fg: #1a1a1a;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-muted: rgba(37, 99, 235, 0.12);
+    --danger: #dc2626;
+    --success: #16a34a;
+    --warning: #d97706;
+    --text-on-accent: #fff;
+    --text-link: #2563eb;
+    --overlay: rgba(0, 0, 0, 0.3);
+    --shadow: rgba(0, 0, 0, 0.12);
+    --code-bg: #f0f1f3;
+    --code-property: #0369a1;
+    --code-string: #15803d;
+    --code-keyword: #7e22ce;
+    --code-comment: #6b7280;
+  }
+}
+
+/* ── Reset & base ──────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); -webkit-font-smoothing: antialiased; line-height: 1.6; }
+a { color: var(--text-link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { max-width: 100%; height: auto; }
+
+/* ── Layout ────────────────────────────────────────────────────── */
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+/* ── Header ────────────────────────────────────────────────────── */
+header { padding: 24px 0; display: flex; align-items: center; justify-content: space-between; }
+header .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: 0.02em; color: var(--fg); }
+header .brand img { width: 28px; height: 28px; }
+header nav { display: flex; gap: 20px; }
+header nav a { color: var(--muted); font-size: 14px; font-weight: 500; }
+header nav a:hover { color: var(--fg); text-decoration: none; }
+
+/* ── Hero ──────────────────────────────────────────────────────── */
+.hero { padding: 72px 0 40px; text-align: center; }
+.hero h1 { font-size: clamp(36px, 5.5vw, 60px); line-height: 1.08; margin: 0 0 20px; letter-spacing: -0.025em; font-weight: 800; }
+.hero h1 .accent { color: var(--accent); }
+.hero .lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 680px; margin: 0 auto 32px; line-height: 1.55; }
+.cta { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+
+/* ── Buttons ───────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 14px 20px; border-radius: 12px; font-weight: 600; font-size: 15px; border: 1px solid var(--border); cursor: pointer; transition: all 0.15s; }
+.btn.primary { background: var(--accent); color: var(--text-on-accent); border-color: var(--accent); }
+.btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); text-decoration: none; }
+.btn.ghost { background: transparent; color: var(--fg); }
+.btn.ghost:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+/* ── Live stats strip ──────────────────────────────────────────── */
+.stats-strip { display: inline-flex; gap: 0; margin-top: 36px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.stat { display: flex; flex-direction: column; gap: 2px; padding: 14px 28px; }
+.stat + .stat { border-left: 1px solid var(--border); }
+.stat-value { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--muted); }
+
+/* ── Hero screenshot ───────────────────────────────────────────── */
+.hero-shot { margin: 48px auto 0; max-width: 1040px; }
+.hero-shot img { width: 100%; border-radius: 14px; border: 1px solid var(--border); box-shadow: 0 30px 80px -20px var(--shadow); }
+
+/* ── Sections ──────────────────────────────────────────────────── */
+section { padding: 72px 0; border-top: 1px solid var(--border); }
+section h2 { font-size: clamp(26px, 3vw, 36px); margin: 0 0 10px; letter-spacing: -0.015em; font-weight: 700; }
+section .section-lede { color: var(--muted); margin: 0 0 36px; max-width: 680px; font-size: 16px; line-height: 1.6; }
+
+/* ── How it works (3-step) ─────────────────────────────────────── */
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; counter-reset: step; }
+.step { position: relative; padding: 24px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
+.step::before { counter-increment: step; content: counter(step); display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; background: var(--accent-muted); color: var(--accent); font-weight: 700; font-size: 14px; margin-bottom: 14px; }
+.step h3 { margin: 0 0 6px; font-size: 17px; }
+.step p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
+
+/* ── Feature grids ─────────────────────────────────────────────── */
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+
+/* ── Feature cards ─────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.card .card-img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; border-bottom: 1px solid var(--border); }
+.card .card-body { padding: 18px 20px; }
+.card h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+/* ── Agent integration ─────────────────────────────────────────── */
+.agent-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.agent-block h3 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+
+/* ── Code blocks ───────────────────────────────────────────────── */
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; color: var(--fg); margin: 0; line-height: 1.6; }
+pre .k { color: var(--code-keyword); }
+pre .s { color: var(--code-string); }
+pre .c { color: var(--code-comment); }
+pre .p { color: var(--code-property); }
+pre .f { color: var(--accent); }
+
+/* ── Lifecycle diagram ─────────────────────────────────────────── */
+.lifecycle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 20px; padding: 18px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); font-size: 13px; font-family: var(--mono); }
+.lifecycle .status { padding: 4px 10px; border-radius: 6px; font-weight: 600; }
+.lifecycle .status.pending { background: color-mix(in srgb, var(--muted) 20%, transparent); color: var(--muted); }
+.lifecycle .status.in-progress { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.lifecycle .status.review { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
+.lifecycle .status.accepted { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.lifecycle .status.denied { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+.lifecycle .arrow { color: var(--muted); }
+
+/* ── Framework pills ───────────────────────────────────────────── */
+.pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.pill { display: inline-block; padding: 7px 14px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-size: 13px; font-weight: 500; }
+.pill.accent { border-color: var(--accent); color: var(--accent); }
+
+/* ── Install section ───────────────────────────────────────────── */
+.install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.install-grid h3 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+
+/* ── Dogfood banner ────────────────────────────────────────────── */
+.dogfood { text-align: center; padding: 32px; margin-top: 8px; border-radius: 12px; background: var(--accent-muted); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+.dogfood p { margin: 0; font-size: 15px; }
+.dogfood code { font-family: var(--mono); background: color-mix(in srgb, var(--accent) 15%, transparent); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+
+/* ── Demo section ──────────────────────────────────────────────── */
+.video-frame { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.video-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.caption { color: var(--muted); margin-top: 14px; font-size: 14px; }
+
+/* ── Footer ────────────────────────────────────────────────────── */
+footer { padding: 40px 0; color: var(--muted); font-size: 14px; text-align: center; border-top: 1px solid var(--border); }
+footer a { color: var(--muted); }
+footer a:hover { color: var(--fg); }
+
+/* ── Responsive ────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .steps { grid-template-columns: 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .agent-grid { grid-template-columns: 1fr; }
+  .install-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  header nav { display: none; }
+  .hero { padding: 48px 0 24px; }
+}

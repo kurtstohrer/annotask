@@ -210,11 +210,10 @@ function onEndpointUp(e: PointerEvent) {
     </g>
 
     <!-- Element outline during endpoint drag -->
-    <rect v-if="endpointDrag && dragTargetRect"
+    <rect v-if="endpointDrag && dragTargetRect" class="drag-target-outline"
       :x="dragTargetRect.x - 4" :y="dragTargetRect.y - 4"
       :width="dragTargetRect.width + 8" :height="dragTargetRect.height + 8"
-      fill="rgba(59,130,246,0.06)" stroke="#3b82f6" stroke-width="2"
-      stroke-dasharray="4 2" rx="3" opacity="0.7"
+      stroke-width="2" stroke-dasharray="4 2" rx="3" opacity="0.7"
     />
 
     <!-- Hover preview (before drawing starts) -->
@@ -284,6 +283,12 @@ function onEndpointUp(e: PointerEvent) {
   pointer-events: none;
 }
 .arrow-path { pointer-events: stroke; cursor: pointer; }
+/* var() is unreliable in SVG presentation attributes, so the drag-target
+   outline is themed here instead of inline on the <rect>. */
+.drag-target-outline {
+  fill: color-mix(in srgb, var(--accent) 6%, transparent);
+  stroke: var(--accent);
+}
 .arrow-delete { cursor: pointer; pointer-events: auto; }
 .endpoint-handle { cursor: grab; pointer-events: auto; }
 .endpoint-handle:active { cursor: grabbing; }
