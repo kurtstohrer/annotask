@@ -53,16 +53,15 @@ Annotask can run a coding agent in-shell. Point it at a local CLI (claude, codex
 opencode, copilot) or an HTTP provider (Anthropic, OpenAI-compatible, OpenRouter)
 in Settings, and the agent applies tasks without leaving the browser. Runs stream
 into a per-task conversation thread (persisted to `.annotask/conversations/`),
-are gated to the same origin/port, and respect an `ANNOTASK_MAX_PERMISSION`
-ceiling and a token budget cap. The agent — never the tool — writes application
-source.
+are gated to the same origin/port, respect an optional `ANNOTASK_MAX_PERMISSION`
+ceiling, and are bounded by idle/duration watchdogs. The agent — never the tool —
+writes application source.
 
 ## Wireframing
 
 Freeze the current route into a manipulable snapshot canvas, then sketch: drag,
-resize, multi-select and nudge, soft-delete, duplicate, explode a block into its
-children, drop palette components (configured in place with props and a REAL
-data-source binding), and draw sections with a markdown spec. Hit **Implement
+resize, multi-select and nudge, soft-delete, duplicate, drop palette components
+(configured in place with props), and draw sections with a markdown spec. Hit **Implement
 this wireframe** and Annotask diffs the sketch into anchored directions, snapshots
 every file it touches, and drives the embedded agent through the apply loop —
 spatial relations are the contract, pixels are hints. Every apply is byte-exact
@@ -205,6 +204,16 @@ pending -> in_progress -> review -> accepted | denied
 | htmx | Yes | No |
 
 Annotask is dev-only. It does not run in production builds.
+
+## Security
+
+Annotask runs an **unauthenticated** dev API on your local server, and the embedded agent can write source files and run shell commands at your project root. By default there is no permission ceiling. Treat it like any other local dev tool:
+
+- Run it only on code (and dependencies) you trust — same-origin app code can reach the API.
+- Don't expose the dev server beyond `localhost`. `vite --host` opens it to your LAN; prefer an SSH tunnel, and Annotask prints a loud warning when it binds non-loopback.
+- In shared / CI / locked-down setups, set `ANNOTASK_MAX_PERMISSION=plan` (read-only) or `default` to cap what a spawned agent can do.
+
+See [SECURITY.md](./SECURITY.md) for the full model.
 
 ## Monorepos and MFEs
 

@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly slot for the secret-gated live-CLI job; also runnable on demand.
+  schedule:
+    - cron: '0 5 * * 1' # Monday 05:00 UTC
+  workflow_dispatch: {}
 
 jobs:
   build-and-test:
@@ -62,3 +66,40 @@ jobs:
       - run: npx playwright install --with-deps chromium
 
       - run: pnpm test:e2e --project=${{ matrix.project }}
+
+  # Live agent-apply loop against a REAL CLI. Gated on a repo secret so it only
+  # runs where credentials exist (fork PRs and unconfigured repos skip it); runs
+  # on the weekly schedule + manual dispatch, never per-PR (cost + auth). This is
+  # the only automated proof that the full apply→write→verify loop works end to
+  # end with a real provider; the per-PR suites cover the server lifecycle/undo
+  # logic deterministically without a CLI.
+  live-cli:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.ANNOTASK_RUN_LIVE_CLI == '1' }}
+    env:
+      ANNOTASK_LIVE_CLI: '1'
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      # Install the Claude CLI the live suite drives. Other providers can be
+      # added the same way once their CI auth story is sorted.
+      - run: npm install -g @anthropic-ai/claude-code
+
+      # The apply-session matrix + live providers self-skip without
+      # ANNOTASK_LIVE_CLI=1; here it's set, so they run against the real CLI.
+      - run: ANNOTASK_LIVE_ONLY=claude pnpm vitest run src/server/__tests__/apply-session-matrix.test.ts

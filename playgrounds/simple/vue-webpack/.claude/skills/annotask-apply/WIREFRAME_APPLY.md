@@ -48,7 +48,7 @@ Before rewriting any expression or bound markup you encounter mid-edit, re-class
 - `kind`/`name`/`module`/`endpoint`: the source as the project defines it (`module` is its defining file). `path` drills into the response shape (`planets[]` = the list; `data.user` = an object); `fields` are the keys the element should display.
 - `shape_source` is the honesty tag for where the drill-down shape came from:
   - `api-schema` — a real API contract matched the source's endpoint; the path/fields were picked off the actual response schema. Trust the shape; `annotask_get_api_operation` returns the full operation when you need more.
-  - `source-details` — regex-inferred return-type hints only (confidence attached at pick time). Re-verify against the real definition before relying on field names.
+  - `source-details` — regex-inferred return-type hints only (no confidence score is carried — the tag is the only signal). Re-verify against the real definition before relying on field names.
   - `none` — the user typed the path/fields blind. Ground them yourself before wiring.
 - **Re-grounding protocol (always):** call `annotask_get_data_source_details` for the definition and `annotask_get_data_source_examples` for the proven import + call pattern — wire the source the way the project already wires it (same import specifier, same destructuring, loops/`v-for` over the `path` collection, render the `fields`).
 - The binding contradicts current source (source renamed, field gone, shape changed)? → `needs_info` with what you found. **Never invent fields**; runtime endpoints carry no response shapes — don't pretend otherwise.
