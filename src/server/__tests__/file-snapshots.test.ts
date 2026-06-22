@@ -247,6 +247,86 @@ describe('file-snapshots', () => {
     })
   })
 
+  describe('byte-exact coverage — git auto-extend (undo covers the agent\'s whole footprint)', () => {
+    function gitInit(): void {
+      const git = (args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+      git(['init', '-q'])
+      // Repo-level identity so `git stash create` (the baseline) can commit.
+      git(['config', 'user.email', 'ci@annotask.test'])
+      git(['config', 'user.name', 'annotask-ci'])
+      git(['add', '-A'])
+      git(['commit', '-q', '-m', 'baseline'])
+    }
+    const SHARED = '<template><nav class="layout">shared layout</nav></template>\n'
+
+    it('undo restores a NON-anchor file the agent also edited (not just the predicted anchors)', async () => {
+      await write('src/Shared.vue', SHARED)
+      gitInit()
+      const store = createSnapshotStore(root)
+      // The apply predicts only the anchor file…
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      // …but the freeform agent edits the anchor AND a shared layout it was
+      // never told about — the case that made undo silently partial.
+      await write(file, ORIGINAL.replace('Planets', 'Worlds'))
+      await write('src/Shared.vue', SHARED.replace('shared layout', 'rebuilt layout'))
+      await store.sealBatch('ab-1')
+
+      // Seal folded the off-anchor file into the batch.
+      expect((await store.state()).batches[0].files).toContain('src/Shared.vue')
+
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted.sort()).toEqual([file, 'src/Shared.vue'].sort())
+      expect(await read(file)).toBe(ORIGINAL)
+      expect(await read('src/Shared.vue')).toBe(SHARED) // byte-exact, never a predicted anchor
+    })
+
+    it('undo RECREATES a file the agent deleted (byte-exact, from held bytes)', async () => {
+      await write('src/Doomed.vue', SHARED)
+      gitInit()
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await fsp.rm(path.join(root, 'src/Doomed.vue')) // the agent deletes it
+      await store.sealBatch('ab-1')
+
+      expect((await store.state()).batches[0].files).toContain('src/Doomed.vue')
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted).toContain('src/Doomed.vue')
+      expect(fs.existsSync(path.join(root, 'src/Doomed.vue'))).toBe(true)
+      expect(await read('src/Doomed.vue')).toBe(SHARED)
+    })
+
+    it('a user edit to an auto-extended file after seal is honoured (diverged, not clobbered)', async () => {
+      await write('src/Shared.vue', SHARED)
+      gitInit()
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write('src/Shared.vue', SHARED.replace('shared layout', 'agent layout'))
+      await store.sealBatch('ab-1')
+
+      // The user keeps working on the agent's output, THEN undoes.
+      const mine = SHARED.replace('shared layout', 'agent layout + my tweak')
+      await write('src/Shared.vue', mine)
+      const result = await store.revertBatch('ab-1')
+      expect(result.skipped).toContain('src/Shared.vue')
+      expect(await read('src/Shared.vue')).toBe(mine) // never clobbered
+    })
+
+    it('discard restores every auto-extended file to the session base across batches', async () => {
+      await write('src/Shared.vue', SHARED)
+      gitInit()
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write('src/Shared.vue', SHARED.replace('shared layout', 'v1'))
+      await store.sealBatch('ab-1')
+      await store.snapshotFiles([file], { id: 'ab-2', taskId: 'task-2' })
+      await write('src/Shared.vue', SHARED.replace('shared layout', 'v2'))
+      await store.sealBatch('ab-2')
+
+      await store.revertAll()
+      expect(await read('src/Shared.vue')).toBe(SHARED) // session base, not v1/v2
+    })
+  })
+
   describe('running-batch guard (no clobbering a live, unsealed apply)', () => {
     it('revertBatch refuses a still-running batch — the agent may be mid-write', async () => {
       const store = createSnapshotStore(root)

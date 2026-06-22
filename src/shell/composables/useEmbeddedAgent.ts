@@ -144,8 +144,41 @@ function redactMessages(messages: ProviderMessage[]): ProviderMessage[] {
  * The runner handles status transitions (lock-on-start, mark-review-on-clean-
  * exit), so the agent does NOT need to call `annotask_update_task`.
  */
+interface SeedFeedbackEntry {
+  questions?: Array<{ id?: string; text?: string }>
+  answers?: Array<{ id?: string; value?: string }>
+  answered_at?: number
+}
+
+/** Render answered needs_info exchanges as an inline Q&A block. The resume
+ *  path (respondToAgent → in_progress → auto-run re-seed) re-runs the WHOLE
+ *  seed; without the answers in the prompt, a no-MCP agent never sees them and
+ *  asks the same question again — an infinite needs_info loop. MCP agents also
+ *  benefit (no extra round-trip). Only ANSWERED exchanges are surfaced. */
+function answeredFeedbackBlock(feedback: SeedFeedbackEntry[] | undefined): string {
+  if (!Array.isArray(feedback)) return ''
+  const lines: string[] = []
+  for (const ex of feedback) {
+    if (!ex || !ex.answered_at || !Array.isArray(ex.questions) || !Array.isArray(ex.answers)) continue
+    const byId = new Map((ex.answers ?? []).map((a) => [a.id, (a.value ?? '').trim()]))
+    for (const q of ex.questions) {
+      const a = byId.get(q.id) ?? ''
+      if (!a) continue
+      lines.push(`> Q: ${(q.text ?? '').trim()}`)
+      lines.push(`> A: ${a}`)
+    }
+  }
+  if (lines.length === 0) return ''
+  return [
+    '',
+    '**Clarifications you previously requested — the user has now answered.** Continue applying the task using these answers; do NOT ask again unless something new is genuinely unresolved.',
+    '',
+    ...lines,
+  ].join('\n')
+}
+
 function buildSeedPrompt(
-  task: { id?: string; status?: string; feedback?: string; resolution?: string },
+  task: { id?: string; status?: string; feedback?: string; resolution?: string; agent_feedback?: SeedFeedbackEntry[] },
   description: string,
 ): string {
   const id = task.id ?? '<unknown>'
@@ -179,6 +212,7 @@ function buildSeedPrompt(
     '',
     quoted,
     retryBlock,
+    answeredFeedbackBlock(task.agent_feedback),
     '',
     `Use \`annotask_get_task\` with this id for full context if you need it.`,
     `Annotask handles the status transitions for you — exit cleanly when done, or reply with a short explanation if you can't apply the change.`,
@@ -700,6 +734,18 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     currentBlocks.value = []
     aborter = null
     currentProvider = null
+    // Cross-tab dedup: the spawn was refused because another tab already owns a
+    // live run for this task. This run never started — DON'T touch the task's
+    // status (the winning tab is mid-write; reverting/reviewing it would corrupt
+    // that run). Surface a gentle note and bail before any transition.
+    const ownedByAnotherTab = stopReason === 'already_running'
+    if (ownedByAnotherTab) {
+      status.value = 'idle'
+      errorMessage.value = 'This task is already being applied in another tab or session.'
+      // Cleanup only; the caller (send) drains any queued chat turns on return.
+      if (taskId) { lockedSeedTasks.delete(taskId); markRunFinished(taskId) }
+      return
+    }
     status.value =
       stopReason === 'aborted' ? 'aborted'
       : stopReason === 'error' ? 'error'

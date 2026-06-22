@@ -2,7 +2,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import {
   emptyWireframeDocument,
-  isWireframeDocument,
+  migrateWireframeDocument,
   type WireframeDocument,
 } from '../shared/wireframe-types.js'
 
@@ -36,7 +36,15 @@ export function createWireframeStore(projectRoot: string) {
   async function load(): Promise<WireframeDocument> {
     try {
       const raw = JSON.parse(await fsp.readFile(filePath, 'utf-8'))
-      return isWireframeDocument(raw) ? raw : emptyWireframeDocument()
+      const migrated = migrateWireframeDocument(raw)
+      if (migrated) return migrated
+      // Recognizably a wireframe doc (has routes) but unmigratable — a newer/
+      // unknown version, or a malformed shape. Don't pretend it never existed:
+      // warn so the loss isn't silent (the next write will overwrite it).
+      if (raw && typeof raw === 'object' && Array.isArray((raw as { routes?: unknown }).routes)) {
+        console.warn(`[Annotask] wireframe.json could not be migrated (version ${String((raw as { version?: unknown }).version)}) — starting empty; the file will be overwritten on the next save.`)
+      }
+      return emptyWireframeDocument()
     } catch {
       return emptyWireframeDocument()
     }

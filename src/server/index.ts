@@ -12,6 +12,7 @@ import { createAgentDetector } from './agent-detect.js'
 import { createInitRunner } from './init.js'
 import { createUsageLedger } from './usage-ledger.js'
 import { createSnapshotStore } from './file-snapshots.js'
+import { releaseApplyTask, type ApplySessionOptions } from './apply-session.js'
 
 export interface AnnotaskServer {
   middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void
@@ -106,15 +107,28 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
   // the task lock, so a client transition that's merely slow still wins the
   // race rather than being clobbered (guard rejects → we no-op).
   function reconcileOrphanedTask(taskId: string, why: string): void {
+    // Capture the type BEFORE the update — a wireframe_apply orphan needs its
+    // apply batch sealed + entries released + canvas unlocked, exactly as the
+    // HTTP in_progress→pending hook does. This path bypasses the HTTP handler,
+    // so without the same closure the batch would stay 'running' and wedge
+    // undo/discard/re-apply.
+    const before = state.getTasks().tasks.find((t: { id?: string }) => t?.id === taskId) as { type?: string } | undefined
     void state.updateTask(
       taskId,
       { status: 'pending' },
       { guard: (t) => (t.status === 'in_progress' ? null : 'task already finalized') },
-    ).then((res) => {
+    ).then(async (res) => {
       // Guard rejected (client won the race) → nothing to report.
       if (res && typeof res === 'object' && 'error' in res) return
       // eslint-disable-next-line no-console
       console.warn(`[annotask] reconciled orphaned task ${taskId} → pending (${why})`)
+      if (before?.type === 'wireframe_apply') {
+        try { await releaseApplyTask(applyOptions, taskId) }
+        catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[annotask] orphan apply-release failed for ${taskId}:`, err)
+        }
+      }
     }).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn(`[annotask] orphan reconcile failed for task ${taskId}:`, err)
@@ -177,6 +191,21 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
   // apply" and "Discard session" byte-exact. Always on: every write it ever
   // performs is an explicit, user-initiated restore.
   const snapshotStore = createSnapshotStore(options.projectRoot)
+
+  // Shared apply-session options so the HTTP PATCH path AND the server-side
+  // orphan reconcile / boot sweep drive a wireframe_apply task's lifecycle the
+  // SAME way. Diverging here is exactly what stranded orphaned applies: an
+  // in_progress run reclaimed without sealing its batch left undo/discard/
+  // re-apply all dead and the canvas locked at 'building' forever.
+  const applyOptions: ApplySessionOptions = {
+    projectRoot: options.projectRoot,
+    getDesignSession: () => state.getDesignSession(),
+    setDesignSession: (doc) => state.setDesignSession(doc),
+    getWireframe: () => state.getWireframe(),
+    setWireframe: (doc) => state.setWireframe(doc),
+    addTask: (task) => state.addTask(task),
+    snapshots: snapshotStore,
+  }
 
   const apiMiddleware = createAPIMiddleware({
     projectRoot: options.projectRoot,

@@ -302,4 +302,34 @@ describe('ClaudeLocalProvider end-to-end via fake fetch', () => {
     expect(events.some((e) => e.type === 'usage' && e.inputTokens === 10 && e.outputTokens === 2)).toBe(true)
     expect(events[events.length - 1]).toMatchObject({ type: 'done' })
   })
+
+  it('maps a 409 task_already_running to a benign done:already_running (never an error)', async () => {
+    // Another tab owns the live run. The losing run must NOT emit an error —
+    // an error reverts the task to pending and yanks the winner's run.
+    const body = JSON.stringify({ error: { code: 'task_already_running', message: 'Task task-1 is already running in another tab or session.' } })
+    const fakeFetch: typeof fetch = async () =>
+      new Response(body, { status: 409, headers: { 'Content-Type': 'application/json' } })
+    const provider = new ClaudeLocalProvider({ fetchImpl: fakeFetch })
+
+    const events: ProviderEvent[] = []
+    for await (const ev of provider.stream([{ role: 'user', content: 'hi' }], [], { systemPrompt: '', taskId: 'task-1' })) {
+      events.push(ev)
+    }
+
+    expect(events.some((e) => e.type === 'error')).toBe(false)
+    expect(events).toEqual([{ type: 'done', stopReason: 'already_running' }])
+  })
+
+  it('still maps other non-ok spawn responses to an error + done', async () => {
+    const fakeFetch: typeof fetch = async () =>
+      new Response('boom', { status: 500, headers: { 'Content-Type': 'text/plain' } })
+    const provider = new ClaudeLocalProvider({ fetchImpl: fakeFetch })
+
+    const events: ProviderEvent[] = []
+    for await (const ev of provider.stream([{ role: 'user', content: 'hi' }], [], { systemPrompt: '' })) {
+      events.push(ev)
+    }
+    expect(events.some((e) => e.type === 'error')).toBe(true)
+    expect(events[events.length - 1]).toMatchObject({ type: 'done', stopReason: 'error' })
+  })
 })

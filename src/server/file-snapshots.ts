@@ -28,6 +28,17 @@ const execFileAsync = promisify(execFile)
  * file since — the file flips to 'diverged', restores skip it, and the only
  * resolution is detachFile (keep the disk bytes, forget the file). Never
  * clobber, never rebase silently.
+ *
+ * Byte-exact COVERAGE: the embedded agent edits freely — shared layouts,
+ * imported children, global CSS — not just the anchor files the apply
+ * predicted. In a git project we capture a baseline (`git stash create`, which
+ * snapshots the dirty working tree without touching it) BEFORE the agent runs,
+ * then at seal `git diff` the tree against it and fold EVERY touched tracked
+ * file into the batch (pre-apply bytes pulled from `git show`), so undo/discard
+ * restore the agent's whole footprint, not a partial subset. An agent-DELETED
+ * file is recreated from its held bytes on restore. Outside a git project (or a
+ * monorepo whose toplevel isn't the project root) coverage falls back to the
+ * predicted anchor files only — documented, never silent.
  */
 
 function sha256(s: string): string {
@@ -45,11 +56,19 @@ interface SnapshotFileEntry {
 }
 
 interface SnapshotBatch extends ApplyBatch {
-  /** Pre-batch bytes per file — what "Undo last apply" restores. */
+  /** Pre-batch bytes per file — what "Undo last apply" restores. Seeded with
+   *  the predicted anchor files at snapshot time, then EXTENDED at seal with
+   *  every other tracked file the agent touched (bytes from `git show
+   *  gitBaseline:file`) so undo covers the agent's whole footprint. */
   before: Record<string, string>
   /** Untracked files at snapshot time (git projects only) — the baseline the
    *  seal diffs against to net agent-CREATED files into undo. */
   untrackedBefore?: string[]
+  /** `git stash create` SHA (or HEAD when the tree was clean) captured at
+   *  snapshot time — the pre-apply tree the seal diffs against to discover
+   *  agent-touched files and recover their pre-apply bytes. Absent outside a
+   *  git project / when the repo toplevel isn't the project root. */
+  gitBaseline?: string
   /** Files the agent created during this batch (rel path → sha256 at seal).
    *  Undo deletes them hash-guarded; a user-edited created file is kept. */
   created?: Record<string, string>
@@ -179,10 +198,81 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
     }
   }
 
-  /** Seal a found batch in place: record each touched file's post-apply hash
-   *  (the restore guard baseline) and net agent-CREATED files into the batch.
-   *  Idempotent enough to re-run on a second review — `before` is untouched. */
+  /** Pre-apply baseline for the byte-exact auto-extend: `git stash create`
+   *  commits the dirty working tree + index to a dangling commit WITHOUT
+   *  touching the tree/index/refs, returning its SHA — exactly the pre-apply
+   *  snapshot we need. A clean tree produces no stash commit, so HEAD already
+   *  IS the baseline. Returns null when not a git project, or when the repo
+   *  toplevel isn't the project root (then `git show repo-rel:path` and our
+   *  project-relative paths would disagree — coverage falls back to anchors). */
+  async function gitBaselineRef(): Promise<string | null> {
+    try {
+      const { stdout: top } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: projectRoot })
+      if (path.resolve(top.trim()) !== path.resolve(projectRoot)) return null
+      const { stdout: stash } = await execFileAsync('git', ['stash', 'create'], { cwd: projectRoot, maxBuffer: 1024 * 1024 })
+      const sha = stash.trim()
+      if (sha) return sha
+      const { stdout: head } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot })
+      return head.trim() || null
+    } catch {
+      return null
+    }
+  }
+
+  /** Tracked files that differ between `baseline` and the current working tree
+   *  (added/modified/deleted) — the agent's footprint beyond the anchor set.
+   *  Created (still-untracked) files don't appear here; they ride the
+   *  untracked net. Project-relative, .annotask/ and quoted paths filtered. */
+  async function gitChangedSince(baseline: string): Promise<string[]> {
+    const { stdout } = await execFileAsync(
+      'git', ['diff', '--name-only', '--no-renames', '--relative', baseline, '--'],
+      { cwd: projectRoot, maxBuffer: 50 * 1024 * 1024 },
+    )
+    return stdout.split('\n').map((s) => s.trim())
+      .filter((f) => f && !f.startsWith('"') && !f.startsWith('.annotask/'))
+  }
+
+  /** Pre-apply content of one tracked file from the baseline tree. null when the
+   *  file didn't exist there (i.e. the agent CREATED it — handled by the
+   *  untracked net, not here). */
+  async function gitShow(baseline: string, file: string): Promise<string | null> {
+    try {
+      const { stdout } = await execFileAsync('git', ['show', `${baseline}:${file}`], { cwd: projectRoot, maxBuffer: 50 * 1024 * 1024 })
+      return stdout
+    } catch {
+      return null
+    }
+  }
+
+  /** Seal a found batch in place: fold in every other tracked file the agent
+   *  touched (byte-exact coverage), record each touched file's post-apply hash
+   *  (the restore guard baseline), and net agent-CREATED files into the batch.
+   *  Idempotent enough to re-run on a second review — pre-apply bytes are only
+   *  ever captured once per file (first touch wins). */
   async function sealBatchInternal(batch: SnapshotBatch, opts?: { failed?: boolean }): Promise<void> {
+    // Auto-extend: fold every tracked file the agent changed beyond the
+    // predicted anchor set into the batch, recovering its pre-apply bytes from
+    // the baseline tree. Undo/discard then restore the agent's whole footprint.
+    if (batch.gitBaseline) {
+      try {
+        const known = new Set(batch.files)
+        for (const file of await gitChangedSince(batch.gitBaseline)) {
+          if (known.has(file)) continue
+          const pre = await gitShow(batch.gitBaseline, file)
+          if (pre === null) continue // created (not in baseline) — netted separately
+          let absPath: string
+          try { absPath = resolveAbs(file) } catch { continue } // escapes root — leave it
+          batch.before[file] = pre
+          batch.files.push(file)
+          known.add(file)
+          // Session base captured on first touch only (the pre-SESSION bytes);
+          // a file an earlier batch already snapshotted keeps that earlier base.
+          if (!journal.files[file]) {
+            journal.files[file] = { absPath, base: pre, baseHash: sha256(pre), status: 'clean' }
+          }
+        }
+      } catch { /* diff/show failed — anchor-only coverage stands, never crash the seal */ }
+    }
     for (const file of batch.files) {
       const entry = journal.files[file]
       if (!entry) continue
@@ -213,22 +303,41 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
     batch.status = opts?.failed ? 'failed' : 'done'
   }
 
-  /** Hash-guarded restore of one file. Returns false (and marks diverged) when
-   *  the disk bytes aren't the ones our last sealed batch left behind. */
+  /** Hash-guarded restore of one file to `bytes` (its pre-apply content).
+   *  Recreates an agent-DELETED file (mkdir -p + write) — that IS the byte-exact
+   *  undo, and the old code silently dropped it. Returns false (and marks
+   *  diverged) only when the disk state isn't the one our seal left behind:
+   *  the USER edited or deleted/created it since, so restoring would clobber
+   *  their work. `lastAppliedHash` is the seal fingerprint — undefined means the
+   *  file was ABSENT at seal (the agent deleted it during the apply). */
   async function restoreFile(relFile: string, bytes: string): Promise<boolean> {
     const entry = journal.files[relFile]
     if (!entry) return false
-    let current: string
+    const expected = entry.lastAppliedHash
+    let current: string | null = null
     try {
       current = await fsp.readFile(entry.absPath, 'utf-8')
     } catch {
-      return false
+      current = null // absent on disk now
     }
-    const expected = entry.lastAppliedHash
-    if (expected !== undefined && sha256(current) !== expected) {
-      entry.status = 'diverged'
-      return false
+    if (current !== null) {
+      // Present now. Absent at seal (expected undefined) ⇒ the user re-created
+      // it after the agent deleted it — don't clobber. Otherwise it must still
+      // match the sealed bytes, or the user edited it since.
+      if (expected === undefined || sha256(current) !== expected) {
+        entry.status = 'diverged'
+        return false
+      }
+    } else {
+      // Absent now. Present at seal (expected set) ⇒ the user deleted it since —
+      // don't silently resurrect. Absent at seal too ⇒ agent-deleted, untouched
+      // by the user → recreate it from the held pre-apply bytes.
+      if (expected !== undefined) {
+        entry.status = 'diverged'
+        return false
+      }
     }
+    await fsp.mkdir(path.dirname(entry.absPath), { recursive: true })
     await fsp.writeFile(entry.absPath, bytes, 'utf-8')
     entry.lastAppliedHash = sha256(bytes)
     return true
@@ -240,6 +349,10 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
         await ready
         const before: Record<string, string> = {}
         for (const file of files) {
+          // Defensive: an empty/falsy target can't resolve (resolveAbs('')
+          // throws). Callers should filter anchorless blocks, but never let one
+          // bad entry abort the whole snapshot and strand a task with no batch.
+          if (!file) continue
           const absPath = resolveAbs(file)
           let bytes = ''
           try { bytes = await fsp.readFile(absPath, 'utf-8') } catch { bytes = '' }
@@ -250,9 +363,11 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
           }
         }
         const untrackedBefore = await gitUntracked()
+        const gitBaseline = await gitBaselineRef()
         journal.batches.push({
           id: batch.id, taskId: batch.taskId, files: [...files], startedAt: Date.now(), status: 'running', before,
           ...(untrackedBefore !== null ? { untrackedBefore } : {}),
+          ...(gitBaseline ? { gitBaseline } : {}),
         })
         await persist()
       })

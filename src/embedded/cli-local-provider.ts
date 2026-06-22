@@ -136,6 +136,16 @@ export abstract class CliLocalProvider implements LLMProvider {
 
     if (!response.ok) {
       const text = await safeReadText(response)
+      // Cross-tab dedup: the server already has a live run for this task in
+      // another tab/session (409 `task_already_running`). THIS run never
+      // started, so it must not be treated as an error — an error reverts the
+      // task to pending, which would yank the WINNING tab's live run out from
+      // under it. Signal a benign, distinct stop reason and let the caller
+      // leave the task status untouched.
+      if (response.status === 409 && text.includes('task_already_running')) {
+        yield { type: 'done', stopReason: 'already_running' }
+        return
+      }
       yield {
         type: 'error',
         error: `[${this.name}] spawn HTTP ${response.status}: ${text || response.statusText}`,

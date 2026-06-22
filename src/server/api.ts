@@ -20,12 +20,12 @@ import type { AgentDetector } from './agent-detect.js'
 import type { InitRunner, ScanOptions } from './init.js'
 import type { UsageLedger } from './usage-ledger.js'
 import type { AgentConfigs, AgentConfigEntry } from './agent-configs.js'
-import { isWireframeDocument, WIREFRAME_SNAPSHOT_FILENAME_RE, type WireframeDocument, type WireframeInstance } from '../shared/wireframe-types.js'
+import { isWireframeDocument, WIREFRAME_SNAPSHOT_FILENAME_RE, type WireframeDocument } from '../shared/wireframe-types.js'
 import { WireframeRevConflictError } from './wireframe-store.js'
 import { isDesignSessionDocument, type DesignSessionDocument } from '../shared/design-session-types.js'
 import { RevConflictError } from './json-cas-store.js'
 import type { SnapshotStore } from './file-snapshots.js'
-import { applyDesignSession, verifyAppliedEntries, revertApplyBatch, releaseApplyTask, acceptApplyTask } from './apply-session.js'
+import { applyDesignSession, verifyAppliedEntries, revertApplyBatch, releaseApplyTask, acceptApplyTask, restampApplyEntries, closeWireframeLifecycle } from './apply-session.js'
 import { PROVIDER_IDS, EFFORT_LEVELS } from '../embedded/provider-config.js'
 
 export interface APIOptions {
@@ -241,53 +241,6 @@ function deriveServerPort(req: IncomingMessage): number | undefined {
  * the placements panel. `setWireframe` broadcasts `wireframe:updated`, so live
  * shells re-load without polling.
  */
-async function closeWireframeLifecycle(
-  options: Pick<APIOptions, 'getWireframe' | 'setWireframe'>,
-  taskId: string,
-  mode: 'remove' | 'revert',
-): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const doc = await options.getWireframe()
-    let touched = false
-    const routes = doc.routes.map((route) => {
-      const canvasOwned = route.canvas?.taskId === taskId
-      if (!route.instances.some((i) => i.taskId === taskId) && !canvasOwned) return route
-      touched = true
-      const instances: WireframeInstance[] = mode === 'remove'
-        ? route.instances.filter((i) => i.taskId !== taskId)
-        : route.instances.map((i) => {
-            if (i.taskId !== taskId) return i
-            const { taskId: _cleared, ...rest } = i
-            return { ...rest, status: 'placed' as const, updatedAt: Date.now() }
-          })
-      // The snapshot-wireframe canvas rides the same lifecycle: accept removes
-      // the implemented sketch; task delete (revert) unlocks it for editing.
-      let canvas = route.canvas
-      if (canvasOwned) {
-        if (mode === 'remove') {
-          canvas = undefined
-        } else {
-          const { taskId: _t, ...rest } = route.canvas!
-          canvas = { ...rest, status: 'sketch' as const }
-        }
-      }
-      return { ...route, instances, canvas, updatedAt: Date.now() }
-    })
-    if (!touched) return
-    try {
-      await options.setWireframe({ ...doc, routes, updatedAt: Date.now() })
-      return
-    } catch (err) {
-      // A non-conflict failure (disk error) won't get better on retry.
-      if (!(err instanceof WireframeRevConflictError)) {
-        console.warn(`[Annotask] wireframe ${mode} for ${taskId} failed:`, err)
-        return
-      }
-    }
-  }
-  console.warn(`[Annotask] wireframe ${mode} for ${taskId} gave up after rev conflicts`)
-}
-
 export function createAPIMiddleware(options: APIOptions) {
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     // DNS-rebinding gate — runs FIRST, for ALL methods. The Origin checks
@@ -957,15 +910,31 @@ export function createAPIMiddleware(options: APIOptions) {
         try { await verifyAppliedEntries(options, id) }
         catch (err) { console.warn('[Annotask] apply verification failed:', err) }
       }
-      // Abandoned run: a crashed/aborted seed run flipped the task back to
-      // 'pending', or the stall watchdog 'blocked' it — without ever reaching
-      // review. Return its 'applying' session entries to pending and seal the
-      // (possibly half-written) batch as failed so it stays revertible, instead
-      // of stranding entries in 'applying' forever.
-      if ((updates.status === 'pending' || updates.status === 'blocked')
-        && taskBefore?.type === 'wireframe_apply' && taskBefore?.status === 'in_progress') {
-        try { await releaseApplyTask(options, id) }
-        catch (err) { console.warn('[Annotask] apply release failed:', err) }
+      // Exit from a live in_progress run that isn't →review (verify seals) or
+      // →accepted (commit). The batch MUST be sealed either way — a 'running'
+      // batch left unsealed wedges undo + discard + re-apply all at once.
+      //   pending/blocked: the run gave up (crash/abort/stall) — fully abandon:
+      //     release 'applying' entries back to pending AND unlock the canvas
+      //     (releaseApplyTask now does both), so the sketch is editable again.
+      //   denied/needs_info: keep the entries + canvas for a retry/resume, but
+      //     still seal so undo/discard work while the user decides.
+      if (taskBefore?.type === 'wireframe_apply' && taskBefore?.status === 'in_progress') {
+        if (updates.status === 'pending' || updates.status === 'blocked') {
+          try { await releaseApplyTask(options, id) }
+          catch (err) { console.warn('[Annotask] apply release failed:', err) }
+        } else if (updates.status === 'denied' || updates.status === 'needs_info') {
+          try { await options.snapshots.sealBatchByTask(id, { failed: true }) }
+          catch (err) { console.warn('[Annotask] apply seal failed:', err) }
+        }
+      }
+      // Retry / resume (denied|blocked|needs_info|review → in_progress) re-arms
+      // verification: entries written/failed on the first review return to
+      // 'applying' so the next review re-checks them instead of showing stale
+      // verdicts. No-op on a first run (entries are already 'applying').
+      if (updates.status === 'in_progress' && taskBefore?.type === 'wireframe_apply'
+        && taskBefore?.status !== 'pending') {
+        try { await restampApplyEntries(options, id) }
+        catch (err) { console.warn('[Annotask] apply re-stamp failed:', err) }
       }
       res.end(JSON.stringify(updated, null, 2))
       return
@@ -979,12 +948,11 @@ export function createAPIMiddleware(options: APIOptions) {
       if (deleted && typeof deleted === 'object' && deleted.error === 'Task not found') {
         return sendError(res, 404, 'Task not found', 'not_found')
       }
-      // Lifecycle closure: deleting a wireframe_apply task abandons the batch —
-      // revert its placements to 'placed' so the user can rebuild them, and
-      // return its session entries to 'pending' (the snapshot batch stays
-      // revertible — the agent may have half-written before the delete).
+      // Lifecycle closure: deleting a wireframe_apply task abandons the batch.
+      // releaseApplyTask seals the (possibly half-written) batch so it stays
+      // revertible, returns its session entries to 'pending', and reverts its
+      // placements to 'placed' + unlocks the canvas sketch for editing.
       if (taskBefore?.type === 'wireframe_apply') {
-        await closeWireframeLifecycle(options, id, 'revert')
         try { await releaseApplyTask(options, id) }
         catch (err) { console.warn('[Annotask] apply release failed:', err) }
       }

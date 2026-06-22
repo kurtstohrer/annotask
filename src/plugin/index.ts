@@ -186,6 +186,20 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         // The announced host must also pass the Host gate — skills/CLI built
         // from server.json send it verbatim in their Host header.
         if (host) extraAllowedHosts.push(host)
+        // Loud warning when bound beyond loopback (e.g. `vite --host`): the
+        // Annotask API is unauthenticated and can spawn agents that write source
+        // + run shell at the project root. On a non-loopback bind, anyone on the
+        // LAN can reach it. See SECURITY.md. (Loopback binds stay quiet.)
+        const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1', 'localhost'])
+        if (host && !loopback.has(host)) {
+          console.warn(
+            `[Annotask] ⚠ SECURITY: bound to ${host}:${port} (beyond localhost). ` +
+            `The Annotask dev API is UNAUTHENTICATED and can run your agent CLI ` +
+            `with file-write + shell access at the project root — anyone on this ` +
+            `network can reach it. Set ANNOTASK_MAX_PERMISSION=plan|default to cap ` +
+            `it, and prefer an SSH tunnel over --host. See SECURITY.md.`,
+          )
+        }
       })
 
       console.log('[Annotask] Design tool available at /__annotask/')

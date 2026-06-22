@@ -71,6 +71,65 @@ function entryForTask(e: SessionEntry): Record<string, unknown> {
   }
 }
 
+/**
+ * Close out a wireframe_apply task's hold on the wireframe doc.
+ *   'remove' (accept) — retire the implemented placements and clear the
+ *     route's canvas sketch (the real component is live now).
+ *   'revert' (abandon: delete / orphan / give-up) — return placements to
+ *     'placed' and unlock the canvas back to 'sketch' so it's editable again.
+ *
+ * Lives here (not in api.ts) so the HTTP PATCH path AND the server-side orphan
+ * reconcile / boot sweep call the SAME closure — a transition handled two
+ * different ways is exactly what stranded orphaned applies (canvas locked at
+ * 'building' forever). CAS-retried, best-effort.
+ */
+export async function closeWireframeLifecycle(
+  options: Pick<ApplySessionOptions, 'getWireframe' | 'setWireframe'>,
+  taskId: string,
+  mode: 'remove' | 'revert',
+): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const doc = await options.getWireframe()
+    let touched = false
+    const routes = doc.routes.map((route) => {
+      const canvasOwned = route.canvas?.taskId === taskId
+      if (!route.instances.some((i) => i.taskId === taskId) && !canvasOwned) return route
+      touched = true
+      const instances: WireframeInstance[] = mode === 'remove'
+        ? route.instances.filter((i) => i.taskId !== taskId)
+        : route.instances.map((i) => {
+            if (i.taskId !== taskId) return i
+            const { taskId: _cleared, ...rest } = i
+            return { ...rest, status: 'placed' as const, updatedAt: Date.now() }
+          })
+      // The snapshot-wireframe canvas rides the same lifecycle: accept removes
+      // the implemented sketch; abandon unlocks it for editing.
+      let canvas = route.canvas
+      if (canvasOwned) {
+        if (mode === 'remove') {
+          canvas = undefined
+        } else {
+          const { taskId: _t, ...rest } = route.canvas!
+          canvas = { ...rest, status: 'sketch' as const }
+        }
+      }
+      return { ...route, instances, canvas, updatedAt: Date.now() }
+    })
+    if (!touched) return
+    try {
+      await options.setWireframe({ ...doc, routes, updatedAt: Date.now() })
+      return
+    } catch (err) {
+      // A non-conflict failure (disk error) won't get better on retry.
+      if (!(err instanceof WireframeRevConflictError)) {
+        console.warn(`[Annotask] wireframe ${mode} for ${taskId} failed:`, err)
+        return
+      }
+    }
+  }
+  console.warn(`[Annotask] wireframe ${mode} for ${taskId} gave up after rev conflicts`)
+}
+
 export async function applyDesignSession(
   options: ApplySessionOptions,
   route: string,
@@ -91,9 +150,14 @@ export async function applyDesignSession(
   const hasDirections = entries.some((e) => e.change.type === 'wireframe_direction')
 
   // Dominant anchor file → the task-level anchor (buildWireframeRoute precedent).
+  // Empty anchors are honest "couldn't ground this block" (a captured element
+  // with no data-annotask-* ancestor, or an add with no donor neighbor) — they
+  // ride the task as screenshot-anchored directions but must never count toward
+  // the dominant file or, below, the snapshot set (snapshotting '' throws).
+  const hasFile = (f: unknown): f is string => typeof f === 'string' && f.length > 0
   const fileCounts = new Map<string, number>()
-  for (const e of entries) fileCounts.set(e.anchor.file, (fileCounts.get(e.anchor.file) ?? 0) + 1)
-  for (const i of instances) fileCounts.set(i.anchor.file, (fileCounts.get(i.anchor.file) ?? 0) + 1)
+  for (const e of entries) if (hasFile(e.anchor.file)) fileCounts.set(e.anchor.file, (fileCounts.get(e.anchor.file) ?? 0) + 1)
+  for (const i of instances) if (hasFile(i.anchor.file)) fileCounts.set(i.anchor.file, (fileCounts.get(i.anchor.file) ?? 0) + 1)
   let domFile = ''
   let domCount = -1
   for (const [f, c] of fileCounts) if (c > domCount) { domFile = f; domCount = c }
@@ -135,8 +199,14 @@ export async function applyDesignSession(
   const taskId = task.id
 
   // Snapshot BEFORE the agent can run — the journal is the crash-safety net.
+  // Filter empty anchors: an anchorless block (file '') would make snapshotFiles
+  // throw on resolveAbs('') — AFTER the task was already minted, stranding an
+  // orphan task with no batch. Those directions still ride the task and the
+  // agent grounds them from the screenshot; the git auto-extend captures any
+  // file the agent actually edits regardless.
   const batchId = `ab-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
   const files = [...new Set([...entries.map((e) => e.anchor.file), ...instances.map((i) => i.anchor.file)])]
+    .filter(hasFile)
   await options.snapshots.snapshotFiles(files, { id: batchId, taskId })
 
   // Stamp instances 'building' (the existing Build semantics: a second apply
@@ -342,13 +412,17 @@ export async function acceptApplyTask(
   return { rotated: !!doc && doc.entries.length === 0 }
 }
 
-/** Abandoned run (task deleted, or a crashed/aborted seed run flipped the task
- *  back to pending/blocked without ever reaching review): seal the
- *  possibly-half-written batch as 'failed' so it carries a hash baseline and
- *  stays revertible (the undo/discard guard refuses a still-'running' batch),
- *  then return its entries to 'pending' so they re-surface as work. */
+/** Abandoned run (task deleted, a crashed/aborted/orphaned seed run flipped the
+ *  task back to pending/blocked, or the server-side orphan reconcile reclaimed
+ *  a stale in_progress lock): seal the possibly-half-written batch as 'failed'
+ *  so it carries a hash baseline and stays revertible (the undo/discard guard
+ *  refuses a still-'running' batch — leaving it 'running' is the wedge that
+ *  disabled undo+discard+re-apply at once), return its entries to 'pending' so
+ *  they re-surface as work, AND unlock the wireframe canvas back to 'sketch'
+ *  (otherwise it stays read-only at 'building' with no agent running). One
+ *  function for every abandon path so the HTTP and server-side paths agree. */
 export async function releaseApplyTask(
-  options: Pick<ApplySessionOptions, 'getDesignSession' | 'setDesignSession' | 'snapshots'>,
+  options: Pick<ApplySessionOptions, 'getDesignSession' | 'setDesignSession' | 'snapshots' | 'getWireframe' | 'setWireframe'>,
   taskId: string,
 ): Promise<void> {
   await options.snapshots.sealBatchByTask(taskId, { failed: true })
@@ -359,6 +433,31 @@ export async function releaseApplyTask(
       if (e.live.status === 'applying') e.live = { status: 'pending', applyBatchId: e.live.applyBatchId }
       delete e.taskId
       touched = true
+    }
+    return touched
+  })
+  // Unlock the route's canvas sketch (no-op when this task never owned one).
+  await closeWireframeLifecycle(options, taskId, 'revert')
+}
+
+/** Re-stamp a denied/blocked/needs_info task's session entries back to
+ *  'applying' when it re-enters 'in_progress' (retry / resume). Without this,
+ *  verifyAppliedEntries (which only re-reads entries still in 'applying') skips
+ *  them on the second review, so the apply panel keeps showing the FIRST run's
+ *  stale written/failed verdicts after a fix. Idempotent. */
+export async function restampApplyEntries(
+  options: Pick<ApplySessionOptions, 'getDesignSession' | 'setDesignSession'>,
+  taskId: string,
+  batchId?: string,
+): Promise<void> {
+  await mutateSession(options, (doc) => {
+    let touched = false
+    for (const e of doc.entries) {
+      if (e.taskId !== taskId) continue
+      if (e.live.status === 'written' || e.live.status === 'failed') {
+        e.live = { status: 'applying', applyBatchId: e.live.applyBatchId ?? batchId }
+        touched = true
+      }
     }
     return touched
   })

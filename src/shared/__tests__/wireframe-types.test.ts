@@ -3,6 +3,7 @@ import {
   isWireframeDataBinding,
   isWireframeBlock,
   isWireframeDocument,
+  migrateWireframeDocument,
   type WireframeBlock,
   type WireframeDataBinding,
   type WireframeDocument,
@@ -60,6 +61,32 @@ function docWith(blocks: WireframeBlock[]): WireframeDocument {
     }],
   }
 }
+
+describe('migrateWireframeDocument (version-bump safety — never silently wipe)', () => {
+  it('passes a valid current-version doc through unchanged', () => {
+    const doc = docWith([paletteBlock()])
+    expect(migrateWireframeDocument(doc)).toEqual(doc)
+  })
+
+  it('stamps the current version onto a pre-versioned (early-format) doc instead of wiping it', () => {
+    const legacy = { updatedAt: 1, rev: 2, routes: [{ route: '/', instances: [] }] } // no `version`
+    const migrated = migrateWireframeDocument(legacy)
+    expect(migrated).not.toBeNull()
+    expect(migrated!.version).toBe('1.0')
+    expect(migrated!.routes).toEqual([{ route: '/', instances: [] }])
+  })
+
+  it('returns null for a newer/unknown version (caller leaves the file alone, not overwrites)', () => {
+    expect(migrateWireframeDocument({ version: '99.0', updatedAt: 1, routes: [] })).toBeNull()
+  })
+
+  it('returns null for genuinely malformed input (preserves same-version strictness)', () => {
+    expect(migrateWireframeDocument(null)).toBeNull()
+    expect(migrateWireframeDocument({ version: '1.0', updatedAt: 1, routes: 'nope' })).toBeNull()
+    // One bad instance still fails — the PUT-boundary contract is unchanged.
+    expect(migrateWireframeDocument({ version: '1.0', updatedAt: 1, routes: [{ route: '/', instances: [{ id: 'x' }] }] })).toBeNull()
+  })
+})
 
 describe('isWireframeDataBinding', () => {
   it('accepts the full contract and a minimal one', () => {

@@ -38,8 +38,11 @@ export interface WireframeDataBinding {
    *  e.g. ["name", "price"]. */
   fields?: string[]
   /** Where the shape came from — the honesty tag the agent sees.
-   *  'api-schema' (real contract) | 'source-details' (regex inference,
-   *  confidence attached) | 'none' (user typed the path blind). */
+   *  'api-schema' (real contract) | 'source-details' (regex inference) |
+   *  'none' (user typed the path blind). NOTE: a numeric confidence is NOT
+   *  currently carried on the binding — the tag is the only signal. Reworking
+   *  this ladder (a real confidence floor, threaded to the agent) is why data
+   *  binding is gated off for this release (see shell/wireframeFeatures.ts). */
   shape_source: 'api-schema' | 'source-details' | 'none'
   /** Maps a component PROP name → a data FIELD within the bound item
    *  (e.g. { label: 'name', value: 'type' }). Drives the preview's bound
@@ -299,6 +302,39 @@ export const WIREFRAME_SNAPSHOT_FILENAME_RE = /^[a-z0-9][a-z0-9-]{0,63}\.png$/
 
 export function emptyWireframeDocument(): WireframeDocument {
   return { version: WIREFRAME_DOC_VERSION, updatedAt: 0, routes: [] }
+}
+
+/**
+ * Forward migrations, keyed by the version they upgrade FROM. Each returns the
+ * doc one schema version newer. Empty today — `1.0` is current — but the frame
+ * MUST exist before the version is ever bumped: without a registered migration,
+ * `isWireframeDocument` rejects the old-version doc and the store wipes every
+ * persisted wireframe (silent data loss). When you bump WIREFRAME_DOC_VERSION,
+ * add the `'1.0': (doc) => ({ ...doc, version: '1.1', ...transform })` entry here.
+ */
+const WIREFRAME_MIGRATIONS: Record<string, (doc: Record<string, unknown>) => Record<string, unknown>> = {}
+
+/**
+ * Reconcile a persisted doc with the current schema instead of silently wiping
+ * it. A fully-valid current doc passes through; a recognized older version is
+ * migrated forward step by step; a pre-versioned (early-format) doc that
+ * otherwise matches the shape is stamped with the current version. Returns null
+ * only when the result still isn't a valid document (genuinely malformed, or a
+ * NEWER/unknown version we can't safely interpret) — the caller then leaves the
+ * file alone rather than overwriting it. Same-version strictness is unchanged:
+ * one bad instance/block still fails validation (the PUT-boundary contract).
+ */
+export function migrateWireframeDocument(raw: unknown): WireframeDocument | null {
+  if (!isPlainObject(raw)) return null
+  let doc: Record<string, unknown> = raw
+  // Pre-versioned early-format doc: shares 1.0's shape, just lacks the field.
+  if (doc.version === undefined) doc = { ...doc, version: WIREFRAME_DOC_VERSION }
+  let guard = 0
+  while (typeof doc.version === 'string' && doc.version !== WIREFRAME_DOC_VERSION
+    && WIREFRAME_MIGRATIONS[doc.version] && guard++ < 20) {
+    doc = WIREFRAME_MIGRATIONS[doc.version](doc)
+  }
+  return isWireframeDocument(doc) ? doc : null
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

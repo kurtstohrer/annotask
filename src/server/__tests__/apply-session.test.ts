@@ -331,6 +331,39 @@ describe('apply-session', () => {
       expect(ctx.session.entries[0].change.added!.data).toEqual(data)
     })
 
+    it('an anchorless add (no donor → file "") mints the task and snapshots nothing — never crashes the apply', async () => {
+      // A page with no data-annotask anchors: the add has nowhere to ground, so
+      // file/line come back ''. The OLD code threw on snapshotFiles('') AFTER
+      // minting the task, stranding an orphan task with no batch (and feeding
+      // the lifecycle wedge). Now empty anchors are filtered out of the set.
+      const entry: SessionEntry = {
+        id: 'wd-floating', ordinal: 1, ts: 1, route: '/planets',
+        change: {
+          id: 'c-wd-floating', type: 'wireframe_direction', op: 'add',
+          description: 'ADD component <Hero> on the page',
+          file: '', section: 'template', line: 0,
+          block: { label: 'Hero' },
+          added: { kind: 'component', componentName: 'Hero', position: 'append' },
+          measured: { after: { x: 0, y: 0, width: 320, height: 120 } },
+        } as unknown as SessionEntry['change'],
+        anchor: { file: '', line: 0 },
+        live: { status: 'pending' },
+      }
+      await seedSession([entry])
+
+      const result = await applyDesignSession(options, '/planets')
+      expect('error' in result).toBe(false)
+      if ('error' in result) return
+      expect(tasks).toHaveLength(1)
+      // No file snapshotted (the only anchor was empty) — but the batch exists
+      // and stays revertible, and the direction still rides the task context.
+      const snap = await options.snapshots.state()
+      expect(Object.keys(snap.files)).toEqual([])
+      expect(snap.batches.map((b) => b.id)).toEqual([result.batchId])
+      const ctx = tasks[0].context as { session: { entries: Array<{ id: string }> } }
+      expect(ctx.session.entries.map((e) => e.id)).toEqual(['wd-floating'])
+    })
+
     it('verify trusts directions with NO source read — the anchor file may be gone entirely', async () => {
       await seedSession([directionEntry('wd-1')])
       const result = await applyDesignSession(options, '/planets')

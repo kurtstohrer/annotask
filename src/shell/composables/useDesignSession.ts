@@ -87,16 +87,19 @@ const applying = ref(false)
 const lastError = ref<string | null>(null)
 
 /**
- * True while an apply run is unsettled: the POST is in flight, a batch is still
- * 'running' (its agent is mid-write, or crashed before sealing), or entries are
- * still 'applying'. Undo/Discard MUST be inert here — reverting an unsealed
- * batch clobbers the agent's in-progress bytes with no hash guard. Clears only
- * once the review hook seals the batch (or an abandon seals it 'failed').
+ * True while an apply run is unsettled: the POST is in flight, or a batch is
+ * still 'running' (its agent is mid-write, or crashed before sealing). Undo/
+ * Discard MUST be inert here — reverting an unsealed batch clobbers the agent's
+ * in-progress bytes with no hash guard. The BATCH status is authoritative: it
+ * is sealed on every terminal transition (review verify, or an abandon/orphan
+ * seal 'failed'), so a lingering 'applying' entry — e.g. an agent paused at
+ * needs_info — no longer falsely pins this true and disables undo forever. The
+ * server's revertBatch/revertAll still hard-refuse a 'running' batch, so a
+ * stale client view can never clobber a live run regardless.
  */
 const applyInFlight = computed(() =>
   applying.value
-  || snapshotState.value.batches.some((b) => (b.status ?? 'running') === 'running')
-  || entries.value.some((e) => e.live.status === 'applying'),
+  || snapshotState.value.batches.some((b) => (b.status ?? 'running') === 'running'),
 )
 
 let ordinalCounter = 0
