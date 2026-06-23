@@ -92,15 +92,18 @@
               {{ effectiveModel }} (custom)
             </option>
           </select>
-          <!-- Visually clear the field when blocked so the user sees the
-               default (Auto) instead of whatever stale id the persona had
-               for a different provider. They can still type a custom id to
-               override, which persists via the same onModelChange path. -->
+          <!-- Manual model entry for providers whose catalog can't be
+               enumerated live (Copilot CLI is the canonical case — its model
+               picker is interactive only). Shows the SAVED id so a custom model
+               (e.g. a Copilot-hosted Claude model) is visible and persists on
+               reload; empty = Auto. A stale id from a DIFFERENT provider is
+               cleared on provider change (see onProviderChange), NOT here — so
+               we never wipe a value the user deliberately entered. -->
           <input
             v-else
             type="text"
             class="adp-input"
-            :value="modelsBlocked ? '' : effectiveModel"
+            :value="effectiveModel"
             :disabled="runtimeSaving"
             placeholder="Auto (CLI default)"
             data-testid="adp-engine-model-manual"
@@ -306,15 +309,12 @@ const modelsBlocked = computed(
 // included via immediate).
 watch(effectiveProvider, (id) => { void agentModels.ensure(id) }, { immediate: true })
 
-// When the picker enters the "Cannot fetch models" state and the persona
-// has a stale model id saved, reset it to Auto (empty) so the input starts
-// clean instead of pre-filling a value the live probe couldn't confirm.
-watch(modelsBlocked, (blocked) => {
-  if (!blocked) return
-  if (!selected.value) return
-  if (!effectiveModel.value) return
-  void persistRuntime({ model: '' })
-})
+// NB: we deliberately do NOT auto-reset the saved model when the catalog can't
+// be fetched (modelsBlocked). A model id the live probe can't enumerate (e.g. a
+// Copilot-hosted model) is still a valid, user-entered value — wiping it here
+// was a data-loss bug that made per-agent model pins silently fail to persist.
+// A genuinely stale id left over from a DIFFERENT provider is cleared on
+// provider change instead (see onProviderChange).
 
 async function persistRuntime(patch: { providerId?: ProviderId; model?: string; effort?: EffortLevel }) {
   if (!selected.value) return
@@ -333,11 +333,18 @@ async function persistRuntime(patch: { providerId?: ProviderId; model?: string; 
 function onProviderChange(value: string) {
   if (!CLI_PROVIDER_OPTIONS.some(p => p.id === value)) return
   const nextProvider = value as ProviderId
+  // A model id is provider-specific, so clear it when the provider changes —
+  // this is the ONE place a stale cross-provider model is dropped (it replaces
+  // the old modelsBlocked auto-wipe). The user then picks/enters the new
+  // provider's model, which now persists.
+  const patch: { providerId: ProviderId; model: string; effort?: EffortLevel } = {
+    providerId: nextProvider,
+    model: '',
+  }
   // If the current effort isn't in the new provider's supported set, snap
   // to its first option (usually 'auto') so the select doesn't sit on a
   // value the dropdown can't render.
   const supportedEfforts = EFFORTS_BY_PROVIDER[nextProvider] ?? EFFORT_LEVELS
-  const patch: { providerId: ProviderId; effort?: EffortLevel } = { providerId: nextProvider }
   if (!supportedEfforts.includes(effectiveEffort.value)) {
     patch.effort = supportedEfforts[0] ?? 'auto'
   }

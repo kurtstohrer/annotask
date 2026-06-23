@@ -122,6 +122,10 @@ const lastIndex = computed(() => renderPlan.value.length - 1)
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--surface-2);
+  /* Let wide children (code blocks, long tokens) shrink instead of forcing the
+     whole conversation scroller to scroll horizontally. Flex items default to
+     min-width:auto, which refuses to shrink below content width. */
+  min-width: 0;
 }
 .cv-msg.role-user { background: color-mix(in srgb, var(--accent) 10%, var(--surface-2)); }
 .cv-msg.role-assistant { background: var(--surface-2); }
@@ -142,7 +146,7 @@ const lastIndex = computed(() => renderPlan.value.length - 1)
 .cv-msg-model,
 .cv-msg-ts { font-weight: 500; }
 
-.cv-msg-body { font-size: 13px; color: var(--text); line-height: 1.55; display: flex; flex-direction: column; gap: 8px; }
+.cv-msg-body { font-size: 13px; color: var(--text); line-height: 1.55; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .cv-msg-text { white-space: pre-wrap; word-break: break-word; }
 
 :deep(.cv-msg-markdown p) { margin: 0 0 8px; }
@@ -151,7 +155,8 @@ const lastIndex = computed(() => renderPlan.value.length - 1)
   background: var(--surface-3);
   border-radius: 4px;
   padding: 8px 10px;
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 360px;
   font-size: 12px;
 }
 :deep(.cv-msg-markdown code) {
@@ -159,8 +164,28 @@ const lastIndex = computed(() => renderPlan.value.length - 1)
   border-radius: 3px;
   padding: 1px 4px;
   font-size: 12px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
-:deep(.cv-msg-markdown pre code) { background: transparent; padding: 0; }
+:deep(.cv-msg-markdown pre code) { background: transparent; padding: 0; word-break: normal; overflow-wrap: normal; }
+/* Full GFM surface — safeMd emits lists/headings/blockquotes/links/tables, none
+   of which were styled, so agent prose rendered with raw browser defaults. */
+:deep(.cv-msg-markdown ul), :deep(.cv-msg-markdown ol) { margin: 4px 0 8px; padding-left: 20px; }
+:deep(.cv-msg-markdown li) { margin: 2px 0; }
+:deep(.cv-msg-markdown li > p) { margin: 0; }
+:deep(.cv-msg-markdown h1), :deep(.cv-msg-markdown h2), :deep(.cv-msg-markdown h3),
+:deep(.cv-msg-markdown h4), :deep(.cv-msg-markdown h5), :deep(.cv-msg-markdown h6) {
+  margin: 10px 0 6px; font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3;
+}
+:deep(.cv-msg-markdown > :first-child) { margin-top: 0; }
+:deep(.cv-msg-markdown a) { color: var(--text-link); text-decoration: underline; word-break: break-word; }
+:deep(.cv-msg-markdown strong) { font-weight: 600; color: var(--text); }
+:deep(.cv-msg-markdown blockquote) { margin: 8px 0; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--text-muted); }
+:deep(.cv-msg-markdown hr) { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+:deep(.cv-msg-markdown table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; }
+:deep(.cv-msg-markdown th), :deep(.cv-msg-markdown td) { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+:deep(.cv-msg-markdown th) { background: var(--surface-3); font-weight: 600; }
+:deep(.cv-msg-markdown img) { max-width: 100%; height: auto; }
 
 .cv-cursor {
   display: inline-block;

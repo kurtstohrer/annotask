@@ -202,6 +202,37 @@ function create(
     return resolvePersonaForTaskType(personas.value, taskType, settings.value.personaOverrides ?? {})
   }
 
+  /**
+   * Resolve the provider + model + effort a SEED (apply) run for the given task
+   * type should use. Policy:
+   *   - A built-in persona with NO explicit per-persona pin inherits the global
+   *     active provider (the Settings → Providers picker) and its model/effort.
+   *     This is what makes the picker actually drive apply runs instead of every
+   *     built-in silently using its hardcoded `claude-local`.
+   *   - An explicit per-persona pin (Settings → Agents, persisted to
+   *     `.annotask/agents.json`) wins. `combinePersonas` has already baked the
+   *     override into the persona's providerId/model/effort, so we read those.
+   *   - A custom persona keeps its own providerId/model/effort (authored
+   *     deliberately).
+   * Free-form chat does NOT call this — it always uses the active provider.
+   */
+  function resolveProviderForTaskType(
+    taskType: string | undefined,
+  ): { providerId: ProviderId; model: string; effort: EffortLevel } {
+    const inheritGlobal = () => {
+      const id = settings.value.activeProvider
+      const cfg = settings.value.providers[id]
+      return { providerId: id, model: cfg.model ?? '', effort: cfg.effort }
+    }
+    const persona = getPersonaForTaskType(taskType)
+    if (!persona) return inheritGlobal()
+    const explicitPin = Boolean(agentOverrides()[persona.id]?.providerId)
+    if (explicitPin || persona.isCustom) {
+      return { providerId: persona.providerId, model: persona.model, effort: persona.effort }
+    }
+    return inheritGlobal()
+  }
+
   /** Insert or replace a custom persona by id. Built-ins are never written
    *  to `customPersonas`; instead, editing a built-in clones it as
    *  `custom:<built-in-id>` so the original stays available. */
@@ -258,6 +289,7 @@ function create(
     setMaxRunDurationMs,
     personas,
     getPersonaForTaskType,
+    resolveProviderForTaskType,
     upsertPersona,
     deletePersona,
     setPersonaOverride,

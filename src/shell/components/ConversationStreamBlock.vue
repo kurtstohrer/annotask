@@ -114,6 +114,8 @@ const hasPairedResult = computed(() =>
   color: var(--text);
   line-height: 1.55;
   word-break: break-word;
+  /* Allow wide children to shrink rather than scroll the whole conversation. */
+  min-width: 0;
 }
 :deep(.csb-markdown p) { margin: 0 0 8px; }
 :deep(.csb-markdown p:last-child) { margin-bottom: 0; }
@@ -121,7 +123,8 @@ const hasPairedResult = computed(() =>
   background: var(--surface-3);
   border-radius: 4px;
   padding: 8px 10px;
-  overflow-x: auto;
+  overflow: auto;
+  max-height: 360px;
   font-size: 12px;
 }
 :deep(.csb-markdown code) {
@@ -129,8 +132,28 @@ const hasPairedResult = computed(() =>
   border-radius: 3px;
   padding: 1px 4px;
   font-size: 12px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
-:deep(.csb-markdown pre code) { background: transparent; padding: 0; }
+:deep(.csb-markdown pre code) { background: transparent; padding: 0; word-break: normal; overflow-wrap: normal; }
+/* Full GFM surface — this is the LIVE/streaming agent-text path, so unstyled
+   lists/headings/links were the most visible. Mirrors ConversationMessage. */
+:deep(.csb-markdown ul), :deep(.csb-markdown ol) { margin: 4px 0 8px; padding-left: 20px; }
+:deep(.csb-markdown li) { margin: 2px 0; }
+:deep(.csb-markdown li > p) { margin: 0; }
+:deep(.csb-markdown h1), :deep(.csb-markdown h2), :deep(.csb-markdown h3),
+:deep(.csb-markdown h4), :deep(.csb-markdown h5), :deep(.csb-markdown h6) {
+  margin: 10px 0 6px; font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3;
+}
+:deep(.csb-markdown > :first-child) { margin-top: 0; }
+:deep(.csb-markdown a) { color: var(--text-link); text-decoration: underline; word-break: break-word; }
+:deep(.csb-markdown strong) { font-weight: 600; color: var(--text); }
+:deep(.csb-markdown blockquote) { margin: 8px 0; padding: 2px 12px; border-left: 3px solid var(--border); color: var(--text-muted); }
+:deep(.csb-markdown hr) { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+:deep(.csb-markdown table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; }
+:deep(.csb-markdown th), :deep(.csb-markdown td) { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+:deep(.csb-markdown th) { background: var(--surface-3); font-weight: 600; }
+:deep(.csb-markdown img) { max-width: 100%; height: auto; }
 
 .csb-cursor {
   display: inline-block;
@@ -144,6 +167,7 @@ const hasPairedResult = computed(() =>
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 .csb-tool-head {
@@ -228,7 +252,9 @@ const hasPairedResult = computed(() =>
   align-items: flex-start;
   padding: 8px 10px;
   border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
-  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  /* Mix into a solid surface (not transparent) so the backdrop is theme-correct
+     regardless of what sits behind it, and the label has reliable contrast. */
+  background: color-mix(in srgb, var(--warning) 14%, var(--surface-2));
   border-radius: 4px;
 }
 .csb-question-label {
@@ -236,7 +262,9 @@ const hasPairedResult = computed(() =>
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--warning);
+  /* --warning on a faint --warning tint failed contrast in some themes; pair the
+     warning hue with --text so the label stays legible. */
+  color: color-mix(in srgb, var(--warning) 55%, var(--text));
 }
 .csb-question-text {
   font-size: 12.5px;

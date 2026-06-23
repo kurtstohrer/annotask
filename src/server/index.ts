@@ -122,6 +122,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
       if (res && typeof res === 'object' && 'error' in res) return
       // eslint-disable-next-line no-console
       console.warn(`[annotask] reconciled orphaned task ${taskId} → pending (${why})`)
+      void finalizeFrozenPartial(taskId)
       if (before?.type === 'wireframe_apply') {
         try { await releaseApplyTask(applyOptions, taskId) }
         catch (err) {
@@ -134,18 +135,76 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
       console.warn(`[annotask] orphan reconcile failed for task ${taskId}:`, err)
     })
   }
+  /**
+   * A detached apply run exited cleanly (code 0) but its client never flipped
+   * the status — the orchestrating tab reloaded/closed mid-run while the CLI
+   * (kept alive by the spawn detach-grace) finished and wrote the files. Land
+   * the task in `review` (the state the client would have set) so completed
+   * work isn't reverted to `pending` and re-applied. Guarded to in_progress so
+   * a returning client that finalizes first still wins.
+   */
+  function finalizeDetachedReview(taskId: string): void {
+    void state.updateTask(
+      taskId,
+      { status: 'review', resolution: 'Applied by the embedded agent; finalized server-side after the tab was closed or reloaded mid-run. Review the changes.' },
+      { guard: (t) => (t.status === 'in_progress' ? null : 'task already finalized') },
+    ).then((res) => {
+      if (res && typeof res === 'object' && 'error' in res) return
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask] finalized detached run ${taskId} → review (clean exit)`)
+      void finalizeFrozenPartial(taskId)
+    }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask] detached review finalize failed for task ${taskId}:`, err)
+    })
+  }
+  /**
+   * Clear a stuck `isPartial:true` assistant turn left behind when the
+   * streaming client vanished mid-run (only the client run loop ever clears it,
+   * so without this the Conversation tab shows a turn frozen mid-stream
+   * forever). Best-effort.
+   */
+  async function finalizeFrozenPartial(taskId: string): Promise<void> {
+    try {
+      const msgs = await taskThread.read(taskId)
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].isPartial) {
+          await taskThread.update(taskId, msgs[i].id, { isPartial: false })
+          break
+        }
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[annotask] clearing frozen partial failed for task ${taskId}:`, err)
+    }
+  }
   // The registry reports every run end; we grace-check a moment later (a normal
   // completion's client review/pending PATCH lands well within this window, so
-  // it no-ops) and, if the task is still `in_progress`, reconcile it. `killed`
-  // distinguishes an interrupted run (we terminated the child) from a child
-  // that exited on its own while the client failed to finalize — for honest
-  // logging; both reconcile to `pending`.
+  // it no-ops) and, if the task is still `in_progress`, finalize it. A child
+  // that exited on its own with code 0 finished the apply (the client just
+  // never flipped status — e.g. its tab reloaded) → land in `review`. Anything
+  // else — a non-zero exit, or a child WE killed (detach-grace expiry, abort,
+  // duration backstop) — reverts to `pending` so it stays retryable.
+  // wireframe_apply always takes the pending path: its apply-batch lifecycle is
+  // reconciled there and a server-side review flip would bypass it.
   const ORPHAN_FINALIZE_GRACE_MS = 12_000
-  function scheduleOrphanFinalize(taskId: string, info: { killed: boolean }): void {
+  function scheduleOrphanFinalize(taskId: string, info: { killed: boolean; exitCode: number | null }): void {
     setTimeout(() => {
-      const task = state.getTasks().tasks.find((t: { id?: string; status?: string }) => t?.id === taskId)
+      const task = state.getTasks().tasks.find((t: { id?: string; status?: string; type?: string }) => t?.id === taskId)
       if (!task || task.status !== 'in_progress') return
-      reconcileOrphanedTask(taskId, info.killed ? 'run interrupted' : 'client never finalized')
+      // A NEWER run already owns this task (a re-spawn landed in the window
+      // between this run's child-exit — which cleared the byTask reservation —
+      // and this delayed callback). Our finalize is stale: flipping the task
+      // now would clobber the live run mid-edit. Bail and let that run finalize
+      // itself. The finalizer is otherwise run-identity-unaware (it keys only
+      // on taskId + status), so this guard is what prevents the clobber.
+      if (agentSpawn.registry.taskRunning(taskId)) return
+      const cleanCompletion = !info.killed && info.exitCode === 0 && task.type !== 'wireframe_apply'
+      if (cleanCompletion) {
+        finalizeDetachedReview(taskId)
+      } else {
+        reconcileOrphanedTask(taskId, info.killed ? 'run interrupted' : 'client never finalized')
+      }
     }, ORPHAN_FINALIZE_GRACE_MS).unref()
   }
   const agentSpawn = createAgentSpawnHandler({ onRunEnd: scheduleOrphanFinalize })

@@ -52,8 +52,7 @@ const detect = useAgentDetect()
 // routes to a different provider than the global active one.
 const effectivePermissionMode = computed<PermissionMode>(() => {
   const taskMode = (props.task as { permissionMode?: PermissionMode }).permissionMode
-  const persona = providerSettings.getPersonaForTaskType(props.task.type)
-  const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+  const activeProviderId = providerSettings.resolveProviderForTaskType(props.task.type).providerId
   const providerCfg = providerSettings.settings.value.providers[activeProviderId]
   const providerMode = (providerCfg as { permissionMode?: PermissionMode }).permissionMode
   return resolveEffectivePermissionMode(
@@ -72,8 +71,7 @@ const PERMISSION_MODE_TOOLTIPS: Record<PermissionMode, string> = {
 }
 const permissionModeTooltip = computed(() => {
   if (effectivePermissionMode.value !== 'plan') return PERMISSION_MODE_TOOLTIPS[effectivePermissionMode.value]
-  const persona = providerSettings.getPersonaForTaskType(props.task.type)
-  const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+  const activeProviderId = providerSettings.resolveProviderForTaskType(props.task.type).providerId
   if (NATIVE_PLAN_PROVIDERS.has(activeProviderId)) return PERMISSION_MODE_TOOLTIPS.plan
   return 'Plan (best-effort) — read-only enforced via model directive only. This provider has no native CLI/sandbox plan mode.'
 })
@@ -210,15 +208,15 @@ const tokenSummary = computed(() => {
 // otherwise the header label lies when a persona overrides the provider
 // (e.g. user picked opencode-local for `style_update` while the global
 // active provider is still claude-local).
-const taskPersona = computed(() => providerSettings.getPersonaForTaskType(props.task.type))
-const activeProvider = computed(() =>
-  taskPersona.value?.providerId ?? providerSettings.activeProvider.value,
+// Resolve the provider/model the seed run will actually use, so the header
+// label never lies: built-in personas inherit the global active provider,
+// custom personas / explicit per-persona pins keep their own (see
+// resolveProviderForTaskType).
+const routedProvider = computed(() => providerSettings.resolveProviderForTaskType(props.task.type))
+const activeProvider = computed(() => routedProvider.value.providerId)
+const activeModel = computed(() =>
+  routedProvider.value.model || providerSettings.settings.value.providers[activeProvider.value]?.model || '',
 )
-const activeModel = computed(() => {
-  const persona = taskPersona.value
-  if (persona && persona.model.length > 0) return persona.model
-  return providerSettings.settings.value.providers[activeProvider.value]?.model || ''
-})
 
 const localCliBlocked = computed(() => {
   const id = activeProvider.value
