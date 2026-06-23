@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
+## [0.4.1] - 2026-06-23
+
+### Fixed
+- **The selected provider now actually applies the task.** Built-in agent personas hard-coded `claude-local`, so every apply/seed run spawned `claude` regardless of the provider you picked in Settings → Providers — surfacing as `spawn claude ENOENT` when claude wasn't installed (e.g. you'd selected Copilot). Built-in personas now inherit the global active provider; an explicit per-persona pin in `.annotask/agents.json` still wins. Verified live across all four CLIs (claude/codex/opencode/copilot).
+- **Per-agent provider/model pins persist.** Setting a persona's model in Settings → Agents was silently wiped whenever the provider's live model catalog couldn't be enumerated (Copilot's interactive-only picker is the canonical case) — and a saved value displayed as empty. The model field now keeps and shows the saved value; a stale id from a *different* provider is cleared on provider change instead, never on catalog-fetch failure.
+- **Reloading the page no longer destroys an in-flight apply.** An applying CLI was bound to the browser tab: a reload tore down the SSE, killed the child mid-edit, and reverted the task to `pending`. The spawn server now keeps a task-bearing run alive across a client disconnect (detach grace) and finalizes it on the child's own exit — a clean exit lands the task in `review`, an interrupted/failed run reverts to `pending`. The client no longer reverts the task on `pagehide` and warns before an accidental reload. A stale orphan-finalize can no longer clobber a newer run for the same task.
+- **Auto-run reliability.** The headless auto-run driver logs when its single-run guard blocks a drain (previously silent), and bounds each run so a hung provider can't pin the queue and stall every later task.
+- **Conversation rendering.** Agent messages now style the full Markdown surface (lists, headings, blockquotes, links, tables) instead of only paragraphs/code; wide tool output and long tokens no longer scroll the whole panel (`min-width: 0` + code wrapping); the "agent paused for input" banner label meets contrast; and rendered links open in a new tab with `rel="noopener"`.
+
+### Changed
+- **Seed prompt carries the task inline.** Apply runs now embed a compact `Task grounding` block (file/line/component/route + per-type context, via the shared task-summary) in the seed prompt, so the agent applies directly instead of reflexively calling `annotask_get_task`. Heavy fields (screenshot, rendered HTML, interaction history) stay behind their MCP tools.
+
 ## [0.4.0] - 2026-06-22
 
 ### Fixed
