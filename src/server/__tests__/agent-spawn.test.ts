@@ -278,6 +278,42 @@ describe('run registry — per-task dedup + orphan hook', () => {
     await p
     expect(ended).toEqual([]) // no taskId → no orphan reconciliation
   })
+
+  it('reports a clean self-exit as { killed:false, exitCode:0 } so the finalizer can land review', async () => {
+    const ends: Array<{ killed: boolean; exitCode: number | null }> = []
+    const child = new FakeChild()
+    const handler = createAgentSpawnHandler({ spawnImpl: fakeSpawn(child), onRunEnd: (_id, info) => ends.push(info) })
+    const p = handler.handleSpawn(fakeReq(), fakeRes(), { cli: 'claude', args: [], taskId: 'task-clean' }, '/tmp')
+    child.finish(0)
+    await p
+    expect(ends).toEqual([{ killed: false, exitCode: 0 }])
+  })
+
+  it('does NOT kill an apply run (taskId) on client disconnect — keeps it alive across a reload', async () => {
+    const child = new FakeChild()
+    const handler = createAgentSpawnHandler({ spawnImpl: fakeSpawn(child) })
+    const req = fakeReq()
+    const p = handler.handleSpawn(req, fakeRes(), { cli: 'claude', args: [], taskId: 'task-detach' }, '/tmp')
+    ;(req as unknown as EventEmitter).emit('close')
+    // The detach grace keeps the child alive (a chat run would be killed — next test).
+    expect(child.killed).toBe(false)
+    expect(handler.registry.taskRunning('task-detach')).toBe(true)
+    // Its own clean exit drains the run and clears the grace timer.
+    child.finish(0)
+    await p
+    expect(handler.registry.taskRunning('task-detach')).toBe(false)
+  })
+
+  it('kills a chat run (no taskId) immediately on client disconnect', async () => {
+    const child = new FakeChild()
+    const handler = createAgentSpawnHandler({ spawnImpl: fakeSpawn(child) })
+    const req = fakeReq()
+    const p = handler.handleSpawn(req, fakeRes(), { cli: 'claude', args: [] }, '/tmp')
+    ;(req as unknown as EventEmitter).emit('close')
+    expect(child.killed).toBe(true)
+    child.finish(143)
+    await p
+  })
 })
 
 describe('origin policy', () => {

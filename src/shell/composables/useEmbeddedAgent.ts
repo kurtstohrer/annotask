@@ -44,6 +44,7 @@ import type { ProviderMessage, ProviderEvent, ProviderContentBlock } from '../..
 import type { PermissionMode } from '../../schema'
 import type { WorkStreamBlock } from '../../shared/work-stream'
 import { summarizeToolCall, summarizeToolResult } from '../utils/toolSummary'
+import { buildTaskSummary } from '../../shared/task-summary'
 import { fetchMcpToolCatalog } from '../services/mcpClient'
 import type { ThreadMessage, UseTaskThread } from './useTaskThread'
 
@@ -128,21 +129,23 @@ function redactMessages(messages: ProviderMessage[]): ProviderMessage[] {
 /**
  * Compose the seed prompt sent to the local CLI.
  *
- * Two things go in: the task id (canonical handle) and the description
- * (rendered as a blockquote). Everything else — file, line, component, theme,
- * selected element, screenshot, interaction history, type-specific context —
- * lives behind `annotask_get_task` and the agent fetches what it needs.
+ * The prompt inlines the COMPACT task — id, description blockquote, and a
+ * `**Task grounding**` block built from `buildTaskSummary` (file/line/component/
+ * route + per-type context + a capped slice of the structured body the task IS:
+ * style changes / theme edits / wireframe placements). This eliminates the
+ * reflexive `annotask_get_task` round-trip every seed run used to start with.
  *
- * Why this shape:
- *   - The id is the only field the agent strictly needs; MCP carries the rest.
- *   - The description is decorative for the agent (it'll get a richer copy via
- *     MCP) but **load-bearing for the human** reading the Conversation tab —
- *     without it, the chat thread is just opaque task IDs.
- *   - Also serves as a graceful-degrade fallback when MCP isn't configured:
- *     the agent still has the user's request as plain text.
+ * Only the HEAVY fields stay behind MCP — screenshot bytes
+ * (`annotask_get_screenshot`), rendered outerHTML (`annotask_get_rendered_html`),
+ * and interaction history (`annotask_get_interaction_history`). The grounding
+ * block mirrors `buildTaskSummary` (the CLI/HTTP/MCP single source of truth) so
+ * the inlined field set can't drift from what triage surfaces elsewhere.
  *
- * The runner handles status transitions (lock-on-start, mark-review-on-clean-
- * exit), so the agent does NOT need to call `annotask_update_task`.
+ * The description blockquote stays first — it's load-bearing for the human
+ * reading the Conversation tab, and a graceful-degrade fallback when MCP isn't
+ * configured. The runner handles status transitions (lock-on-start, mark-
+ * review-on-clean-exit), so the agent does NOT need to call
+ * `annotask_update_task`.
  */
 interface SeedFeedbackEntry {
   questions?: Array<{ id?: string; text?: string }>
@@ -177,8 +180,84 @@ function answeredFeedbackBlock(feedback: SeedFeedbackEntry[] | undefined): strin
   ].join('\n')
 }
 
+/** Summary keys already surfaced elsewhere in the seed prompt, so the grounding
+ *  block shouldn't repeat them. `feedback`/`resolution` ride the retry block;
+ *  `attempts` is conveyed by the answered-feedback Q&A block; file/line/
+ *  component/route render on the dedicated `where:` line. */
+const GROUNDING_SKIP = new Set([
+  'id', 'type', 'status', 'description', 'feedback', 'blocked_reason', 'resolution',
+  'attempts', 'file', 'line', 'component', 'route',
+])
+
+/** Cap on inlined structured-body entries (style changes / theme edits /
+ *  wireframe placements) so a huge task can't blow the prompt — the rest stays
+ *  one `annotask_get_task` away. */
+const GROUNDING_BODY_CAP = 12
+
+/**
+ * Render the compact, agent-useful subset of the task inline so a seed run has
+ * file/line/component/context WITHOUT a reflexive `annotask_get_task`. Reuses
+ * `buildTaskSummary` (the CLI/HTTP/MCP single source of truth); the heavy
+ * fields (screenshot bytes, rendered outerHTML, interaction history) stay
+ * behind their dedicated MCP tools. Returns '' when there's nothing to ground.
+ */
+function groundingBlock(task: Record<string, unknown>): string {
+  let summary: Record<string, unknown>
+  try { summary = buildTaskSummary(task) } catch { return '' }
+
+  const loc: string[] = []
+  if (typeof summary.file === 'string' && summary.file) {
+    loc.push(`\`${summary.file}\`${typeof summary.line === 'number' ? `:${summary.line}` : ''}`)
+  }
+  if (typeof summary.component === 'string' && summary.component) loc.push(`component \`${summary.component}\``)
+  if (typeof summary.route === 'string' && summary.route) loc.push(`route \`${summary.route}\``)
+
+  const extras: string[] = []
+  for (const [k, v] of Object.entries(summary)) {
+    if (GROUNDING_SKIP.has(k) || v == null) continue
+    extras.push(`- ${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+  }
+
+  // The structured arrays a task IS (changes/edits/placements). Capped so a
+  // large wireframe/theme task stays bounded; the tail points back to MCP.
+  let bodyBlock = ''
+  const ctx = (task.context && typeof task.context === 'object' && !Array.isArray(task.context))
+    ? task.context as Record<string, unknown>
+    : undefined
+  const wf = ctx && ctx.wireframe && typeof ctx.wireframe === 'object' && !Array.isArray(ctx.wireframe)
+    ? ctx.wireframe as Record<string, unknown>
+    : undefined
+  let arr: unknown[] | null = null
+  if (ctx && Array.isArray(ctx.changes)) arr = ctx.changes
+  else if (ctx && Array.isArray(ctx.edits)) arr = ctx.edits
+  else if (wf && Array.isArray(wf.instances)) arr = wf.instances
+  if (arr && arr.length > 0) {
+    const head = arr.slice(0, GROUNDING_BODY_CAP)
+    const tail = arr.length > GROUNDING_BODY_CAP
+      ? `\n…+${arr.length - GROUNDING_BODY_CAP} more — \`annotask_get_task\` for the full set`
+      : ''
+    bodyBlock = '```json\n' + JSON.stringify(head) + '\n```' + tail
+  }
+
+  const lines: string[] = []
+  if (loc.length > 0) lines.push(`- where: ${loc.join(', ')}`)
+  lines.push(...extras)
+  if (lines.length === 0 && !bodyBlock) return ''
+  // Assemble heading / list / code-fence as DISTINCT markdown blocks separated
+  // by blank lines. A single-'\n' join (with the leading '' stripped by
+  // filter(Boolean)) let the heading lazily continue into the preceding
+  // blockquote once this string was spliced into the seed prompt — the caller
+  // also joins sections with a blank line for the same reason.
+  const parts: string[] = [
+    '**Task grounding** (inlined — apply from this; fetch the full task only for the screenshot, rendered HTML, or interaction history):',
+  ]
+  if (lines.length > 0) parts.push(lines.join('\n'))
+  if (bodyBlock) parts.push(bodyBlock)
+  return parts.join('\n\n')
+}
+
 function buildSeedPrompt(
-  task: { id?: string; status?: string; feedback?: string; resolution?: string; agent_feedback?: SeedFeedbackEntry[] },
+  task: { id?: string; status?: string; feedback?: string; resolution?: string; agent_feedback?: SeedFeedbackEntry[]; [k: string]: unknown },
   description: string,
 ): string {
   const id = task.id ?? '<unknown>'
@@ -207,16 +286,25 @@ function buildSeedPrompt(
         'Address the feedback specifically — do not repeat the previous approach unless the feedback explicitly asks for a small tweak on top of it.',
       ].join('\n')
     : ''
+  const grounding = groundingBlock(task)
+  const closing = [
+    grounding
+      ? `The grounding above is the compact task. Only call \`annotask_get_task\` if you need the screenshot, rendered HTML, or interaction history — otherwise apply directly.`
+      : `Call \`annotask_get_task\` with this id if you need more than the description above.`,
+    `Annotask handles the status transitions for you — exit cleanly when done, or reply with a short explanation if you can't apply the change.`,
+  ].join('\n')
+  // Join only non-empty sections with a BLANK LINE so each (lead-in +
+  // description blockquote, grounding, retry, answered-feedback, closing)
+  // renders as its own markdown block. A single-'\n' join previously let the
+  // grounding heading and the closing lines lazily continue INTO the
+  // blockquote / where-list (CommonMark lazy continuation).
   return [
-    `Apply Annotask task \`${id}\`:`,
-    '',
-    quoted,
+    `Apply Annotask task \`${id}\`:\n\n${quoted}`,
+    grounding,
     retryBlock,
     answeredFeedbackBlock(task.agent_feedback),
-    '',
-    `Use \`annotask_get_task\` with this id for full context if you need it.`,
-    `Annotask handles the status transitions for you — exit cleanly when done, or reply with a short explanation if you can't apply the change.`,
-  ].filter(Boolean).join('\n')
+    closing,
+  ].map((s) => s.trim()).filter(Boolean).join('\n\n')
 }
 
 /**
@@ -245,31 +333,30 @@ async function fetchSystemPrompt(taskType: string | undefined): Promise<string> 
 
 /**
  * Task ids this tab currently holds an `in_progress` lock for via a live seed
- * run. If the tab is closed mid-run, the run's normal finalization never gets
- * to execute — so on `pagehide` we relinquish each lock back to `pending` with
- * a keepalive PATCH. That reconciles the task *before* the server's
- * orphan-finalizer has to guess, so a closed tab leaves a retryable `pending`
- * task instead of a stranded one (and never the misleading "tab was likely
- * closed" blocked state). Module-scoped so the single listener covers both the
- * headless auto-run driver and any open Conversation tab.
+ * run. Used to WARN before an accidental reload/close (`beforeunload`).
+ *
+ * We deliberately do NOT revert the task to `pending` on unload anymore. The
+ * old `pagehide` keepalive-PATCH-to-pending raced the server and instantly
+ * abandoned whatever the CLI had already written — that WAS the "reload breaks
+ * the agent" bug. The server now keeps the CLI alive across a disconnect
+ * (spawn detach-grace) and finalizes the task on the child's own exit (clean
+ * exit → `review`, interrupted/failed → `pending`; see `scheduleOrphanFinalize`
+ * in server/index.ts), so the correct client behavior is to leave the lock
+ * alone and just discourage the accidental reload. Module-scoped so the single
+ * listener covers both the headless auto-run driver and any open tab.
  */
 const lockedSeedTasks = new Set<string>()
-let pagehideArmed = false
-function armPagehideFlush(): void {
-  if (pagehideArmed || typeof window === 'undefined') return
-  pagehideArmed = true
-  window.addEventListener('pagehide', () => {
-    for (const id of lockedSeedTasks) {
-      try {
-        // keepalive lets the request outlive the unloading document.
-        void fetch(`/__annotask/api/tasks/${encodeURIComponent(id)}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'pending' }),
-          keepalive: true,
-        }).catch(() => { /* best-effort */ })
-      } catch { /* ignore */ }
-    }
+let unloadGuardArmed = false
+function armUnloadGuard(): void {
+  if (unloadGuardArmed || typeof window === 'undefined') return
+  unloadGuardArmed = true
+  window.addEventListener('beforeunload', (e: BeforeUnloadEvent) => {
+    if (lockedSeedTasks.size === 0) return
+    // Standard "are you sure you want to leave?" prompt. The agent keeps
+    // running server-side either way, but the user loses the live work-stream
+    // view, so it's worth a confirm.
+    e.preventDefault()
+    e.returnValue = ''
   })
 }
 
@@ -393,10 +480,17 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     const taskType = currentTask && typeof currentTask.type === 'string' ? currentTask.type : undefined
     const persona = isSeed ? providerSettings.getPersonaForTaskType(taskType) : null
 
-    const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+    // Provider routing. Seed (apply) runs resolve through the persona/active-
+    // provider resolver so the global Settings → Providers picker actually
+    // drives which CLI applies the task: built-in personas inherit the active
+    // provider unless the user explicitly pinned one in Settings → Agents;
+    // custom personas keep their own. Free-form chat (isSeed=false) never routes
+    // through a persona — it always uses the active provider + its model/effort.
+    const routed = isSeed ? providerSettings.resolveProviderForTaskType(taskType) : null
+    const activeProviderId = routed ? routed.providerId : providerSettings.activeProvider.value
     const activeCfg = providerSettings.settings.value.providers[activeProviderId]
-    const activeModel = (persona && persona.model.length > 0 ? persona.model : activeCfg.model) ?? ''
-    const activeEffort = persona && persona.effort !== 'auto' ? persona.effort : activeCfg.effort
+    const activeModel = (routed ? routed.model : activeCfg.model) ?? ''
+    const activeEffort = routed ? routed.effort : activeCfg.effort
 
     // Phase 3 v1: only local CLIs can apply tasks (they have native file-edit
     // tools and the spawn `cwd` lands them in the project root). HTTP-only
@@ -404,7 +498,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     // the user how to fix it.
     if (isSeed && !isLocalCliProvider(activeProviderId)) {
       status.value = 'error'
-      errorMessage.value = `${activeProviderId} can't apply tasks yet — pick a persona that uses a local CLI (claude-local, codex-local, opencode-local, copilot-local) in Settings → Agents.`
+      errorMessage.value = `${activeProviderId} can't apply tasks yet — choose a local CLI (claude-local, codex-local, opencode-local, copilot-local) as your provider in Settings → Providers, or pin one for this task type in Settings → Agents.`
       if (taskId) markRunFinished(taskId)
       return
     }
@@ -461,11 +555,12 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
 
     let provider: import('../../embedded/provider.js').LLMProvider
     try {
-      // If a persona is active and selects a different provider than the
-      // global active one, fork the settings so makeProvider keys off the
-      // persona's choice without mutating the user's persisted activeProvider.
-      const settingsForCall = persona && persona.providerId !== providerSettings.settings.value.activeProvider
-        ? { ...providerSettings.settings.value, activeProvider: persona.providerId }
+      // Fork the settings so makeProvider keys off the RESOLVED provider
+      // (routed above through resolveProviderForTaskType) without mutating the
+      // user's persisted activeProvider. This is the seam that actually spawns
+      // the right CLI — editing only `activeProviderId` above isn't enough.
+      const settingsForCall = activeProviderId !== providerSettings.settings.value.activeProvider
+        ? { ...providerSettings.settings.value, activeProvider: activeProviderId }
         : providerSettings.settings.value
       provider = makeProvider(settingsForCall, {
         referer: typeof window !== 'undefined' ? window.location.origin : undefined,
@@ -786,9 +881,10 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       if (!current) return
       if (current.status !== 'pending' && current.status !== 'denied') return
       await taskSystem.updateTaskStatus(taskId, 'in_progress')
-      // Track the held lock so a pagehide (tab close) can relinquish it.
+      // Track the held lock so beforeunload can warn before an accidental
+      // reload/close (the server keeps the run alive + finalizes it).
       lockedSeedTasks.add(taskId)
-      armPagehideFlush()
+      armUnloadGuard()
     } catch (err) {
       // Surface in the conversation error strip, don't abort the run — the
       // agent should still try to do useful work even if the lock fails.

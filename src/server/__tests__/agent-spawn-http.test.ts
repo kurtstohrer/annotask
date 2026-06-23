@@ -300,6 +300,39 @@ describe('agent-spawn over HTTP (real middleware + real spawn handler)', () => {
     child.finish(143) // simulate the SIGTERM landing so the run drains
   })
 
+  it('keeps the child alive on client disconnect when the run carries a taskId (reload survival)', async () => {
+    const before = spawned.length
+    const clientReq = http.request({
+      method: 'POST',
+      hostname: 'localhost',
+      port: serverPort(),
+      path: SPAWN_PATH,
+      headers: { 'Content-Type': 'application/json' },
+    })
+    clientReq.on('error', () => { /* expected after destroy */ })
+    clientReq.on('response', (res) => {
+      res.on('data', () => { /* keep the stream flowing */ })
+      res.on('error', () => { /* expected after destroy */ })
+    })
+    clientReq.end(JSON.stringify({ cli: 'claude', args: [], taskId: 'task-reload' }))
+
+    await waitFor(() => spawned.length > before, 'child spawn')
+    const child = spawned[spawned.length - 1]
+    expect(child.killed).toBe(false)
+
+    clientReq.destroy()
+    // Apply runs get a detach grace so a page reload doesn't destroy in-flight
+    // work — the child must still be alive shortly after the disconnect (the
+    // no-taskId case above is killed immediately).
+    await new Promise((r) => setTimeout(r, 80))
+    expect(child.killed).toBe(false)
+    expect(agentSpawn.registry.taskRunning('task-reload')).toBe(true)
+
+    // The child exiting on its own drains the run (afterEach also guards this).
+    child.finish(0)
+    await waitFor(() => agentSpawn.registry.size() === 0, 'run drains after child exit')
+  })
+
   describe('ANNOTASK_MAX_PERMISSION cap at the route level', () => {
     it('403s a bypass spawn under cap=default — canonical flag AND synonym spellings', async () => {
       process.env.ANNOTASK_MAX_PERMISSION = 'default'

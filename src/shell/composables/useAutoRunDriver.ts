@@ -47,7 +47,15 @@ export function startAutoRunDriver(): void {
 }
 
 async function drain(taskSystem: ReturnType<typeof useTasks>): Promise<void> {
-  if (runningId) return // already busy; we'll re-enter when this turn finishes
+  if (runningId) {
+    // Already busy; we'll re-enter when this turn finishes. Warn (don't stay
+    // silent) so a stuck runningId — the failure mode where every later auto
+    // task sits unstarted until the user opens its Conversation tab — is
+    // diagnosable from the console instead of looking like nothing happened.
+    // eslint-disable-next-line no-console
+    console.warn(`[annotask:autorun] drain skipped: a run is already in flight (runningId=${runningId})`)
+    return
+  }
 
   // Skip the entire drain when the user is in skill/MCP mode. Tasks may
   // still enqueue (older code paths, tests), but the driver should not
@@ -137,7 +145,36 @@ async function runHeadless(taskId: string, prompt: string): Promise<void> {
     cancelHooks.set(taskId, () => agent.abort())
     // Seed run — agent treats this prompt as its objective. On clean
     // completion the composable flips the task to `review`.
-    await agent.send(prompt, { isSeed: true })
+    //
+    // Hard ceiling: a `send()` that never settles (a provider that hangs with
+    // the run watchdog disabled, or an abort that fails to break the stream)
+    // would pin the module-global `runningId` forever and wedge the FIFO — every
+    // later auto task then sits unstarted until the user opens its Conversation
+    // tab. Race the send against an absolute ceiling sized generously ABOVE the
+    // user's configured run watchdog so it never pre-empts a legitimate long
+    // run; on expiry abort the agent and reject so `drain`'s finally releases
+    // `runningId`.
+    const s = useProviderSettings().settings.value
+    const watchdogMs = Math.max(s.maxRunDurationMs, s.idleTimeoutMs, 0)
+    const ceilingMs = watchdogMs > 0 ? watchdogMs + 60_000 : 20 * 60_000
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const sendPromise = agent.send(prompt, { isSeed: true })
+    // Swallow a late rejection so aborting via the ceiling doesn't surface as an
+    // unhandled rejection after the race already settled.
+    void sendPromise.catch(() => {})
+    try {
+      await Promise.race([
+        sendPromise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            agent.abort()
+            reject(new Error(`headless run exceeded the ${Math.round(ceilingMs / 60_000)}-minute driver ceiling`))
+          }, ceilingMs)
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
   } finally {
     cancelHooks.delete(taskId)
     thread.close()

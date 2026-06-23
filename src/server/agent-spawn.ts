@@ -63,6 +63,18 @@ const MAX_SPAWN_DURATION_MS = 15 * 60_000
  * at once. Excess spawns are refused with a `too_many_agents` error.
  */
 const MAX_CONCURRENT_SPAWNS = 4
+/**
+ * Grace window to keep a CLI child alive after its client SSE disconnects,
+ * WHEN the run is applying a task (carries a taskId). A page reload tears down
+ * the SSE; without this the child is SIGTERM'd mid-edit and the in-flight work
+ * is lost. With it, the child keeps running and the server finalizes the task
+ * on the child's own exit (see `onRunEnd` → index.ts: clean exit → review,
+ * otherwise → pending). Chat runs (no taskId) are bound to their tab and are
+ * still killed the instant the client disconnects. Kept beneath
+ * MAX_SPAWN_DURATION_MS and below the boot-reclaim age so a client that never
+ * returns is still cleaned up promptly.
+ */
+const DETACH_GRACE_MS = 90_000
 
 /**
  * PATH passed to spawned CLIs. Appends `ANNOTASK_HOST_PATH` (if set) so
@@ -143,12 +155,16 @@ export interface AgentSpawnOptions {
    * the orchestrating tab closed mid-run) — it grace-checks "still in_progress?"
    * so a normal completion (client about to set `review`) is a no-op.
    *
-   * `info.killed` is true when WE terminated the child (client disconnect,
-   * explicit abort, or the duration backstop) and false when it exited on its
-   * own — lets the finalizer word its reason honestly instead of always
-   * blaming a closed tab.
+   * `info.killed` is true when WE terminated the child (explicit abort, the
+   * detach-grace expiry, or the duration backstop) and false when it exited on
+   * its own — lets the finalizer word its reason honestly instead of always
+   * blaming a closed tab. `info.exitCode` is the child's exit status (null when
+   * killed/signalled): a clean `0` from a child that exited on its own means
+   * the apply finished even though the client never finalized it (e.g. the tab
+   * reloaded mid-run), so the finalizer can land the task in `review` instead
+   * of wrongly reverting completed work to `pending`.
    */
-  onRunEnd?: (taskId: string, info: { killed: boolean }) => void
+  onRunEnd?: (taskId: string, info: { killed: boolean; exitCode: number | null }) => void
   /** Test seam: inject a child-process factory (defaults to node:child_process spawn). */
   spawnImpl?: typeof spawn
 }
@@ -423,6 +439,13 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
     }
 
     let killed = false
+    // Set once the run has fully ended (child closed + cleanup running). Guards
+    // onClientGone so the `res.end()` in cleanup — which itself fires res
+    // 'close' — can't re-enter and arm a pointless detach timer on a dead run.
+    let runEnded = false
+    // Detach-grace timer: armed when an apply run's client disconnects, kills
+    // the child if no one returns within DETACH_GRACE_MS.
+    let detachTimer: ReturnType<typeof setTimeout> | null = null
     // Signal the whole process group on POSIX (the child was spawned detached,
     // i.e. as a group leader) so grandchildren the agent forked die with it.
     // Falls back to the direct child.kill when there's no pid (spawn-time
@@ -436,8 +459,27 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
     function killChild() {
       if (killed) return
       killed = true
+      if (detachTimer) { clearTimeout(detachTimer); detachTimer = null }
       killGroup('SIGTERM')
       setTimeout(() => { killGroup('SIGKILL') }, KILL_GRACE_MS).unref()
+    }
+    // Client SSE went away (tab closed, navigated, or RELOADED). For a chat run
+    // the child is bound to its tab — kill it. For an APPLY run (has a taskId)
+    // a reload would otherwise destroy in-flight edits, so keep the child alive
+    // for a grace window: it finishes and the server finalizes the task on its
+    // exit. The child keeps writing to a dead socket during the grace, which is
+    // harmless (write() swallows EPIPE). Kill on grace expiry.
+    // Capture the (narrowed) taskId in a local — TS doesn't carry the
+    // `typeof parsed === 'string'` narrowing into the nested closure below.
+    const runTaskId = parsed.taskId
+    let clientGone = false
+    function onClientGone() {
+      if (clientGone || runEnded) return
+      clientGone = true
+      if (!runTaskId) { killChild(); return }
+      if (detachTimer || killed) return
+      detachTimer = setTimeout(() => { killChild() }, DETACH_GRACE_MS)
+      detachTimer.unref?.()
     }
     active.set(runId, { child, kill: killChild, taskId: parsed.taskId })
 
@@ -463,10 +505,11 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
     }, KEEPALIVE_INTERVAL_MS)
     keepalive.unref()
 
-    // Abort on client disconnect. Belt-and-suspenders: some proxies close
-    // the response socket rather than the request, so we listen on both.
-    req.on('close', () => { killChild() })
-    res.on('close', () => { killChild() })
+    // Client disconnect (incl. page reload). Belt-and-suspenders: some proxies
+    // close the response socket rather than the request, so we listen on both.
+    // For apply runs this starts the detach grace rather than an instant kill.
+    req.on('close', () => { onClientGone() })
+    res.on('close', () => { onClientGone() })
 
     // Absolute duration backstop — kill a child that outlives the ceiling
     // (e.g. its client died without closing the socket). Cleared on close.
@@ -523,6 +566,7 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
       })
     })
 
+    let exitCode: number | null = null
     await new Promise<void>((resolve) => {
       let resolved = false
       const finish = () => { if (!resolved) { resolved = true; resolve() } }
@@ -532,6 +576,7 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
         finish()
       })
       child.on('close', (code, signal) => {
+        exitCode = typeof code === 'number' ? code : null
         // Flush trailing stdout/stderr (no terminating newline).
         if (stdoutBuf.length > 0) write(res, 'stdout', stdoutBuf)
         if (stderrBuf.length > 0) write(res, 'stderr', stderrBuf)
@@ -540,16 +585,23 @@ export function createAgentSpawnHandler(opts: AgentSpawnOptions = {}): AgentSpaw
       })
     })
 
+    // Mark ended BEFORE res.end() (which fires res 'close') so the disconnect
+    // handler can't arm a detach timer on this already-finished run.
+    runEnded = true
     clearInterval(keepalive)
     clearTimeout(maxDuration)
+    if (detachTimer) { clearTimeout(detachTimer); detachTimer = null }
     active.delete(runId)
     if (parsed.taskId && byTask.get(parsed.taskId) === runId) byTask.delete(parsed.taskId)
     try { res.end() } catch { /* already ended */ }
-    // Report the run end so a task the client never finalized (orphaned by a
-    // closed tab) can be reconciled server-side. Fired for normal completions
-    // too — the handler grace-checks status, so those no-op.
+    // Report the run end so a task the client never finalized can be reconciled
+    // server-side. `killed` distinguishes a terminated child from one that
+    // exited on its own; `exitCode` lets the finalizer land a detached-but-
+    // completed apply (clean exit) in `review` instead of reverting it to
+    // `pending`. Fired for normal completions too — the handler grace-checks
+    // status, so a client that already finalized makes this a no-op.
     if (parsed.taskId) {
-      try { opts.onRunEnd?.(parsed.taskId, { killed }) } catch { /* never let a sink break cleanup */ }
+      try { opts.onRunEnd?.(parsed.taskId, { killed, exitCode }) } catch { /* never let a sink break cleanup */ }
     }
   }
 

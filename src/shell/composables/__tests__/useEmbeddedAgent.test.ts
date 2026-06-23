@@ -102,9 +102,15 @@ function makeStubThread(initial: ThreadMessage[] = []): UseTaskThread & {
 
 beforeEach(() => {
   resetProviderSettingsForTests()
-  // Default to OpenRouter so makeProvider doesn't bail on missing creds.
+  // Default to a local CLI: seed (apply) runs now route through
+  // resolveProviderForTaskType, and a built-in persona with no explicit pin
+  // inherits the global active provider. The seed-lifecycle tests below use
+  // no-`type` tasks (→ the `general` built-in), so the active provider must be
+  // a local CLI or the "local CLIs only" apply gate fires before they can run.
+  // (makeProvider is mocked, so claude-local needs no real CLI here.)
   const store = useProviderSettings()
-  store.setActiveProvider('openrouter')
+  store.setActiveProvider('claude-local')
+  // Keep an OpenRouter config populated so the redaction test can flip to it.
   store.setProviderConfig({
     id: 'openrouter',
     apiKey: 'sk-or-test',
@@ -172,6 +178,9 @@ describe('useEmbeddedAgent — surfaces', () => {
 
 describe('useEmbeddedAgent — redaction wiring', () => {
   it('scrubs secrets from outgoing history before the provider sees them', async () => {
+    // Redaction matters most on an HTTP provider (the prompt leaves the machine),
+    // so exercise it on openrouter specifically (the suite default is a local CLI).
+    useProviderSettings().setActiveProvider('openrouter')
     const secret = `sk-ant-${'A'.repeat(40)}`
     const thread = makeStubThread([
       { id: 'u0', ts: 1, role: 'user', content: `my key is ${secret}` },
@@ -253,6 +262,28 @@ describe('useEmbeddedAgent — seed run lifecycle', () => {
     await agent.send('free-form follow-up', /* isSeed omitted */)
 
     expect(updateTaskStatusMock).not.toHaveBeenCalled()
+  })
+
+  it('inlines task grounding as a SEPARATE markdown block (no lazy continuation into the blockquote)', async () => {
+    tasksRef.value = [{
+      id: 'task-test', status: 'pending', type: 'style_update',
+      description: 'Make the button blue.', file: 'src/App.vue', line: 42,
+    }]
+    const thread = makeStubThread()
+    const agent = useEmbeddedAgent(thread)
+    await agent.send('Make the button blue.', { isSeed: true })
+
+    const seed = thread.appended.find((m) => m.role === 'user')
+    expect(seed).toBeDefined()
+    const content = seed!.content
+    // The description rides as a blockquote (human-facing in the Conversation tab).
+    expect(content).toContain('> Make the button blue.')
+    // The grounding heading MUST be preceded by a blank line so CommonMark
+    // renders it as its own block instead of absorbing it into the blockquote.
+    expect(content).toMatch(/\n\n\*\*Task grounding\*\*/)
+    // file/line are inlined so the agent doesn't reflexively annotask_get_task.
+    expect(content).toContain('src/App.vue')
+    expect(content).toContain(':42')
   })
 
   it('uses the agent\'s last text block as the resolution', async () => {

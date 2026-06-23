@@ -94,8 +94,7 @@ const taskPermissionMode = computed<string>(() => (props.task as { permissionMod
 // provider when one matches the task type so the dropdown shows what'll
 // actually fire on a Run-with-agent click.
 const inheritedPermissionMode = computed<PermissionMode>(() => {
-  const persona = providerSettings.getPersonaForTaskType(props.task.type)
-  const activeProviderId = persona?.providerId ?? providerSettings.activeProvider.value
+  const activeProviderId = providerSettings.resolveProviderForTaskType(props.task.type).providerId
   const providerCfg = providerSettings.settings.value.providers[activeProviderId]
   const providerMode = (providerCfg as { permissionMode?: PermissionMode }).permissionMode
   return providerMode ?? providerSettings.settings.value.permissionMode
