@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
+## [0.4.2] - 2026-06-23
+
+### Added
+- **Micro-frontend wireframes.** The snapshot wireframe now decomposes a single-spa / Module-Federation / qiankun route into per-MFE blocks instead of one opaque box per micro-frontend. The capture walker — extracted into a tested `src/plugin/bridge/wireframe-walker.ts` — descends through the un-instrumented mount container into each MFE's instrumented content, anchors every block DOWN to its own MFE source (never the host shell that authors the mount `<div>`), carries the owning MFE end-to-end (`anchor.mfe` / `direction.mfe`), and budgets blocks per MFE so a busy trailing MFE isn't dropped by the cap. Non-MFE apps take a byte-identical legacy path. Verified live against a 6-MFE single-spa stress app.
+- **Deep-dive into nested elements.** Explode is re-enabled: double-click a captured block to break it into its direct children (repeat to go deeper). Re-resolution is MFE-scoped, so a package-local path shared across MFEs (`src/App.tsx`) lands on the right one. Hovering a block previews its children as outlines — purely informational; it never captures or explodes. Dragging an exploded shell carries its children with it.
+- **Scan affordance on capture.** Capturing now sweeps a scan line over the still-visible live iframe instead of showing a blank screen.
+
+### Fixed
+- **Hash-routed apps no longer freeze the wireframe (and tasks/annotations) to one route.** Route tracking compared only `location.pathname` (always `/` under hash routing) and `normalizeRoute` stripped the hash, so single-spa / hash-history routes all collapsed into one bucket — the wireframe showed a stale capture and needed a manual Recapture on every route change. The bridge now reports `pathname + hash` and `normalizeRoute` keeps hash ROUTES (`#/react`) while still dropping plain scroll anchors (`#section`), so changing route re-keys the canvas and auto-captures the new route.
+- **Cross-MFE apply and byte-exact undo.** Captured MFE anchors are rewritten to host-resolvable `../mfe-x/src/...` paths and the file-snapshot store is workspace-aware, so the embedded agent grounds and edits the correct package and undo/discard stay byte-exact even when two MFEs expose the same package-local path. A snapshot target that escapes containment is now skipped rather than aborting the whole batch.
+
 ## [0.4.1] - 2026-06-23
 
 ### Fixed
