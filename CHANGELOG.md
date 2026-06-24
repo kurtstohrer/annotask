@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
-## [Unreleased]
+## [0.4.4] - 2026-06-24
 
 ### Fixed
 - **Wireframe explode no longer fails silently on anchorless blocks.** A captured block with no source anchor (`anchor.file === ''`) — DOM rendered by an un-instrumented shared/library `dist` component, or a `pending` framework mount region — keyed "explode into child blocks" off `anchor.file`, so double-clicking it did *nothing*, with no feedback ([#54](https://github.com/kurtstohrer/annotask/issues/54)). Anchorless blocks are unavoidable in any real app that consumes a pre-built component library (Annotask transforms source JSX, not shipped bundles). Now: (1) explode and the hover child-preview re-resolve an anchorless block's live subtree by captured **geometry** (`wfElementForRect` matches the element whose document box fits the block's `originalRect`) instead of the durable-anchor lookup, decomposing it into anchorless geometric children — useful for layout wireframing even though they can't drive source codegen; (2) a `pending` MFE region (a single-spa/qiankun/`<application>` mount with no `data-annotask-mfe` descendant) is captured as multiple geometric sub-blocks via the same unwrap + content passes instead of one opaque box (empty mounts still emit nothing); (3) every explode failure now sets a visible error in the wireframe header ("This block isn't mapped to source … it can still be moved or resized as one block") rather than returning silently. Anchored-block, instrumented-MFE, and non-MFE capture/explode output is byte-identical.
