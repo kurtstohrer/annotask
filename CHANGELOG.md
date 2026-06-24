@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. Versions follow [Semantic Versioning](https://semver.org/). Dates are ISO 8601.
 
+## [0.4.3] - 2026-06-23
+
+### Fixed
+- **The published package no longer ships stale build chunks.** `tsup` emits content-hashed chunk filenames and ran with `clean: false` (it can't wipe `dist/` itself because `build:shell` writes `dist/shell` first), so every rebuild left the previous build's orphaned chunks behind — local `dist/` had accumulated **nine full copies of the ~560K server bundle** plus their `standalone` wrappers, and `files: ["dist"]` shipped the lot. The build now wipes `dist/` first via a new `scripts/clean-dist.mjs`, and a `prepublishOnly` guard rebuilds clean before any publish. The packed tarball drops from **9.3 MB to 3.8 MB unpacked** (60 → 57 files), with the duplicate server bundles collapsed to one.
+
+### Changed
+- **The design-tool shell loads lazily — lighter first paint.** The shell built to a single eager 1.5 MB JS chunk that pulled CodeMirror and prismjs into first paint via components most sessions never open immediately. The heavy overlays (`InitWizard`, `SettingsOverlay`, `ReportViewer`, `HelpOverlay`, `A11yDetailDrawer`, `WireframeCanvas`) and `TaskJsonView` now load on demand through `defineAsyncComponent`, moving **CodeMirror (~536K), prismjs (~21K), ~220K of overlay code, and ~87K of CSS** off the critical path — the eager entry chunk drops from **1.5 MB to 525 KB**. Cross-cutting composables stay eager (they drive always-visible toolbar badges), and `vite` `manualChunks` names the big vendor libs for stable cross-deploy caching.
+
 ## [0.4.2] - 2026-06-23
 
 ### Added
