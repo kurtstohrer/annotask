@@ -19,7 +19,8 @@ afterEach(() => { while (openWindows.length) openWindows.pop()!.window.close() }
 
 interface Meta { eid: string; file: string; line: string; component: string; source_tag: string; tag: string; cls: string; role: string; mfe?: string; rect: { x: number; y: number; width: number; height: number }; dataUrl: null }
 interface Disc { blocks: Array<{ el: any; meta: Meta }>; truncated: boolean }
-type DiscoverFn = (root: any, deps: any, opts?: { mfeDescentEnabled?: boolean }) => Disc
+type DiscoverFn = (root: any, deps: any, opts?: { mfeDescentEnabled?: boolean; anchorBoundary?: any }) => Disc
+type RectFn = (root: any, rect: { x: number; y: number; width: number; height: number }, deps: any) => any
 
 function makeWindow(): any {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', {
@@ -34,7 +35,7 @@ function makeWindow(): any {
   win.Element.prototype.getBoundingClientRect = function () {
     return this.__rect || { x: 0, y: 0, width: 400, height: 300, top: 0, left: 0, right: 400, bottom: 300 }
   }
-  win.eval(bridgeWireframeWalker() + '\n;window.__discoverBlocks = discoverBlocks;')
+  win.eval(bridgeWireframeWalker() + '\n;window.__discoverBlocks = discoverBlocks; window.__wfElementForRect = wfElementForRect;')
   return win
 }
 
@@ -192,19 +193,109 @@ describe('wireframe walker — anchoring edge cases', () => {
     expect(r.blocks.some((b) => b.meta.file === 'host/Shell.vue')).toBe(false)
   })
 
-  it('pending region (framework mount, no stamped descendant yet) → one honest unanchored block, never the host file', () => {
+  it('pending region (framework mount, no stamped descendant yet) → geometric content block, honest unanchored, never the host file', () => {
     const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const spinner = el(win, 'div', { cls: 'spinner', rect: [0, 0, 600, 400] })
     const mountDiv = el(win, 'div', {
       id: 'single-spa-application:@x/loading',
       attrs: { 'data-annotask-file': 'host/Shell.vue', 'data-annotask-line': '1' },
       rect: [0, 0, 600, 400],
-    }, [ el(win, 'div', { cls: 'spinner', rect: [0, 0, 600, 400] }) ]) // no data-annotask-mfe anywhere inside
+    }, [ spinner ]) // no data-annotask-mfe anywhere inside
     mount(win, el(win, 'main', { rect: [0, 0, 600, 400] }, [mountDiv]))
 
     const r = discover(win.document.body, deps, { mfeDescentEnabled: true })
     expect(r.blocks.length).toBe(1)
+    // The block is the region CONTENT (spinner), not the opaque host mount — and
+    // it is honestly unanchored, never the host glue file.
+    expect(r.blocks[0].el).toBe(spinner)
     expect(r.blocks[0].meta.file).toBe('')           // honest unanchored
     expect('mfe' in r.blocks[0].meta).toBe(false)     // region.mfe '' → omitted
+  })
+
+  it('pending region with multiple children → multiple anchorless geometric sub-blocks (not one opaque box)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // A production / third-party MFE bundle: real DOM, multiple sections, but no
+    // data-annotask-* anywhere (Annotask never transformed its source).
+    const header = el(win, 'header', { cls: 'remote-head', rect: [0, 0, 600, 80] })
+    const body = el(win, 'div', { cls: 'remote-body', rect: [0, 80, 600, 320] })
+    const footer = el(win, 'footer', { cls: 'remote-foot', rect: [0, 400, 600, 80] })
+    const mountDiv = el(win, 'div', {
+      id: 'single-spa-application:@x/prod-remote',
+      attrs: { 'data-annotask-file': 'host/Shell.vue', 'data-annotask-line': '1' }, // host glue
+      rect: [0, 0, 600, 480],
+    }, [ el(win, 'div', { cls: 'remote-root', rect: [0, 0, 600, 480] }, [header, body, footer]) ])
+    mount(win, el(win, 'main', { rect: [0, 0, 600, 480] }, [mountDiv]))
+
+    const r = discover(win.document.body, deps, { mfeDescentEnabled: true })
+    // Decomposed into its geometric children — wireframeable, not one opaque box.
+    expect(r.blocks.length).toBe(3)
+    expect(r.blocks.map((b) => b.el)).toEqual(expect.arrayContaining([header, body, footer]))
+    // Every sub-block is honestly unanchored — never the host glue file.
+    expect(r.blocks.every((b) => b.meta.file === '')).toBe(true)
+    expect(r.blocks.every((b) => !('mfe' in b.meta))).toBe(true)
+    // And the opaque mount itself is NOT emitted as a block.
+    expect(r.blocks.some((b) => b.el === mountDiv)).toBe(false)
+  })
+
+  it('anchorBoundary bounds the legacy anchor walk: geometric explode of an un-instrumented mount yields anchorless children, never the host-glue file', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // The mount div carries HOST glue (data-annotask-file) but its content is
+    // un-instrumented (no data-annotask-*). This IS the element wfElementForRect
+    // resolves to on the geometric (anchorless) explode path.
+    const a = el(win, 'section', { cls: 'sk-a', rect: [0, 0, 600, 200] })
+    const b = el(win, 'section', { cls: 'sk-b', rect: [0, 200, 600, 200] })
+    const mountDiv = el(win, 'div', {
+      id: 'single-spa-application:@x/prod',
+      attrs: { 'data-annotask-file': 'src/HostApp.vue', 'data-annotask-line': '1' }, // host glue
+      rect: [0, 0, 600, 400],
+    }, [a, b])
+    mount(win, mountDiv)
+
+    // Without the boundary (the bug): findSourceElement walks UP to the host file.
+    const unbounded = discover(mountDiv, deps, { mfeDescentEnabled: true })
+    expect(unbounded.blocks.length).toBe(2)
+    expect(unbounded.blocks.every((bl) => bl.meta.file === 'src/HostApp.vue')).toBe(true)
+
+    // With the boundary: the same children resolve ANCHORLESS — never host glue.
+    const bounded = discover(mountDiv, deps, { mfeDescentEnabled: true, anchorBoundary: mountDiv })
+    expect(bounded.blocks.length).toBe(2)
+    expect(bounded.blocks.every((bl) => bl.meta.file === '')).toBe(true)
+  })
+
+  it('anchorBoundary still resolves DOWN to a real instrumented descendant strictly below the root', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // An anchorless container whose ONE child IS instrumented — exploding it must
+    // pick up the real descendant anchor, not strip it.
+    const stamped = el(win, 'section', { cls: 'real', attrs: { 'data-annotask-file': 'src/Card.tsx', 'data-annotask-line': '3' }, rect: [0, 0, 600, 200] })
+    const plain = el(win, 'section', { cls: 'plain', rect: [0, 200, 600, 200] })
+    const root = el(win, 'div', { cls: 'anchorless-root', rect: [0, 0, 600, 400] }, [stamped, plain])
+    mount(win, root)
+
+    const r = discover(root, deps, { mfeDescentEnabled: true, anchorBoundary: root })
+    const byCls = Object.fromEntries(r.blocks.map((bl) => [bl.meta.cls, bl.meta.file]))
+    expect(byCls['real']).toBe('src/Card.tsx') // resolved DOWN — within the boundary
+    expect(byCls['plain']).toBe('')            // genuinely anchorless
+  })
+
+  it('instrumented region whose mount has only a zero-box child still emits one block anchored DOWN (byte-identical, not dropped)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // A display:contents-style wrapper has a zero box (fails wfQualifies), so the
+    // mount has no QUALIFYING direct children — but the region is INSTRUMENTED (a
+    // real stamped descendant), so it must NOT be dropped (the empty-mount return
+    // is pending-only).
+    const stamped = mfeEl(win, 'section', 'remote', 'src/Widget.tsx', '5', [0, 0, 600, 400])
+    const wrapper = el(win, 'div', { cls: 'contents', rect: [0, 0, 0, 0] }, [stamped]) // zero box
+    const mountDiv = el(win, 'div', {
+      id: 'single-spa-application:@org/remote',
+      attrs: { 'data-annotask-file': 'src/HostApp.vue', 'data-annotask-line': '1' }, // host glue
+      rect: [0, 0, 600, 400],
+    }, [wrapper])
+    mount(win, el(win, 'main', { rect: [0, 0, 600, 400] }, [mountDiv]))
+
+    const r = discover(win.document.body, deps, { mfeDescentEnabled: true })
+    expect(r.blocks.length).toBe(1)
+    expect(r.blocks[0].meta.file).toBe('src/Widget.tsx') // anchored DOWN, never host glue, never gone
+    expect(r.blocks[0].meta.mfe).toBe('remote')
   })
 
   it('an EMPTY inactive mount (no content, host-stamped) emits NO block and is never host-anchored', () => {
@@ -331,5 +422,96 @@ describe('wireframe walker — per-MFE budget', () => {
     // Both MFEs represented — neither starved to zero by a flat document slice.
     expect(r.blocks.some((b) => b.meta.mfe === 'a')).toBe(true)
     expect(r.blocks.some((b) => b.meta.mfe === 'b')).toBe(true)
+  })
+})
+
+describe('wireframe walker — wfElementForRect (geometric root re-resolution)', () => {
+  it('returns the live element whose document box matches the rect', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const target = el(win, 'section', { cls: 'target', rect: [0, 300, 800, 300] })
+    const page = el(win, 'main', { rect: [0, 0, 800, 900] }, [
+      el(win, 'section', { cls: 'hero', rect: [0, 0, 800, 300] }),
+      target,
+      el(win, 'section', { cls: 'foot', rect: [0, 600, 800, 300] }),
+    ])
+    mount(win, page)
+
+    expect(forRect(win.document.body, { x: 0, y: 300, width: 800, height: 300 }, deps)).toBe(target)
+  })
+
+  it('outermost wins on an exact-box tie (explode the container, not its lone wrapper)', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    // A region and its single full-size inner wrapper share one box; main is
+    // taller so it doesn't tie.
+    const inner = el(win, 'div', { cls: 'inner', rect: [0, 0, 600, 400] })
+    const outer = el(win, 'div', { cls: 'outer', rect: [0, 0, 600, 400] }, [inner])
+    mount(win, el(win, 'main', { rect: [0, 0, 600, 800] }, [outer]))
+
+    expect(forRect(win.document.body, { x: 0, y: 0, width: 600, height: 400 }, deps)).toBe(outer)
+  })
+
+  it('returns null when nothing comes within tolerance (the page reflowed past it)', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 400] }, [
+      el(win, 'section', { cls: 'a', rect: [0, 0, 800, 400] }),
+    ]))
+    // A rect nowhere near any real element.
+    expect(forRect(win.document.body, { x: 0, y: 5000, width: 120, height: 60 }, deps)).toBeNull()
+  })
+
+  it('skips hidden elements even when their authored box matches', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const hidden = el(win, 'div', { cls: 'hidden', rect: [0, 0, 400, 200] })
+    hidden.style.display = 'none'
+    const visible = el(win, 'div', { cls: 'visible', rect: [0, 0, 400, 200] })
+    // Hidden one is earlier in document order, so it would win the tie if not skipped.
+    mount(win, el(win, 'main', { rect: [0, 0, 400, 400] }, [hidden, visible]))
+
+    expect(forRect(win.document.body, { x: 0, y: 0, width: 400, height: 200 }, deps)).toBe(visible)
+  })
+
+  it('matches in DOCUMENT space under non-zero scroll (the metaOnly hover probe never scrolls)', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const target = el(win, 'section', { cls: 'target', rect: [0, 100, 600, 300] }) // client (viewport) box
+    mount(win, el(win, 'main', { rect: [0, 0, 600, 900] }, [target]))
+    // The iframe is scrolled down 300px. jsdom scrollTo is a no-op, so override
+    // the getters directly; document coords = client box + scroll.
+    Object.defineProperty(win, 'scrollX', { value: 0, configurable: true })
+    Object.defineProperty(win, 'scrollY', { value: 300, configurable: true })
+    // The captured rect is in DOCUMENT coords: client y 100 + scroll 300 = 400.
+    expect(forRect(win.document.body, { x: 0, y: 400, width: 600, height: 300 }, deps)).toBe(target)
+    // A dropped/sign-flipped scroll term would instead match the VIEWPORT-coords
+    // rect (y 100); assert it does not, so the +scroll conversion is exercised.
+    expect(forRect(win.document.body, { x: 0, y: 100, width: 600, height: 300 }, deps)).toBeNull()
+  })
+
+  it('accepts a small post-reflow drift on a large region (tolerance scales with size)', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const big = el(win, 'section', { cls: 'big', rect: [0, 0, 800, 300] }) // tol = max(48, (800+300)*0.3) = 330
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 1200] }, [big]))
+    // Captured rect drifted ~6px per edge (score 24) — well within tolerance.
+    expect(forRect(win.document.body, { x: 6, y: 6, width: 806, height: 306 }, deps)).toBe(big)
+  })
+
+  it('rejects the same absolute drift on a tiny block (floor tolerance, not size-scaled up)', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const tiny = el(win, 'div', { cls: 'tiny', rect: [0, 0, 40, 20] }) // tol = max(48, (40+20)*0.3=18) = 48
+    mount(win, el(win, 'main', { rect: [0, 0, 400, 400] }, [tiny]))
+    // 20px drift per edge -> score 80 > 48 floor -> rejected.
+    expect(forRect(win.document.body, { x: 20, y: 20, width: 60, height: 40 }, deps)).toBeNull()
+  })
+
+  it('skips data-annotask-preview/-instance overlays and visibility:hidden, even first in document order', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const preview = el(win, 'div', { cls: 'pv', attrs: { 'data-annotask-preview': 'true' }, rect: [0, 0, 400, 200] })
+    const instance = el(win, 'div', { cls: 'inst', attrs: { 'data-annotask-instance': 'true' }, rect: [0, 0, 400, 200] })
+    const hidden = el(win, 'div', { cls: 'hid', rect: [0, 0, 400, 200] }); hidden.style.visibility = 'hidden'
+    const real = el(win, 'div', { cls: 'real', rect: [0, 0, 400, 200] })
+    // The three distractors share the exact box and come FIRST, so they would win
+    // the tie if not excluded — a real wireframe session has shell overlays in the
+    // live DOM that can box-match a captured region.
+    mount(win, el(win, 'main', { rect: [0, 0, 400, 400] }, [preview, instance, hidden, real]))
+
+    expect(forRect(win.document.body, { x: 0, y: 0, width: 400, height: 200 }, deps)).toBe(real)
   })
 })

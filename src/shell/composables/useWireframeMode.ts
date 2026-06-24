@@ -745,20 +745,33 @@ export function useWireframeMode(deps: WireframeModeDeps) {
    *  produce. */
   async function resolveBlockChildren(block: WireframeBlock): Promise<WireframeChildRect[]> {
     if (!active.value || block.kind !== 'captured' || block.shell || block.deleted) return []
-    if (!block.anchor?.file || !block.originalRect) return []
+    if (!block.originalRect) return []
     try {
-      const group = await iframe.findTemplateGroup(
-        toLocalFile(block.anchor.mfe, block.anchor.file),
-        String(block.anchor.line),
-        block.anchor.tag ?? '',
-        block.anchor.mfe,
-      )
-      const rootEid = group.eids[0]
-      if (!rootEid) return []
-      const res = await iframe.captureWireframe({ rootEid, metaOnly: true })
+      // Anchored blocks re-resolve via their durable source anchor; anchorless
+      // ones (un-instrumented MFE/library DOM) re-resolve by captured geometry.
+      // Mirrors explodeBlock so the hover highlights preview exactly what an
+      // explode would produce — anchorless blocks included.
+      let payload: WireframeCapturePayload
+      let rootEid: string | null = null
+      if (block.anchor?.file) {
+        const group = await iframe.findTemplateGroup(
+          toLocalFile(block.anchor.mfe, block.anchor.file),
+          String(block.anchor.line),
+          block.anchor.tag ?? '',
+          block.anchor.mfe,
+        )
+        rootEid = group.eids[0] ?? null
+        if (!rootEid) return []
+        payload = { rootEid, metaOnly: true }
+      } else {
+        payload = { rootRect: { ...block.originalRect }, metaOnly: true }
+      }
+      const res = await iframe.captureWireframe(payload)
       if (res.error || !res.blocks?.length) return []
-      // One block back = no finer granularity (same guard explode uses).
-      if (res.blocks.length === 1 && res.blocks[0].eid === rootEid) return []
+      // One block back = no finer granularity (same guard explode uses). The
+      // geometric path learns the root eid from the bridge's response.
+      const probeRoot = rootEid ?? res.rootEid ?? null
+      if (res.blocks.length === 1 && probeRoot && res.blocks[0].eid === probeRoot) return []
       return res.blocks.map((b) => ({
         rect: { x: b.rect.x, y: b.rect.y, width: b.rect.width, height: b.rect.height },
         file: b.file, line: b.line, tag: b.tag,
@@ -770,47 +783,68 @@ export function useWireframeMode(deps: WireframeModeDeps) {
 
   /**
    * Explode (W4): re-capture one captured block a level deeper — the block is
-   * replaced by per-child blocks, each carrying its own source anchor. The
-   * children rasterize from the LIVE page (the only honest pixel source) and
-   * are translated by the block's canvas delta so they land inside the box
+   * replaced by per-child blocks, each carrying its own source anchor (or an
+   * empty anchor when the block was anchorless — geometric children of an
+   * un-instrumented region stay anchorless, useful for layout but not codegen).
+   * The children rasterize from the LIVE page (the only honest pixel source)
+   * and are translated by the block's canvas delta so they land inside the box
    * the user sees, even after a move.
    */
   async function explodeBlock(id: string): Promise<boolean> {
     const c = canvas.value
     const parent = findBlock(id)
     if (!c || !parent || parent.kind !== 'captured' || parent.deleted || capturing.value) return false
-    if (!parent.anchor?.file || !parent.originalRect) return false
     if (parent.shell) {
       error.value = 'Already exploded — its children are separate blocks.'
       return false
     }
+    if (!parent.originalRect) {
+      error.value = "This block can't be exploded — its captured geometry is missing. Recapture instead."
+      return false
+    }
     error.value = null
 
-    // Re-resolve the live element from the durable anchor (eids are volatile).
-    // The DOM carries the MFE's package-local path, so translate the resolvable
-    // anchor back to local form and scope the query to the owning MFE.
-    const group = await iframe.findTemplateGroup(
-      toLocalFile(parent.anchor.mfe, parent.anchor.file),
-      String(parent.anchor.line),
-      parent.anchor.tag ?? '',
-      parent.anchor.mfe,
-    )
-    const rootEid = group.eids[0]
-    if (!rootEid) {
-      error.value = 'Could not find this block in the live page — the source may have changed. Recapture instead.'
-      return false
+    // Resolve the live element to re-capture a level deeper. ANCHORED blocks
+    // re-resolve from their durable source anchor (eids are volatile) — the DOM
+    // carries the MFE's package-local path, so translate the resolvable anchor
+    // back to local form and scope the query to the owning MFE. ANCHORLESS
+    // blocks (DOM rendered by an un-instrumented shared/library/dist component,
+    // or a pending MFE region) carry no anchor to look up — re-resolve their
+    // live subtree by captured GEOMETRY instead, so they still decompose into
+    // (anchorless) geometric children for layout wireframing.
+    let payload: WireframeCapturePayload
+    let rootEid: string | null = null
+    if (parent.anchor?.file) {
+      const group = await iframe.findTemplateGroup(
+        toLocalFile(parent.anchor.mfe, parent.anchor.file),
+        String(parent.anchor.line),
+        parent.anchor.tag ?? '',
+        parent.anchor.mfe,
+      )
+      rootEid = group.eids[0] ?? null
+      if (!rootEid) {
+        error.value = 'Could not find this block in the live page — the source may have changed. Recapture instead.'
+        return false
+      }
+      payload = { rootEid }
+    } else {
+      payload = { rootRect: { ...parent.originalRect } }
     }
 
     capturing.value = true
     try {
-      const res = await iframe.captureWireframe({ rootEid })
+      const res = await iframe.captureWireframe(payload)
       if (res.error || !res.blocks?.length) {
         error.value = res.error ?? 'nothing to explode'
         return false
       }
-      // One block back = no finer granularity available.
-      if (res.blocks.length === 1 && res.blocks[0].eid === rootEid) {
-        error.value = 'This block has no separable children.'
+      // One block back = no finer granularity available. The geometric path
+      // learns the resolved root's eid from the bridge response.
+      const resolvedRoot = rootEid ?? res.rootEid ?? null
+      if (res.blocks.length === 1 && resolvedRoot && res.blocks[0].eid === resolvedRoot) {
+        error.value = parent.anchor?.file
+          ? 'This block has no separable children.'
+          : "This block isn't mapped to source (it's rendered by an un-instrumented component) and has no separable children — it can still be moved or resized as one block."
         return false
       }
 

@@ -13,13 +13,23 @@
  *   discoverBlocks(root, deps, opts) -> { blocks: [{ el, meta }], truncated }
  *     deps = { getComputedStyle, findSourceElement, getSourceData, getEid }
  *     opts = { mfeDescentEnabled?: boolean }   (default true)
+ *   wfElementForRect(rootEl, rect, deps) -> Element | null
+ *     deps = { getComputedStyle }
+ *     The live element whose document-space box best matches `rect` (within a
+ *     size-scaled tolerance) — the geometric re-resolution the capture handler
+ *     uses to explode an ANCHORLESS block (one with no source anchor to look
+ *     up). Null when nothing comes close (the page reflowed past tolerance).
  *
  * Non-MFE pages (no detected MFE regions, or mfeDescentEnabled === false) take
  * the legacy single-root path — the SAME helpers with every region branch
  * skipped, so the block set, order, rects, and anchors are unchanged and no
  * `mfe` field is emitted. MFE pages decompose each mount container into its
  * instrumented children, each anchored to its OWN MFE source (never the host
- * shell) and stamped with `meta.mfe`.
+ * shell) and stamped with `meta.mfe`. An UN-instrumented (`pending`) mount —
+ * a framework boundary with no `data-annotask-mfe` descendant (production
+ * bundle, third-party remote, or a not-yet-mounted async bundle) — is still
+ * decomposed by GEOMETRY into anchorless sub-blocks, so the region can be
+ * wireframed for layout even though it can't drive source codegen.
  *
  * The walk is pure: it reads the DOM and returns data. Scroll restoration,
  * html2canvas rasterization, and `respond()` stay in messages.ts.
@@ -259,12 +269,32 @@ export function bridgeWireframeWalker(): string {
       return { file: '', line: '', component: '', source_tag: '', mfe: region.mfe };
     }
 
+    // Bounded source walk: find the nearest data-annotask-* ancestor that is a
+    // STRICT DESCENDANT of the boundary, never the boundary itself or above it.
+    // The geometric (anchorless) explode path passes the resolved root as the
+    // boundary so a child of an un-instrumented region can still resolve DOWN to
+    // a real instrumented descendant, but never UP to the host-glue mount whose
+    // wrapper carries the host shell's file (which would mis-anchor an anchorless
+    // block to the wrong source — issue #54). Empty when nothing qualifies.
+    function wfBoundedSource(el, boundary) {
+      var c = el;
+      while (c && c !== boundary) {
+        if (c.hasAttribute && (c.hasAttribute('data-annotask-file') || c.hasAttribute('data-astro-source-file'))) {
+          return deps.getSourceData(c);
+        }
+        c = c.parentElement;
+      }
+      return { file: '', line: '', component: '', source_tag: '', mfe: '' };
+    }
+
     function wfBuildMeta(el, region) {
       var data;
       if (region && region.pending) {
         data = { file: '', line: '', component: '', source_tag: '', mfe: region.mfe || '' };
       } else if (region) {
         data = wfResolveMfeAnchor(el, region);
+      } else if (opts.anchorBoundary) {
+        data = wfBoundedSource(el, opts.anchorBoundary);
       } else {
         var src = deps.findSourceElement(el);
         data = deps.getSourceData(src.sourceEl);
@@ -300,14 +330,18 @@ export function bridgeWireframeWalker(): string {
     }
     function wfDiscoverRegion(region, cap) {
       var mount = region.mountEl;
-      if (region.pending) {
-        // Pending = framework mount with no stamped descendant. A loading MFE
-        // showing a spinner/skeleton (has qualifying content) becomes ONE
-        // opaque block; an EMPTY mount (an inactive single-spa route's leftover
-        // container) emits nothing — it is still a detected region so the page
-        // pass can't mis-anchor it to the host glue, but it adds no noise box.
-        return wfChildren(mount).length > 0 ? { els: [mount], truncated: false } : { els: [], truncated: false };
-      }
+      // An EMPTY PENDING mount (an inactive single-spa route's leftover
+      // container, or a not-yet-mounted async bundle) emits nothing — it is
+      // still a detected region so the page pass can't mis-anchor it to the host
+      // glue, but it adds no noise box. A pending mount WITH content now runs the
+      // same geometric unwrap + content pass as instrumented regions; wfBuildMeta
+      // honestly returns empty anchors for it (region.pending), so a pre-built
+      // component library / third-party remote decomposes into wireframeable
+      // blocks instead of one opaque box. INSTRUMENTED regions are untouched —
+      // they fall straight through to the byte-identical fallback chain below
+      // (which emits [mount] anchored DOWN when the mount has no qualifying
+      // direct children, e.g. a display:contents wrapper).
+      if (region.pending && wfChildren(mount).length === 0) return { els: [], truncated: false };
       var contentRoot = wfRegionUnwrap(mount);
       var res = wfContentKids(contentRoot);
       var kids = res.kids;
@@ -364,6 +398,53 @@ export function bridgeWireframeWalker(): string {
     blocks.sort(function(a, b) { return wfDocOrder(a.el, b.el); });
     if (blocks.length > WF_BLOCK_CAP) { blocks = blocks.slice(0, WF_BLOCK_CAP); truncated = true; }
     return { blocks: blocks, truncated: truncated };
+  }
+
+  // ===================== Geometric root re-resolution ========================
+  // The live element whose document-space box best matches a captured block's
+  // rect. An ANCHORLESS block (un-instrumented MFE / shared-library DOM) has no
+  // source anchor to look up for explode, but its PIXELS are real — its captured
+  // geometry pins the live subtree. Document-space (rect + scroll) so it works
+  // whether or not the caller normalized scroll (the metaOnly hover probe does
+  // not scroll; the full-rasterize explode scrolls to 0,0 first). Returns null
+  // when nothing comes within tolerance, so the caller can surface an honest
+  // "couldn't find this block" instead of exploding the wrong element.
+  function wfElementForRect(rootEl, rect, deps) {
+    if (!rootEl || !rect) return null;
+    var getCS = deps.getComputedStyle;
+    var sx = window.scrollX || 0, sy = window.scrollY || 0;
+    var best = null, bestScore = Infinity;
+    // The expensive part (getComputedStyle, a style flush) is deferred to genuine
+    // candidates only — most elements are rejected by the cheap tag/box/score
+    // checks first, so a full-document scan stays one layout flush + O(n) reads
+    // rather than O(n) style flushes (this also runs on the debounced metaOnly
+    // hover probe). Visibility/preview exclusion mirrors wfQualifies (scoped
+    // inside discoverBlocks, so it can't be shared without hoisting).
+    function consider(el) {
+      if (!el || el.nodeType !== 1) return;
+      var t = el.tagName;
+      if (t === 'SCRIPT' || t === 'STYLE' || t === 'LINK' || t === 'TEMPLATE' || t === 'NOSCRIPT') return;
+      var r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return;
+      var score = Math.abs((r.x + sx) - rect.x) + Math.abs((r.y + sy) - rect.y)
+        + Math.abs(r.width - rect.width) + Math.abs(r.height - rect.height);
+      // Strict '<' so equal-box elements keep the FIRST (outermost: rootEl, then
+      // document order) — explode the container, not its lone inner wrapper. A
+      // non-improving score skips the costly qualify check entirely.
+      if (score >= bestScore) return;
+      if (el.hasAttribute('data-annotask-instance') || el.hasAttribute('data-annotask-preview')) return;
+      var cs = getCS(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      best = el; bestScore = score;
+    }
+    consider(rootEl);
+    var all = rootEl.querySelectorAll ? rootEl.querySelectorAll('*') : [];
+    for (var i = 0; i < all.length; i++) consider(all[i]);
+    // Accept only a genuinely close match. Tolerance scales with the block (a
+    // small drift on a big region is fine; the same px on a tiny block is not),
+    // summed across the four edges, with a floor for tiny blocks.
+    var tol = Math.max(48, (rect.width + rect.height) * 0.3);
+    return (best && bestScore <= tol) ? best : null;
   }
 `
 }

@@ -1089,17 +1089,31 @@ export function bridgeMessages(): string {
       var wfMetaOnly = !!(payload && payload.metaOnly);
       if (!wfMetaOnly) window.scrollTo(0, 0);
 
-      var wfRoot = payload && payload.rootEid ? getEl(payload.rootEid) : document.body;
-      if (!wfRoot) { wfFinishError('root element not found'); return; }
-      // MFE-aware descent is ON by default. discoverBlocks short-circuits to the
-      // byte-identical legacy single-root path whenever the page has no MFE
-      // mount regions, so this only changes output on real multi-MFE routes.
-      var wfDisc = discoverBlocks(wfRoot, {
+      var wfDeps = {
         getComputedStyle: function(el) { return window.getComputedStyle(el); },
         findSourceElement: findSourceElement,
         getSourceData: getSourceData,
         getEid: getEid
-      }, { mfeDescentEnabled: true });
+      };
+      // Refine = explode / hover-child probe (rootEid OR rootRect). rootEid is
+      // the precise anchored path; rootRect re-resolves an ANCHORLESS block by
+      // GEOMETRY (the live element whose box matches the captured rect) so a
+      // block with no source anchor can still decompose for layout work.
+      var wfIsRefine = !!(payload && (payload.rootEid || payload.rootRect));
+      var wfRoot = payload && payload.rootEid ? getEl(payload.rootEid) : null;
+      var wfGeometricRoot = false;
+      if (!wfRoot && payload && payload.rootRect) { wfRoot = wfElementForRect(document.body, payload.rootRect, wfDeps); wfGeometricRoot = true; }
+      if (!wfRoot && !wfIsRefine) wfRoot = document.body;
+      if (!wfRoot) { wfFinishError(wfIsRefine ? 'could not locate this block in the live page — it may have moved or the page changed' : 'root element not found'); return; }
+      // MFE-aware descent is ON by default. discoverBlocks short-circuits to the
+      // byte-identical legacy single-root path whenever the page has no MFE
+      // mount regions, so this only changes output on real multi-MFE routes.
+      // anchorBoundary (geometric/anchorless explode only): bound the legacy
+      // anchor walk to the resolved root so a child of an un-instrumented region
+      // can resolve DOWN to an instrumented descendant but never UP to the
+      // host-glue mount above it (issue #54). Omitted for the anchored rootEid
+      // path so its output stays byte-identical.
+      var wfDisc = discoverBlocks(wfRoot, wfDeps, wfGeometricRoot ? { mfeDescentEnabled: true, anchorBoundary: wfRoot } : { mfeDescentEnabled: true });
       if (!wfDisc.blocks.length) { wfFinishError('nothing to capture'); return; }
       // The h2c run loop below consumes wfMetas (serializable, sent to the shell)
       // and the explode shell-capture path consumes wfAll (the block elements).
@@ -1110,7 +1124,7 @@ export function bridgeMessages(): string {
       if (wfMetaOnly) {
         // Hover child-rect probe: the per-block metas (rects/eids/file/mfe/tag,
         // dataUrl null) only — the shell overlays them for the hover highlights.
-        respond(id, {
+        var wfMetaResult = {
           viewport: {
             width: window.innerWidth, height: window.innerHeight,
             docWidth: document.documentElement.scrollWidth,
@@ -1119,7 +1133,12 @@ export function bridgeMessages(): string {
           },
           blocks: wfMetas,
           truncated: wfTruncated
-        });
+        };
+        // Refine probes echo the resolved root's eid so the shell can tell
+        // "one block back === the root" (no separable children) from a single
+        // genuine child — even on the geometric rootRect path.
+        if (wfIsRefine) wfMetaResult.rootEid = getEid(wfRoot);
+        respond(id, wfMetaResult);
         return;
       }
 
@@ -1143,14 +1162,14 @@ export function bridgeMessages(): string {
             });
         }
         function wfCaptureFull() {
-          // Explode captures (rootEid) refine an existing canvas — the
+          // Explode captures (rootEid/rootRect) refine an existing canvas — the
           // original full-page "before" stays the honest baseline. Instead,
           // capture the root's SHELL: its own pixels (background, padding,
           // the surface between children) with the captured child blocks
           // visibility-hidden in the clone — the container's styling without
           // ghost children burned in.
-          if (payload && payload.rootEid) {
-            var shellRoot = getEl(payload.rootEid);
+          if (wfIsRefine) {
+            var shellRoot = wfRoot;
             if (!shellRoot) { wfFinish(null, null); return; }
             sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'container shell' });
             for (var smi = 0; smi < wfAll.length; smi++) wfAll[smi].setAttribute('data-annotask-wf-hide', '1');
@@ -1191,6 +1210,8 @@ export function bridgeMessages(): string {
           if (wfTruncated) result.truncated = true;
           if (fullDataUrl) result.fullDataUrl = fullDataUrl;
           if (shellDataUrl) result.shellDataUrl = shellDataUrl;
+          // Refine captures echo the resolved root's eid (see metaOnly above).
+          if (wfIsRefine) result.rootEid = getEid(wfRoot);
           respond(id, result);
         }
         wfCaptureNext();

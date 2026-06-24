@@ -405,6 +405,105 @@ describe('useWireframeMode', () => {
     })
   })
 
+  describe('explode (W4) — anchorless blocks (un-instrumented MFE / library DOM)', () => {
+    // A captured block with NO source anchor: rendered by a pre-built bundle a
+    // shared component library ships, so its DOM carries no data-annotask-*.
+    const ANCHORLESS_CAPTURE: WireframeCaptureResult = {
+      viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+      fullDataUrl: 'data:image/png;base64,FULL',
+      blocks: [{
+        eid: 'm1', file: '', line: '', component: '', source_tag: '', tag: 'div', cls: 'remote-root', role: 'content',
+        rect: { x: 0, y: 0, width: 1280, height: 600 }, dataUrl: 'data:image/png;base64,M1',
+      }],
+    }
+    // The geometric explode response: anchorless children + the resolved root's
+    // eid (the bridge echoes it so the shell's no-children guard works without
+    // ever having supplied an eid).
+    const ANCHORLESS_CHILDREN: WireframeCaptureResult = {
+      viewport: { width: 1280, height: 800, docWidth: 1280, docHeight: 2400, scale: 2 },
+      shellDataUrl: 'data:image/png;base64,SHELL',
+      rootEid: 'live-root',
+      blocks: [
+        { eid: 'gc1', file: '', line: '', component: '', source_tag: '', tag: 'header', cls: 'rh', role: 'content', rect: { x: 0, y: 0, width: 1280, height: 80 }, dataUrl: 'data:image/png;base64,GC1' },
+        { eid: 'gc2', file: '', line: '', component: '', source_tag: '', tag: 'div', cls: 'rb', role: 'content', rect: { x: 0, y: 80, width: 1280, height: 520 }, dataUrl: 'data:image/png;base64,GC2' },
+      ],
+    }
+
+    it('re-resolves by GEOMETRY (rootRect) — no anchor lookup — into anchorless children', async () => {
+      const { mode, iframe } = makeMode(makeIframe(ANCHORLESS_CAPTURE))
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      expect(parent.anchor?.file).toBe('')
+
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce(ANCHORLESS_CHILDREN)
+      const ok = await mode.explodeBlock(parent.id)
+      expect(ok).toBe(true)
+      // The anchorless path never touches the durable-anchor lookup.
+      expect(iframe.findTemplateGroup).not.toHaveBeenCalled()
+      expect(iframe.captureWireframe).toHaveBeenLastCalledWith({ rootRect: parent.originalRect })
+
+      const children = mode.canvas.value!.blocks.filter((b) => b.parentId === parent.id)
+      expect(children).toHaveLength(2)
+      // Children stay anchorless — consistent with the un-instrumented region.
+      expect(children.every((b) => b.anchor?.file === '')).toBe(true)
+      // Parent survives as the SHELL backdrop, exactly like the anchored path.
+      const shell = mode.canvas.value!.blocks.find((b) => b.id === parent.id)!
+      expect(shell.shell).toBe(true)
+      expect(mode.imageSrc(shell)).toBe('data:image/png;base64,SHELL')
+    })
+
+    it('no separable children → an explanatory error, never a silent no-op', async () => {
+      const { mode, iframe } = makeMode(makeIframe(ANCHORLESS_CAPTURE))
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      // The bridge resolves the root but it has no finer children: one block back,
+      // and its eid === the echoed rootEid.
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce({
+        viewport: CAPTURE_OK.viewport,
+        rootEid: 'live-root',
+        blocks: [{ eid: 'live-root', file: '', line: '', component: '', source_tag: '', tag: 'div', cls: 'remote-root', role: 'content', rect: { x: 0, y: 0, width: 1280, height: 600 }, dataUrl: 'data:image/png;base64,M1' }],
+      })
+      expect(await mode.explodeBlock(parent.id)).toBe(false)
+      expect(mode.error.value).toContain("isn't mapped to source")
+      expect(mode.canvas.value!.blocks.find((b) => b.id === parent.id)).toBeDefined()
+    })
+
+    it('an anchorless block the bridge cannot locate surfaces an error and keeps the block', async () => {
+      const { mode, iframe } = makeMode(makeIframe(ANCHORLESS_CAPTURE))
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce({ error: 'could not locate this block in the live page — it may have moved or the page changed' })
+      expect(await mode.explodeBlock(parent.id)).toBe(false)
+      expect(mode.error.value).toContain('could not locate')
+      expect(mode.canvas.value!.blocks.find((b) => b.id === parent.id)).toBeDefined()
+    })
+
+    it('resolveBlockChildren probes anchorless blocks by rootRect (hover preview parity)', async () => {
+      const { mode, iframe } = makeMode(makeIframe(ANCHORLESS_CAPTURE))
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce(ANCHORLESS_CHILDREN)
+      const kids = await mode.resolveBlockChildren(parent)
+      expect(iframe.findTemplateGroup).not.toHaveBeenCalled()
+      expect(iframe.captureWireframe).toHaveBeenLastCalledWith({ rootRect: parent.originalRect, metaOnly: true })
+      expect(kids).toHaveLength(2)
+    })
+
+    it('resolveBlockChildren returns [] when the geometric probe yields only the root (no separable children)', async () => {
+      const { mode, iframe } = makeMode(makeIframe(ANCHORLESS_CAPTURE))
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      // One block back, whose eid === the echoed rootEid: hover-preview parity
+      // with explode's no-children guard, on the anchorless (res.rootEid) path.
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce({
+        viewport: CAPTURE_OK.viewport,
+        rootEid: 'live-root',
+        blocks: [{ eid: 'live-root', file: '', line: '', component: '', source_tag: '', tag: 'div', cls: 'remote-root', role: 'content', rect: { x: 0, y: 0, width: 1280, height: 600 }, dataUrl: null }],
+      })
+      expect(await mode.resolveBlockChildren(parent)).toEqual([])
+    })
+  })
+
   it('boot restore re-enters only with both the flag and a persisted canvas', async () => {
     localStorage.setItem('annotask:wireframe', '1')
     // No canvas persisted → flag is cleared, mode stays off.

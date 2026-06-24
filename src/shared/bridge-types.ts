@@ -339,6 +339,11 @@ export interface ClassUndoPayload {
 export interface WireframeCapturePayload {
   /** Capture children of this element instead of the page (W4 explode). */
   rootEid?: string
+  /** Geometric explode root: when `rootEid` is absent/unresolvable, the bridge
+   *  finds the live element whose document-space box best matches this rect and
+   *  captures its children. Lets ANCHORLESS blocks (un-instrumented MFE/library
+   *  DOM, with no source anchor to look up) still decompose by geometry. */
+  rootRect?: BridgeRect
   /** Rasterization scale; default min(devicePixelRatio, 2), capped at 3. */
   scale?: number
   /** Hover probe: return block metas (rects/eids/anchors) only — skip the
@@ -381,6 +386,11 @@ export interface WireframeCaptureResult {
   /** Explode (rootEid) only: the root's own pixels with the captured child
    *  blocks hidden — the container's surface, no ghost children. */
   shellDataUrl?: string
+  /** Refine captures (rootEid/rootRect) only: the eid of the resolved root, so
+   *  the shell can tell "one block back === the root itself" (no separable
+   *  children) from "one genuine child" — even on the geometric rootRect path
+   *  where it never supplied the eid. Absent on full-page captures. */
+  rootEid?: string
   blocks?: WireframeCaptureBlock[]
   error?: string
 }
