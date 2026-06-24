@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, defineAsyncComponent } from 'vue'
 import { useStyleEditor } from './composables/useStyleEditor'
 import { useDesignSession } from './composables/useDesignSession'
 import { useInteractionMode } from './composables/useInteractionMode'
@@ -24,7 +24,9 @@ import PinOverlay from './components/PinOverlay.vue'
 import ArrowOverlay from './components/ArrowOverlay.vue'
 import TextHighlightOverlay from './components/TextHighlightOverlay.vue'
 import LayoutOverlay from './components/LayoutOverlay.vue'
-import WireframeCanvas from './components/WireframeCanvas.vue'
+// Lazy-loaded: only mounts behind a v-if when wireframe capture/canvas is active,
+// so it (and its ~1.4K LOC) stays out of the shell's first-paint chunk.
+const WireframeCanvas = defineAsyncComponent(() => import('./components/WireframeCanvas.vue'))
 // Panels + Overlays + Modals (extracted components)
 import AppToolbar from './components/AppToolbar.vue'
 import AppBanners from './components/AppBanners.vue'
@@ -37,18 +39,23 @@ import AuditPanel from './components/AuditPanel.vue'
 import DataSourcesPage from './components/DataSourcesPage.vue'
 import ComponentsPage from './components/ComponentsPage.vue'
 import OverlayLegend from './components/OverlayLegend.vue'
-import HelpOverlay from './components/HelpOverlay.vue'
-import SettingsOverlay from './components/SettingsOverlay.vue'
-import InitWizard from './components/InitWizard.vue'
+// Lazy-loaded overlays — opened on demand. SettingsOverlay + InitWizard are the only
+// paths to MarkdownEditor → CodeMirror (~280K), so deferring them keeps CodeMirror out
+// of first paint.
+const HelpOverlay = defineAsyncComponent(() => import('./components/HelpOverlay.vue'))
+const SettingsOverlay = defineAsyncComponent(() => import('./components/SettingsOverlay.vue'))
+const InitWizard = defineAsyncComponent(() => import('./components/InitWizard.vue'))
 import { useInitFlow } from './composables/useInitFlow'
 import { useProviderSettings } from './composables/useProviderSettings'
 import { useAgentModels } from './composables/useAgentModels'
 import { useAgentMode } from './composables/useAgentMode'
 import { startAutoRunDriver } from './composables/useAutoRunDriver'
 import { useAgentDetect, fetchAgentDetect } from './composables/useTaskThread'
-import A11yDetailDrawer from './components/A11yDetailDrawer.vue'
+// Lazy-loaded: A11yDetailDrawer opens on demand; ReportViewer is one of two prismjs
+// (~90K) consumers — deferring it (and TaskJsonView below) keeps prismjs off first paint.
+const A11yDetailDrawer = defineAsyncComponent(() => import('./components/A11yDetailDrawer.vue'))
 import ContextMenu from './components/ContextMenu.vue'
-import ReportViewer from './components/ReportViewer.vue'
+const ReportViewer = defineAsyncComponent(() => import('./components/ReportViewer.vue'))
 import TaskDetailModal from './components/TaskDetailModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import { useTasks } from './composables/useTasks'

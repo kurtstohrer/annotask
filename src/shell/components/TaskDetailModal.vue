@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, defineAsyncComponent } from 'vue'
 import { safeMd } from '../utils/safeMd'
 import type { Task } from '../composables/useTasks'
 import ConfirmDialog from './ConfirmDialog.vue'
 import TaskAgentFeedback from './TaskAgentFeedback.vue'
 import TaskInteractionHistory from './TaskInteractionHistory.vue'
-import TaskJsonView from './TaskJsonView.vue'
+// Lazy-loaded: the JSON tab is behind v-if (default off) and is the second prismjs
+// consumer — deferring it keeps the syntax highlighter off the shell's first paint.
+const TaskJsonView = defineAsyncComponent(() => import('./TaskJsonView.vue'))
 import ConversationTab from './ConversationTab.vue'
 import Icon from './Icon.vue'
 import { useProviderSettings } from '../composables/useProviderSettings'

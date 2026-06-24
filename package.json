@@ -30,7 +30,8 @@
     "!dist/**/*.map"
   ],
   "scripts": {
-    "build": "pnpm build:shell && pnpm build:plugin && pnpm build:vendor",
+    "build": "node scripts/clean-dist.mjs && pnpm build:shell && pnpm build:plugin && pnpm build:vendor",
+    "prepublishOnly": "pnpm build",
     "build:shell": "vite build --config vite.config.shell.ts",
     "build:plugin": "tsup",
     "build:vendor": "node scripts/copy-vendor.mjs",
