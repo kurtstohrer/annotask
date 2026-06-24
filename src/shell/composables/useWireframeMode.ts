@@ -1,13 +1,14 @@
 import { ref, computed, watch, type Ref } from 'vue'
 import { useWireframeDoc } from './useWireframeDoc'
 import { useDesignSession } from './useDesignSession'
+import { useWorkspace } from './useWorkspace'
 import { useCanvasSelection } from './useCanvasSelection'
 import { useCanvasHistory } from './useCanvasHistory'
 import { computeWireframeDirections } from '../utils/wireframeDirections'
 import { composeWireframeDiff } from '../utils/wireframeComposite'
 import { normalizeRoute } from '../utils/routes'
-import type { WireframeBlock, WireframeCanvasState, WireframeDataBinding, WireframeFidelity, WireframePaletteRef } from '../../shared/wireframe-types'
-import type { WireframeCapturePayload, WireframeCaptureResult, WireframeCaptureProgress } from '../../shared/bridge-types'
+import type { WireframeBlock, WireframeBlockAnchor, WireframeCanvasState, WireframeDataBinding, WireframeFidelity, WireframePaletteRef } from '../../shared/wireframe-types'
+import type { WireframeCaptureBlock, WireframeCapturePayload, WireframeCaptureResult, WireframeCaptureProgress } from '../../shared/bridge-types'
 import type { InteractionMode } from './useInteractionMode'
 
 /** localStorage flag so F5 re-enters wireframe mode (W2 accept). Only the
@@ -22,8 +23,10 @@ export interface WireframeModeIframe {
    *  mounts N stacked instances; `opts.instanceProps` overlays per-instance prop
    *  values (bound data rows). */
   previewComponent: (componentName: string, props?: Record<string, unknown>, module?: string, width?: number, opts?: { repeat?: number; instanceProps?: Record<string, unknown>[] }) => Promise<{ mounted: boolean; fidelity?: string | null; dataUrl?: string; width?: number; height?: number; error?: string }>
-  /** Durable-anchor → live eids re-resolution (explode targets). */
-  findTemplateGroup: (file: string, line: string, tagName: string) => Promise<{ eids: string[] }>
+  /** Durable-anchor → live eids re-resolution (explode targets). `mfe` scopes
+   *  the DOM query to one micro-frontend so a shared package-local path resolves
+   *  unambiguously. */
+  findTemplateGroup: (file: string, line: string, tagName: string, mfe?: string) => Promise<{ eids: string[] }>
   // `any` matches the bridge event registry's signature (iframeBridge.on).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onBridgeEvent: (type: string, handler: (payload: any) => void) => void
@@ -60,10 +63,57 @@ export interface PaletteSnapshot {
   mounted?: boolean
 }
 
+/** A direct child of a captured block, probed live for the hover highlights.
+ *  `rect` is in document (capture) coordinates — the canvas transforms it onto
+ *  the block's current on-canvas rect. */
+export interface WireframeChildRect {
+  rect: { x: number; y: number; width: number; height: number }
+  file: string
+  line: string
+  tag: string
+  mfe?: string
+  label: string
+}
+
 let blockCounter = 0
 function mintBlockId(): string {
   blockCounter++
   return `wfb-${Date.now().toString(36)}-${blockCounter.toString(36)}`
+}
+
+/** POSIX-style relative dir between two workspace-root-relative, '/'-separated
+ *  directories. `relDir('a/host', 'a/mfe')` → '../mfe'. Empty when equal. */
+function relDir(fromDir: string, toDir: string): string {
+  const from = fromDir ? fromDir.split('/') : []
+  const to = toDir ? toDir.split('/') : []
+  let i = 0
+  while (i < from.length && i < to.length && from[i] === to[i]) i++
+  return [...from.slice(i).map(() => '..'), ...to.slice(i)].join('/')
+}
+
+/** Build a captured block's source anchor from a capture-result block. Shared
+ *  by the capture and explode paths so both carry the same shape — including
+ *  `mfe`, the owning micro-frontend resolved during the MFE-aware walk (absent
+ *  on single-MFE/legacy captures, where the field is simply omitted).
+ *
+ *  `toAnchorFile` rewrites the bridge's package-local `file` (Vite stamps it
+ *  relative to the MFE's own root, e.g. `src/App.tsx`) into a path the HOST
+ *  dev server can resolve — `../mfe-x/src/App.tsx` for a sibling MFE — so the
+ *  agent's grounding (code-context/source-excerpt), the apply contract, and the
+ *  byte-exact snapshot all hit the right file. Distinct MFEs sharing a local
+ *  path (two `src/App.tsx`) become distinct anchors, so the snapshot dedup is
+ *  honest. Identity when there's no MFE or the resolver can't place it. */
+function buildAnchor(b: WireframeCaptureBlock, toAnchorFile: (mfe: string | undefined, file: string) => string): WireframeBlockAnchor {
+  return {
+    file: toAnchorFile(b.mfe, b.file),
+    line: parseInt(b.line, 10) || 0,
+    ...(b.component ? { component: b.component } : {}),
+    ...(b.source_tag ? { sourceTag: b.source_tag } : {}),
+    ...(b.cls ? { cssClass: b.cls } : {}),
+    tag: b.tag,
+    role: b.role,
+    ...(b.mfe ? { mfe: b.mfe } : {}),
+  }
 }
 
 /**
@@ -79,6 +129,35 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   const { iframe, interactionMode, shellView } = deps
   const wireframeDoc = useWireframeDoc()
   const session = useDesignSession()
+  const workspace = useWorkspace()
+  // The MFE filter loads this elsewhere; ensure it's available for anchor
+  // translation even if capture is the first thing the user touches (idempotent).
+  void workspace.load()
+
+  /** Rewrite a block's package-local `file` into a HOST-resolvable path using
+   *  its owning MFE: a sibling MFE's `src/App.tsx` becomes `../mfe-x/src/App.tsx`
+   *  (relative to the host dev server's project root). Returns `file` unchanged
+   *  when there's no MFE, the catalog hasn't loaded, the MFE is unknown, or the
+   *  block lives in the running package itself. */
+  function toAnchorFile(mfe: string | undefined, file: string): string {
+    if (!mfe) return file
+    const pkg = workspace.info.value?.packages.find((p) => p.mfe === mfe)
+    if (!pkg?.dir) return file
+    const rel = relDir(workspace.info.value?.currentDir ?? '', pkg.dir)
+    return rel ? `${rel}/${file}` : file
+  }
+
+  /** Inverse of toAnchorFile: a host-resolvable anchor path (`../mfe-x/src/App.tsx`)
+   *  back to the MFE's package-local form (`src/App.tsx`) that the DOM's
+   *  `data-annotask-file` actually carries — needed to re-resolve a block for
+   *  explode. Identity when there's no MFE / the prefix doesn't apply. */
+  function toLocalFile(mfe: string | undefined, file: string): string {
+    if (!mfe) return file
+    const pkg = workspace.info.value?.packages.find((p) => p.mfe === mfe)
+    if (!pkg?.dir) return file
+    const rel = relDir(workspace.info.value?.currentDir ?? '', pkg.dir)
+    return rel && file.startsWith(`${rel}/`) ? file.slice(rel.length + 1) : file
+  }
 
   const active = ref(false)
   const capturing = ref(false)
@@ -193,15 +272,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
           originalRect: { ...rect },
           z: i + 1,
           createdAt: Date.now(),
-          anchor: {
-            file: b.file,
-            line: parseInt(b.line, 10) || 0,
-            ...(b.component ? { component: b.component } : {}),
-            ...(b.source_tag ? { sourceTag: b.source_tag } : {}),
-            ...(b.cls ? { cssClass: b.cls } : {}),
-            tag: b.tag,
-            role: b.role,
-          },
+          anchor: buildAnchor(b, toAnchorFile),
           ...(b.error ? { captureError: b.error } : {}),
           ...(b.clipped ? { clipped: true } : {}),
         }
@@ -665,6 +736,38 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     return id
   }
 
+  /** Hover probe: the direct children of a captured block, re-resolved live and
+   *  MFE-scoped, WITHOUT rasterizing — for the canvas's per-element hover
+   *  highlights. Returns document-coordinate rects (the canvas maps them onto
+   *  the block's current rect). Empty when the block isn't explodable or can't
+   *  be re-resolved (route changed / source drifted). Mirrors explodeBlock's
+   *  re-resolution so the highlight previews exactly what an explode would
+   *  produce. */
+  async function resolveBlockChildren(block: WireframeBlock): Promise<WireframeChildRect[]> {
+    if (!active.value || block.kind !== 'captured' || block.shell || block.deleted) return []
+    if (!block.anchor?.file || !block.originalRect) return []
+    try {
+      const group = await iframe.findTemplateGroup(
+        toLocalFile(block.anchor.mfe, block.anchor.file),
+        String(block.anchor.line),
+        block.anchor.tag ?? '',
+        block.anchor.mfe,
+      )
+      const rootEid = group.eids[0]
+      if (!rootEid) return []
+      const res = await iframe.captureWireframe({ rootEid, metaOnly: true })
+      if (res.error || !res.blocks?.length) return []
+      // One block back = no finer granularity (same guard explode uses).
+      if (res.blocks.length === 1 && res.blocks[0].eid === rootEid) return []
+      return res.blocks.map((b) => ({
+        rect: { x: b.rect.x, y: b.rect.y, width: b.rect.width, height: b.rect.height },
+        file: b.file, line: b.line, tag: b.tag,
+        ...(b.mfe ? { mfe: b.mfe } : {}),
+        label: b.cls || b.component || b.tag,
+      }))
+    } catch { return [] }
+  }
+
   /**
    * Explode (W4): re-capture one captured block a level deeper — the block is
    * replaced by per-child blocks, each carrying its own source anchor. The
@@ -684,7 +787,14 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     error.value = null
 
     // Re-resolve the live element from the durable anchor (eids are volatile).
-    const group = await iframe.findTemplateGroup(parent.anchor.file, String(parent.anchor.line), parent.anchor.tag ?? '')
+    // The DOM carries the MFE's package-local path, so translate the resolvable
+    // anchor back to local form and scope the query to the owning MFE.
+    const group = await iframe.findTemplateGroup(
+      toLocalFile(parent.anchor.mfe, parent.anchor.file),
+      String(parent.anchor.line),
+      parent.anchor.tag ?? '',
+      parent.anchor.mfe,
+    )
     const rootEid = group.eids[0]
     if (!rootEid) {
       error.value = 'Could not find this block in the live page — the source may have changed. Recapture instead.'
@@ -727,15 +837,9 @@ export function useWireframeMode(deps: WireframeModeDeps) {
           originalRect: { x: b.rect.x, y: b.rect.y, width: b.rect.width, height: b.rect.height },
           z: baseZ + i,
           createdAt: Date.now(),
-          anchor: {
-            file: b.file,
-            line: parseInt(b.line, 10) || 0,
-            ...(b.component ? { component: b.component } : {}),
-            ...(b.source_tag ? { sourceTag: b.source_tag } : {}),
-            ...(b.cls ? { cssClass: b.cls } : {}),
-            tag: b.tag,
-            role: b.role,
-          },
+          anchor: buildAnchor(b, toAnchorFile),
+          // Lineage: dragging the parent SHELL moves its children with it.
+          parentId: id,
           ...(b.error ? { captureError: b.error } : {}),
           ...(b.clipped ? { clipped: true } : {}),
         }
@@ -999,6 +1103,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     findBlock,
     addPlaceholderBlock,
     explodeBlock,
+    resolveBlockChildren,
     // implement (W3)
     building,
     implementing,

@@ -4,6 +4,7 @@ import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolveProjectFile } from './path-safety.js'
+import { resolveWorkspace } from './workspace.js'
 import type { ApplyBatch } from '../shared/design-session-types.js'
 
 const execFileAsync = promisify(execFile)
@@ -115,6 +116,13 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
   const legacyDraftJournalPath = path.join(projectRoot, '.annotask', 'draft-edits.json')
 
   let journal: SnapshotJournal = { version: 1, files: {}, batches: [] }
+  // Workspace root, resolved once into `ready`. Broadens snapshot containment to
+  // the monorepo root so a captured MFE block anchored host-project-root-
+  // relative (`../mfe-x/src/App.tsx`) resolves and stays contained — the SAME
+  // workspace awareness code-context/source-excerpt already use for reads.
+  // Without it, a sibling-MFE `../` path throws here and strands the apply.
+  // undefined for single-package projects (containment stays projectRoot).
+  let workspaceRoot: string | undefined
   // Serialize every mutation: rapid apply/undo clicks and lifecycle hooks must
   // never interleave read-modify-write on the journal or the files.
   let chain: Promise<unknown> = Promise.resolve()
@@ -126,19 +134,20 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
 
   function resolveAbs(file: string): string {
     // Containment: snapshot restores are the only tool-authored source writes,
-    // so targets must resolve inside projectRoot (same discipline as the old
-    // draft engine, via the shared resolveProjectFile guard).
+    // so targets must resolve inside projectRoot — or, in a monorepo, the
+    // workspace root (a sibling MFE package). Same discipline as the shared
+    // resolveProjectFile / code-context guard.
     if (file.includes('\0')) throw new Error(`Invalid snapshot target: ${file}`)
     if (path.isAbsolute(file)) {
-      const rootAbs = path.resolve(projectRoot)
       const abs = path.resolve(file)
-      const rootWithSep = rootAbs.endsWith(path.sep) ? rootAbs : rootAbs + path.sep
-      if (!abs.startsWith(rootWithSep)) {
-        throw new Error(`Snapshot target escapes the project root: ${file}`)
+      const roots = [path.resolve(projectRoot), ...(workspaceRoot ? [path.resolve(workspaceRoot)] : [])]
+      for (const root of roots) {
+        const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep
+        if (abs.startsWith(rootWithSep)) return abs
       }
-      return abs
+      throw new Error(`Snapshot target escapes the project root: ${file}`)
     }
-    const resolved = resolveProjectFile(projectRoot, file)
+    const resolved = resolveProjectFile(projectRoot, file, workspaceRoot)
     if (!resolved) throw new Error(`Snapshot target escapes the project root: ${file}`)
     return resolved.absolutePath
   }
@@ -176,7 +185,16 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
     } catch { /* no legacy journal */ }
   }
 
-  const ready = rehydrate()
+  // Resolve the workspace root alongside rehydrate so it's set before any
+  // store method (all `await ready` first) reaches resolveAbs. A single-package
+  // project resolves to isWorkspace:false → containment stays projectRoot.
+  async function resolveWorkspaceRoot(): Promise<void> {
+    try {
+      const info = await resolveWorkspace(projectRoot)
+      if (info.isWorkspace) workspaceRoot = info.root
+    } catch { /* single-package fallback — containment stays projectRoot */ }
+  }
+  const ready = Promise.all([rehydrate(), resolveWorkspaceRoot()]).then(() => undefined)
 
   /** Untracked files per `git status --porcelain -uall` (gitignore-aware), or
    *  null when this isn't a usable git project — the created-files net is then
@@ -349,11 +367,14 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
         await ready
         const before: Record<string, string> = {}
         for (const file of files) {
-          // Defensive: an empty/falsy target can't resolve (resolveAbs('')
-          // throws). Callers should filter anchorless blocks, but never let one
-          // bad entry abort the whole snapshot and strand a task with no batch.
+          // Defensive: an empty/falsy or escaping target can't resolve
+          // (resolveAbs throws). Callers should filter anchorless blocks, but
+          // never let one bad entry abort the whole snapshot and strand a task
+          // with no batch — skip it; its directions still ride the task and the
+          // git auto-extend captures anything the agent actually edits.
           if (!file) continue
-          const absPath = resolveAbs(file)
+          let absPath: string
+          try { absPath = resolveAbs(file) } catch { continue }
           let bytes = ''
           try { bytes = await fsp.readFile(absPath, 'utf-8') } catch { bytes = '' }
           before[file] = bytes

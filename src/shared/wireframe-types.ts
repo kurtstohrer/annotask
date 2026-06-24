@@ -198,6 +198,10 @@ export interface WireframeBlockAnchor {
   cssClass?: string
   /** 'header' | 'nav' | 'footer' | 'aside' | 'content' from block discovery. */
   role?: string
+  /** Owning MFE id of the captured element — where it LIVES (location
+   *  semantics), distinct from WireframePaletteRef.mfe's import-from
+   *  semantics. Absent in single-MFE/legacy docs. */
+  mfe?: string
 }
 
 /** What a palette block stands for — REAL scanner names, mirrors
@@ -241,6 +245,9 @@ export interface WireframeBlock {
   shell?: boolean
   /** Set on duplicates; the original block's id (image file is shared). */
   duplicateOf?: string
+  /** Set on explode children: the parent (now SHELL) block's id. Dragging the
+   *  parent moves its descendants with it; dragging a child moves only itself. */
+  parentId?: string
   // palette blocks
   component?: WireframePaletteRef
   fidelity?: WireframeFidelity
@@ -385,6 +392,7 @@ export function isWireframeBlock(value: unknown): value is WireframeBlock {
   if (value.deleted !== undefined && typeof value.deleted !== 'boolean') return false
   if (value.shell !== undefined && typeof value.shell !== 'boolean') return false
   if (value.duplicateOf !== undefined && typeof value.duplicateOf !== 'string') return false
+  if (value.parentId !== undefined && typeof value.parentId !== 'string') return false
   if (value.md !== undefined && typeof value.md !== 'string') return false
   if (value.data !== undefined && !isWireframeDataBinding(value.data)) return false
   if (value.kind === 'captured') {

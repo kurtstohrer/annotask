@@ -336,7 +336,8 @@ describe('useWireframeMode', () => {
       vi.mocked(iframe.captureWireframe).mockResolvedValueOnce(CHILD_CAPTURE)
       const ok = await mode.explodeBlock(parent.id)
       expect(ok).toBe(true)
-      expect(iframe.findTemplateGroup).toHaveBeenCalledWith('src/pages/PlanetsPage.vue', '30', 'div')
+      // Non-MFE block: file passes through untranslated, mfe arg is undefined.
+      expect(iframe.findTemplateGroup).toHaveBeenCalledWith('src/pages/PlanetsPage.vue', '30', 'div', undefined)
       expect(iframe.captureWireframe).toHaveBeenLastCalledWith({ rootEid: 'live-1' })
 
       const blocks = mode.canvas.value!.blocks
@@ -360,6 +361,8 @@ describe('useWireframeMode', () => {
       expect(children[0].image).toMatch(/\.png$/)
       // Children stack above the shell.
       expect(Math.min(...children.map((b) => b.z))).toBeGreaterThan(shell.z)
+      // Lineage: each child points at the shell so a parent drag carries them.
+      expect(children.every((b) => b.parentId === parent.id)).toBe(true)
       // The parent's ORIGINAL snapshot file was dropped (nothing references it).
       const deletes = fetchMock.mock.calls.filter((c) => String(c[0]).includes(`wireframe-snapshots/${parentImage}`) && (c[1] as RequestInit)?.method === 'DELETE')
       expect(deletes).toHaveLength(1)

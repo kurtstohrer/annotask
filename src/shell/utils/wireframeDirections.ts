@@ -203,9 +203,13 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       const dataNote = b.data
         ? `; bind to the ${b.data.kind} ${b.data.name}${b.data.path ? ` → ${b.data.path}` : ''}${b.data.fields?.length ? ` (show ${b.data.fields.join(', ')})` : ''}${mapNote}${loopNote} [shape: ${b.data.shape_source}]`
         : ''
-      // Multi-MFE: name the owning package so the agent imports from it and
+      // Multi-MFE: import the dropped component FROM its own package when it has
+      // one; otherwise inherit the anchored DONOR's MFE — a placeholder/dup
+      // dropped into (or duplicated from) MFE-A's region is authored in MFE-A's
+      // package. Names the owning package so the agent imports from it and
       // scopes example search there (see WIREFRAME_APPLY.md).
-      const mfeNote = b.component?.mfe ? `; import from MFE "${b.component.mfe}"` : ''
+      const addMfe = b.component?.mfe || neighbor?.anchor?.mfe || ''
+      const mfeNote = addMfe ? `; import from MFE "${addMfe}"` : ''
       directions.push({
         id: `wd-${b.id}-add`,
         type: 'wireframe_direction',
@@ -222,7 +226,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
           ...(componentName ? { componentName } : {}),
           ...(b.component?.library ? { library: b.component.library } : {}),
           ...(b.component?.module ? { module: b.component.module } : {}),
-          ...(b.component?.mfe ? { mfe: b.component.mfe } : {}),
+          ...(addMfe ? { mfe: addMfe } : {}),
           ...(b.component?.props ? { props: b.component.props } : {}),
           ...(b.component?.previewProps ? { previewProps: b.component.previewProps } : {}),
           ...(kind === 'placeholder' ? { label: ownLabel } : {}),
@@ -237,12 +241,18 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
 
     // Captured blocks: delete / move / resize / note against the original.
     const ownLabel = label(b)
+    // Multi-MFE: the existing element LIVES in this package — the agent edits
+    // THAT source, and a shared MFE-local path (src/App.tsx) disambiguates by it
+    // (LOCATION semantics, distinct from an add's import-from). See
+    // WIREFRAME_APPLY.md.
+    const mfeLoc = b.anchor?.mfe ? ` in MFE "${b.anchor.mfe}"` : ''
     const base = {
       type: 'wireframe_direction' as const,
       file: b.anchor?.file ?? '',
       section: 'template' as const,
       line: b.anchor?.line ?? 0,
       ...(b.anchor?.component ? { component: b.anchor.component } : {}),
+      ...(b.anchor?.mfe ? { mfe: b.anchor.mfe } : {}),
       block: { label: ownLabel, ...(b.anchor?.component ? { component: b.anchor.component } : {}), ...(b.anchor?.tag ? { tag: b.anchor.tag } : {}) },
     }
 
@@ -251,7 +261,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-delete`,
         op: 'delete',
-        description: `DELETE the ${ownLabel}${fileLine(b)}${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `DELETE the ${ownLabel}${fileLine(b)}${mfeLoc}${b.note ? ` — user said: "${b.note}"` : ''}`,
         measured: { before: { ...(b.originalRect ?? b.rect) } },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -284,7 +294,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-move`,
         op: 'move',
-        description: `MOVE the ${ownLabel}${fileLine(b)}: ${parts.join('; ')}${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `MOVE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${parts.join('; ')}${b.note ? ` — user said: "${b.note}"` : ''}`,
         measured: {
           before: { ...before }, after: { ...after },
           dx: Math.round(dx), dy: Math.round(dy),
@@ -301,7 +311,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-resize`,
         op: 'resize',
-        description: `RESIZE the ${ownLabel}${fileLine(b)}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `RESIZE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}`,
         measured: { before: { ...before }, after: { ...after }, wPct, hPct },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -313,7 +323,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-note`,
         op: 'note',
-        description: `NOTE on the ${ownLabel}${fileLine(b)}: user said: "${b.note}"`,
+        description: `NOTE on the ${ownLabel}${fileLine(b)}${mfeLoc}: user said: "${b.note}"`,
         note: b.note,
       })
     }

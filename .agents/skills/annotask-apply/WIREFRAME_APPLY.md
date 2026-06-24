@@ -17,8 +17,17 @@ The user rearranged a SKETCH — images of the rendered page, not the live app. 
 - `block`: `{ label, component?, tag? }` — the block's identity as captured. Tool-derived, never invented.
 - `file`/`line` (top level): the block's captured source anchor — or, for `add`, the nearest anchored NEIGHBOR block (see `added.position`).
 - `measured`: TOOL-MEASURED geometry. `before`/`after` rects, `dx`/`dy`, `wPct`/`hPct` (percent of original), and `relations[]` — order-flip / full-width / alignment facts computed from box geometry (e.g. `"now above the filters (was below)"`).
-- `added` (op `add` only): `kind` `component` (a real palette component — `componentName`/`library`/`module`/`props` are REAL scanner output) | `placeholder` (a user-drawn labeled box) | `duplicate` (another copy of a captured block's markup). `position` (`before`/`after`/`append`) is relative to the anchored neighbor. May carry `md` (the user's VERBATIM markdown spec for a drawn section) and/or `data` (a binding to a REAL catalog data source — see *Data bindings on adds* below).
+- `added` (op `add` only): `kind` `component` (a real palette component — `componentName`/`library`/`module`/`props` are REAL scanner output) | `placeholder` (a user-drawn labeled box) | `duplicate` (another copy of a captured block's markup). `position` (`before`/`after`/`append`) is relative to the anchored neighbor. May carry `md` (the user's VERBATIM markdown spec for a drawn section), `data` (a binding to a REAL catalog data source — see *Data bindings on adds* below), and `mfe` (op `add` — **import-from**: the micro-frontend package to import the component FROM and to scope `annotask_get_component_examples` to).
+- `mfe` (ops `move`/`resize`/`delete`/`note`, top level): **location** — the existing element LIVES in this micro-frontend's package. Distinct from `added.mfe`'s import-from meaning. See *Multi-MFE routes* below.
 - `note`: the user's VERBATIM words for that block. `measured` is what the tool measured; `note` is what the user said — never conflate them, and never present a measured relation as a user request.
+
+### Multi-MFE routes
+
+A single-spa / module-federation route is composed of several micro-frontend packages. Capture decomposes each MFE into its own blocks, so one `wireframe_apply` task can span several packages:
+
+- The top-level `file` on every direction is already **host-resolvable**: an element living in a sibling MFE is anchored relative to the host project root (e.g. `../mfe-react-workflows/src/Board.tsx`). Pass it verbatim to `annotask_get_source_excerpt` / `annotask_get_code_context` — they resolve it under the workspace root. Edit that exact file.
+- `mfe` (and `added.mfe`) names the owning package. Two MFEs can expose the SAME package-local path (both `src/App.tsx`); the `file` already disambiguates them, and `mfe` tells you which package's conventions/imports to follow. For an `add`, import the component from `added.mfe`'s package and scope example lookups there.
+- Group edits by `file` and apply each file independently (see *Defaults*). Undo/discard is byte-exact per MFE because each MFE's file is snapshotted under its own resolved path.
 
 ### Intent over pixels
 

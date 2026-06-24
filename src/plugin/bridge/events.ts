@@ -518,10 +518,16 @@ export function bridgeEvents(): string {
   });
 
   // ── Route Tracking ────────────────────────────────────
-  var lastRoute = window.location.pathname;
+  // Include the hash so hash-routed apps (single-spa, vue-router/react-router
+  // hash mode) report route changes — pathname stays '/' there, so a
+  // pathname-only check never fired and the shell saw one frozen route. The
+  // shell's normalizeRoute keeps hash ROUTES ('#/foo') and drops plain scroll
+  // ANCHORS ('#section'), so reporting the raw hash here is safe either way.
+  function routeOf() { return window.location.pathname + window.location.hash; }
+  var lastRoute = routeOf();
 
   function checkRoute() {
-    var path = window.location.pathname;
+    var path = routeOf();
     if (path !== lastRoute) {
       lastRoute = path;
       sendToShell('route:changed', { path: path });

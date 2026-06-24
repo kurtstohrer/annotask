@@ -237,9 +237,15 @@ export function bridgeMessages(): string {
     }
 
     if (type === 'resolve:template-group') {
-      var all = document.querySelectorAll(
-        '[data-annotask-file="' + payload.file + '"][data-annotask-line="' + payload.line + '"]'
-      );
+      // In a multi-MFE page, the same package-local file+line (src/App.tsx:1)
+      // exists in several MFEs — scope to the requested mfe so explode
+      // re-resolves the RIGHT block, not an ambiguous cross-MFE match.
+      var tgSel = '[data-annotask-file="' + payload.file + '"][data-annotask-line="' + payload.line + '"]';
+      if (payload.mfe) {
+        var tgMfe = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(payload.mfe) : payload.mfe.replace(/"/g, '\\\\"');
+        tgSel += '[data-annotask-mfe="' + tgMfe + '"]';
+      }
+      var all = document.querySelectorAll(tgSel);
       if (all.length === 0 && payload.file && payload.line) {
         var astroAll = document.querySelectorAll('[data-astro-source-file]');
         var matched = [];
@@ -1065,159 +1071,56 @@ export function bridgeMessages(): string {
       var wfSavedX = window.scrollX || 0;
       var wfSavedY = window.scrollY || 0;
 
-      function wfQualifies(el) {
-        if (!el || el.nodeType !== 1) return false;
-        var t = el.tagName;
-        if (t === 'SCRIPT' || t === 'STYLE' || t === 'LINK' || t === 'TEMPLATE' || t === 'NOSCRIPT') return false;
-        if (el.hasAttribute('data-annotask-instance') || el.hasAttribute('data-annotask-preview')) return false;
-        var cs = window.getComputedStyle(el);
-        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-        var r = el.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      }
-
-      function wfChildren(el) {
-        var out = [];
-        for (var i = 0; i < el.children.length; i++) {
-          if (wfQualifies(el.children[i])) out.push(el.children[i]);
-        }
-        return out;
-      }
-
-      function wfHeight(el) { return el.getBoundingClientRect().height; }
-
-      // Content root: start at the semantic main when present, then unwrap
-      // single-child wrappers while the lone child covers most of its parent's
-      // HEIGHT. Height, not area: a centered max-width page column at a wide
-      // viewport is exactly the wrapper that must unwrap, and its horizontal
-      // margins would fail an area test. The unwrap applies to main too — a
-      // router outlet usually renders ONE page wrapper inside it, and the
-      // page's sections are what the user wants as blocks.
-      function wfContentRoot(root) {
-        var main = root.querySelector('main, [role="main"]');
-        var cur = (main && wfQualifies(main)) ? main : root;
-        for (var depth = 0; depth < 6; depth++) {
-          var kids = wfChildren(cur);
-          if (kids.length === 1 && wfHeight(cur) > 0 && wfHeight(kids[0]) >= wfHeight(cur) * 0.8) { cur = kids[0]; continue; }
-          break;
-        }
-        return cur;
-      }
-
+      // Block discovery — element predicates (wfQualifies/wfChildren), the
+      // content-root unwrap, the chrome/content/straggler passes, the MFE-aware
+      // region descent, and the per-block meta builder — now lives in the
+      // wireframe-walker bridge fragment (see wireframe-walker.ts) and is
+      // invoked below as discoverBlocks(). Extracted so the MFE descent is a
+      // single, jsdom-tested unit rather than inline in this untyped template.
       function wfFinishError(message) {
         window.scrollTo(wfSavedX, wfSavedY);
         respond(id, { error: message });
       }
 
-      window.scrollTo(0, 0);
+      // metaOnly (hover child-rect probe) skips the scroll — it doesn't
+      // rasterize, so it needs no scroll-0,0 normalization, and jumping the live
+      // iframe to the top on every hover would be jarring. Block rects come from
+      // getBoundingClientRect + scrollX/Y, which already yields document coords.
+      var wfMetaOnly = !!(payload && payload.metaOnly);
+      if (!wfMetaOnly) window.scrollTo(0, 0);
 
       var wfRoot = payload && payload.rootEid ? getEl(payload.rootEid) : document.body;
       if (!wfRoot) { wfFinishError('root element not found'); return; }
-      var wfContent = wfContentRoot(wfRoot);
+      // MFE-aware descent is ON by default. discoverBlocks short-circuits to the
+      // byte-identical legacy single-root path whenever the page has no MFE
+      // mount regions, so this only changes output on real multi-MFE routes.
+      var wfDisc = discoverBlocks(wfRoot, {
+        getComputedStyle: function(el) { return window.getComputedStyle(el); },
+        findSourceElement: findSourceElement,
+        getSourceData: getSourceData,
+        getEid: getEid
+      }, { mfeDescentEnabled: true });
+      if (!wfDisc.blocks.length) { wfFinishError('nothing to capture'); return; }
+      // The h2c run loop below consumes wfMetas (serializable, sent to the shell)
+      // and the explode shell-capture path consumes wfAll (the block elements).
+      var wfAll = wfDisc.blocks.map(function(b) { return b.el; });
+      var wfMetas = wfDisc.blocks.map(function(b) { return b.meta; });
+      var wfTruncated = wfDisc.truncated;
 
-      // Chrome pass: page furniture outside the content root, outermost only.
-      var wfChrome = [];
-      var wfChromeCandidates = wfRoot.querySelectorAll('header, nav, footer, aside');
-      for (var wci = 0; wci < wfChromeCandidates.length; wci++) {
-        var wcEl = wfChromeCandidates[wci];
-        if (!wfQualifies(wcEl)) continue;
-        if (wfContent !== wfRoot && wfContent.contains(wcEl) && wfContent !== wcEl) continue;
-        var wcContained = false;
-        for (var wcj = 0; wcj < wfChrome.length; wcj++) {
-          if (wfChrome[wcj].contains(wcEl)) { wcContained = true; break; }
-        }
-        if (!wcContained) wfChrome.push(wcEl);
-      }
-
-      // Content pass: direct qualifying children of the content root with a
-      // minimum footprint; when a level has only one (undersized) child,
-      // descend and retry so thin wrappers don't yield a single page block.
-      var wfContentKids = [];
-      var wfCursor = wfContent;
-      for (var wfDepth = 0; wfDepth < 5; wfDepth++) {
-        var wfRaw = wfChildren(wfCursor);
-        wfContentKids = [];
-        for (var wki = 0; wki < wfRaw.length; wki++) {
-          var wkr = wfRaw[wki].getBoundingClientRect();
-          if (wkr.width >= 48 && wkr.height >= 24) wfContentKids.push(wfRaw[wki]);
-        }
-        if (wfContentKids.length === 0 && wfRaw.length === 1) { wfCursor = wfRaw[0]; continue; }
-        break;
-      }
-      if (wfContentKids.length === 0) {
-        // Fall back to one block = the content root itself (still anchored).
-        if (wfQualifies(wfCursor)) wfContentKids = [wfCursor];
-        else if (wfChrome.length === 0) { wfFinishError('nothing to capture'); return; }
-      }
-
-      // Straggler pass: content OUTSIDE the content root that isn't semantic
-      // chrome — a floating button, banner, or toast mounted as a sibling of
-      // <main> would otherwise appear in the honest full-page "before" but
-      // get no block on the canvas. Walk the root→content-root path; at each
-      // level, every qualifying sibling with a real footprint becomes a
-      // block, unless the chrome pass already covers it.
-      var wfStragglers = [];
-      (function() {
-        var wfPath = [];
-        var wfNode = wfContent;
-        while (wfNode && wfNode !== wfRoot) { wfPath.push(wfNode); wfNode = wfNode.parentElement; }
-        if (wfNode !== wfRoot) return; // content root detached from the capture root
-        wfPath.push(wfRoot);
-        for (var wpi = wfPath.length - 1; wpi >= 1; wpi--) {
-          var wpParent = wfPath[wpi];
-          var wpPathChild = wfPath[wpi - 1];
-          var wpKids = wfChildren(wpParent);
-          for (var wpk = 0; wpk < wpKids.length; wpk++) {
-            var wpKid = wpKids[wpk];
-            if (wpKid === wpPathChild) continue;
-            var wpr = wpKid.getBoundingClientRect();
-            if (wpr.width < 48 || wpr.height < 24) continue;
-            var wpCovered = false;
-            for (var wpc = 0; wpc < wfChrome.length && !wpCovered; wpc++) {
-              // Contains-a-chrome-block counts as covered too: blocking the
-              // wrapper would double-capture the header inside it.
-              if (wfChrome[wpc] === wpKid || wfChrome[wpc].contains(wpKid) || wpKid.contains(wfChrome[wpc])) wpCovered = true;
-            }
-            if (!wpCovered) wfStragglers.push(wpKid);
-          }
-        }
-      })();
-
-      var wfAll = [];
-      for (var wai = 0; wai < wfChrome.length; wai++) wfAll.push(wfChrome[wai]);
-      for (var waj = 0; waj < wfContentKids.length; waj++) {
-        if (wfAll.indexOf(wfContentKids[waj]) === -1) wfAll.push(wfContentKids[waj]);
-      }
-      for (var wak = 0; wak < wfStragglers.length; wak++) {
-        if (wfAll.indexOf(wfStragglers[wak]) === -1) wfAll.push(wfStragglers[wak]);
-      }
-      wfAll.sort(function(a, b) {
-        var pos = a.compareDocumentPosition(b);
-        if (pos & 4) return -1; // a precedes b
-        if (pos & 2) return 1;
-        return 0;
-      });
-      var wfTruncated = false;
-      if (wfAll.length > 24) { wfAll = wfAll.slice(0, 24); wfTruncated = true; }
-
-      var wfMetas = [];
-      for (var wmi = 0; wmi < wfAll.length; wmi++) {
-        var wmEl = wfAll[wmi];
-        var wmSrc = findSourceElement(wmEl);
-        var wmData = getSourceData(wmSrc.sourceEl);
-        var wmRect = wmEl.getBoundingClientRect();
-        var wmTag = wmEl.tagName.toLowerCase();
-        wfMetas.push({
-          eid: getEid(wmEl),
-          file: wmData.file, line: wmData.line, component: wmData.component,
-          source_tag: wmData.source_tag, tag: wmTag,
-          // First class name — the human-distinct identity for direction
-          // labels ('toolbar', 'layout'); component names repeat per page.
-          cls: (wmEl.classList && wmEl.classList[0]) || '',
-          role: (wmTag === 'header' || wmTag === 'nav' || wmTag === 'footer' || wmTag === 'aside') ? wmTag : 'content',
-          rect: { x: wmRect.x + (window.scrollX || 0), y: wmRect.y + (window.scrollY || 0), width: wmRect.width, height: wmRect.height },
-          dataUrl: null
+      if (wfMetaOnly) {
+        // Hover child-rect probe: the per-block metas (rects/eids/file/mfe/tag,
+        // dataUrl null) only — the shell overlays them for the hover highlights.
+        respond(id, {
+          viewport: {
+            width: window.innerWidth, height: window.innerHeight,
+            docWidth: document.documentElement.scrollWidth,
+            docHeight: document.documentElement.scrollHeight,
+            scale: wfScale
+          },
+          blocks: wfMetas,
+          truncated: wfTruncated
         });
+        return;
       }
 
       function wfRun(h2c) {
@@ -1648,7 +1551,9 @@ export function bridgeMessages(): string {
     }
 
     if (type === 'route:current') {
-      respond(id, { path: window.location.pathname });
+      // pathname + hash so the initial route read matches the change events
+      // (hash-routed apps live entirely in the hash).
+      respond(id, { path: window.location.pathname + window.location.hash });
       return;
     }
 

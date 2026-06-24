@@ -295,3 +295,37 @@ describe('directionAnchor', () => {
     expect(directionAnchor(lone, [lone])).toEqual({ neighbor: null, position: 'append' })
   })
 })
+
+describe('computeWireframeDirections — multi-MFE', () => {
+  it('a moved captured block carries its MFE as a location note + structured field', () => {
+    const blocks = [
+      captured('board', 0, 300, 5, { anchor: { file: '../mfe-react-workflows/src/Board.tsx', line: 5, sourceTag: 'board', tag: 'section', mfe: 'react-workflows' } }),
+      captured('queue', 320, 300, 9, { anchor: { file: '../mfe-react-workflows/src/Queue.tsx', line: 9, sourceTag: 'queue', tag: 'section', mfe: 'react-workflows' } }),
+    ]
+    blocks[0].rect = { ...blocks[0].rect, y: 700 } // board moves below queue
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const board = dirs.find((d) => d.block.label === 'board')!
+    expect(board.op).toBe('move')
+    expect(board.mfe).toBe('react-workflows')
+    expect(board.description).toContain('in MFE "react-workflows"')
+    expect(board.file).toBe('../mfe-react-workflows/src/Board.tsx')
+  })
+
+  it('a non-MFE captured block omits the mfe field and note', () => {
+    const blocks = planetsBlocks()
+    blocks[2].rect = { ...blocks[2].rect, y: 90 } // grid moves up
+    const grid = computeWireframeDirections(canvasWith(blocks)).find((d) => d.block.label === 'grid')!
+    expect('mfe' in grid).toBe(false)
+    expect(grid.description).not.toContain('in MFE')
+  })
+
+  it('an ADD dropped near an MFE-anchored donor inherits the donor MFE for import-from', () => {
+    const donor = captured('board', 0, 300, 5, { anchor: { file: '../mfe-react-workflows/src/Board.tsx', line: 5, sourceTag: 'board', tag: 'section', mfe: 'react-workflows' } })
+    // A user-drawn placeholder section dropped just below the donor — no own mfe.
+    const ph: WireframeBlock = { id: 'cta', kind: 'placeholder', rect: { x: 0, y: 290, width: 800, height: 60 }, z: 2, createdAt: 2, label: 'CTA' }
+    const dirs = computeWireframeDirections(canvasWith([donor, ph]))
+    const add = dirs.find((d) => d.op === 'add')!
+    expect(add.added?.mfe).toBe('react-workflows')
+    expect(add.description).toContain('import from MFE "react-workflows"')
+  })
+})

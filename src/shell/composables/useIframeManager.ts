@@ -193,9 +193,9 @@ export function useIframeManager(iframeRef: Ref<HTMLIFrameElement | null>) {
     } catch { return null }
   }
 
-  async function findTemplateGroup(file: string, line: string, tagName: string): Promise<TemplateGroupResult> {
+  async function findTemplateGroup(file: string, line: string, tagName: string, mfe?: string): Promise<TemplateGroupResult> {
     try {
-      const result = await bridge.request<TemplateGroupResult>('resolve:template-group', { file, line, tagName })
+      const result = await bridge.request<TemplateGroupResult>('resolve:template-group', { file, line, tagName, ...(mfe ? { mfe } : {}) })
       // Convert rects to shell coordinates
       result.rects = result.rects.map(r => toShellRect(r) || r)
       return result

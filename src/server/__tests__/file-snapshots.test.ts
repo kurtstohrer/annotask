@@ -164,11 +164,16 @@ describe('file-snapshots', () => {
     expect(fs.existsSync(path.join(root, '.annotask', 'file-snapshots.json'))).toBe(false)
   })
 
-  it('rejects snapshot targets outside the project root', async () => {
+  it('skips snapshot targets outside the containment root (never snapshots them, never aborts the batch)', async () => {
+    // Single-package project (no workspace): containment is projectRoot. An
+    // escaping target is SKIPPED rather than throwing — one bad anchor must not
+    // abort the whole snapshot and strand a just-minted task. Containment still
+    // holds: the escaping file is never added to the journal.
     const store = createSnapshotStore(root)
-    await expect(store.snapshotFiles(['../outside.vue'], { id: 'ab-1', taskId: 't1' })).rejects.toThrow(/escapes/)
+    await write(file, ORIGINAL)
     const outsideAbs = path.join(os.tmpdir(), 'annotask-outside.vue')
-    await expect(store.snapshotFiles([outsideAbs], { id: 'ab-2', taskId: 't2' })).rejects.toThrow(/escapes/)
+    await expect(store.snapshotFiles(['../outside.vue', outsideAbs, file], { id: 'ab-1', taskId: 't1' })).resolves.toBeUndefined()
+    expect(Object.keys((await store.state()).files)).toEqual([file]) // only the in-root file
   })
 
   describe('agent-created files (W4 netting — git projects)', () => {
@@ -393,5 +398,60 @@ describe('file-snapshots', () => {
       await expect(store.sealBatchByTask('task-unknown')).resolves.toBeUndefined()
       expect((await store.state()).batches[0].status).toBe('running')
     })
+  })
+})
+
+// A captured MFE block anchors host-project-root-relative (`../mfe-x/...`). The
+// snapshot store must resolve that under the WORKSPACE root (like code-context)
+// rather than throwing "escapes the project root" — otherwise cross-MFE undo is
+// dead. Two MFEs sharing a package-local path stay distinct because the `../`
+// paths differ.
+describe('file-snapshots — workspace-aware (cross-MFE)', () => {
+  let ws: string       // workspace (monorepo) root
+  let host: string     // the running package = snapshot store's projectRoot
+
+  beforeEach(async () => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-ws-'))
+    await fsp.writeFile(path.join(ws, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n", 'utf-8')
+    host = path.join(ws, 'apps', 'host')
+    for (const pkg of ['host', 'mfe-a', 'mfe-b']) {
+      await fsp.mkdir(path.join(ws, 'apps', pkg, 'src'), { recursive: true })
+      await fsp.writeFile(path.join(ws, 'apps', pkg, 'package.json'), JSON.stringify({ name: `@x/${pkg}` }), 'utf-8')
+    }
+    // Both MFEs expose the SAME package-local path — the collision the host
+    // anchor disambiguates via `../mfe-a/...` vs `../mfe-b/...`.
+    await fsp.writeFile(path.join(ws, 'apps', 'mfe-a', 'src', 'App.tsx'), 'A-ORIGINAL\n', 'utf-8')
+    await fsp.writeFile(path.join(ws, 'apps', 'mfe-b', 'src', 'App.tsx'), 'B-ORIGINAL\n', 'utf-8')
+  })
+
+  afterEach(async () => { await fsp.rm(ws, { recursive: true, force: true }) })
+
+  it('snapshots + byte-exact reverts two sibling MFEs that share a package-local path', async () => {
+    const store = createSnapshotStore(host)
+    const aRel = '../mfe-a/src/App.tsx'
+    const bRel = '../mfe-b/src/App.tsx'
+    await store.snapshotFiles([aRel, bRel], { id: 'ab-1', taskId: 't1' })
+
+    // Both got distinct snapshot entries (the dedup hole would have collapsed them).
+    const state = await store.state()
+    expect(Object.keys(state.files).sort()).toEqual([aRel, bRel].sort())
+
+    await fsp.writeFile(path.join(ws, 'apps', 'mfe-a', 'src', 'App.tsx'), 'A-EDITED\n', 'utf-8')
+    await fsp.writeFile(path.join(ws, 'apps', 'mfe-b', 'src', 'App.tsx'), 'B-EDITED\n', 'utf-8')
+    await store.sealBatch('ab-1')
+
+    const result = await store.revertBatch('ab-1')
+    expect(result.reverted.sort()).toEqual([aRel, bRel].sort())
+    expect(result.skipped).toEqual([])
+    expect(await fsp.readFile(path.join(ws, 'apps', 'mfe-a', 'src', 'App.tsx'), 'utf-8')).toBe('A-ORIGINAL\n')
+    expect(await fsp.readFile(path.join(ws, 'apps', 'mfe-b', 'src', 'App.tsx'), 'utf-8')).toBe('B-ORIGINAL\n')
+  })
+
+  it('still refuses a target that escapes the workspace root (skips it, never throws)', async () => {
+    const store = createSnapshotStore(host)
+    // ../../../ escapes even the workspace root — must be skipped, not snapshotted.
+    await store.snapshotFiles(['../../../../../../etc/hosts', '../mfe-a/src/App.tsx'], { id: 'ab-1', taskId: 't1' })
+    const files = Object.keys((await store.state()).files)
+    expect(files).toEqual(['../mfe-a/src/App.tsx'])
   })
 })

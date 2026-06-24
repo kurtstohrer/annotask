@@ -276,6 +276,10 @@ export interface WireframeDirectionChange extends BaseChange {
   /** USER-SAID, verbatim (the block's canvas note). Rides any op; op 'note'
    *  when the note is the only change on the block. */
   note?: string
+  // NOTE: ops move/resize/delete/note also carry the inherited BaseChange.mfe —
+  // the MFE the EXISTING element LIVES in (LOCATION semantics: the agent edits
+  // THAT package, and it disambiguates two MFEs sharing a local path like
+  // src/App.tsx). Distinct from `added.mfe` above (op 'add' = import-from).
 }
 
 /**

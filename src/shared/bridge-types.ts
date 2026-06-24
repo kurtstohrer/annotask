@@ -341,6 +341,10 @@ export interface WireframeCapturePayload {
   rootEid?: string
   /** Rasterization scale; default min(devicePixelRatio, 2), capped at 3. */
   scale?: number
+  /** Hover probe: return block metas (rects/eids/anchors) only — skip the
+   *  html2canvas rasterization AND the scroll-to-top. Powers the per-element
+   *  hover highlights without the cost or the visible iframe jump. */
+  metaOnly?: boolean
 }
 
 export interface WireframeCaptureBlock {
@@ -355,6 +359,10 @@ export interface WireframeCaptureBlock {
   cls: string
   /** 'header' | 'nav' | 'footer' | 'aside' | 'content' from block discovery. */
   role: string
+  /** Owning MFE id, resolved from the block's instrumented descendant in a
+   *  multi-MFE workspace (a single-spa/MF/qiankun mount container is host glue
+   *  and carries no mfe of its own). '' / absent in single-MFE/legacy captures. */
+  mfe?: string
   /** Document CSS px (captured at scroll 0,0). */
   rect: BridgeRect
   /** PNG dataUrl at `scale`x; null when this block's capture failed. */

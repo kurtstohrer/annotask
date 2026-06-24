@@ -21,13 +21,23 @@ describe('normalizeRoute', () => {
     expect(normalizeRoute('/')).toBe('/')
   })
 
-  it('drops query and hash', () => {
+  it('drops the query string', () => {
     expect(normalizeRoute('/foo?x=1')).toBe('/foo')
-    expect(normalizeRoute('/foo#bar')).toBe('/foo')
-    expect(normalizeRoute('/foo?x=1#bar')).toBe('/foo')
   })
 
-  it('handles hash-only paths', () => {
+  it('drops plain scroll anchors (no leading slash after #)', () => {
+    expect(normalizeRoute('/foo#bar')).toBe('/foo')
+    expect(normalizeRoute('/foo?x=1#bar')).toBe('/foo')
     expect(normalizeRoute('#top')).toBe('/')
+  })
+
+  it('keeps hash ROUTES (#/… — hash-history / single-spa)', () => {
+    expect(normalizeRoute('/#/react')).toBe('/#/react')
+    expect(normalizeRoute('#/vue')).toBe('/#/vue')
+    expect(normalizeRoute('/#/react?tab=workflows')).toBe('/#/react?tab=workflows')
+  })
+
+  it('distinguishes hash routes so they no longer collapse to the pathname', () => {
+    expect(normalizeRoute('/#/react')).not.toBe(normalizeRoute('/#/vue'))
   })
 })

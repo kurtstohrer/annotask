@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import DataBindingPicker from './DataBindingPicker.vue'
 import WireframeBlockPopover from './WireframeBlockPopover.vue'
@@ -11,6 +11,7 @@ import type { useComponentGenerator } from '../composables/useComponentGenerator
 import type { CanvasSelection } from '../composables/useCanvasSelection'
 import type { CanvasHistory } from '../composables/useCanvasHistory'
 import type { WireframeBlock, WireframeCanvasState, WireframeDataBinding } from '../../shared/wireframe-types'
+import type { WireframeChildRect } from '../composables/useWireframeMode'
 import type { WireframeCaptureProgress } from '../../shared/bridge-types'
 
 // Release-scope flags (deferred this release — see wireframeFeatures.ts).
@@ -24,6 +25,9 @@ const props = defineProps<{
   error: string | null
   /** Resolves a block's image (session dataUrl → sidecar file → null). */
   imageSrc: (block: WireframeBlock) => string | null
+  /** Hover probe: a captured block's direct children (document-coord rects +
+   *  anchors) for the per-element hover highlights. */
+  resolveChildren?: (block: WireframeBlock) => Promise<WireframeChildRect[]>
   deletedBlocks: WireframeBlock[]
   /** Locked: a wireframe_apply task is implementing this sketch right now. */
   building: boolean
@@ -219,6 +223,24 @@ const dragState = ref<{
   moved: boolean
 } | null>(null)
 
+/** Expand a move set so a parent SHELL carries its explode children (and any
+ *  deeper descendants) with it. Directional — children never pull their parent —
+ *  so dragging a child still rearranges only that child within the shell. */
+function withDescendants(blocks: WireframeBlock[]): WireframeBlock[] {
+  const all = props.canvas?.blocks ?? []
+  const out = new Map<string, WireframeBlock>()
+  const queue = [...blocks]
+  while (queue.length) {
+    const b = queue.shift()!
+    if (out.has(b.id)) continue
+    out.set(b.id, b)
+    for (const child of all) {
+      if (child.parentId === b.id && !out.has(child.id)) queue.push(child)
+    }
+  }
+  return [...out.values()]
+}
+
 function beginDrag(e: PointerEvent, b: WireframeBlock, mode: 'move' | 'resize', handle?: string): void {
   e.preventDefault()
   e.stopPropagation()
@@ -227,7 +249,8 @@ function beginDrag(e: PointerEvent, b: WireframeBlock, mode: 'move' | 'resize', 
   if (e.shiftKey) return // shift-click is selection surgery, never a drag
   // bring-to-front is deferred to the first actual move (onDragMove): a plain
   // click must not bump z, so it leaves no undo step behind.
-  const group = mode === 'move' ? selectedBlocks() : [b]
+  // A shell drag carries its children — they keep their relative offsets.
+  const group = mode === 'move' ? withDescendants(selectedBlocks()) : [b]
   dragState.value = {
     mode, handle,
     startX: e.clientX, startY: e.clientY,
@@ -250,8 +273,12 @@ function onDragMove(e: PointerEvent): void {
     d.moved = true
     // First real movement: open ONE history entry for the whole gesture, then
     // raise the grabbed block (the z-bump rides inside this same undo step).
+    // Skip the bump for a SHELL — it must stay UNDER its children, which sit
+    // above it; raising it would cover them with the backdrop.
     props.history.begin()
-    if (d.mode === 'move') emit('bring-to-front', d.grabbedId)
+    if (d.mode === 'move' && !props.canvas?.blocks.find((x) => x.id === d.grabbedId)?.shell) {
+      emit('bring-to-front', d.grabbedId)
+    }
   }
 
   if (d.mode === 'move') {
@@ -302,8 +329,107 @@ function onDragUp(): void {
 function onBlockDblClick(b: WireframeBlock): void {
   if (!WIREFRAME_EXPLODE_ENABLED) return // deferred this release (see wireframeFeatures)
   if (props.building || b.kind !== 'captured' || b.shell) return
+  cancelHover()
   emit('explode-block', b.id)
 }
+
+// ── Hover-to-preview (highlights only) ────────────────────
+// Hovering an explodable block reveals its direct children as outlines and
+// highlights the one under the cursor (so you SEE what double-click would drill
+// into). Purely informational — hovering NEVER captures or explodes anything;
+// explode is an explicit double-click. (An earlier dwell-to-explode auto-fired
+// on a pause, drilling into blocks the user only meant to look at.)
+
+const HOVER_FETCH_DELAY_MS = 110   // settle before probing — don't fetch on a fly-over
+
+const hoverBlockId = ref<string | null>(null)
+const hoverChildren = ref<WireframeChildRect[]>([])
+const hoverChildIdx = ref(-1)
+let hoverFetchTimer: ReturnType<typeof setTimeout> | null = null
+let hoverFetchToken = 0
+
+function isExplodable(b: WireframeBlock): boolean {
+  return WIREFRAME_EXPLODE_ENABLED && !!props.resolveChildren && b.kind === 'captured'
+    && !b.shell && !b.deleted && !props.building && !props.capturing
+}
+
+/** Any modal/editor open, or a drag in flight, suppresses hover preview. */
+function hoverSuppressed(): boolean {
+  return !!dragState.value || drawMode.value || noteEditing.value || mdEditing.value
+    || labelDraft.value !== null || dataPickerFor.value !== null
+}
+
+function onBlockHoverEnter(b: WireframeBlock, e: PointerEvent): void {
+  if (!isExplodable(b) || hoverSuppressed()) return
+  if (hoverBlockId.value === b.id) return
+  cancelHover()
+  // Debounce the probe so skating across blocks doesn't fire a request per block.
+  hoverFetchTimer = setTimeout(() => { void fetchHoverChildren(b) }, HOVER_FETCH_DELAY_MS)
+}
+
+async function fetchHoverChildren(b: WireframeBlock): Promise<void> {
+  if (!props.resolveChildren || hoverSuppressed()) return
+  const token = ++hoverFetchToken
+  hoverBlockId.value = b.id
+  const kids = await props.resolveChildren(b)
+  if (token !== hoverFetchToken || hoverBlockId.value !== b.id) return // stale / left
+  hoverChildren.value = kids
+}
+
+function onBlockHoverMove(b: WireframeBlock, e: PointerEvent): void {
+  if (!isExplodable(b) || hoverSuppressed()) { if (hoverBlockId.value) cancelHover(); return }
+  if (hoverBlockId.value !== b.id) { onBlockHoverEnter(b, e); return }
+  hoverChildIdx.value = childIndexAt(b, stagePoint(e))
+}
+
+function onBlockHoverLeave(b: WireframeBlock): void {
+  if (hoverBlockId.value === b.id) cancelHover()
+}
+
+function cancelHover(): void {
+  if (hoverFetchTimer) { clearTimeout(hoverFetchTimer); hoverFetchTimer = null }
+  hoverFetchToken++
+  hoverBlockId.value = null
+  hoverChildren.value = []
+  hoverChildIdx.value = -1
+}
+
+const hoverBlock = computed(() => hoverBlockId.value ? props.canvas?.blocks.find((b) => b.id === hoverBlockId.value) ?? null : null)
+
+/** A probed child's document rect mapped onto the block's CURRENT canvas rect
+ *  (the block may have been moved/resized since capture). */
+function childCanvasRect(b: WireframeBlock, c: WireframeChildRect): { x: number; y: number; width: number; height: number } {
+  const o = b.originalRect ?? b.rect
+  const sx = b.rect.width / Math.max(o.width, 1)
+  const sy = b.rect.height / Math.max(o.height, 1)
+  return {
+    x: b.rect.x + (c.rect.x - o.x) * sx,
+    y: b.rect.y + (c.rect.y - o.y) * sy,
+    width: c.rect.width * sx,
+    height: c.rect.height * sy,
+  }
+}
+
+function childIndexAt(b: WireframeBlock, p: { x: number; y: number }): number {
+  let best = -1, bestArea = Infinity
+  hoverChildren.value.forEach((c, i) => {
+    const r = childCanvasRect(b, c)
+    if (p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height) {
+      const a = r.width * r.height
+      if (a < bestArea) { bestArea = a; best = i } // smallest containing child wins
+    }
+  })
+  return best
+}
+
+function childStyle(c: WireframeChildRect): Record<string, string> {
+  const b = hoverBlock.value
+  if (!b) return { display: 'none' }
+  const r = childCanvasRect(b, c)
+  return { left: `${r.x}px`, top: `${r.y}px`, width: `${r.width}px`, height: `${r.height}px` }
+}
+
+onUnmounted(() => cancelHover())
 
 // ── Notes ─────────────────────────────────────────────────
 
@@ -485,7 +611,7 @@ function onRecaptureConfirmed(): void {
 </script>
 
 <template>
-  <div ref="rootRef" class="wireframe-canvas" data-testid="wireframe-canvas" tabindex="-1" @keydown="onKeydown">
+  <div ref="rootRef" class="wireframe-canvas" :class="{ scanning: capturing && !canvas }" data-testid="wireframe-canvas" tabindex="-1" @keydown="onKeydown">
     <div class="wf-chrome">
       <span class="wf-title">
         <Icon name="frame" :size="12" />
@@ -541,7 +667,15 @@ function onRecaptureConfirmed(): void {
       </button>
     </div>
 
-    <div v-if="capturing && !canvas" class="wf-empty">Capturing the page…</div>
+    <!-- Capture: the live iframe stays visible underneath (the root goes
+         transparent) with a scan sweep over it, instead of a blank screen. -->
+    <div v-if="capturing && !canvas" class="wf-scanning" data-testid="wf-scanning">
+      <div class="wf-scan-line" />
+      <div class="wf-scan-label">
+        <Icon name="scan-search" :size="13" />
+        Scanning the page{{ progress ? ` — ${progress.index + 1}/${progress.total}` : '…' }}
+      </div>
+    </div>
 
     <div v-else-if="canvas" class="wf-scroll"
       @dragenter.prevent
@@ -556,6 +690,9 @@ function onRecaptureConfirmed(): void {
           :data-block-id="b.id"
           :style="{ left: b.rect.x + 'px', top: b.rect.y + 'px', width: b.rect.width + 'px', height: b.rect.height + 'px', zIndex: b.z }"
           @pointerdown.stop="beginDrag($event, b, 'move')"
+          @pointerenter="onBlockHoverEnter(b, $event)"
+          @pointermove="onBlockHoverMove(b, $event)"
+          @pointerleave="onBlockHoverLeave(b)"
           @dblclick.stop="onBlockDblClick(b)">
           <img v-if="imageSrc(b)" :src="imageSrc(b)!" :alt="blockLabel(b)" draggable="false" />
           <div v-else-if="b.kind === 'placeholder'" class="wf-placeholder-body" :class="{ section: isSection(b) }">
@@ -684,6 +821,15 @@ function onRecaptureConfirmed(): void {
             @keydown.enter.prevent="commitPlaceholder" @keydown.escape="cancelPlaceholder" @blur="commitPlaceholder" />
         </div>
 
+        <!-- Hover-to-preview: outline the hovered block's children, emphasize the
+             one under the cursor, and show the dwell-to-explode progress ring.
+             All pointer-transparent so the block's own hover/double-click work. -->
+        <template v-if="hoverBlock && hoverChildren.length">
+          <div v-for="(c, i) in hoverChildren" :key="`hc${i}`"
+            class="wf-child-outline" :class="{ active: i === hoverChildIdx }"
+            :style="childStyle(c)" :data-testid="`wf-child-outline-${i}`" />
+        </template>
+
       </div>
     </div>
 
@@ -796,6 +942,51 @@ function onRecaptureConfirmed(): void {
   font-size: 12px;
 }
 
+/* While capturing the FIRST sketch, drop the opaque backdrop so the live iframe
+   shows through (the toolbar keeps its own surface bg) and sweep a scan line
+   over it — a "scanning" affordance instead of a blank screen. */
+.wireframe-canvas.scanning { background: transparent; }
+.wf-scanning {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  /* Faint tint so it reads as "processing" without hiding the UI underneath. */
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.wf-scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  box-shadow: 0 0 14px 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  animation: wf-scan-sweep 1.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes wf-scan-sweep {
+  0%   { top: 0%;   opacity: 0; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+.wf-scan-label {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+  backdrop-filter: blur(2px);
+}
+
 .wf-scroll { flex: 1; overflow: auto; }
 .wf-stage {
   position: relative;
@@ -817,6 +1008,23 @@ function onRecaptureConfirmed(): void {
 .wf-block.dragging { cursor: grabbing; opacity: 0.92; }
 .wf-block:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .wf-block.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); overflow: visible; }
+
+/* Hover-to-preview: per-child outlines + the dwell-to-explode ring. All
+   pointer-transparent so they never steal the block's hover/double-click. */
+.wf-child-outline {
+  position: absolute;
+  pointer-events: none;
+  z-index: 9000;
+  box-sizing: border-box;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 2px;
+  transition: background 70ms ease, border-color 70ms ease;
+}
+.wf-child-outline.active {
+  border: 1.5px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
 .wf-block img {
   display: block;
   width: 100%;
@@ -935,7 +1143,6 @@ function onRecaptureConfirmed(): void {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 /* Palette block awaiting (or lacking) a snapshot — honest, never a fake image. */
 .wf-palette-body {
   display: flex;

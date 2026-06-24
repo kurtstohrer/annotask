@@ -205,6 +205,10 @@ export async function applyDesignSession(
   // agent grounds them from the screenshot; the git auto-extend captures any
   // file the agent actually edits regardless.
   const batchId = `ab-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+  // Captured MFE anchors are host-project-root-relative (`../mfe-x/src/App.tsx`),
+  // so two MFEs sharing a package-local path (both `src/App.tsx`) are DISTINCT
+  // here and each gets its own snapshot — the Set dedup is honest. The
+  // workspace-aware snapshot store resolves the `../` and keeps it contained.
   const files = [...new Set([...entries.map((e) => e.anchor.file), ...instances.map((i) => i.anchor.file)])]
     .filter(hasFile)
   await options.snapshots.snapshotFiles(files, { id: batchId, taskId })
