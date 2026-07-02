@@ -1078,8 +1078,128 @@ export function bridgeMessages(): string {
       // invoked below as discoverBlocks(). Extracted so the MFE descent is a
       // single, jsdom-tested unit rather than inline in this untyped template.
       function wfFinishError(message) {
+        wfScrollerRestore();
         window.scrollTo(wfSavedX, wfSavedY);
         respond(id, { error: message });
+      }
+
+      // ---- capture-robustness helpers ----------------------------------------
+      // Primary inner scroller: the dashboard-shell layout (html/body overflow:
+      // hidden, one big element scrolls) gets ZERO normalization from
+      // window.scrollTo — its scroll offset skews every rect and its clip hides
+      // below-fold content from html2canvas. Largest scrollable wins; cheap
+      // scrollHeight test first so the style read only hits real candidates.
+      var wfScroller = null, wfScrollerSavedTop = 0, wfScrollerSavedLeft = 0;
+      function wfFindScroller() {
+        var best = null, bestArea = 0;
+        var all = document.body ? document.body.getElementsByTagName('*') : [];
+        for (var si = 0; si < all.length; si++) {
+          var sel = all[si];
+          if (sel.scrollHeight <= sel.clientHeight + 8) continue;
+          var so = window.getComputedStyle(sel).overflowY;
+          if (so !== 'auto' && so !== 'scroll') continue;
+          var sr = sel.getBoundingClientRect();
+          if (sr.width * sr.height > bestArea) { best = sel; bestArea = sr.width * sr.height; }
+        }
+        return best;
+      }
+      // Reset the scroller to origin for capture (rects and crops share one
+      // coordinate space) and tag it so onclone can find its clone twin.
+      function wfScrollerReset() {
+        wfScroller = wfFindScroller();
+        if (!wfScroller) return;
+        wfScrollerSavedTop = wfScroller.scrollTop;
+        wfScrollerSavedLeft = wfScroller.scrollLeft;
+        wfScroller.scrollTop = 0;
+        wfScroller.scrollLeft = 0;
+        wfScroller.setAttribute('data-annotask-wf-scroller', '1');
+      }
+      function wfScrollerRestore() {
+        if (!wfScroller) return;
+        wfScroller.scrollTop = wfScrollerSavedTop;
+        wfScroller.scrollLeft = wfScrollerSavedLeft;
+        wfScroller.removeAttribute('data-annotask-wf-scroller');
+        wfScroller = null;
+      }
+      // Un-clip the scroller in html2canvas's CLONE so below-fold content
+      // paints. Only applied to crops of blocks INSIDE the scroller (their
+      // live rects ignore clipping, so they already match the expanded
+      // layout) and to the full-page pass — content AFTER the scroller in
+      // flow shifts down when it expands, so outside-blocks keep the
+      // unexpanded clone and their live-geometry crops stay true.
+      function wfExpandScrollerInClone(docClone) {
+        var sc = docClone.querySelector('[data-annotask-wf-scroller]');
+        if (!sc) return;
+        sc.style.height = 'auto';
+        sc.style.maxHeight = 'none';
+        sc.style.overflow = 'visible';
+      }
+      // Document height including the scroller's hidden extent — the honest
+      // canvas bound for blocks whose rects run past the scroller's clip.
+      function wfDocHeight() {
+        var de = document.documentElement;
+        var h = de ? de.scrollHeight : 0;
+        if (wfScroller) {
+          var sr = wfScroller.getBoundingClientRect();
+          h = Math.max(h, sr.y + (window.scrollY || 0) + wfScroller.scrollHeight);
+        }
+        return h;
+      }
+      // One html2canvas render with its own deadline. The shell's whole-capture
+      // bridge timeout is 60s and used to be the ONLY guard — a single hung
+      // render (broken <img>, pathological page) then discarded every block
+      // that had already succeeded. A per-render deadline turns that into one
+      // block's meta.error. imageTimeout caps html2canvas's own per-image wait
+      // (its default is 15s, which alone could eat the whole budget).
+      function wfH2c(h2c, target, opts, timeoutMs) {
+        opts.imageTimeout = 3000;
+        return new Promise(function(resolve, reject) {
+          var settled = false;
+          var t = setTimeout(function() {
+            if (!settled) { settled = true; reject(new Error('render timed out')); }
+          }, timeoutMs);
+          h2c(target, opts).then(
+            function(canvas) { if (!settled) { settled = true; clearTimeout(t); resolve(canvas); } },
+            function(err) { if (!settled) { settled = true; clearTimeout(t); reject(err); } }
+          );
+        });
+      }
+      // Reveal below-fold lazy content before discovery: IntersectionObserver
+      // loaders and reveal-on-scroll animations only fire once scrolled into
+      // view, so an unswept page rasterizes their blocks blank. Sweeps the
+      // window AND the primary scroller in viewport-sized steps (capped ~25),
+      // then waits for fonts (bounded) and a final settle. Full captures only —
+      // the metaOnly hover probe must not scroll, and explode re-captures a
+      // route whose content already loaded at the original capture.
+      function wfWarmUp(done) {
+        var de = document.documentElement;
+        var sweepScroller = wfFindScroller();
+        var total = Math.max(
+          de ? de.scrollHeight : 0,
+          document.body ? document.body.scrollHeight : 0,
+          sweepScroller ? sweepScroller.scrollHeight : 0
+        );
+        var step = Math.max(window.innerHeight || 400, Math.ceil(total / 25));
+        var y = 0;
+        function finish() {
+          var settled = false;
+          function fin() { if (!settled) { settled = true; setTimeout(done, 120); } }
+          var fonts = document.fonts && document.fonts.ready;
+          if (fonts && typeof fonts.then === 'function') {
+            fonts.then(fin, fin);
+            setTimeout(fin, 1500);
+          } else {
+            fin();
+          }
+        }
+        function sweep() {
+          if (y > total) { finish(); return; }
+          window.scrollTo(0, y);
+          if (sweepScroller) sweepScroller.scrollTop = y;
+          y += step;
+          setTimeout(sweep, 130);
+        }
+        sweep();
       }
 
       // metaOnly (hover child-rect probe) skips the scroll — it doesn't
@@ -1087,163 +1207,199 @@ export function bridgeMessages(): string {
       // iframe to the top on every hover would be jarring. Block rects come from
       // getBoundingClientRect + scrollX/Y, which already yields document coords.
       var wfMetaOnly = !!(payload && payload.metaOnly);
-      if (!wfMetaOnly) window.scrollTo(0, 0);
-
-      var wfDeps = {
-        getComputedStyle: function(el) { return window.getComputedStyle(el); },
-        findSourceElement: findSourceElement,
-        getSourceData: getSourceData,
-        getEid: getEid
-      };
-      // Refine = explode / hover-child probe (rootEid OR rootRect). rootEid is
-      // the precise anchored path; rootRect re-resolves an ANCHORLESS block by
-      // GEOMETRY (the live element whose box matches the captured rect) so a
-      // block with no source anchor can still decompose for layout work.
+      // Hoisted for the warm-up dispatch below; refine semantics documented at
+      // the root-resolution site inside wfProceed.
       var wfIsRefine = !!(payload && (payload.rootEid || payload.rootRect));
-      var wfRoot = payload && payload.rootEid ? getEl(payload.rootEid) : null;
-      var wfGeometricRoot = false;
-      if (!wfRoot && payload && payload.rootRect) { wfRoot = wfElementForRect(document.body, payload.rootRect, wfDeps); wfGeometricRoot = true; }
-      if (!wfRoot && !wfIsRefine) wfRoot = document.body;
-      if (!wfRoot) { wfFinishError(wfIsRefine ? 'could not locate this block in the live page — it may have moved or the page changed' : 'root element not found'); return; }
-      // MFE-aware descent is ON by default. discoverBlocks short-circuits to the
-      // byte-identical legacy single-root path whenever the page has no MFE
-      // mount regions, so this only changes output on real multi-MFE routes.
-      // anchorBoundary (geometric/anchorless explode only): bound the legacy
-      // anchor walk to the resolved root so a child of an un-instrumented region
-      // can resolve DOWN to an instrumented descendant but never UP to the
-      // host-glue mount above it (issue #54). Omitted for the anchored rootEid
-      // path so its output stays byte-identical.
-      var wfDisc = discoverBlocks(wfRoot, wfDeps, wfGeometricRoot ? { mfeDescentEnabled: true, anchorBoundary: wfRoot } : { mfeDescentEnabled: true });
-      if (!wfDisc.blocks.length) { wfFinishError('nothing to capture'); return; }
-      // The h2c run loop below consumes wfMetas (serializable, sent to the shell)
-      // and the explode shell-capture path consumes wfAll (the block elements).
-      var wfAll = wfDisc.blocks.map(function(b) { return b.el; });
-      var wfMetas = wfDisc.blocks.map(function(b) { return b.meta; });
-      var wfTruncated = wfDisc.truncated;
 
-      if (wfMetaOnly) {
-        // Hover child-rect probe: the per-block metas (rects/eids/file/mfe/tag,
-        // dataUrl null) only — the shell overlays them for the hover highlights.
-        var wfMetaResult = {
-          viewport: {
-            width: window.innerWidth, height: window.innerHeight,
-            docWidth: document.documentElement.scrollWidth,
-            docHeight: document.documentElement.scrollHeight,
-            scale: wfScale
-          },
-          blocks: wfMetas,
-          truncated: wfTruncated
+      // Discovery + rasterization, deferred so a full capture can warm the
+      // page up (async) first. metaOnly/refine call it synchronously.
+      function wfProceed() {
+        var wfDeps = {
+          getComputedStyle: function(el) { return window.getComputedStyle(el); },
+          findSourceElement: findSourceElement,
+          getSourceData: getSourceData,
+          getEid: getEid
         };
-        // Refine probes echo the resolved root's eid so the shell can tell
-        // "one block back === the root" (no separable children) from a single
-        // genuine child — even on the geometric rootRect path.
-        if (wfIsRefine) wfMetaResult.rootEid = getEid(wfRoot);
-        respond(id, wfMetaResult);
-        return;
-      }
+        // Refine = explode / hover-child probe (rootEid OR rootRect). rootEid is
+        // the precise anchored path; rootRect re-resolves an ANCHORLESS block by
+        // GEOMETRY (the live element whose box matches the captured rect) so a
+        // block with no source anchor can still decompose for layout work.
+        var wfRoot = payload && payload.rootEid ? getEl(payload.rootEid) : null;
+        var wfGeometricRoot = false;
+        if (!wfRoot && payload && payload.rootRect) { wfRoot = wfElementForRect(document.body, payload.rootRect, wfDeps); wfGeometricRoot = true; }
+        if (!wfRoot && !wfIsRefine) wfRoot = document.body;
+        if (!wfRoot) { wfFinishError(wfIsRefine ? 'could not locate this block in the live page — it may have moved or the page changed' : 'root element not found'); return; }
+        // MFE-aware descent is ON by default. discoverBlocks short-circuits to the
+        // byte-identical legacy single-root path whenever the page has no MFE
+        // mount regions, so this only changes output on real multi-MFE routes.
+        // anchorBoundary (geometric/anchorless explode only): bound the legacy
+        // anchor walk to the resolved root so a child of an un-instrumented region
+        // can resolve DOWN to an instrumented descendant but never UP to the
+        // host-glue mount above it (issue #54). Omitted for the anchored rootEid
+        // path so its output stays byte-identical.
+        var wfDisc = discoverBlocks(wfRoot, wfDeps, wfGeometricRoot ? { mfeDescentEnabled: true, anchorBoundary: wfRoot } : { mfeDescentEnabled: true });
+        if (!wfDisc.blocks.length) { wfFinishError('nothing to capture'); return; }
+        // The h2c run loop below consumes wfMetas (serializable, sent to the shell)
+        // and the explode shell-capture path consumes wfAll (the block elements).
+        var wfAll = wfDisc.blocks.map(function(b) { return b.el; });
+        var wfMetas = wfDisc.blocks.map(function(b) { return b.meta; });
+        var wfTruncated = wfDisc.truncated;
 
-      function wfRun(h2c) {
-        var wfIdx = 0;
-        function wfCaptureNext() {
-          if (wfIdx >= wfMetas.length) { wfCaptureFull(); return; }
-          var meta = wfMetas[wfIdx];
-          sendToShell('wireframe:capture-progress', { index: wfIdx, total: wfMetas.length + 1, label: meta.component || meta.source_tag || meta.tag });
-          var capH = Math.min(meta.rect.height, 4000);
-          h2c(document.body, { useCORS: true, allowTaint: true, logging: false, scale: wfScale, x: meta.rect.x, y: meta.rect.y, width: meta.rect.width, height: capH })
-            .then(function(canvas) {
-              meta.dataUrl = canvas.toDataURL('image/png');
-              if (capH < meta.rect.height) meta.clipped = true;
-              wfIdx++; wfCaptureNext();
-            })
-            .catch(function(err) {
-              meta.dataUrl = null;
-              meta.error = (err && err.message) || 'capture failed';
-              wfIdx++; wfCaptureNext();
-            });
-        }
-        function wfCaptureFull() {
-          // Explode captures (rootEid/rootRect) refine an existing canvas — the
-          // original full-page "before" stays the honest baseline. Instead,
-          // capture the root's SHELL: its own pixels (background, padding,
-          // the surface between children) with the captured child blocks
-          // visibility-hidden in the clone — the container's styling without
-          // ghost children burned in.
-          if (wfIsRefine) {
-            var shellRoot = wfRoot;
-            if (!shellRoot) { wfFinish(null, null); return; }
-            sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'container shell' });
-            for (var smi = 0; smi < wfAll.length; smi++) wfAll[smi].setAttribute('data-annotask-wf-hide', '1');
-            var shellCleanup = function() {
-              for (var sci = 0; sci < wfAll.length; sci++) wfAll[sci].removeAttribute('data-annotask-wf-hide');
-            };
-            var shellRect = shellRoot.getBoundingClientRect();
-            h2c(document.body, {
-              useCORS: true, allowTaint: true, logging: false, scale: wfScale,
-              x: shellRect.x + (window.scrollX || 0), y: shellRect.y + (window.scrollY || 0),
-              width: shellRect.width, height: Math.min(shellRect.height, 4000),
-              onclone: function(docClone) {
-                var hidden = docClone.querySelectorAll('[data-annotask-wf-hide]');
-                for (var shi = 0; shi < hidden.length; shi++) hidden[shi].style.visibility = 'hidden';
-              }
-            }).then(function(canvas) { shellCleanup(); wfFinish(null, canvas.toDataURL('image/png')); })
-              .catch(function() { shellCleanup(); wfFinish(null, null); });
-            return;
-          }
-          sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
-          // Scale 1: the full page only feeds the before/after composite, and
-          // a retina full-document PNG would blow the 4MB upload cap.
-          h2c(document.body, { useCORS: true, allowTaint: true, logging: false, scale: 1 })
-            .then(function(canvas) { wfFinish(canvas.toDataURL('image/png'), null); })
-            .catch(function() { wfFinish(null, null); });
-        }
-        function wfFinish(fullDataUrl, shellDataUrl) {
-          window.scrollTo(wfSavedX, wfSavedY);
-          var result = {
+        if (wfMetaOnly) {
+          // Hover child-rect probe: the per-block metas (rects/eids/file/mfe/tag,
+          // dataUrl null) only — the shell overlays them for the hover highlights.
+          var wfMetaResult = {
             viewport: {
               width: window.innerWidth, height: window.innerHeight,
               docWidth: document.documentElement.scrollWidth,
               docHeight: document.documentElement.scrollHeight,
               scale: wfScale
             },
-            blocks: wfMetas
+            blocks: wfMetas,
+            truncated: wfTruncated
           };
-          if (wfTruncated) result.truncated = true;
-          if (fullDataUrl) result.fullDataUrl = fullDataUrl;
-          if (shellDataUrl) result.shellDataUrl = shellDataUrl;
-          // Refine captures echo the resolved root's eid (see metaOnly above).
-          if (wfIsRefine) result.rootEid = getEid(wfRoot);
-          respond(id, result);
+          // Refine probes echo the resolved root's eid so the shell can tell
+          // "one block back === the root" (no separable children) from a single
+          // genuine child — even on the geometric rootRect path.
+          if (wfIsRefine) wfMetaResult.rootEid = getEid(wfRoot);
+          respond(id, wfMetaResult);
+          return;
         }
-        wfCaptureNext();
-      }
 
-      function wfResolveH2c() {
-        var h2c = window.html2canvas;
-        if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
-        return (typeof h2c === 'function') ? h2c : null;
-      }
+        function wfRun(h2c) {
+          var wfIdx = 0;
+          function wfCaptureNext() {
+            if (wfIdx >= wfMetas.length) { wfCaptureFull(); return; }
+            var meta = wfMetas[wfIdx];
+            sendToShell('wireframe:capture-progress', { index: wfIdx, total: wfMetas.length + 1, label: meta.component || meta.source_tag || meta.tag });
+            var capH = Math.min(meta.rect.height, 4000);
+            var wfBlockOpts = { useCORS: true, allowTaint: true, logging: false, scale: wfScale, x: meta.rect.x, y: meta.rect.y, width: meta.rect.width, height: capH };
+            // In-scroller blocks crop from the expanded clone (their live rects
+            // already ignore the clip); outside-blocks keep live geometry.
+            if (wfScroller && wfScroller.contains(wfAll[wfIdx])) wfBlockOpts.onclone = wfExpandScrollerInClone;
+            wfH2c(h2c, document.body, wfBlockOpts, 12000)
+              .then(function(canvas) {
+                meta.dataUrl = canvas.toDataURL('image/png');
+                if (capH < meta.rect.height) meta.clipped = true;
+                wfIdx++; wfCaptureNext();
+              })
+              .catch(function(err) {
+                meta.dataUrl = null;
+                meta.error = (err && err.message) || 'capture failed';
+                wfIdx++; wfCaptureNext();
+              });
+          }
+          function wfCaptureFull() {
+            // Explode captures (rootEid/rootRect) refine an existing canvas — the
+            // original full-page "before" stays the honest baseline. Instead,
+            // capture the root's SHELL: its own pixels (background, padding,
+            // the surface between children) with the captured child blocks
+            // visibility-hidden in the clone — the container's styling without
+            // ghost children burned in.
+            if (wfIsRefine) {
+              var shellRoot = wfRoot;
+              if (!shellRoot) { wfFinish(null, null); return; }
+              sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'container shell' });
+              for (var smi = 0; smi < wfAll.length; smi++) wfAll[smi].setAttribute('data-annotask-wf-hide', '1');
+              var shellCleanup = function() {
+                for (var sci = 0; sci < wfAll.length; sci++) wfAll[sci].removeAttribute('data-annotask-wf-hide');
+              };
+              var shellRect = shellRoot.getBoundingClientRect();
+              wfH2c(h2c, document.body, {
+                useCORS: true, allowTaint: true, logging: false, scale: wfScale,
+                x: shellRect.x + (window.scrollX || 0), y: shellRect.y + (window.scrollY || 0),
+                width: shellRect.width, height: Math.min(shellRect.height, 4000),
+                onclone: function(docClone) {
+                  if (wfScroller && wfScroller.contains(shellRoot)) wfExpandScrollerInClone(docClone);
+                  var hidden = docClone.querySelectorAll('[data-annotask-wf-hide]');
+                  for (var shi = 0; shi < hidden.length; shi++) hidden[shi].style.visibility = 'hidden';
+                }
+              }, 12000).then(function(canvas) { shellCleanup(); wfFinish(null, canvas.toDataURL('image/png')); })
+                .catch(function() { shellCleanup(); wfFinish(null, null); });
+              return;
+            }
+            sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
+            // Scale 1: the full page only feeds the before/after composite, and
+            // a retina full-document PNG would blow the 4MB upload cap. The
+            // expanded clone paints the scroller's whole extent (content after
+            // it shifts down, but a complete before beats a clipped one).
+            wfH2c(h2c, document.body, { useCORS: true, allowTaint: true, logging: false, scale: 1, onclone: wfExpandScrollerInClone }, 20000)
+              .then(function(canvas) { wfFinish(canvas.toDataURL('image/png'), null); })
+              .catch(function() { wfFinish(null, null); });
+          }
+          function wfFinish(fullDataUrl, shellDataUrl) {
+            // docHeight BEFORE the scroller restore — it reads the scroller's
+            // hidden extent, which the restore folds back behind the clip.
+            var wfFinalDocHeight = wfDocHeight();
+            wfScrollerRestore();
+            window.scrollTo(wfSavedX, wfSavedY);
+            var result = {
+              viewport: {
+                width: window.innerWidth, height: window.innerHeight,
+                docWidth: document.documentElement.scrollWidth,
+                docHeight: wfFinalDocHeight,
+                scale: wfScale
+              },
+              blocks: wfMetas
+            };
+            if (wfTruncated) result.truncated = true;
+            if (fullDataUrl) result.fullDataUrl = fullDataUrl;
+            if (shellDataUrl) result.shellDataUrl = shellDataUrl;
+            // Refine captures echo the resolved root's eid (see metaOnly above).
+            if (wfIsRefine) result.rootEid = getEid(wfRoot);
+            respond(id, result);
+          }
+          wfCaptureNext();
+        }
 
-      if (wfResolveH2c()) {
-        wfRun(wfResolveH2c());
+        function wfResolveH2c() {
+          var h2c = window.html2canvas;
+          if (h2c && typeof h2c !== 'function' && typeof h2c.default === 'function') h2c = h2c.default;
+          return (typeof h2c === 'function') ? h2c : null;
+        }
+
+        if (wfResolveH2c()) {
+          wfRun(wfResolveH2c());
+        } else {
+          var wfScript = document.createElement('script');
+          wfScript.src = '/__annotask/vendor/html2canvas.min.js';
+          var wfSavedDefine;
+          if (typeof window.define === 'function' && window.define.amd) {
+            wfSavedDefine = window.define;
+            window.define = undefined;
+          }
+          wfScript.onload = function() {
+            if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
+            var h2c = wfResolveH2c();
+            if (h2c) wfRun(h2c);
+            else wfFinishError('html2canvas not loaded');
+          };
+          wfScript.onerror = function() {
+            if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
+            wfFinishError('failed to load html2canvas — check that /__annotask/ routes are accessible from the app origin');
+          };
+          document.head.appendChild(wfScript);
+        }
+      } // end wfProceed
+
+      // Full captures sweep the page first so lazy content reveals, then
+      // normalize the window AND the primary inner scroller to origin. The
+      // metaOnly hover probe never scrolls; explode re-captures content that
+      // already loaded at the original capture, so both skip the sweep —
+      // explode still normalizes, its geometry must match the original
+      // capture's coordinate space.
+      if (wfMetaOnly) {
+        wfProceed();
+      } else if (wfIsRefine || (payload && payload.skipWarmup)) {
+        window.scrollTo(0, 0);
+        wfScrollerReset();
+        wfProceed();
       } else {
-        var wfScript = document.createElement('script');
-        wfScript.src = '/__annotask/vendor/html2canvas.min.js';
-        var wfSavedDefine;
-        if (typeof window.define === 'function' && window.define.amd) {
-          wfSavedDefine = window.define;
-          window.define = undefined;
-        }
-        wfScript.onload = function() {
-          if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
-          var h2c = wfResolveH2c();
-          if (h2c) wfRun(h2c);
-          else wfFinishError('html2canvas not loaded');
-        };
-        wfScript.onerror = function() {
-          if (wfSavedDefine !== undefined) window.define = wfSavedDefine;
-          wfFinishError('failed to load html2canvas — check that /__annotask/ routes are accessible from the app origin');
-        };
-        document.head.appendChild(wfScript);
+        wfWarmUp(function() {
+          window.scrollTo(0, 0);
+          wfScrollerReset();
+          wfProceed();
+        });
       }
       return;
     }
