@@ -30,6 +30,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_api_operation` | Fetch one API operation by path |
 | `annotask_resolve_endpoint` | Match a concrete URL to a known API operation |
 | `annotask_get_source_excerpt` | Direct source excerpt by file/line (no task required) |
+| `annotask_resolve_fingerprint` | Resolve DOM evidence (class names, text, tag) from an unanchored element to ranked candidate source locations |
 | `annotask_get_binding_classification` | Round-trip-honesty classification of one element by file/line[/tag]: per-prop literal/bound/unknown, text kind, enclosing loop |
 | `annotask_get_playbook` | Fetch a task-type companion playbook (A11Y_RULES, THEME_UPDATE, ERROR_FIX, PERF_FIX, WIREFRAME_APPLY) |
 | `annotask_get_agent_directions` | Fetch per-persona project directions from `.annotask/agents.json` |
@@ -92,8 +93,10 @@ annotask data-source-details useUserQuery  # Definition-level data-source detail
 annotask api-schemas         # Discovered API schemas
 annotask api-operation /users --method=GET # One resolved API operation
 annotask resolve-endpoint /api/users/42    # Match a concrete URL to a known schema
+annotask resolve-fingerprint --classes=a,b --text="…"  # DOM evidence → ranked candidate source locations (anchorless blocks)
 annotask init-skills         # Install agent skills into project
 annotask init-mcp            # Write MCP config (--editor=claude|cursor|vscode|windsurf|codex|opencode|copilot|all; codex/copilot are user-global)
+annotask serve --target=URL  # Universal proxy mode: design tool for ANY running site (zero build integration) — proxies the target, injects the bridge
 annotask mcp                 # Start MCP stdio server (proxies to dev server)
 ```
 
@@ -123,6 +126,7 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET /__annotask/api/component-examples/:name` — In-repo component usage examples
 - `GET /__annotask/api/code-context/:taskId` — Ground task to current source context
 - `GET /__annotask/api/source-excerpt` — Direct source excerpt by file/line
+- `GET /__annotask/api/resolve-fingerprint` — DOM evidence (`?classes&text&tag&limit`) → ranked candidate source locations, for anchorless wireframe blocks
 - `GET /__annotask/api/binding-classify` — Round-trip honesty classification for one element (`?file&line&tag?`): per-prop literal/bound/unknown, text literal/bound/mixed, enclosing loop — agent grounding before rewriting props/text
 - `GET /__annotask/api/data-context/:taskId` — Stored or resolved task data context
 - `GET /__annotask/api/data-context/probe|resolve|element` — Shell data-context helpers

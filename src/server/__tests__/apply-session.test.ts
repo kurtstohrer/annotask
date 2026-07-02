@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { applyDesignSession, verifyAppliedEntries, revertApplyBatch, releaseApplyTask, acceptApplyTask, type ApplySessionOptions } from '../apply-session'
 import { createSessionStore } from '../session-store'
 import { createWireframeStore } from '../wireframe-store'
@@ -272,6 +273,68 @@ describe('apply-session', () => {
     const undo = await revertApplyBatch(options, result.batchId)
     expect(undo.reverted).toEqual(['src/Page.vue'])
     expect(await fsp.readFile(path.join(root, 'src/Page.vue'), 'utf-8')).toBe(PAGE)
+  })
+
+  describe('undo coverage', () => {
+    function gitInit(): void {
+      const git = (args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+      git(['init', '-q'])
+      git(['add', '-A'])
+      git(['-c', 'user.email=ci@annotask.test', '-c', 'user.name=annotask-ci', 'commit', '-q', '-m', 'baseline'])
+    }
+
+    /** Anchorless direction (no donor → file '') — nothing to snapshot. */
+    function anchorlessAddEntry(id: string): SessionEntry {
+      return {
+        id, ordinal: 1, ts: 1, route: '/planets',
+        change: {
+          id: `c-${id}`, type: 'wireframe_direction', op: 'add',
+          description: 'ADD component <Hero> on the page',
+          file: '', section: 'template', line: 0,
+          block: { label: 'Hero' },
+          added: { kind: 'component', componentName: 'Hero', position: 'append' },
+          measured: { after: { x: 0, y: 0, width: 320, height: 120 } },
+        } as unknown as SessionEntry['change'],
+        anchor: { file: '', line: 0 },
+        live: { status: 'pending' },
+      }
+    }
+
+    it('non-git + anchored entries → anchors-only, stamped in response, task context, and batch', async () => {
+      await seedSession([textEntry('se-1')])
+      const result = await applyDesignSession(options, '/planets')
+      if ('error' in result) throw new Error(result.error)
+      expect(result.undoCoverage).toBe('anchors-only')
+      const ctx = tasks[0].context as { session: { undo_coverage?: string } }
+      expect(ctx.session.undo_coverage).toBe('anchors-only')
+      // The panel reads coverage off the batch (survives reload).
+      const snap = await options.snapshots.state()
+      expect(snap.batches[0].coverage).toBe('anchors-only')
+    })
+
+    it('non-git + all-empty anchors → none (undo would restore zero bytes)', async () => {
+      await seedSession([anchorlessAddEntry('wd-float')])
+      const result = await applyDesignSession(options, '/planets')
+      if ('error' in result) throw new Error(result.error)
+      expect(result.undoCoverage).toBe('none')
+      const ctx = tasks[0].context as { session: { undo_coverage?: string } }
+      expect(ctx.session.undo_coverage).toBe('none')
+      const snap = await options.snapshots.state()
+      expect(snap.batches[0].coverage).toBe('none')
+    })
+
+    it('git project → full (the seal auto-extends to the agent\'s whole footprint)', async () => {
+      gitInit()
+      // Even with ZERO anchored files, git coverage makes undo byte-exact.
+      await seedSession([anchorlessAddEntry('wd-float')])
+      const result = await applyDesignSession(options, '/planets')
+      if ('error' in result) throw new Error(result.error)
+      expect(result.undoCoverage).toBe('full')
+      const ctx = tasks[0].context as { session: { undo_coverage?: string } }
+      expect(ctx.session.undo_coverage).toBe('full')
+      const snap = await options.snapshots.state()
+      expect(snap.batches[0].coverage).toBe('full')
+    })
   })
 
   describe('wireframe directions (W3)', () => {
@@ -550,6 +613,70 @@ describe('apply-session', () => {
       const result = await applyDesignSession(wsOptions, '/planets')
       expect(result).toEqual({ error: "entry wd-ghost: anchor 'src/App.vue' could not be attributed to MFE 'ghost'" })
       expect(wsTasks).toHaveLength(0)
+    })
+
+    describe('cross-MFE module rewrite', () => {
+      /** Add direction located on the HOST (no location mfe) importing a
+       *  component OWNED by the child MFE — its module is child-package-root-
+       *  relative and meaningless as a host import. */
+      function crossMfeAddEntry(id: string, module: string, anchor?: SessionEntry['anchor']): SessionEntry {
+        const e = directionEntry(id)
+        e.anchor = anchor ?? { file: 'src/App.vue', line: 1 }
+        const change = e.change as unknown as Record<string, unknown>
+        change.op = 'add'
+        change.file = e.anchor.file
+        change.added = {
+          kind: 'component', componentName: 'PlanetCard', library: 'project',
+          module, mfe: 'child', position: 'after',
+        }
+        return e
+      }
+
+      function addedModule(): string {
+        const ctx = wsTasks[0].context as { session: { entries: Array<{ change: { added?: { module?: string } } }> } }
+        return ctx.session.entries[0].change.added!.module!
+      }
+
+      it('rewrites to <packageName>/<subpath> when the owning package.json is named', async () => {
+        await fsp.mkdir(path.join(ws, 'mfe-child/src/components'), { recursive: true })
+        await fsp.writeFile(path.join(ws, 'mfe-child/src/components/PlanetCard.vue'), '<template><i/></template>\n', 'utf-8')
+        await seedWsSession([crossMfeAddEntry('wd-x', './src/components/PlanetCard.vue')])
+
+        const result = await applyDesignSession(wsOptions, '/planets')
+        expect('error' in result).toBe(false)
+        expect(addedModule()).toBe('mfe-child/src/components/PlanetCard.vue')
+      })
+
+      it('falls back to the workspace-relative path when the owning package is unnamed', async () => {
+        // No `name` in package.json — a directory basename is not importable.
+        await fsp.writeFile(path.join(ws, 'mfe-child/package.json'), '{}', 'utf-8')
+        await fsp.mkdir(path.join(ws, 'mfe-child/src/components'), { recursive: true })
+        await fsp.writeFile(path.join(ws, 'mfe-child/src/components/PlanetCard.vue'), '<template><i/></template>\n', 'utf-8')
+        await seedWsSession([crossMfeAddEntry('wd-x', './src/components/PlanetCard.vue')])
+
+        const result = await applyDesignSession(wsOptions, '/planets')
+        expect('error' in result).toBe(false)
+        expect(addedModule()).toBe('../mfe-child/src/components/PlanetCard.vue')
+      })
+
+      it('leaves the module untouched when the target file is missing under the owning package', async () => {
+        await seedWsSession([crossMfeAddEntry('wd-x', './src/components/Ghost.vue')])
+
+        const result = await applyDesignSession(wsOptions, '/planets')
+        expect('error' in result).toBe(false)
+        expect(addedModule()).toBe('./src/components/Ghost.vue')
+      })
+
+      it('leaves the module untouched when the direction already lives in the owning MFE', async () => {
+        await fsp.mkdir(path.join(ws, 'mfe-child/src/components'), { recursive: true })
+        await fsp.writeFile(path.join(ws, 'mfe-child/src/components/PlanetCard.vue'), '<template><i/></template>\n', 'utf-8')
+        await seedWsSession([crossMfeAddEntry('wd-x', './src/components/PlanetCard.vue',
+          { file: '../mfe-child/src/App.vue', line: 1, mfe: 'child' })])
+
+        const result = await applyDesignSession(wsOptions, '/planets')
+        expect('error' in result).toBe(false)
+        expect(addedModule()).toBe('./src/components/PlanetCard.vue')
+      })
     })
   })
 })

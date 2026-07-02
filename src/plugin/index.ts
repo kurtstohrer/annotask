@@ -5,7 +5,9 @@ import { pathToFileURL } from 'node:url'
 import { transformFile, transformHTML, injectComponentRegistry } from './transform.js'
 import { bridgeClientScript } from './bridge-client.js'
 import { createAnnotaskServer } from '../server/index.js'
-import { writeServerInfo, writeMfeServerInfo } from '../server/discovery.js'
+import { writeServerInfo, writeMfeServerInfo, readServerInfo } from '../server/discovery.js'
+import { getWorkspaceCatalog } from '../server/workspace-catalog.js'
+import path from 'node:path'
 
 export interface AnnotaskOptions {
   /** @experimental Not yet implemented. OpenAPI spec path or URL */
@@ -126,6 +128,21 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
     apply: 'serve',
 
     configureServer(server: ViteDevServer) {
+      // Middleware-mode Vite (server.httpServer === null) is how Nuxt/Nitro
+      // and other meta-frameworks embed Vite: the WebSocket can't attach,
+      // server.json is never written, and Nitro-rendered HTML never flows
+      // through this connect stack — the tool would be silently half-dead
+      // while still printing its success banner. Refuse loudly with the
+      // supported alternative instead.
+      if (!server.httpServer) {
+        console.warn(
+          '[Annotask] ⚠ This Vite server runs in middleware mode (no HTTP server of its own — ' +
+          'Nuxt/Nitro embed Vite this way). The Annotask WebSocket, discovery, and HTML injection ' +
+          "can't attach here, so the design tool is DISABLED for this server. " +
+          'Run the app through the universal proxy instead: `npx annotask serve --target <app-url>`.',
+        )
+        return
+      }
       // Hosts beyond localhost / IP literals that may reach /__annotask/*
       // (the API middleware's DNS-rebinding gate). Seeded from Vite's own
       // `server.allowedHosts` and the host the server actually announces, so
@@ -200,6 +217,10 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
             `it, and prefer an SSH tunnel over --host. See SECURITY.md.`,
           )
         }
+        // Topology check: a sibling MFE package running its OWN annotask
+        // instance fragments tasks/wireframes into a separate store the user
+        // never sees from this shell. Warn once at boot; never block it.
+        void warnSplitTaskStores(projectRoot, port)
       })
 
       console.log('[Annotask] Design tool available at /__annotask/')
@@ -251,7 +272,10 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
               let body = chunks.join('')
               if (body.includes('</body>') && !body.includes('__ANNOTASK_BRIDGE__')) {
                 const scripts = `<script>${bridgeClientScript()}</script>\n`
-                body = body.replace('</body>', scripts + '</body>')
+                // Function replacer: a string replacement would expand `$'`/
+                // `$&` inside the bridge source (React fiber key prefixes)
+                // into replace() patterns and corrupt the script.
+                body = body.replace('</body>', () => scripts + '</body>')
               }
               return _end.call(res, body)
             }
@@ -273,6 +297,34 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
   }
 
   return [transformPlugin, servePlugin]
+}
+
+/**
+ * Warn when a sibling workspace MFE package has its OWN annotask server
+ * registered (standalone child, or a pointer at some other root): its tasks
+ * and wireframes land in a store this shell never reads. Pointer entries
+ * (pid 0, written by child mode) are checked against OUR port; live entries
+ * are first liveness-checked so a stale server.json from a stopped run
+ * doesn't cry wolf.
+ */
+async function warnSplitTaskStores(projectRoot: string, port: number): Promise<void> {
+  try {
+    const catalog = await getWorkspaceCatalog(projectRoot)
+    for (const pkg of catalog.packages) {
+      if (!pkg.mfe || path.resolve(pkg.absDir) === path.resolve(projectRoot)) continue
+      const info = readServerInfo(pkg.absDir)
+      if (!info || info.port === port) continue
+      if (info.pid > 0) {
+        try { process.kill(info.pid, 0) } catch { continue } // stale — ignore
+      }
+      console.warn(
+        `[Annotask] ⚠ MFE '${pkg.mfe}' (${path.relative(projectRoot, pkg.absDir)}) is registered to a DIFFERENT ` +
+        `annotask server (${info.url}) — its tasks and wireframes land in a separate store this shell can't see. ` +
+        `For one shared board, configure that package with annotask({ mfe: '${pkg.mfe}', server: 'http://localhost:${port}' }) ` +
+        `and stop its standalone instance.`,
+      )
+    }
+  } catch { /* catalog unavailable — never block boot */ }
 }
 
 export default annotask

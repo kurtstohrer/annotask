@@ -15,6 +15,7 @@ import { classifyBindings } from '../server/binding-classify.js'
 import { createAgentConfigStore } from '../server/agent-configs.js'
 import { loadSkill, TASK_TYPE_COMPANIONS } from '../skills/loader.js'
 import { getComponentExamples } from '../server/component-examples.js'
+import { resolveFingerprint, hasUsableEvidence } from '../server/resolve-fingerprint.js'
 import { resolveDataContext } from '../server/data-context.js'
 import { scanDataSources } from '../server/data-source-scanner.js'
 import { mergeRuntimeOrphansIntoEntries, findMatchingStaticEntries } from '../server/runtime-endpoints.js'
@@ -77,6 +78,13 @@ const McpGetBindingClassificationArgs = z.object({
   file: SafeSourceFile,
   line: z.number().int().min(1, 'line must be >= 1'),
   tag: z.string().max(200).optional(),
+})
+
+const McpResolveFingerprintArgs = z.object({
+  classes: z.array(z.string().max(200)).max(50).optional(),
+  text: z.string().max(500).optional(),
+  tag: z.string().max(200).optional(),
+  limit: z.number().int().min(1).max(20).optional(),
 })
 
 const taskTypeValues = [...TASK_TYPES] as [typeof TASK_TYPES[number], ...typeof TASK_TYPES[number][]]
@@ -381,6 +389,21 @@ export const MCP_TOOLS: ToolDef[] = [
         tag: { type: 'string', description: 'Tag/component name to disambiguate (e.g. "PlanetCard", "h1")' },
       },
       required: ['file', 'line'],
+    },
+  },
+  {
+    name: 'annotask_resolve_fingerprint',
+    description:
+      'Resolve DOM evidence (class names, text, tag) from an unanchored element to candidate source locations. ' +
+      'Use for wireframe directions whose anchor file is empty. Requires classes or text (>= 3 chars); tag alone is only a tiebreak.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        classes: { type: 'array', items: { type: 'string' }, description: 'Class names off the element, matched as whole tokens (e.g. from fingerprint.selector)' },
+        text: { type: 'string', description: 'Leading text content of the element (e.g. fingerprint.textHead). Ignored under 3 chars after trimming.' },
+        tag: { type: 'string', description: 'Tag/component name — weak tiebreak only (e.g. "button", "PlanetCard")' },
+        limit: { type: 'number', description: 'Max candidates to return. Default 5, max 20.' },
+      },
     },
   },
   {
@@ -889,6 +912,19 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       const { file, line, tag } = parsed.data
       const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
       const result = await classifyBindings(deps.projectRoot, file, line, { tag, workspaceRoot })
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_resolve_fingerprint': {
+      const parsed = parseWith(McpResolveFingerprintArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { classes, text, tag, limit } = parsed.data
+      // Same gate as GET /__annotask/api/resolve-fingerprint: tag alone is
+      // never enough evidence to search on.
+      if (!hasUsableEvidence(classes ?? [], text ?? '')) {
+        return toolError('No usable evidence: provide classes or text (>= 3 chars after trimming)')
+      }
+      const result = await resolveFingerprint(deps.projectRoot, { classes, text, tag, limit })
       return { content: [{ type: 'text', text: compact(result) }] }
     }
 

@@ -50,6 +50,15 @@ The task screenshot (`annotask_get_screenshot`) is a labeled composite: **left =
 
 Before rewriting any expression or bound markup you encounter mid-edit, re-classify it against CURRENT source: `annotask_get_binding_classification` (CLI: `annotask binding-classify`). Never rewrite an expression that references variables.
 
+### Anchorless directions (`file` is `''`)
+
+A block from an un-instrumented region (production MFE remote, third-party bundle, geometric explode child) has no source anchor. Its direction instead carries `fingerprint: { selector, textHead, htmlHead }` and its description says so. Resolve it to source BEFORE editing:
+
+1. Call `annotask_resolve_fingerprint` with `classes` = the class tokens in `selector` (if any), `text` = `textHead`, and `tag` = the selector's last segment's tag (or `block.tag`).
+2. No tool / no hits? Grep the repo for the `htmlHead`'s distinctive class names or text literals instead.
+3. Confirm the winning candidate with `annotask_get_source_excerpt` — the excerpt must actually contain the fingerprinted markup.
+4. Candidates with similar scores are AMBIGUOUS — ask via `needs_info`, **never guess between them**. No candidate at all → `blocked_reason` (the source likely isn't in this repo).
+
 ### Data bindings on adds (`added.data`)
 
 > **Gated off this release.** Wireframe data binding is DEFERRED (`WIREFRAME_DATA_BINDING_ENABLED=false` in `src/shell/wireframeFeatures.ts`), so new `wireframe_apply` tasks won't carry `added.data`. This section applies to legacy/older task files that already contain a binding — when one is present, wire it per the rules below.

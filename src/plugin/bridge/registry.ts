@@ -84,7 +84,11 @@ export function bridgeRegistry(): string {
 
   // ── Source Element Resolution ─────────────────────────
   function hasSourceAttr(el) {
-    return el.hasAttribute && (el.hasAttribute('data-annotask-file') || el.hasAttribute('data-astro-source-file'));
+    // data-annotask-fragment-url stops the walk too: markup swapped in by
+    // htmx/Turbo (stamped in events.ts) must resolve to the request that
+    // produced it, not to whatever instrumented ancestor happens to contain
+    // the swap target.
+    return el.hasAttribute && (el.hasAttribute('data-annotask-file') || el.hasAttribute('data-astro-source-file') || el.hasAttribute('data-annotask-fragment-url'));
   }
 
   function findSourceElement(el) {
@@ -94,6 +98,58 @@ export function bridgeRegistry(): string {
       c = c.parentElement;
     }
     return { sourceEl: el, targetEl: el };
+  }
+
+  // ── Native Debug-Metadata Anchors ─────────────────────
+  // Zero-transform fallbacks: frameworks that stamp their own dev metadata
+  // anchor without our transform, the same way data-astro-source-* already
+  // does. Consulted only when neither our stamps nor Astro's resolved a
+  // file — our own stamps always win.
+
+  /** Cut an absolute React _debugSource fileName down to a project-usable
+   *  path at the LAST '/src/' segment (keeps 'src/...'). No '/src/' segment
+   *  → honest-empty: an absolute path would only be rejected by the server's
+   *  path-safety, so skipping the source beats emitting one. */
+  function reactProjectFile(fileName) {
+    if (!fileName) return '';
+    var f = String(fileName).replace(/\\\\/g, '/');
+    var i = f.lastIndexOf('/src/');
+    return i !== -1 ? f.slice(i + 1) : '';
+  }
+
+  /** React dev builds hang the fiber off the DOM node under a randomized own
+   *  key ('__reactFiber$' + hash). React <=18 fibers carry _debugSource
+   *  ({ fileName, lineNumber }); React 19 removed it — then we report at
+   *  most a component display name, never a fabricated file. */
+  function getReactDebugSource(el) {
+    var fiber = null;
+    try {
+      var keys = Object.keys(el);
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i].indexOf('__reactFiber$') === 0) { fiber = el[keys[i]]; break; }
+      }
+    } catch (e) {}
+    if (!fiber) return null;
+    var file = '';
+    var line = '';
+    try {
+      var ds = fiber._debugSource;
+      if (ds && ds.fileName) {
+        file = reactProjectFile(ds.fileName);
+        if (file && ds.lineNumber) line = String(ds.lineNumber);
+      }
+    } catch (e) {}
+    var component = '';
+    try {
+      var t = fiber.type;
+      if (t && typeof t !== 'string') component = t.displayName || t.name || '';
+      // Host fibers (type 'div') name their owning component via _debugOwner.
+      if (!component && fiber._debugOwner && fiber._debugOwner.type && typeof fiber._debugOwner.type !== 'string') {
+        component = fiber._debugOwner.type.displayName || fiber._debugOwner.type.name || '';
+      }
+    } catch (e) {}
+    if (!file && !component) return null;
+    return { file: file, line: line, component: component };
   }
 
   function getSourceData(el) {
@@ -110,6 +166,33 @@ export function bridgeRegistry(): string {
     if ((!line || line === '0') && el.getAttribute('data-astro-source-loc')) {
       line = (el.getAttribute('data-astro-source-loc') || '').split(':')[0];
     }
+
+    // Server-swapped fragment root (stamped by the htmx/Turbo listeners in
+    // events.ts): the honest anchor is the request that produced the markup
+    // ('POST /search'), not a file. Also skips the native-metadata fallbacks
+    // — the fragment arrived over the wire, framework debug info can't apply.
+    var fragmentUrl = '';
+    if (!file) fragmentUrl = el.getAttribute('data-annotask-fragment-url') || '';
+
+    // Svelte dev builds attach __svelte_meta = { loc: { file, line, column } }
+    // per element; loc.file is project-relative and loc.line is 1-based —
+    // both match our conventions, so they are used as-is.
+    if (!file && !fragmentUrl && el.__svelte_meta && el.__svelte_meta.loc && el.__svelte_meta.loc.file) {
+      file = String(el.__svelte_meta.loc.file);
+      if ((!line || line === '0') && el.__svelte_meta.loc.line) line = String(el.__svelte_meta.loc.line);
+    }
+    // React dev fiber (_debugSource) — last in the resolver chain.
+    if (!file && !fragmentUrl) {
+      var rd = getReactDebugSource(el);
+      if (rd) {
+        if (rd.file) {
+          file = rd.file;
+          if ((!line || line === '0') && rd.line) line = rd.line;
+        }
+        if (!component && rd.component) component = rd.component;
+      }
+    }
+
     if (!component && file) {
       var parts = file.split('/');
       var fileName = parts[parts.length - 1] || '';
@@ -118,7 +201,9 @@ export function bridgeRegistry(): string {
 
     var mfe = el.getAttribute('data-annotask-mfe') || '';
 
-    return { file: file, line: line, component: component, source_tag: sourceTag, mfe: mfe };
+    var data = { file: file, line: line, component: component, source_tag: sourceTag, mfe: mfe };
+    if (fragmentUrl) data.fragmentUrl = fragmentUrl;
+    return data;
   }
 
   function getRect(el) {

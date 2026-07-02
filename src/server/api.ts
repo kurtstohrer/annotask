@@ -165,6 +165,7 @@ import { filterTasksByMfe } from '../shared/task-summary.js'
 import { getCodeContext } from './code-context.js'
 import { classifyBindings } from './binding-classify.js'
 import { getComponentExamples } from './component-examples.js'
+import { resolveFingerprint, hasUsableEvidence } from './resolve-fingerprint.js'
 import { scanComponentUsage } from './component-usage.js'
 import { probeDataContext, resolveDataContext, resolveElementDataContext } from './data-context.js'
 import { scanDataSources } from './data-source-scanner.js'
@@ -1298,6 +1299,25 @@ export function createAPIMiddleware(options: APIOptions) {
       const tag = urlObj.searchParams.get('tag') || undefined
       const workspaceRoot = await getWorkspaceRoot(options.projectRoot)
       const result = await classifyBindings(options.projectRoot, file, lineArg, { tag, workspaceRoot })
+      res.end(JSON.stringify(result, null, 2))
+      return
+    }
+
+    // DOM-evidence → source-location resolver for anchorless wireframe
+    // blocks. `classes` is comma-separated; `text` only counts as evidence at
+    // >= 3 chars after trimming; `tag` is a weak tiebreak, never sufficient
+    // alone — hence the 400 when neither classes nor text is usable.
+    if (path === 'resolve-fingerprint' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const classes = (urlObj.searchParams.get('classes') || '').split(',').map(s => s.trim()).filter(Boolean)
+      const text = urlObj.searchParams.get('text') || ''
+      const tag = urlObj.searchParams.get('tag') || undefined
+      if (!hasUsableEvidence(classes, text)) {
+        return sendError(res, 400, 'No usable evidence: provide classes or text (>= 3 chars after trimming)')
+      }
+      const limitArg = Number(urlObj.searchParams.get('limit') || '5')
+      const limit = Number.isFinite(limitArg) ? Math.max(1, Math.min(20, limitArg)) : 5
+      const result = await resolveFingerprint(options.projectRoot, { classes, text, tag, limit })
       res.end(JSON.stringify(result, null, 2))
       return
     }

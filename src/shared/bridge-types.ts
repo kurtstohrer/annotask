@@ -58,6 +58,13 @@ export interface ResolvedElement {
    *  any file/line describe the mounted component's internals — selection must
    *  treat this as "the placement", not a source element. */
   instance_id?: string
+  /** Present when the anchor walk hit a server-swapped fragment root (htmx /
+   *  Turbo, stamped data-annotask-fragment-url) before any file-bearing
+   *  anchor: '<METHOD> <path>' of the request that produced the markup (e.g.
+   *  "POST /search"), alongside the usual empty-file shape. An honest "this
+   *  markup came over the wire" signal from the bridge's getSourceData — not
+   *  yet plumbed into tasks/directions. */
+  fragmentUrl?: string
 }
 
 export interface ResolveTemplateGroupPayload {
@@ -383,6 +390,12 @@ export interface WireframeCaptureBlock {
    *  anchor are real — moving the mount is legitimate — but the interior is
    *  another app's DOM (never descended; cross-origin pixels rasterize blank). */
   embedded?: 'iframe'
+  /** DOM fingerprint, stamped ONLY when `file` is '' (un-instrumented MFE
+   *  remote, production bundle, geometric explode child): nth-of-type selector
+   *  path, leading text, and outerHTML head with data-annotask-* stripped —
+   *  enough for `annotask_resolve_fingerprint` to find the source. Anchored
+   *  blocks never carry it (zero payload growth on the happy path). */
+  fingerprint?: { selector: string; textHead: string; htmlHead: string }
 }
 
 export interface WireframeCaptureResult {

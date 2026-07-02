@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolveProjectFile } from './path-safety.js'
 import { resolveWorkspace } from './workspace.js'
-import type { ApplyBatch } from '../shared/design-session-types.js'
+import type { ApplyBatch, UndoCoverage } from '../shared/design-session-types.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -117,6 +117,13 @@ export interface SnapshotStore {
   detachFile(file: string): Promise<void>
   /** Journal view with a fresh divergence hash-sweep. */
   state(): Promise<SnapshotState>
+  /** Whether a batch snapshotted right now would capture a git pre-apply
+   *  baseline (the byte-exact auto-extend) — the 'full' undo-coverage tier.
+   *  Runs the SAME probe the snapshot path uses, so the apply can stamp
+   *  coverage into the task context BEFORE the batch exists (the task is
+   *  minted first). Optional so API-boundary test doubles stay minimal;
+   *  absent reads as no baseline. */
+  gitCoverageAvailable?(): Promise<boolean>
   flush(): Promise<void>
 }
 
@@ -445,8 +452,14 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
         // in the same projectRoot-relative shape.
         const gitBaseline = await gitBaselineRef()
         const untrackedBefore = await gitUntracked(gitBaseline?.toplevel)
+        // Undo-coverage honesty: a git baseline auto-extends the seal to the
+        // agent's whole footprint; without one only the snapshotted anchors
+        // restore — and an EMPTY set restores zero bytes. Stamped on the batch
+        // (it rides state()) so the panel warns before the user trusts undo.
+        const coverage: UndoCoverage = gitBaseline ? 'full'
+          : Object.keys(before).length > 0 ? 'anchors-only' : 'none'
         journal.batches.push({
-          id: batch.id, taskId: batch.taskId, files: [...files], startedAt: Date.now(), status: 'running', before,
+          id: batch.id, taskId: batch.taskId, files: [...files], startedAt: Date.now(), status: 'running', before, coverage,
           ...(untrackedBefore !== null ? { untrackedBefore } : {}),
           ...(gitBaseline ? { gitBaseline: gitBaseline.ref } : {}),
           ...(gitBaseline?.toplevel ? { gitToplevel: gitBaseline.toplevel } : {}),
@@ -610,6 +623,16 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
             ...(created && Object.keys(created).length > 0 ? { created: Object.keys(created) } : {}),
           })),
         }
+      })
+    },
+
+    gitCoverageAvailable() {
+      return enqueue(async () => {
+        await ready
+        // Same predicate snapshotFiles records (may leave a dangling stash
+        // commit on a dirty tree — identical to the real snapshot moments
+        // later, and git gc reclaims it).
+        return (await gitBaselineRef()) !== null
       })
     },
 

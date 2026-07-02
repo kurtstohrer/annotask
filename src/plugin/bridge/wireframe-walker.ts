@@ -354,6 +354,38 @@ export function bridgeWireframeWalker(): string {
       return { file: '', line: '', component: '', source_tag: '', mfe: '' };
     }
 
+    // ---- anchorless DOM fingerprint -------------------------------------
+    // A block with no data-annotask anchor (un-instrumented MFE remote,
+    // production bundle, geometric explode child) has no file to edit — its
+    // direction would carry only a class label + measured rects. Three cheap
+    // fields let the agent resolve the block back to source via
+    // annotask_resolve_fingerprint. Anchored blocks NEVER carry a fingerprint
+    // (zero payload growth on the happy path).
+    // nth-of-type CSS path from body (deepest ~12 levels when nested further).
+    function wfFingerprintSelector(el) {
+      var parts = [];
+      var cur = el;
+      for (var depth = 0; depth < 12; depth++) {
+        if (!cur || cur.nodeType !== 1) break;
+        var t = cur.tagName;
+        if (t === 'BODY' || t === 'HTML') break;
+        var n = 1;
+        var sib = cur.previousElementSibling;
+        while (sib) { if (sib.tagName === t) n++; sib = sib.previousElementSibling; }
+        parts.unshift(t.toLowerCase() + ':nth-of-type(' + n + ')');
+        cur = cur.parentElement;
+      }
+      return parts.join(' > ');
+    }
+    function wfFingerprint(el) {
+      var text = (el.textContent || '').replace(/\\s+/g, ' ').replace(/^ +| +$/g, '').slice(0, 140);
+      // Strip data-annotask-* the same way messages.ts sanitizes rendered HTML —
+      // instrumented DESCENDANTS of an anchorless block would otherwise leak
+      // volatile attrs into the fingerprint the agent greps for.
+      var html = (el.outerHTML || '').replace(/ data-annotask-[a-z-]+="[^"]*"/g, '').slice(0, 1000);
+      return { selector: wfFingerprintSelector(el), textHead: text, htmlHead: html };
+    }
+
     function wfBuildMeta(el, region) {
       var data;
       if (region && region.pending) {
@@ -389,6 +421,9 @@ export function bridgeWireframeWalker(): string {
       // separable, so say so instead of staying silent.
       if (tag === 'iframe') meta.embedded = 'iframe';
       else if (tag.indexOf('-') !== -1 && wfChildren(el).length === 0) meta.fidelity = 'shadow-opaque';
+      // Anchorless: no file to edit, so stamp the DOM fingerprint that makes
+      // the block's direction resolvable (see wfFingerprint above).
+      if (!data.file) meta.fingerprint = wfFingerprint(el);
       return meta;
     }
 

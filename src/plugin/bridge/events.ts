@@ -584,6 +584,36 @@ export function bridgeEvents(): string {
     renderedMo.observe(document.body, { childList: true, subtree: true });
   }
 
+  // ── Server-Fragment Stamping (htmx / Turbo) ───────────
+  // htmx and Turbo swap server-rendered markup into the page with no build
+  // step, so nothing stamps data-annotask-file on it. Stamping the swapped
+  // subtree ROOT with '<METHOD> <path>' gives getSourceData (registry.ts) an
+  // honest "markup produced by POST /search" anchor instead of silently
+  // mis-anchoring to whatever instrumented ancestor contains the swap
+  // target. Plain document-level listeners — harmless no-ops when neither
+  // library is loaded (the events simply never fire; both bubble).
+  function fragmentPathname(url) {
+    if (!url) return '';
+    try { return new URL(url, window.location.href).pathname; } catch (e) { return ''; }
+  }
+  function stampFragmentRoot(el, method, path) {
+    if (!el || el.nodeType !== 1 || !el.setAttribute || !path) return;
+    el.setAttribute('data-annotask-fragment-url', method + ' ' + path);
+  }
+  document.addEventListener('htmx:afterSwap', function(e) {
+    var d = e.detail || {};
+    var path = fragmentPathname(d.pathInfo && d.pathInfo.requestPath ? d.pathInfo.requestPath : '');
+    if (!path && d.xhr && d.xhr.responseURL) path = fragmentPathname(d.xhr.responseURL);
+    var verb = d.requestConfig && d.requestConfig.verb ? String(d.requestConfig.verb).toUpperCase() : 'GET';
+    stampFragmentRoot(d.target || e.target, verb, path);
+  });
+  document.addEventListener('turbo:frame-render', function(e) {
+    var frame = e.target;
+    if (!frame || !frame.getAttribute) return;
+    // Turbo frames navigate via GET only; the frame's src is the request.
+    stampFragmentRoot(frame, 'GET', fragmentPathname(frame.getAttribute('src') || ''));
+  });
+
   // ── Color Scheme Tracking ─────────────────────────────
   // Push 'color-scheme:changed' whenever the app toggles light/dark / named
   // theme. Relies on detectColorScheme() declared in messages.ts — function

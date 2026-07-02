@@ -716,6 +716,13 @@ function onRecaptureConfirmed(): void {
           <!-- Shimmer while this block's snapshot is rendering; the last-good
                image (if any) stays visible underneath. -->
           <div v-if="isGenerating(b)" class="wf-shimmer" data-testid="wf-shimmer" />
+          <!-- Embedded-document mount (<iframe>): its interior is another app's
+               DOM, so a blank cross-origin pane must never read as a captured
+               surface — hatch it and say what it is. -->
+          <template v-if="b.embedded === 'iframe'">
+            <div class="wf-embedded-hatch" :data-testid="`wf-embedded-hatch-${b.id}`" />
+            <div class="wf-embedded-badge" title="This block is an embedded app (iframe) — move/resize the mount; its interior isn't captured">embedded app</div>
+          </template>
           <div v-if="b.clipped" class="wf-clipped-note" title="Block was taller than the capture cap — only the top is shown">clipped</div>
           <div v-if="b.note && primaryBlock?.id !== b.id" class="wf-note-chip" :title="b.note">
             <Icon name="pencil" :size="9" /> note
@@ -1086,6 +1093,34 @@ function onRecaptureConfirmed(): void {
 .wf-md-hint :deep(h1), .wf-md-hint :deep(h2), .wf-md-hint :deep(h3) { font-size: 11px; margin: 2px 0; color: var(--text); }
 .wf-md-hint :deep(p), .wf-md-hint :deep(ul) { margin: 2px 0; }
 .wf-md-hint :deep(ul) { padding-left: 14px; }
+
+/* Embedded-app mount: subtle diagonal hatch + badge over the block (the
+   snapshot, if any, stays visible underneath). Pointer-transparent so the
+   block still drags/selects normally. */
+.wf-embedded-hatch {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent 0 10px,
+    color-mix(in srgb, var(--border) 45%, transparent) 10px 11px
+  );
+}
+.wf-embedded-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--surface-2) 85%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  pointer-events: none;
+}
 
 .wf-clipped-note {
   position: absolute;

@@ -141,3 +141,35 @@ describe('WireframeBlock.data + .md validation', () => {
     ]))).toBe(false)
   })
 })
+
+describe('WireframeBlockAnchor.fingerprint validation', () => {
+  function capturedBlock(extra: Partial<WireframeBlock> = {}): WireframeBlock {
+    return {
+      id: 'wfb-3',
+      kind: 'captured',
+      rect: { x: 0, y: 0, width: 800, height: 300 },
+      originalRect: { x: 0, y: 0, width: 800, height: 300 },
+      z: 1,
+      createdAt: 1,
+      anchor: { file: '', line: 0, tag: 'div', cssClass: 'remote-widget' },
+      ...extra,
+    }
+  }
+  const fp = { selector: 'main:nth-of-type(1) > div:nth-of-type(2)', textHead: 'Remote widget', htmlHead: '<div class="remote-widget"></div>' }
+
+  it('accepts an anchorless captured block carrying the full three-string fingerprint', () => {
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fingerprint: fp } }))).toBe(true)
+    // Round-trips through the document validator too (PUT boundary).
+    expect(isWireframeDocument(docWith([capturedBlock({ anchor: { file: '', line: 0, fingerprint: fp } })]))).toBe(true)
+  })
+
+  it('accepts legacy anchors without a fingerprint', () => {
+    expect(isWireframeBlock(capturedBlock())).toBe(true)
+  })
+
+  it('rejects a malformed fingerprint (wrong type, missing key, non-string field)', () => {
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fingerprint: 'div.x' as never } }))).toBe(false)
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fingerprint: { selector: 'div', textHead: 'x' } as never } }))).toBe(false)
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fingerprint: { ...fp, htmlHead: 42 } as never } }))).toBe(false)
+  })
+})

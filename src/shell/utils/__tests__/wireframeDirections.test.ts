@@ -474,3 +474,86 @@ describe('computeWireframeDirections — multi-MFE', () => {
     expect(add.description).toContain('import from MFE "react-workflows"')
   })
 })
+
+describe('computeWireframeDirections — anchorless DOM fingerprints', () => {
+  const FP = {
+    selector: 'main:nth-of-type(1) > div:nth-of-type(2)',
+    textHead: 'Remote widget',
+    htmlHead: '<div class="remote-widget">Remote widget</div>',
+  }
+  const HINT = ' — unanchored: DOM fingerprint attached; resolve it to source with annotask_resolve_fingerprint before editing'
+
+  /** A captured block from an un-instrumented region: file '' + fingerprint. */
+  function anchorless(id: string, y: number, height: number, extra: Partial<WireframeBlock> = {}): WireframeBlock {
+    const rect = { x: 0, y, width: 800, height }
+    return {
+      id,
+      kind: 'captured',
+      rect: { ...rect },
+      originalRect: { ...rect },
+      z: 1,
+      createdAt: 1,
+      anchor: { file: '', line: 0, tag: 'div', cssClass: 'remote-widget', fingerprint: FP },
+      ...extra,
+    }
+  }
+
+  it('a deleted anchorless block rides the fingerprint and flags the description', () => {
+    const blocks = [...planetsBlocks(), anchorless('remote', 800, 200, { deleted: true })]
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const del = dirs.find((d) => d.op === 'delete')!
+    expect(del.file).toBe('')
+    expect(del.fingerprint).toEqual(FP)
+    expect(del.description.endsWith(HINT)).toBe(true)
+  })
+
+  it('a moved anchorless block rides the fingerprint and flags the description', () => {
+    const blocks = [...planetsBlocks(), anchorless('remote', 800, 200)]
+    blocks[3].rect = { ...blocks[3].rect, y: 90 } // moves above the filters
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const move = dirs.find((d) => d.block.label === 'remote-widget')!
+    expect(move.op).toBe('move')
+    expect(move.fingerprint).toEqual(FP)
+    expect(move.description.endsWith(HINT)).toBe(true)
+  })
+
+  it('a note-only anchorless block rides the fingerprint too', () => {
+    const blocks = [...planetsBlocks(), anchorless('remote', 800, 200, { note: 'make it blue' })]
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const note = dirs.find((d) => d.op === 'note')!
+    expect(note.fingerprint).toEqual(FP)
+    expect(note.description.endsWith(HINT)).toBe(true)
+  })
+
+  it('an anchorless block WITHOUT a fingerprint (legacy capture) emits no field and no hint', () => {
+    const blocks = [...planetsBlocks(),
+      anchorless('remote', 800, 200, { deleted: true, anchor: { file: '', line: 0, tag: 'div', cssClass: 'remote-widget' } })]
+    const del = computeWireframeDirections(canvasWith(blocks)).find((d) => d.op === 'delete')!
+    expect('fingerprint' in del).toBe(false)
+    expect(del.description).not.toContain('annotask_resolve_fingerprint')
+  })
+
+  it('regression pin: an anchored block never carries a fingerprint even when its anchor has one persisted', () => {
+    // Defensive: fingerprint should never coexist with a real file, but if a
+    // doc carried both, the direction must trust the file and drop the hint.
+    const blocks = planetsBlocks()
+    blocks[1].deleted = true
+    blocks[1].anchor = { ...blocks[1].anchor!, fingerprint: FP }
+    const del = computeWireframeDirections(canvasWith(blocks)).find((d) => d.op === 'delete')!
+    expect(del.file).toBe('src/pages/PlanetsPage.vue')
+    expect('fingerprint' in del).toBe(false)
+    expect(del.description).not.toContain('annotask_resolve_fingerprint')
+  })
+
+  it('an ADD whose donors are all unanchored invents nothing — no fingerprint, no hint', () => {
+    // Only anchorless captured blocks on the canvas: no honest donor exists,
+    // so the add stays file '' / line 0 exactly as before this feature.
+    const ph: WireframeBlock = { id: 'cta', kind: 'placeholder', rect: { x: 0, y: 290, width: 800, height: 60 }, z: 2, createdAt: 2, label: 'CTA' }
+    const dirs = computeWireframeDirections(canvasWith([anchorless('remote', 0, 200), ph]))
+    const add = dirs.find((d) => d.op === 'add')!
+    expect(add.file).toBe('')
+    expect(add.line).toBe(0)
+    expect('fingerprint' in add).toBe(false)
+    expect(add.description).not.toContain('annotask_resolve_fingerprint')
+  })
+})

@@ -7,7 +7,7 @@ import { WireframeRevConflictError } from './wireframe-store.js'
 import { classifyBindings } from './binding-classify.js'
 import { resolveProjectFile } from './path-safety.js'
 import type { SnapshotStore } from './file-snapshots.js'
-import type { DesignSessionDocument, SessionEntry } from '../shared/design-session-types.js'
+import type { DesignSessionDocument, SessionEntry, UndoCoverage } from '../shared/design-session-types.js'
 import type { WireframeDocument, WireframeInstance } from '../shared/wireframe-types.js'
 
 /**
@@ -177,11 +177,63 @@ async function attributeMfeAnchors(
   return null
 }
 
+/** package.json `name` of a package dir — null when absent/unnamed. The
+ *  workspace catalog's `name` can't stand in here: it silently falls back to
+ *  the directory basename, which is not an importable specifier. */
+async function readPackageJsonName(absDir: string): Promise<string | null> {
+  try {
+    const pkg = JSON.parse(await fsp.readFile(path.join(absDir, 'package.json'), 'utf-8'))
+    return typeof pkg.name === 'string' && pkg.name.length > 0 ? pkg.name : null
+  } catch { return null }
+}
+
+/**
+ * Cross-MFE module rewrite — an add direction's `added.module` is a specifier
+ * relative to the OWNING package's root ('./components/PlanetCard.vue'),
+ * meaningless as an import from another package. When `added.mfe` (import-from
+ * semantics) names a package that is NOT the one the direction's location
+ * lives in (`anchor.mfe`/`change.mfe`, location semantics; the host when
+ * absent), rewrite the module to a host-resolvable form:
+ * '<packageName>/<subpath>' when the owning package.json carries a name, else
+ * the workspace-relative file path ('../mfe-x/src/…' — the anchor-path
+ * convention). Rewrites ONLY when the target file actually exists under the
+ * owning package; otherwise the module is left untouched and the playbook's
+ * example-search flow still applies. Mutates `added.module` in place, BEFORE
+ * entryForTask lifts the change into the task context.
+ */
+async function rewriteCrossMfeModules(projectRoot: string, entries: SessionEntry[]): Promise<void> {
+  for (const e of entries) {
+    const c = e.change
+    if (c.type !== 'wireframe_direction' || c.op !== 'add') continue
+    const added = c.added
+    if (!added?.mfe || !added.module) continue
+    // getWorkspaceCatalog is TTL-cached — the attribution pass above already
+    // paid for this fetch.
+    const catalog = await getWorkspaceCatalog(projectRoot)
+    const owning = catalog.packages.find((p) => p.mfe === added.mfe)
+    if (!owning) continue // catalog can't see the package — leave the module alone
+    // The package the agent will be EDITING: the anchor's MFE claim (or the
+    // pre-anchor-field change-level one), the host when neither is set.
+    const locationMfe = e.anchor.mfe ?? c.mfe
+    const owningIsLocation = locationMfe
+      ? owning.mfe === locationMfe
+      : path.resolve(owning.absDir) === path.resolve(projectRoot)
+    if (owningIsLocation) continue // same package — the specifier already resolves
+    const target = path.resolve(owning.absDir, added.module)
+    // Unknown target (bare library specifier, moved file) — never invent.
+    if (!containedIn(owning.absDir, target) || !fs.existsSync(target)) continue
+    const pkgName = await readPackageJsonName(owning.absDir)
+    added.module = pkgName
+      ? `${pkgName}/${path.relative(owning.absDir, target).split(path.sep).join('/')}`
+      : path.relative(projectRoot, target).split(path.sep).join('/')
+  }
+}
+
 export async function applyDesignSession(
   options: ApplySessionOptions,
   route: string,
   extras?: { screenshot?: string },
-): Promise<{ taskId: string; batchId: string; entryIds: string[]; instanceIds: string[] } | { error: string }> {
+): Promise<{ taskId: string; batchId: string; entryIds: string[]; instanceIds: string[]; undoCoverage: UndoCoverage } | { error: string }> {
   const session = await options.getDesignSession()
   const wireframe = await options.getWireframe()
 
@@ -205,6 +257,10 @@ export async function applyDesignSession(
     ...instances.map((i) => ({ label: `instance ${i.id}`, mfe: (i.anchor as { mfe?: string }).mfe, anchor: i.anchor })),
   ])
   if (attributionError) return attributionError
+
+  // Cross-MFE component imports: rewrite package-root-relative modules to a
+  // host-resolvable specifier before the entries ride the task context.
+  await rewriteCrossMfeModules(options.projectRoot, entries)
 
   // Dominant anchor file → the task-level anchor (buildWireframeRoute precedent).
   // Empty anchors are honest "couldn't ground this block" (a captured element
@@ -240,6 +296,27 @@ export async function applyDesignSession(
     ? `Implement the wireframe sketch on ${route}.${compositeNote} Pixel positions are hints — implement the INTENT with idiomatic layout.\n${summaryLines.join('\n')}`
     : `Apply ${summaryLines.length} design-session edit${summaryLines.length === 1 ? '' : 's'} on ${route}:\n${summaryLines.join('\n')}`
 
+  // Snapshot set, assembled BEFORE the task is minted so undo coverage can be
+  // stamped into the task context. Filter empty anchors: an anchorless block
+  // (file '') would make snapshotFiles throw on resolveAbs('') — AFTER the
+  // task was already minted, stranding an orphan task with no batch. Those
+  // directions still ride the task and the agent grounds them from the
+  // screenshot; the git auto-extend captures any file the agent actually
+  // edits regardless.
+  // Captured MFE anchors are host-project-root-relative (`../mfe-x/src/App.tsx`),
+  // so two MFEs sharing a package-local path (both `src/App.tsx`) are DISTINCT
+  // here and each gets its own snapshot — the Set dedup is honest. The
+  // workspace-aware snapshot store resolves the `../` and keeps it contained.
+  const files = [...new Set([...entries.map((e) => e.anchor.file), ...instances.map((i) => i.anchor.file)])]
+    .filter(hasFile)
+
+  // Undo-coverage honesty: all-empty anchors in a non-git project mint a batch
+  // that restores ZERO bytes — "Undo last apply" would succeed doing nothing.
+  // Classified with the same git probe snapshotFiles records, stamped into the
+  // task context + response so the shell warns BEFORE the user trusts undo.
+  const undoCoverage: UndoCoverage = (await options.snapshots.gitCoverageAvailable?.()) ? 'full'
+    : files.length > 0 ? 'anchors-only' : 'none'
+
   const task = await options.addTask({
     type: 'wireframe_apply',
     description,
@@ -249,25 +326,14 @@ export async function applyDesignSession(
     ...(extras?.screenshot ? { screenshot: extras.screenshot } : {}),
     context: {
       ...(instances.length > 0 ? { wireframe: { route, instances } } : {}),
-      session: { session_id: session.sessionId, entries: entries.map(entryForTask) },
+      session: { session_id: session.sessionId, undo_coverage: undoCoverage, entries: entries.map(entryForTask) },
     },
   }) as { id?: string } | null
   if (!task?.id) return { error: 'task creation failed' }
   const taskId = task.id
 
   // Snapshot BEFORE the agent can run — the journal is the crash-safety net.
-  // Filter empty anchors: an anchorless block (file '') would make snapshotFiles
-  // throw on resolveAbs('') — AFTER the task was already minted, stranding an
-  // orphan task with no batch. Those directions still ride the task and the
-  // agent grounds them from the screenshot; the git auto-extend captures any
-  // file the agent actually edits regardless.
   const batchId = `ab-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-  // Captured MFE anchors are host-project-root-relative (`../mfe-x/src/App.tsx`),
-  // so two MFEs sharing a package-local path (both `src/App.tsx`) are DISTINCT
-  // here and each gets its own snapshot — the Set dedup is honest. The
-  // workspace-aware snapshot store resolves the `../` and keeps it contained.
-  const files = [...new Set([...entries.map((e) => e.anchor.file), ...instances.map((i) => i.anchor.file)])]
-    .filter(hasFile)
   await options.snapshots.snapshotFiles(files, { id: batchId, taskId })
 
   // Stamp instances 'building' (the existing Build semantics: a second apply
@@ -327,7 +393,7 @@ export async function applyDesignSession(
     return touched
   })
 
-  return { taskId, batchId, entryIds: [...entryIds], instanceIds: instances.map((i) => i.id) }
+  return { taskId, batchId, entryIds: [...entryIds], instanceIds: instances.map((i) => i.id), undoCoverage }
 }
 
 /** Does the file's current content plausibly contain the applied edit? Used as

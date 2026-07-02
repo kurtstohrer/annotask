@@ -17,7 +17,7 @@ import { bridgeWireframeWalker } from '../wireframe-walker'
 const openWindows: JSDOM[] = []
 afterEach(() => { while (openWindows.length) openWindows.pop()!.window.close() })
 
-interface Meta { eid: string; file: string; line: string; component: string; source_tag: string; tag: string; cls: string; role: string; mfe?: string; fidelity?: string; embedded?: string; rect: { x: number; y: number; width: number; height: number }; dataUrl: null }
+interface Meta { eid: string; file: string; line: string; component: string; source_tag: string; tag: string; cls: string; role: string; mfe?: string; fidelity?: string; embedded?: string; fingerprint?: { selector: string; textHead: string; htmlHead: string }; rect: { x: number; y: number; width: number; height: number }; dataUrl: null }
 interface Disc { blocks: Array<{ el: any; meta: Meta }>; truncated: boolean }
 type DiscoverFn = (root: any, deps: any, opts?: { mfeDescentEnabled?: boolean; anchorBoundary?: any }) => Disc
 type RectFn = (root: any, rect: { x: number; y: number; width: number; height: number }, deps: any) => any
@@ -613,6 +613,118 @@ describe('wireframe walker — per-MFE budget', () => {
     // Both MFEs represented — neither starved to zero by a flat document slice.
     expect(r.blocks.some((b) => b.meta.mfe === 'a')).toBe(true)
     expect(r.blocks.some((b) => b.meta.mfe === 'b')).toBe(true)
+  })
+})
+
+describe('wireframe walker — anchorless DOM fingerprints', () => {
+  it('an un-instrumented page: every anchorless block carries a fingerprint with the nth-of-type selector path', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // A production bundle: real DOM, no data-annotask-* anywhere.
+    const page = el(win, 'main', { rect: [0, 0, 800, 900] }, [
+      el(win, 'section', { cls: 'hero', rect: [0, 0, 800, 300] }),
+      el(win, 'div', { cls: 'spacer', rect: [0, 300, 800, 300] }),
+      el(win, 'section', { cls: 'foot', rect: [0, 600, 800, 300] }),
+    ])
+    mount(win, page)
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.length).toBe(3)
+    expect(r.blocks.every((b) => b.meta.file === '' && !!b.meta.fingerprint)).toBe(true)
+    // nth-of-type counts SAME-TAG siblings only: the div between the two
+    // sections doesn't bump the second section past :nth-of-type(2).
+    const byCls = Object.fromEntries(r.blocks.map((b) => [b.meta.cls, b.meta.fingerprint!]))
+    expect(byCls['hero'].selector).toBe('main:nth-of-type(1) > section:nth-of-type(1)')
+    expect(byCls['spacer'].selector).toBe('main:nth-of-type(1) > div:nth-of-type(1)')
+    expect(byCls['foot'].selector).toBe('main:nth-of-type(1) > section:nth-of-type(2)')
+  })
+
+  it('textHead collapses whitespace, trims, and caps at 140 chars', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const messy = el(win, 'section', { cls: 'messy', rect: [0, 0, 800, 300] })
+    messy.appendChild(win.document.createTextNode('  Hello   world\n\n  '))
+    messy.appendChild(el(win, 'span', { rect: [0, 0, 100, 20] }))
+    messy.lastElementChild.textContent = 'from   remote  '
+    const long = el(win, 'section', { cls: 'long', rect: [0, 300, 800, 300] })
+    long.textContent = 'x'.repeat(200)
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 600] }, [messy, long]))
+
+    const r = discover(win.document.body, deps)
+    const byCls = Object.fromEntries(r.blocks.map((b) => [b.meta.cls, b.meta.fingerprint!]))
+    expect(byCls['messy'].textHead).toBe('Hello world from remote')
+    expect(byCls['long'].textHead).toBe('x'.repeat(140))
+  })
+
+  it('htmlHead strips every data-annotask-* attribute and caps at 1000 chars', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // The block itself is anchorless (findSourceElement walks UP, never down),
+    // but a DESCENDANT carries instrumentation — it must not leak into the
+    // fingerprint the agent greps the repo for.
+    const block = el(win, 'section', { cls: 'remote-card', rect: [0, 0, 800, 300] }, [
+      el(win, 'div', { cls: 'stamped-child', attrs: { 'data-annotask-file': 'src/X.vue', 'data-annotask-line': '3', 'data-annotask-component': 'X' }, rect: [0, 0, 800, 100] }),
+    ])
+    const big = el(win, 'section', { cls: 'big', rect: [0, 300, 800, 300] })
+    big.textContent = 'y'.repeat(2000)
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 600] }, [block, big]))
+
+    const r = discover(win.document.body, deps)
+    const byCls = Object.fromEntries(r.blocks.map((b) => [b.meta.cls, b.meta]))
+    expect(byCls['remote-card'].file).toBe('') // descendant attrs never anchor the block
+    expect(byCls['remote-card'].fingerprint!.htmlHead).not.toContain('data-annotask')
+    expect(byCls['remote-card'].fingerprint!.htmlHead).toContain('class="stamped-child"')
+    expect(byCls['big'].fingerprint!.htmlHead.length).toBe(1000)
+  })
+
+  it('selector path is bounded to 12 levels on a deeply nested block', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // Bury the explode root 12 wrappers deep, then explode it via
+    // anchorBoundary — its children sit 14 levels below body.
+    let cur = win.document.body
+    for (let i = 0; i < 12; i++) {
+      const wrap = el(win, 'div', { cls: `w${i}`, rect: [0, 0, 800, 600] })
+      cur.appendChild(wrap)
+      cur = wrap
+    }
+    const a = el(win, 'section', { cls: 'deep-a', rect: [0, 0, 800, 300] })
+    const b = el(win, 'section', { cls: 'deep-b', rect: [0, 300, 800, 300] })
+    const root = el(win, 'div', { cls: 'deep-root', rect: [0, 0, 800, 600] }, [a, b])
+    cur.appendChild(root)
+
+    const r = discover(root, deps, { mfeDescentEnabled: true, anchorBoundary: root })
+    const fp = r.blocks.find((bl) => bl.meta.cls === 'deep-a')!.meta.fingerprint!
+    const segments = fp.selector.split(' > ')
+    expect(segments).toHaveLength(12)
+    expect(segments[segments.length - 1]).toBe('section:nth-of-type(1)') // the block itself, deepest kept
+  })
+
+  it('pending MFE region: geometric sub-blocks carry fingerprints (the un-instrumented remote case)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const header = el(win, 'header', { cls: 'remote-head', rect: [0, 0, 600, 80] })
+    const body = el(win, 'div', { cls: 'remote-body', rect: [0, 80, 600, 320] })
+    const mountDiv = el(win, 'div', {
+      id: 'single-spa-application:@x/prod-remote',
+      attrs: { 'data-annotask-file': 'host/Shell.vue', 'data-annotask-line': '1' }, // host glue
+      rect: [0, 0, 600, 400],
+    }, [ el(win, 'div', { cls: 'remote-root', rect: [0, 0, 600, 400] }, [header, body]) ])
+    mount(win, el(win, 'main', { rect: [0, 0, 600, 400] }, [mountDiv]))
+
+    const r = discover(win.document.body, deps, { mfeDescentEnabled: true })
+    expect(r.blocks.length).toBe(2)
+    expect(r.blocks.every((b) => b.meta.file === '' && !!b.meta.fingerprint)).toBe(true)
+    expect(r.blocks.find((b) => b.meta.cls === 'remote-head')!.meta.fingerprint!.selector.endsWith('header:nth-of-type(1)')).toBe(true)
+  })
+
+  it('regression pin: anchored blocks carry NO fingerprint (zero payload growth on the happy path)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const page = el(win, 'main', { rect: [0, 0, 800, 900] }, [
+      el(win, 'section', { cls: 'hero', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '3' }, rect: [0, 0, 800, 300] }),
+      el(win, 'section', { cls: 'body', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '9' }, rect: [0, 300, 800, 300] }),
+    ])
+    mount(win, page)
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.length).toBe(2)
+    expect(r.blocks.every((b) => b.meta.file === 'src/App.vue')).toBe(true)
+    expect(r.blocks.every((b) => !('fingerprint' in b.meta))).toBe(true)
   })
 })
 

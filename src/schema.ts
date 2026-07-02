@@ -239,6 +239,12 @@ export interface WireframeDirectionChange extends BaseChange {
    *  loop-rendered, so ONE source edit affects every instance. `ordinal` is
    *  the block's 1-based position among the sharers in document order. */
   sharedAnchor?: { ordinal: number; of: number }
+  /** Set ONLY when `file` is '' (un-instrumented MFE remote, production
+   *  bundle, geometric explode child): the block's capture-time DOM
+   *  fingerprint — nth-of-type selector path, leading text, sanitized
+   *  outerHTML head. Tool-captured, never invented. The agent resolves it to
+   *  source via `annotask_resolve_fingerprint` before editing. */
+  fingerprint?: { selector: string; textHead: string; htmlHead: string }
   /** TOOL-MEASURED spatial facts. Never user-authored. */
   measured?: {
     before?: WireframeRect

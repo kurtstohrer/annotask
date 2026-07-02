@@ -211,6 +211,8 @@ async function dispatch(): Promise<void> {
     initSkills()
   } else if (command === 'init-mcp') {
     initMcp()
+  } else if (command === 'serve') {
+    await serveProxy()
   } else if (command === 'screenshot') {
     await fetchScreenshot()
   } else if (command === 'tasks') {
@@ -255,6 +257,8 @@ async function dispatch(): Promise<void> {
     await fetchApiOperation()
   } else if (command === 'resolve-endpoint') {
     await resolveEndpointCmd()
+  } else if (command === 'resolve-fingerprint') {
+    await resolveFingerprintCmd()
   } else if (command === 'runtime-endpoints') {
     await fetchRuntimeEndpoints()
   } else if (command === 'mcp') {
@@ -709,6 +713,56 @@ function initSkills() {
 
 function isSymlink(p: string): boolean {
   try { return lstatSync(p).isSymbolicLink() } catch { return false }
+}
+
+// ── Serve: universal proxy mode — the design tool for ANY site ──
+
+async function serveProxy() {
+  const targetArg = args.find(a => a.startsWith('--target='))?.split('=')[1]
+  if (!targetArg) {
+    console.error(`\x1b[31m[Annotask]\x1b[0m Missing --target. Usage: annotask serve --target=http://localhost:3000 [--port=24700]`)
+    exit(1)
+    return
+  }
+  let target: URL
+  try {
+    target = new URL(targetArg)
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error('protocol')
+  } catch {
+    console.error(`\x1b[31m[Annotask]\x1b[0m --target must be an absolute http(s) URL (got '${targetArg}')`)
+    exit(1)
+    return
+  }
+  const portArg = Number(args.find(a => a.startsWith('--port='))?.split('=')[1]) || 24700
+
+  // Dynamic import keeps the server bundle out of every other CLI command's
+  // startup path (tsup code-splits it into its own chunk).
+  const { startProxyServer } = await import('../server/proxy-serve.js')
+  const { port: boundPort, close } = await startProxyServer({
+    projectRoot: process.cwd(),
+    target: target.origin,
+    port: portArg,
+  })
+
+  console.log()
+  console.log(`\x1b[32m[Annotask]\x1b[0m Proxying \x1b[36m${target.origin}\x1b[0m — no build integration needed`)
+  console.log(`  App (through proxy):  \x1b[36mhttp://localhost:${boundPort}/\x1b[0m`)
+  console.log(`  Design tool:          \x1b[36mhttp://localhost:${boundPort}/__annotask/\x1b[0m`)
+  console.log(`  MCP:                  http://localhost:${boundPort}/__annotask/mcp`)
+  console.log()
+  console.log(`  Source anchors come from the page itself in this mode (framework`)
+  console.log(`  dev metadata where present, DOM fingerprints otherwise) — agents`)
+  console.log(`  resolve fingerprints to source via annotask_resolve_fingerprint.`)
+  console.log(`  Ctrl-C to stop.`)
+
+  const stop = async () => {
+    await close()
+    exit(0)
+  }
+  process.on('SIGINT', () => { void stop() })
+  process.on('SIGTERM', () => { void stop() })
+  // Keep the process alive; the server holds the event loop open anyway.
+  await new Promise(() => { /* runs until signalled */ })
 }
 
 // ── Init MCP: write editor-specific MCP config files ──
@@ -1409,6 +1463,31 @@ async function resolveEndpointCmd() {
   }
 }
 
+/** DOM-evidence → candidate source locations, for anchorless wireframe
+ *  directions (fingerprint rides the direction; this resolves it). */
+async function resolveFingerprintCmd() {
+  const classesArg = args.find(a => a.startsWith('--classes='))?.split('=')[1] ?? ''
+  const textArg = args.find(a => a.startsWith('--text='))?.split('=')[1] ?? ''
+  const tagArg = args.find(a => a.startsWith('--tag='))?.split('=')[1]
+  if (!classesArg && !textArg) {
+    fail('usage', 'Usage: annotask resolve-fingerprint --classes=a,b [--text="literal"] [--tag=div] [--limit=5]')
+  }
+  const limitArg = args.find(a => a.startsWith('--limit='))?.split('=')[1]
+  const params = new URLSearchParams()
+  if (classesArg) params.set('classes', classesArg)
+  if (textArg) params.set('text', textArg)
+  if (tagArg) params.set('tag', tagArg)
+  if (limitArg) params.set('limit', limitArg)
+  try {
+    const res = await fetch(`${apiUrl}/resolve-fingerprint?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    fail(errCode(err), `Failed to resolve fingerprint: ${err.message}`)
+  }
+}
+
 // ── MCP: stdio transport (proxies to HTTP MCP endpoint) ──
 
 import { createInterface } from 'node:readline'
@@ -1572,7 +1651,15 @@ function printHelp() {
                   CLI targets are what give embedded codex/opencode/copilot
                   runs their annotask tools — without them those providers
                   work purely off the inlined task grounding.
+  resolve-fingerprint  Resolve DOM evidence (class names, text, tag) from an
+                  unanchored element to ranked candidate source locations.
+                  Usage: annotask resolve-fingerprint --classes=a,b --text="…"
   mcp             Start MCP server (stdio transport, proxies to dev server)
+  serve           Universal proxy mode: host the design tool for ANY running
+                  site (production build, CDN page, Rails/Django/PHP, remote
+                  staging) with zero build integration. Reverse-proxies the
+                  target and injects the bridge into its HTML.
+                  Usage: annotask serve --target=http://localhost:3000
   help            Show this help
 
 \x1b[33mOptions:\x1b[0m

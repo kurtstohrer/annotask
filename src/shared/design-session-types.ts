@@ -97,6 +97,16 @@ export interface DesignSessionDocument {
   entries: SessionEntry[]
 }
 
+/**
+ * How much of an apply's footprint "Undo last apply" can actually restore.
+ *  'full'         — a git baseline was captured, so the seal auto-extends to
+ *                   the agent's whole footprint.
+ *  'anchors-only' — no git baseline; only the predicted anchor files restore.
+ *  'none'         — no baseline AND an empty snapshot set: undo would
+ *                   "succeed" restoring zero bytes.
+ */
+export type UndoCoverage = 'full' | 'anchors-only' | 'none'
+
 /** One agent-apply run: which task it rode and which files it touched. */
 export interface ApplyBatch {
   id: string
@@ -105,6 +115,9 @@ export interface ApplyBatch {
   startedAt: number
   finishedAt?: number
   status: 'running' | 'done' | 'failed'
+  /** Undo-coverage honesty, stamped at snapshot time. Absent on batches that
+   *  predate the field — consumers show nothing rather than guess. */
+  coverage?: UndoCoverage
 }
 
 export const DESIGN_SESSION_DOC_VERSION = '1.0' as const

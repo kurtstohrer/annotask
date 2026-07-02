@@ -185,6 +185,18 @@ export interface WireframeBlockRect {
   height: number
 }
 
+/** DOM fingerprint of an ANCHORLESS captured block (`file` is '') — the
+ *  bridge stamps it at capture time so the agent can resolve the block back
+ *  to source via `annotask_resolve_fingerprint`. `selector` is an
+ *  nth-of-type CSS path, `textHead` the leading text, `htmlHead` the
+ *  outerHTML head with data-annotask-* stripped. Never present when `file`
+ *  is set. */
+export interface WireframeBlockFingerprint {
+  selector: string
+  textHead: string
+  htmlHead: string
+}
+
 /** Source identity of a captured block (data-annotask-* at capture time).
  *  `file` may be '' when the element carried no stamp — honest, no chip. */
 export interface WireframeBlockAnchor {
@@ -202,6 +214,8 @@ export interface WireframeBlockAnchor {
    *  semantics), distinct from WireframePaletteRef.mfe's import-from
    *  semantics. Absent in single-MFE/legacy docs. */
   mfe?: string
+  /** Carried only when `file` is '' — see WireframeBlockFingerprint. */
+  fingerprint?: WireframeBlockFingerprint
 }
 
 /** What a palette block stands for — REAL scanner names, mirrors
@@ -403,6 +417,15 @@ export function isWireframeBlock(value: unknown): value is WireframeBlock {
   if (value.kind === 'captured') {
     const anchor = value.anchor as Record<string, unknown> | undefined
     if (!isPlainObject(anchor) || typeof anchor.file !== 'string' || typeof anchor.line !== 'number') return false
+    // Anchorless fingerprint — optional, but when present it must be the full
+    // three-string shape or the apply-time resolve call gets garbage input.
+    if (anchor.fingerprint !== undefined) {
+      const fp = anchor.fingerprint as Record<string, unknown>
+      if (!isPlainObject(fp)) return false
+      for (const k of ['selector', 'textHead', 'htmlHead']) {
+        if (typeof fp[k] !== 'string') return false
+      }
+    }
     if (!isBlockRect(value.originalRect)) return false
   }
   if (value.kind === 'palette') {

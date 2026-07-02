@@ -329,6 +329,13 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
     // WIREFRAME_APPLY.md.
     const mfeLoc = b.anchor?.mfe ? ` in MFE "${b.anchor.mfe}"` : ''
     const shared = sharedAnchors.get(b.id)
+    // Anchorless block (file '') carrying a capture-time DOM fingerprint: ride
+    // it on the direction and tell the agent to resolve it FIRST — a bare
+    // class label + measured rects is honest but not actionable.
+    const fingerprint = !b.anchor?.file && b.anchor?.fingerprint ? b.anchor.fingerprint : undefined
+    const fingerprintNote = fingerprint
+      ? ' — unanchored: DOM fingerprint attached; resolve it to source with annotask_resolve_fingerprint before editing'
+      : ''
     const base = {
       type: 'wireframe_direction' as const,
       file: b.anchor?.file ?? '',
@@ -338,6 +345,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       ...(b.anchor?.mfe ? { mfe: b.anchor.mfe } : {}),
       block: { label: ownLabel, ...(b.anchor?.component ? { component: b.anchor.component } : {}), ...(b.anchor?.tag ? { tag: b.anchor.tag } : {}) },
       ...(shared ? { sharedAnchor: shared } : {}),
+      ...(fingerprint ? { fingerprint } : {}),
     }
     // One anchor, many blocks = loop-rendered: a source edit hits every
     // instance, so the description must warn — deletes loudest of all.
@@ -353,7 +361,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-delete`,
         op: 'delete',
-        description: `DELETE the ${ownLabel}${fileLine(b)}${mfeLoc}${b.note ? ` — user said: "${b.note}"` : ''}${sharedDeleteNote}`,
+        description: `DELETE the ${ownLabel}${fileLine(b)}${mfeLoc}${b.note ? ` — user said: "${b.note}"` : ''}${sharedDeleteNote}${fingerprintNote}`,
         measured: { before: { ...(b.originalRect ?? b.rect) } },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -398,7 +406,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-move`,
         op: 'move',
-        description: `MOVE the ${ownLabel}${fileLine(b)}${mfeLoc}${childrenNote}: ${parts.join('; ')}${containerNote}${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}`,
+        description: `MOVE the ${ownLabel}${fileLine(b)}${mfeLoc}${childrenNote}: ${parts.join('; ')}${containerNote}${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}${fingerprintNote}`,
         measured: {
           before: { ...before }, after: { ...after },
           dx: Math.round(dx), dy: Math.round(dy),
@@ -415,7 +423,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-resize`,
         op: 'resize',
-        description: `RESIZE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}`,
+        description: `RESIZE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}${fingerprintNote}`,
         measured: { before: { ...before }, after: { ...after }, wPct, hPct },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -427,7 +435,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-note`,
         op: 'note',
-        description: `NOTE on the ${ownLabel}${fileLine(b)}${mfeLoc}: user said: "${b.note}"`,
+        description: `NOTE on the ${ownLabel}${fileLine(b)}${mfeLoc}: user said: "${b.note}"${fingerprintNote}`,
         // Note-only directions still sort by where the block sits — without
         // a rect the top-down sort would pin them all to y=0.
         measured: { after: { ...b.rect } },

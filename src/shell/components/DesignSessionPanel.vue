@@ -22,6 +22,14 @@ const lastBatch = computed(() => {
   const batches = session.snapshotState.value.batches
   return batches.length ? batches[batches.length - 1] : null
 })
+/** Undo-coverage honesty for the newest batch (stamped at snapshot time).
+ *  Absent on legacy batches — show nothing rather than guess. */
+const coverageWarning = computed(() => {
+  const c = lastBatch.value?.coverage
+  if (c === 'anchors-only') return 'Undo coverage: anchors only'
+  if (c === 'none') return 'Undo unavailable — not a git repo and no anchored files'
+  return null
+})
 const banner = computed(() => session.lastError.value ?? session.syncError.value)
 
 const confirmingDiscard = ref(false)
@@ -95,6 +103,11 @@ async function onDiscard() {
           : 'Restore every touched file to its session-start bytes and remove session placements'"
         @click="confirmingDiscard = true"
       >Discard session</button>
+    </div>
+
+    <div v-if="coverageWarning" class="session-coverage" role="status" data-testid="session-coverage"
+      title="Without a git baseline, undo can only restore the files the apply predicted — anything else the agent edits stays">
+      {{ coverageWarning }}
     </div>
 
     <ConfirmDialog
@@ -213,6 +226,10 @@ async function onDiscard() {
 .session-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.session-coverage {
+  font-size: 10px;
+  color: var(--warning);
 }
 .session-apply {
   background: var(--accent) !important;

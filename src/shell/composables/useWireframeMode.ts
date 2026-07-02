@@ -113,6 +113,9 @@ function buildAnchor(b: WireframeCaptureBlock, toAnchorFile: (mfe: string | unde
     tag: b.tag,
     role: b.role,
     ...(b.mfe ? { mfe: b.mfe } : {}),
+    // Anchorless blocks (file '') carry the bridge's DOM fingerprint so the
+    // apply-time direction stays resolvable (annotask_resolve_fingerprint).
+    ...(b.fingerprint ? { fingerprint: b.fingerprint } : {}),
   }
 }
 

@@ -174,7 +174,10 @@ export class AnnotaskWebpackPlugin {
       const hooks = htmlPluginConstructor.getHooks(compilation)
       hooks.beforeEmit.tapAsync('AnnotaskWebpackPlugin', (data: any, cb: any) => {
         const scripts = `\n<script>${bridgeClientScript()}</script>`
-        data.html = data.html.replace('</body>', scripts + '\n</body>')
+        // Function replacer: a string replacement would expand `$'`/`$&`
+        // inside the bridge source (React fiber key prefixes) into replace()
+        // patterns and corrupt the script.
+        data.html = data.html.replace('</body>', () => scripts + '\n</body>')
         cb(null, data)
       })
     })
