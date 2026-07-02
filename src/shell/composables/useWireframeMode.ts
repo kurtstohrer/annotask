@@ -281,6 +281,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
           z: i + 1,
           createdAt: Date.now(),
           anchor: buildAnchor(b, toAnchorFile),
+          ...(b.embedded ? { embedded: b.embedded } : {}),
           ...(b.error ? { captureError: b.error } : {}),
           ...(b.clipped ? { clipped: true } : {}),
         }
@@ -808,6 +809,12 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       error.value = 'Already exploded — its children are separate blocks.'
       return false
     }
+    // An <iframe> mount is another app's document — its interior can't be
+    // decomposed into anything meaningful from here. Move/resize stays fine.
+    if (parent.embedded === 'iframe') {
+      error.value = 'This block is an embedded application — annotate it from its own dev server.'
+      return false
+    }
     if (!parent.originalRect) {
       error.value = "This block can't be exploded — its captured geometry is missing. Recapture instead."
       return false
@@ -888,6 +895,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
           anchor: buildAnchor(b, toAnchorFile),
           // Lineage: dragging the parent SHELL moves its children with it.
           parentId: id,
+          ...(b.embedded ? { embedded: b.embedded } : {}),
           ...(b.error ? { captureError: b.error } : {}),
           ...(b.clipped ? { clipped: true } : {}),
         }

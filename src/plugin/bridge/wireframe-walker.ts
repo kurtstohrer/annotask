@@ -31,6 +31,16 @@
  * decomposed by GEOMETRY into anchorless sub-blocks, so the region can be
  * wireframed for layout even though it can't drive source codegen.
  *
+ * Discovery is shadow-DOM-aware: a host with no qualifying light children
+ * descends into its OPEN shadow root (a <slot> resolves to its assigned light
+ * content, or its fallback children), so a web-component page (Lit/Shoelace)
+ * decomposes instead of collapsing into one undecomposable block. A CLOSED
+ * shadow host can't be descended — its block is stamped
+ * `meta.fidelity: 'shadow-opaque'` so downstream is honest instead of silent.
+ * An <iframe> is an opaque leaf: emitted as a block (its geometry/anchor are
+ * real — moving the mount is legitimate) and matchable by wfElementForRect,
+ * stamped `meta.embedded: 'iframe'`, and never descended into.
+ *
  * The walk is pure: it reads the DOM and returns data. Scroll restoration,
  * html2canvas rasterization, and `respond()` stay in messages.ts.
  *
@@ -61,9 +71,38 @@ export function bridgeWireframeWalker(): string {
       return r.width > 0 && r.height > 0;
     }
     function wfChildren(el) {
+      // An <iframe> is an opaque leaf: its element children are unrendered
+      // fallback content and its real interior (contentDocument) is another
+      // page's DOM — the mount moves as one block, nothing to descend into.
+      if (el.tagName === 'IFRAME') return [];
       var out = [];
       for (var i = 0; i < el.children.length; i++) {
         if (wfQualifies(el.children[i])) out.push(el.children[i]);
+      }
+      // A web-component host (Lit/Shoelace) keeps its content in an OPEN shadow
+      // root, invisible to el.children — html2canvas RENDERS open shadow DOM
+      // fine, so discovery must see it too or the whole page collapses into one
+      // undecomposable block. Light children win on mixed hosts.
+      if (out.length === 0 && el.shadowRoot) return wfShadowChildren(el.shadowRoot);
+      return out;
+    }
+    // Element children of an open shadow root. A <slot> is no box of its own
+    // (display:contents) — resolve it to its assignedElements() so slotted
+    // light content is walked once, at its RENDERED position; a slot with
+    // nothing assigned renders its fallback content, so walk its own children.
+    function wfShadowChildren(sr) {
+      var out = [];
+      for (var i = 0; i < sr.children.length; i++) {
+        var c = sr.children[i];
+        if (c.tagName === 'SLOT') {
+          var assigned = c.assignedElements ? c.assignedElements() : [];
+          var list = assigned.length ? assigned : c.children;
+          for (var j = 0; j < list.length; j++) {
+            if (wfQualifies(list[j])) out.push(list[j]);
+          }
+        } else if (wfQualifies(c)) {
+          out.push(c);
+        }
       }
       return out;
     }
@@ -341,6 +380,15 @@ export function bridgeWireframeWalker(): string {
       // Only carry mfe when it resolved — keeps legacy/non-MFE output free of
       // the field (and the shell omits an empty anchor.mfe).
       if (data.mfe) meta.mfe = data.mfe;
+      // Honesty stamps — additive, absent on ordinary blocks. An <iframe> is an
+      // embedded document: geometry/anchor are real (moving the mount is
+      // legitimate) but the interior is another app — never descended, and
+      // cross-origin pixels rasterize blank. A custom element (a '-' tag) with
+      // no reachable children is a CLOSED shadow host we can't see into (an
+      // open root would have yielded shadow children) — real pixels, nothing
+      // separable, so say so instead of staying silent.
+      if (tag === 'iframe') meta.embedded = 'iframe';
+      else if (tag.indexOf('-') !== -1 && wfChildren(el).length === 0) meta.fidelity = 'shadow-opaque';
       return meta;
     }
 
@@ -468,6 +516,20 @@ export function bridgeWireframeWalker(): string {
     consider(rootEl);
     var all = rootEl.querySelectorAll ? rootEl.querySelectorAll('*') : [];
     for (var i = 0; i < all.length; i++) consider(all[i]);
+    // querySelectorAll never crosses a shadow boundary — sweep OPEN shadow
+    // roots too (recursively; the page is finite) so a captured shadow-DOM
+    // block can still be re-resolved by geometry. Light elements were
+    // considered FIRST, so on an exact-box tie a host still beats its own
+    // full-size shadow wrapper (the same outermost-wins rule as above).
+    function considerShadow(sr) {
+      var kids = sr.querySelectorAll('*');
+      for (var k = 0; k < kids.length; k++) {
+        consider(kids[k]);
+        if (kids[k].shadowRoot) considerShadow(kids[k].shadowRoot);
+      }
+    }
+    if (rootEl.shadowRoot) considerShadow(rootEl.shadowRoot);
+    for (var s = 0; s < all.length; s++) { if (all[s].shadowRoot) considerShadow(all[s].shadowRoot); }
     // Accept only a genuinely close match. Tolerance scales with the block (a
     // small drift on a big region is fine; the same px on a tiny block is not),
     // summed across the four edges, with a floor for tiny blocks.

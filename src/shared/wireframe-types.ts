@@ -248,6 +248,10 @@ export interface WireframeBlock {
   /** Set on explode children: the parent (now SHELL) block's id. Dragging the
    *  parent moves its descendants with it; dragging a child moves only itself. */
   parentId?: string
+  /** The captured element is an embedded document mount (<iframe>). Moving or
+   *  resizing the mount is legitimate; its interior is another app's DOM, so
+   *  the block is never explodable. Mirrors the walker's meta.embedded stamp. */
+  embedded?: 'iframe'
   // palette blocks
   component?: WireframePaletteRef
   fidelity?: WireframeFidelity
@@ -393,6 +397,7 @@ export function isWireframeBlock(value: unknown): value is WireframeBlock {
   if (value.shell !== undefined && typeof value.shell !== 'boolean') return false
   if (value.duplicateOf !== undefined && typeof value.duplicateOf !== 'string') return false
   if (value.parentId !== undefined && typeof value.parentId !== 'string') return false
+  if (value.embedded !== undefined && value.embedded !== 'iframe') return false
   if (value.md !== undefined && typeof value.md !== 'string') return false
   if (value.data !== undefined && !isWireframeDataBinding(value.data)) return false
   if (value.kind === 'captured') {

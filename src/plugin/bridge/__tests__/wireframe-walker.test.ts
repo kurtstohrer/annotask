@@ -17,7 +17,7 @@ import { bridgeWireframeWalker } from '../wireframe-walker'
 const openWindows: JSDOM[] = []
 afterEach(() => { while (openWindows.length) openWindows.pop()!.window.close() })
 
-interface Meta { eid: string; file: string; line: string; component: string; source_tag: string; tag: string; cls: string; role: string; mfe?: string; rect: { x: number; y: number; width: number; height: number }; dataUrl: null }
+interface Meta { eid: string; file: string; line: string; component: string; source_tag: string; tag: string; cls: string; role: string; mfe?: string; fidelity?: string; embedded?: string; rect: { x: number; y: number; width: number; height: number }; dataUrl: null }
 interface Disc { blocks: Array<{ el: any; meta: Meta }>; truncated: boolean }
 type DiscoverFn = (root: any, deps: any, opts?: { mfeDescentEnabled?: boolean; anchorBoundary?: any }) => Disc
 type RectFn = (root: any, rect: { x: number; y: number; width: number; height: number }, deps: any) => any
@@ -417,6 +417,125 @@ describe('wireframe walker — chrome-pass garbage filters', () => {
   })
 })
 
+describe('wireframe walker — shadow DOM descent', () => {
+  // jsdom supports attachShadow, so these use REAL shadow roots — the __rect
+  // prototype override applies to shadow elements the same as light ones.
+  it('a host with all content in an OPEN shadow root decomposes into its shadow children (not one opaque block)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // A Lit/Shoelace-style app shell: <my-app> in the body, everything rendered
+    // into its shadow root — el.children sees nothing, html2canvas sees it all.
+    const host = el(win, 'my-app', { rect: [0, 0, 800, 900] })
+    const sr = host.attachShadow({ mode: 'open' })
+    const head = el(win, 'header', { cls: 'sh-head', rect: [0, 0, 800, 100] })
+    const bodySec = el(win, 'section', { cls: 'sh-body', rect: [0, 100, 800, 700] })
+    const foot = el(win, 'footer', { cls: 'sh-foot', rect: [0, 800, 800, 100] })
+    sr.appendChild(head); sr.appendChild(bodySec); sr.appendChild(foot)
+    mount(win, host)
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.map((b) => b.el)).toEqual([head, bodySec, foot])
+    // The host itself is not emitted, and open-shadow content is never stamped
+    // opaque — it decomposed.
+    expect(r.blocks.some((b) => b.el === host)).toBe(false)
+    expect(r.blocks.every((b) => !('fidelity' in b.meta) && !('embedded' in b.meta))).toBe(true)
+  })
+
+  it('a <slot> resolves at its slot position (fallback children when nothing is assigned)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const host = el(win, 'my-layout', { rect: [0, 0, 800, 600] })
+    host.appendChild(win.document.createTextNode('text-only light content')) // no light ELEMENT children
+    const sr = host.attachShadow({ mode: 'open' })
+    const top = el(win, 'div', { cls: 'sh-top', rect: [0, 0, 800, 100] })
+    const slot = win.document.createElement('slot')
+    const fallback = el(win, 'section', { cls: 'slot-fallback', rect: [0, 100, 800, 400] })
+    slot.appendChild(fallback)
+    const bottom = el(win, 'div', { cls: 'sh-bottom', rect: [0, 500, 800, 100] })
+    sr.appendChild(top); sr.appendChild(slot); sr.appendChild(bottom)
+    mount(win, host)
+
+    const r = discover(win.document.body, deps)
+    // The fallback content lands BETWEEN the slot's shadow siblings — its
+    // rendered position — and the slot element itself is never a block.
+    expect(r.blocks.map((b) => b.meta.cls)).toEqual(['sh-top', 'slot-fallback', 'sh-bottom'])
+    expect(r.blocks.some((b) => b.el === slot)).toBe(false)
+  })
+
+  it('mixed host: qualifying light (slotted) children win — walked once, never duplicated through the shadow slot', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const lightA = el(win, 'section', { cls: 'light-a', rect: [0, 0, 800, 300] })
+    const lightB = el(win, 'section', { cls: 'light-b', rect: [0, 300, 800, 300] })
+    const host = el(win, 'my-card', { rect: [0, 0, 800, 600] }, [lightA, lightB])
+    const sr = host.attachShadow({ mode: 'open' })
+    const frame = el(win, 'div', { cls: 'sh-frame', rect: [0, 0, 800, 600] })
+    frame.appendChild(win.document.createElement('slot'))
+    sr.appendChild(frame)
+    mount(win, host)
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.map((b) => b.el)).toEqual([lightA, lightB])
+  })
+
+  it('a CLOSED shadow custom element emits one block stamped fidelity shadow-opaque; ordinary siblings stay unstamped', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const normal = el(win, 'section', { cls: 'normal', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '3' }, rect: [0, 0, 800, 300] })
+    const widget = el(win, 'my-widget', { cls: 'widget', rect: [0, 300, 800, 300] })
+    const csr = widget.attachShadow({ mode: 'closed' }) // widget.shadowRoot stays null
+    csr.appendChild(el(win, 'div', { cls: 'unreachable', rect: [0, 300, 800, 300] }))
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 600] }, [normal, widget]))
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.length).toBe(2)
+    const byCls = Object.fromEntries(r.blocks.map((b) => [b.meta.cls, b.meta]))
+    expect(byCls['widget'].fidelity).toBe('shadow-opaque')
+    expect('fidelity' in byCls['normal']).toBe(false)
+    // The closed root's interior is genuinely invisible to discovery.
+    expect(r.blocks.some((b) => b.meta.cls === 'unreachable')).toBe(false)
+  })
+
+  it('regression pin: an ordinary light-DOM page is untouched — same block set, no honesty stamps', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const page = el(win, 'main', { rect: [0, 0, 800, 900] }, [
+      el(win, 'section', { cls: 'hero', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '3' }, rect: [0, 0, 800, 300] }),
+      el(win, 'section', { cls: 'body', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '9' }, rect: [0, 300, 800, 300] }),
+      el(win, 'section', { cls: 'foot', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '15' }, rect: [0, 600, 800, 300] }),
+    ])
+    mount(win, page)
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.map((b) => b.meta.cls)).toEqual(['hero', 'body', 'foot'])
+    expect(r.blocks.every((b) => !('fidelity' in b.meta) && !('embedded' in b.meta))).toBe(true)
+  })
+})
+
+describe('wireframe walker — iframe opaque boundary', () => {
+  it('an <iframe> emits exactly one embedded-flagged block and is never descended (fallback children ignored)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const frame = el(win, 'iframe', { cls: 'remote-app', rect: [0, 0, 800, 600] })
+    // Element children of an <iframe> are unrendered fallback content — a
+    // descent that returned them would fabricate blocks the page never shows.
+    frame.appendChild(el(win, 'div', { cls: 'frame-fallback', rect: [0, 0, 800, 600] }))
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 600] }, [frame]))
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.length).toBe(1)
+    expect(r.blocks[0].el).toBe(frame)
+    expect(r.blocks[0].meta.embedded).toBe('iframe')
+    expect(r.blocks.some((b) => b.meta.cls === 'frame-fallback')).toBe(false)
+  })
+
+  it('an iframe among ordinary sections rides along as one opaque block; siblings carry no stamp', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const hero = el(win, 'section', { cls: 'hero', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '3' }, rect: [0, 0, 800, 200] })
+    const frame = el(win, 'iframe', { cls: 'embed', rect: [0, 200, 800, 300] })
+    const foot = el(win, 'section', { cls: 'foot', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '9' }, rect: [0, 500, 800, 100] })
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 600] }, [hero, frame, foot]))
+
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.map((b) => b.meta.cls)).toEqual(['hero', 'embed', 'foot'])
+    expect(r.blocks.filter((b) => b.meta.embedded === 'iframe').map((b) => b.meta.cls)).toEqual(['embed'])
+  })
+})
+
 describe('wireframe walker — detection robustness', () => {
   it('children-driven boundary: a plain wrapper (no id convention) with stamped descendants is decomposed (Module Federation)', () => {
     const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
@@ -585,5 +704,39 @@ describe('wireframe walker — wfElementForRect (geometric root re-resolution)',
     mount(win, el(win, 'main', { rect: [0, 0, 400, 400] }, [preview, instance, hidden, real]))
 
     expect(forRect(win.document.body, { x: 0, y: 0, width: 400, height: 200 }, deps)).toBe(real)
+  })
+
+  it('matches an element inside an open shadow root (querySelectorAll cannot see it)', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const host = el(win, 'my-app', { rect: [0, 0, 800, 900] })
+    const sr = host.attachShadow({ mode: 'open' })
+    const target = el(win, 'section', { cls: 'sh-target', rect: [0, 300, 800, 300] })
+    sr.appendChild(el(win, 'header', { cls: 'sh-head', rect: [0, 0, 800, 300] }))
+    sr.appendChild(target)
+    sr.appendChild(el(win, 'footer', { cls: 'sh-foot', rect: [0, 600, 800, 300] }))
+    mount(win, host)
+
+    expect(forRect(win.document.body, { x: 0, y: 300, width: 800, height: 300 }, deps)).toBe(target)
+  })
+
+  it('still matches an <iframe> — geometry re-resolution for a MOVE must see the mount', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const frame = el(win, 'iframe', { cls: 'embed', rect: [0, 200, 800, 300] })
+    mount(win, el(win, 'main', { rect: [0, 0, 800, 600] }, [
+      el(win, 'section', { cls: 'hero', rect: [0, 0, 800, 200] }),
+      frame,
+    ]))
+
+    expect(forRect(win.document.body, { x: 0, y: 200, width: 800, height: 300 }, deps)).toBe(frame)
+  })
+
+  it('a host wins the exact-box tie against its own full-size shadow wrapper (light considered first)', () => {
+    const win = makeWindow(); const forRect: RectFn = win.__wfElementForRect; const deps = makeDeps()
+    const host = el(win, 'my-card', { rect: [0, 0, 600, 400] })
+    const sr = host.attachShadow({ mode: 'open' })
+    sr.appendChild(el(win, 'div', { cls: 'sh-wrap', rect: [0, 0, 600, 400] }))
+    mount(win, el(win, 'main', { rect: [0, 0, 600, 800] }, [host]))
+
+    expect(forRect(win.document.body, { x: 0, y: 0, width: 600, height: 400 }, deps)).toBe(host)
   })
 })

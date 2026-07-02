@@ -375,6 +375,14 @@ export interface WireframeCaptureBlock {
   error?: string
   /** Block was taller than the 4000px cap — only the top is in the image. */
   clipped?: boolean
+  /** Custom element whose interior is unreachable (closed shadow root): the
+   *  pixels are real but nothing inside is separable. Open shadow roots are
+   *  walked normally and never stamped. */
+  fidelity?: 'shadow-opaque'
+  /** Embedded document (<iframe> MFE mount / third-party widget): geometry and
+   *  anchor are real — moving the mount is legitimate — but the interior is
+   *  another app's DOM (never descended; cross-origin pixels rasterize blank). */
+  embedded?: 'iframe'
 }
 
 export interface WireframeCaptureResult {
