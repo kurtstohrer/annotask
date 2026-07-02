@@ -12,7 +12,9 @@
 
 import {
   CliLocalProvider,
+  lastUserMessageText,
   rollupHistoryAsPrompt,
+  STDIN_PROMPT_MAX_CHARS,
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
@@ -51,7 +53,13 @@ export class CodexLocalProvider extends CliLocalProvider {
     _tools: ProviderTool[],
     options: StreamOptions,
   ): SpawnRequest {
-    const args = ['exec', '--json']
+    const args = ['exec']
+    // Session resume is a SUBCOMMAND (`codex exec resume <id>`), so it must
+    // land immediately after `exec`, before any flags. Flags below apply to
+    // both forms; resume spawns still carry sandbox/model flags so the
+    // permission floor holds on resumed turns.
+    if (options.resumeSessionId) args.push('resume', options.resumeSessionId)
+    args.push('--json')
     // Permission mode → codex sandbox flags. `bypass` keeps the historical
     // `--dangerously-bypass-approvals-and-sandbox`; `plan` clamps the sandbox
     // to `read-only`; `default` uses `--full-auto` (workspace-write sandbox).
@@ -68,15 +76,29 @@ export class CodexLocalProvider extends CliLocalProvider {
       args.push('-c', `model_reasoning_effort=${options.effort}`)
     }
     args.push(...this.extraArgs)
-    // Codex consumes the prompt as the trailing positional arg. Prepend the
-    // annotask system prompt so the persona's instructions reach the model
-    // even though codex has no separate system-prompt flag, and roll up the
-    // prior turns as a transcript — each turn spawns a fresh `codex exec`,
-    // so the prompt is the only memory follow-up messages get. The `--`
-    // separator is required: skill bodies often start with `---` (YAML
-    // frontmatter), and without it clap parses the leading `--` as an
-    // unknown long flag.
-    args.push('--', rollupHistoryAsPrompt(messages, options.systemPrompt))
+    // Codex consumes the prompt as the trailing positional arg. On a resumed
+    // session the CLI already holds the system prompt and prior turns, so the
+    // prompt is ONLY the new user message. Cold spawns prepend the annotask
+    // system prompt (codex has no separate system-prompt flag) and roll up
+    // the prior turns as a transcript — the prompt is the only memory a
+    // fresh `codex exec` gets. The `--` separator is required: skill bodies
+    // often start with `---` (YAML frontmatter), and without it clap parses
+    // the leading `--` as an unknown long flag.
+    //
+    // Transport: when the installed CLI documents it, pass `-` and put the
+    // prompt on STDIN instead of argv — no 100KB argv ceiling (history
+    // truncation budget quadruples) and the prompt stops being visible to
+    // every local process via `ps`.
+    const stdinTransport = options.cliCapabilities?.stdinPrompt === true
+    const prompt = options.resumeSessionId
+      ? lastUserMessageText(messages)
+      : rollupHistoryAsPrompt(messages, options.systemPrompt,
+          stdinTransport ? STDIN_PROMPT_MAX_CHARS : undefined)
+    if (stdinTransport) {
+      args.push('--', '-')
+      return { cli: 'codex', args, stdin: prompt }
+    }
+    args.push('--', prompt)
     return { cli: 'codex', args }
   }
 
@@ -93,6 +115,12 @@ export class CodexLocalProvider extends CliLocalProvider {
 export interface CodexEvent {
   type?: string
   item?: CodexItem
+  /** 0.111+ emits `{type:'thread.started', thread_id}` when the session opens;
+   *  `codex exec resume <thread_id>` continues it. */
+  thread_id?: string
+  /** Older builds surfaced `session.created`/`session_configured` with a
+   *  `session_id` — same resume semantics. */
+  session_id?: string
   usage?: {
     input_tokens?: number
     cached_input_tokens?: number
@@ -127,6 +155,15 @@ interface CodexItem {
 }
 
 export function mapCodexEvent(ev: CodexEvent): ProviderEvent[] {
+  // Session open — the id `codex exec resume` continues. Shape varies by
+  // version: `thread.started`+thread_id (0.111+), `session.created`/
+  // `session_configured`+session_id (older). Accept both spellings.
+  if (ev.type === 'thread.started' || ev.type === 'session.created' || ev.type === 'session_configured') {
+    const sid = typeof ev.thread_id === 'string' && ev.thread_id.length > 0
+      ? ev.thread_id
+      : typeof ev.session_id === 'string' && ev.session_id.length > 0 ? ev.session_id : undefined
+    return sid ? [{ type: 'session', sessionId: sid }] : []
+  }
   if (ev.type === 'item.completed' && ev.item) {
     return mapCodexItem(ev.item)
   }

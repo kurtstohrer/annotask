@@ -93,7 +93,7 @@ annotask api-schemas         # Discovered API schemas
 annotask api-operation /users --method=GET # One resolved API operation
 annotask resolve-endpoint /api/users/42    # Match a concrete URL to a known schema
 annotask init-skills         # Install agent skills into project
-annotask init-mcp            # Write editor MCP config (--editor=claude|cursor|vscode|windsurf|all)
+annotask init-mcp            # Write MCP config (--editor=claude|cursor|vscode|windsurf|codex|opencode|copilot|all; codex/copilot are user-global)
 annotask mcp                 # Start MCP stdio server (proxies to dev server)
 ```
 

@@ -21,6 +21,9 @@ interface UsageTotals {
   cacheReadTokens: number
   cacheCreationTokens: number
   turns: number
+  /** Entries whose counts were character-length estimates (CLI reported no
+   *  or output-only usage). Optional: pre-upgrade ledgers won't send it. */
+  estimatedTurns?: number
 }
 interface UsageSummary {
   totals: UsageTotals
@@ -128,6 +131,16 @@ const providerShare = computed<number | null>(() => {
       <p v-if="providerShare !== null" class="usage-share">
         That's <strong>{{ providerShare }}%</strong> of total project usage
         across all providers.
+      </p>
+
+      <p
+        v-if="(providerTotals.estimatedTurns ?? 0) > 0"
+        class="usage-share"
+        data-testid="usage-estimated-note"
+      >
+        ≈ {{ providerTotals.estimatedTurns }} of {{ providerTotals.turns }} turns
+        are character-length <strong>estimates</strong> — this CLI didn't report
+        full token counts.
       </p>
     </template>
   </div>

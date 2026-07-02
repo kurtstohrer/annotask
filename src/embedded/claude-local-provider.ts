@@ -16,6 +16,8 @@
 import {
   CliLocalProvider,
   flattenMessagesAsPrompt,
+  lastUserMessageText,
+  POSITIONAL_PROMPT_MAX_CHARS,
   type ParsedLineResult,
   type SpawnRequest,
 } from './cli-local-provider.js'
@@ -59,14 +61,36 @@ export class ClaudeLocalProvider extends CliLocalProvider {
     // Permission mode is resolved + headless-normalized per-call (task ??
     // persona ?? global, then normalizeHeadlessMode). The fail-safe fallback is
     // claude's safe default (bypass — claude has no headless ask-mode), not a
-    // blanket bypass for every CLI.
+    // blanket bypass for every CLI. Permission/model flags ride resume spawns
+    // too — enforcement must hold even when the conversation context doesn't
+    // get re-sent.
     args.push(...claudePermissionFlags(options.permissionMode ?? defaultPermissionModeFor('claude')))
     if (this.model) args.push('--model', this.model)
     args.push(...this.extraArgs)
+    if (options.resumeSessionId) {
+      // Resume the CLI's own persisted session: the system prompt and every
+      // prior turn already live in it, so stdin carries ONLY the new user
+      // message. The base class falls back to the cold path below when the
+      // session turns out to be stale.
+      args.push('--resume', options.resumeSessionId)
+      return { cli: 'claude', args, stdin: lastUserMessageText(messages) }
+    }
+    // When the installed CLI supports it, ship the composed skill prompt as a
+    // REAL system-prompt append instead of prepending it to the user message:
+    // it lands adjacent to Claude Code's own cached prefix (covered by its
+    // cache_control breakpoints), so back-to-back spawns re-read the stable
+    // 22-39KB skill block at cache-read pricing — and instructions stop being
+    // framed as user speech. Guarded by the same argv budget as the
+    // positional CLIs (a single Linux argv string caps at 128KiB).
+    const sys = options.systemPrompt ?? ''
+    if (options.cliCapabilities?.appendSystemPrompt === true && sys.length > 0 && sys.length <= POSITIONAL_PROMPT_MAX_CHARS) {
+      args.push('--append-system-prompt', sys)
+      return { cli: 'claude', args, stdin: flattenMessagesAsPrompt(messages, '') }
+    }
     return {
       cli: 'claude',
       args,
-      stdin: flattenMessagesAsPrompt(messages, options.systemPrompt),
+      stdin: flattenMessagesAsPrompt(messages, sys),
     }
   }
 
@@ -94,6 +118,11 @@ export class ClaudeLocalProvider extends CliLocalProvider {
  */
 export interface ClaudeStreamEvent {
   type?: string
+  /** `system` envelope discriminator — `'init'` on the session-opening event. */
+  subtype?: string
+  /** Claude Code stamps the session id on every stream-json envelope; we only
+   *  read it off `system`(init) and `result` to avoid event spam. */
+  session_id?: string
   message?: {
     role?: string
     content?: Array<ClaudeContentBlock>
@@ -125,6 +154,17 @@ interface ClaudeUsage {
 }
 
 export function mapClaudeEvent(ev: ClaudeStreamEvent): ProviderEvent[] {
+  // Session id for resume: the `system`/init envelope opens the session; the
+  // `result` envelope closes it and re-states the id (a resumed run mints a
+  // NEW id there — that's the one the next turn must resume from).
+  if ((ev.type === 'system' && ev.subtype === 'init') || ev.type === 'result') {
+    const out: ProviderEvent[] = []
+    if (typeof ev.session_id === 'string' && ev.session_id.length > 0) {
+      out.push({ type: 'session', sessionId: ev.session_id })
+    }
+    if (ev.type === 'result' && ev.usage) out.push(usageEvent(ev.usage))
+    return out
+  }
   if (ev.type === 'assistant' && ev.message) {
     const out: ProviderEvent[] = []
     for (const block of ev.message.content ?? []) {
@@ -151,9 +191,6 @@ export function mapClaudeEvent(ev: ClaudeStreamEvent): ProviderEvent[] {
       })
     }
     return out
-  }
-  if (ev.type === 'result' && ev.usage) {
-    return [usageEvent(ev.usage)]
   }
   return []
 }

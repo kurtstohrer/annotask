@@ -69,6 +69,33 @@ export interface StreamOptions {
    * providers ignore it.
    */
   taskId?: string
+  /**
+   * CLI session to resume, captured from a prior turn's `session` event.
+   * When set, local-CLI providers spawn with their native resume flag
+   * (`claude --resume`, `codex exec resume`, `opencode run --session`,
+   * `copilot --resume`) and send ONLY the latest user message — the session
+   * already holds the system prompt and prior turns, so nothing is re-sent.
+   * The caller must only pass an id captured from the SAME provider, and only
+   * when the detect probe says the installed CLI supports resume. Providers
+   * fall back to a cold full-history spawn when the resume attempt dies
+   * without producing content (stale/expired session). HTTP providers ignore.
+   */
+  resumeSessionId?: string
+  /**
+   * Feature flags for the INSTALLED CLI binary, probed server-side from its
+   * help text (agent-detect) and forwarded by the runner. Providers read the
+   * ones they care about and fall back to their legacy invocation when a flag
+   * is absent/false — an old CLI must never receive a flag it can't parse.
+   *   - appendSystemPrompt (claude): pass the composed skill prompt via
+   *     `--append-system-prompt` instead of inside the user message.
+   *   - stdinPrompt (codex): pass the prompt on stdin via the `-` positional
+   *     instead of argv (no 100KB argv cap, nothing leaks into `ps`).
+   * HTTP providers ignore this entirely.
+   */
+  cliCapabilities?: {
+    appendSystemPrompt?: boolean
+    stdinPrompt?: boolean
+  }
   /** Caller's abort signal. Providers must terminate the stream when it fires. */
   signal?: AbortSignal
 }
@@ -86,14 +113,24 @@ export type ProviderEvent =
    *  client-side never emit this. */
   | { type: 'tool_result', toolUseId: string, content: string, isError?: boolean }
   /** End-of-message usage counters. Cache-token fields are populated when the
-   *  provider exposes them (Anthropic does). */
+   *  provider exposes them (Anthropic does). `estimated` marks counts derived
+   *  from character length because the CLI reported none (or reported only
+   *  output — older copilot builds): closer to truth than a hard 0, but not
+   *  provider-authoritative. */
   | {
       type: 'usage'
       inputTokens: number
       outputTokens: number
       cacheReadTokens?: number
       cacheCreationTokens?: number
+      estimated?: boolean
     }
+  /** CLI session identifier for this run, parsed from the CLI's own stream
+   *  (claude stream-json `system/init`, codex `thread.started`, …). The
+   *  runner persists the LAST one seen onto the turn's thread message so the
+   *  next turn can resume the session instead of replaying the transcript.
+   *  Emitted zero or more times; later events win. Local-CLI only. */
+  | { type: 'session', sessionId: string }
   /** Terminal event for the stream. `stopReason` is provider-specific. */
   | { type: 'done', stopReason?: string }
   /** Non-fatal error surfaced through the stream rather than thrown. The

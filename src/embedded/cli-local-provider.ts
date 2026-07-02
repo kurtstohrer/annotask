@@ -24,6 +24,15 @@
  * Each subclass implements `buildSpawn()` (how to invoke the CLI for the
  * given prompt) and `parseStdoutLine()` (how to map one JSON line to zero or
  * more ProviderEvents).
+ *
+ * Session resume: when `options.resumeSessionId` is set, subclasses build
+ * their CLI's native resume argv (`claude --resume`, `codex exec resume`,
+ * `opencode run --session`, `copilot --resume`) and send ONLY the latest user
+ * message — the session already holds the system prompt and prior turns. The
+ * base class runs that as a guarded attempt and silently retries cold (full
+ * history, no resume flag) when the attempt dies without producing content —
+ * see `runSpawn`. Subclasses parse their CLI's session identifier into
+ * `{ type: 'session', sessionId }` events so the runner can persist it.
  */
 
 import type {
@@ -115,6 +124,42 @@ export abstract class CliLocalProvider implements LLMProvider {
       return
     }
 
+    const wantResume = typeof options.resumeSessionId === 'string' && options.resumeSessionId.length > 0
+    if (wantResume) {
+      // Attempt 1: resume the CLI session — subclasses build the resume argv
+      // and send only the latest user message. If the session is stale
+      // (expired, pruned, wrong machine) the CLI dies fast without producing
+      // content; retry cold with the full history so the turn still lands.
+      // The cold spawn emits a fresh `session` event, so the caller's stored
+      // id self-heals on the next turn.
+      const outcome = yield* this.runSpawn(messages, tools, options, true)
+      if (outcome !== 'fallback') return
+      const cold: StreamOptions = { ...options, resumeSessionId: undefined }
+      yield* this.runSpawn(messages, tools, cold, false)
+      return
+    }
+    yield* this.runSpawn(messages, tools, options, false)
+  }
+
+  /**
+   * One spawn attempt. Yields provider events as they stream.
+   *
+   * `isResumeAttempt` changes the failure contract: events are held back until
+   * the first CONTENT event (text / tool_call / tool_result) proves the
+   * session took. A resume attempt that dies contentless (non-zero exit or a
+   * transport-level stderr error, and not user-aborted) yields NO terminal
+   * events and returns `'fallback'` so the caller can silently retry cold.
+   * Everything else — including the pre-spawn 409 `task_already_running` and
+   * fetch/HTTP failures (a dead server fails cold spawns identically, so
+   * retrying would only double the noise) — terminates normally with
+   * `'done'`.
+   */
+  private async *runSpawn(
+    messages: ProviderMessage[],
+    tools: ProviderTool[],
+    options: StreamOptions,
+    isResumeAttempt: boolean,
+  ): AsyncGenerator<ProviderEvent, 'done' | 'fallback', void> {
     const spawn = this.buildSpawn(messages, tools, options)
     // Forward the task id (when this run is applying one) so the server can key
     // its run registry by task — dedup cross-tab runs + finalize orphans.
@@ -131,7 +176,7 @@ export abstract class CliLocalProvider implements LLMProvider {
     } catch (err) {
       yield { type: 'error', error: `[${this.name}] spawn fetch failed: ${(err as Error).message}` }
       yield { type: 'done', stopReason: 'error' }
-      return
+      return 'done'
     }
 
     if (!response.ok) {
@@ -144,19 +189,19 @@ export abstract class CliLocalProvider implements LLMProvider {
       // leave the task status untouched.
       if (response.status === 409 && text.includes('task_already_running')) {
         yield { type: 'done', stopReason: 'already_running' }
-        return
+        return 'done'
       }
       yield {
         type: 'error',
         error: `[${this.name}] spawn HTTP ${response.status}: ${text || response.statusText}`,
       }
       yield { type: 'done', stopReason: 'error' }
-      return
+      return 'done'
     }
     if (!response.body) {
       yield { type: 'error', error: `[${this.name}] spawn response has no body` }
       yield { type: 'done', stopReason: 'error' }
-      return
+      return 'done'
     }
 
     let exitCode: number | null = null
@@ -164,6 +209,24 @@ export abstract class CliLocalProvider implements LLMProvider {
     let stopReason: string | undefined
     let usageEmitted = false
     this.lastRunId = null
+
+    // Resume attempts hold pre-content events (session ids, early usage) so a
+    // failed attempt can be discarded wholesale — nothing from a stale-session
+    // spawn may leak into the caller's timeline. The hold releases on the
+    // first content event; from then on it's plain pass-through. Non-resume
+    // spawns never hold (holding=false ⇒ byte-identical to the old behavior).
+    let holding = isResumeAttempt
+    let contentSeen = false
+    const holdback: ProviderEvent[] = []
+    const heldErrors: string[] = []
+    const isContent = (e: ProviderEvent): boolean =>
+      e.type === 'text' || e.type === 'tool_call' || e.type === 'tool_result'
+
+    // Character counts backing the estimated-usage fallback below: what we
+    // sent (stdin + argv — flags are noise next to the prompt) and the text
+    // the CLI streamed back.
+    const promptChars = (spawn.stdin?.length ?? 0) + spawn.args.reduce((n, a) => n + a.length + 1, 0)
+    let textCharsOut = 0
 
     try {
       for await (const ev of iterateSse(response.body, options.signal)) {
@@ -176,7 +239,22 @@ export abstract class CliLocalProvider implements LLMProvider {
         } else if (ev.event === 'stdout') {
           for (const out of this.parseStdoutLine(ev.data)) {
             if (out.type === 'usage') usageEmitted = true
-            yield out
+            if (out.type === 'text') textCharsOut += out.text.length
+            if (isContent(out)) contentSeen = true
+            if (holding) {
+              if (contentSeen) {
+                holding = false
+                for (const h of holdback) yield h
+                holdback.length = 0
+                for (const e of heldErrors) yield { type: 'error', error: `[${this.name}] ${e}` }
+                heldErrors.length = 0
+                yield out
+              } else {
+                holdback.push(out)
+              }
+            } else {
+              yield out
+            }
           }
         } else if (ev.event === 'stderr') {
           // Buffer stderr — only surface if the process exits non-zero.
@@ -187,29 +265,70 @@ export abstract class CliLocalProvider implements LLMProvider {
             exitCode = typeof parsed.code === 'number' ? parsed.code : null
           } catch { /* ignore */ }
         } else if (ev.event === 'error') {
-          yield { type: 'error', error: `[${this.name}] ${ev.data}` }
+          if (holding) {
+            heldErrors.push(ev.data)
+          } else {
+            yield { type: 'error', error: `[${this.name}] ${ev.data}` }
+          }
           stopReason = 'error'
         }
       }
     } catch (err) {
-      yield { type: 'error', error: (err as Error).message ?? String(err) }
+      const msg = (err as Error).message ?? String(err)
+      if (holding) heldErrors.push(msg)
+      else yield { type: 'error', error: msg }
       stopReason = 'error'
     }
     this.lastRunId = null
 
-    if (options.signal?.aborted) stopReason = 'aborted'
+    const aborted = options.signal?.aborted === true
+
+    // Stale-session signature: the resume attempt produced no content and
+    // ended badly (non-zero exit or a stream error) without the user aborting.
+    // Suppress everything it held and let the caller retry cold.
+    if (isResumeAttempt && !contentSeen && !aborted
+      && (stopReason === 'error' || (exitCode !== null && exitCode !== 0))) {
+      return 'fallback'
+    }
+
+    // A resume attempt that ended cleanly while still holding (content-free
+    // but successful — e.g. only session/usage events) flushes its hold now.
+    if (holding) {
+      for (const h of holdback) yield h
+      for (const e of heldErrors) yield { type: 'error', error: `[${this.name}] ${e}` }
+    }
+
+    if (aborted) stopReason = 'aborted'
     else if (exitCode !== null && exitCode !== 0) {
       yield this.onCliError(stderrBuffer, exitCode)
       stopReason = stopReason ?? 'error'
     }
 
     if (!usageEmitted) {
-      // Subclasses that don't surface usage still need a `usage` event so the
-      // cost meter doesn't show a phantom zero forever.
-      yield { type: 'usage', inputTokens: 0, outputTokens: 0 }
+      // The CLI reported no usage at all (opencode legacy shapes, unknown
+      // future CLIs). Estimate from character counts instead of recording a
+      // systematic 0 — flagged `estimated` so the ledger/meter stay honest.
+      yield {
+        type: 'usage',
+        inputTokens: estimateTokensFromChars(promptChars),
+        outputTokens: estimateTokensFromChars(textCharsOut),
+        estimated: true,
+      }
     }
     yield { type: 'done', stopReason }
+    return 'done'
   }
+}
+
+/**
+ * Rough token estimate from character length (~3.6 chars/token for English
+ * prose + code, mirroring the shell's pre-run cost-meter estimator). Used
+ * when a CLI reports no (or partial) usage so the ledger records a value
+ * closer to truth than a hard 0 — always paired with `estimated: true`.
+ */
+export function estimateTokensFromChars(chars: number): number {
+  if (!Number.isFinite(chars) || chars <= 0) return 0
+  return Math.round(chars / 3.6)
 }
 
 /** Extract the text payload of one provider message. Tool blocks have no
@@ -250,8 +369,11 @@ export function flattenMessagesAsPrompt(
  * picks up the instructions even though everything is technically one user
  * message.
  *
- * `claude --print` already supports a real system prompt via stdin's flatten
- * helper above, so it doesn't go through this.
+ * `claude --print` doesn't go through this — its subclass uses
+ * `flattenMessagesAsPrompt` on stdin instead. Note that is NOT a real system
+ * prompt either: the CLI receives one user-message blob that merely opens
+ * with the instructions. Moving claude to `--append-system-prompt` is
+ * tracked as a follow-up (prompt-caching win).
  */
 export function withSystemPrompt(userText: string, systemPrompt: string): string {
   const trimmed = systemPrompt.trim()
@@ -283,6 +405,13 @@ export function lastUserMessageText(messages: ProviderMessage[]): string {
  * (its prompt rides on stdin), only the positional-prompt CLIs are.
  */
 export const POSITIONAL_PROMPT_MAX_CHARS = 100_000
+
+/**
+ * Character budget for prompts delivered over STDIN (no argv ceiling — the
+ * bound here is model-context sanity, not the OS). Roughly 110K tokens of
+ * history headroom before oldest-first truncation kicks in.
+ */
+export const STDIN_PROMPT_MAX_CHARS = 400_000
 
 /** Inserted at the top of the rolled-up transcript when old turns were
  *  dropped, so the model knows the history is incomplete rather than

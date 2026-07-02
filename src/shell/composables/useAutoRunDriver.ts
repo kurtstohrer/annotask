@@ -10,7 +10,9 @@
  *
  * Concurrency cap: 1. Local CLIs (claude/codex/opencode) consume real CPU
  * and may grab file locks; serializing keeps cross-task chaos out of v1.
- * Queued ids run FIFO.
+ * Queued ids run FIFO, except that a live batch chain (see `BatchChain`)
+ * pulls chain-compatible ids forward so same-type tasks resume one CLI
+ * session back-to-back instead of each paying a cold bootstrap.
  *
  * Drains policy: the driver claims an id by calling `consumeAutoRun(id)` —
  * if a Conversation tab is already mounted for that task, it raced us and
@@ -21,7 +23,7 @@
 import { watch } from 'vue'
 import { useAgentMode, consumeAutoRun } from './useAgentMode'
 import { useTaskThread } from './useTaskThread'
-import { useEmbeddedAgent } from './useEmbeddedAgent'
+import { useEmbeddedAgent, type ChainSessionHint } from './useEmbeddedAgent'
 import { useTasks } from './useTasks'
 import { useProviderSettings } from './useProviderSettings'
 
@@ -31,6 +33,45 @@ let runningId: string | null = null
 // tab observing a headless run can't reach that run's local `aborter` (the
 // driver owns a separate agent instance), so it routes a cancel through here.
 const cancelHooks = new Map<string, () => void>()
+
+/**
+ * Cross-task batch chain: the CLI session left behind by the LAST headless
+ * run. When the next queued task resolves to the same provider AND the same
+ * task type (same composed skill prompt), its seed run resumes this session —
+ * tasks 2..N of a "run pending" batch then skip the CLI bootstrap + the
+ * 22-39KB skill prompt and inherit the warm repo context (files already
+ * read). This is the bounded, safe version of "one session, feed tasks to
+ * it": bounded because the chain recycles once the session's context passes
+ * `CHAIN_RECYCLE_INPUT_TOKENS` (a long-lived session eventually costs more
+ * per task than a cold spawn, and risks compaction), and safe because a
+ * stale/failed resume silently falls back to a cold spawn provider-side.
+ */
+interface BatchChain extends ChainSessionHint {
+  taskType: string
+  /** Input tokens of the chain's last turn ≈ the session's context size. */
+  lastInputTokens: number
+}
+let chain: BatchChain | null = null
+/** Recycle the chain once the session context reaches this size — beyond it,
+ *  cache-reading the accumulated context per task exceeds a fresh bootstrap. */
+const CHAIN_RECYCLE_INPUT_TOKENS = 100_000
+
+/** The chain hint for a task, or undefined when chaining doesn't apply
+ *  (no live chain, resume disabled, different type/provider, or the chain's
+ *  context has outgrown the recycle threshold). */
+function chainFor(task: { type?: string }): ChainSessionHint | undefined {
+  if (!chain) return undefined
+  const providerSettings = useProviderSettings()
+  if (providerSettings.settings.value.sessionResumeEnabled === false) return undefined
+  if (String(task.type ?? '') !== chain.taskType) return undefined
+  // Same provider the runner will resolve for this task type — personas can
+  // pin providers per type, so this must mirror the runner's routing.
+  const routed = providerSettings.resolveProviderForTaskType?.(task.type)
+  const providerId = routed ? routed.providerId : providerSettings.settings.value.activeProvider
+  if (providerId !== chain.providerId) return undefined
+  if (chain.lastInputTokens >= CHAIN_RECYCLE_INPUT_TOKENS) return undefined
+  return { sessionId: chain.sessionId, providerId: chain.providerId }
+}
 
 export function startAutoRunDriver(): void {
   if (started) return
@@ -79,10 +120,23 @@ async function drain(taskSystem: ReturnType<typeof useTasks>): Promise<void> {
   while (true) {
     const queue = useAgentMode().pendingAutoRun.value
 
-    // FIFO among entries we haven't already skipped this pass.
+    // Prefer a chain-compatible entry (same task type + provider as the live
+    // batch session) so a mixed-type "run pending" queue still chains the
+    // matching tasks back-to-back; fall back to strict FIFO. Reordering is
+    // safe — queued auto tasks are independent by construction.
     let id: string | null = null
-    for (const x of queue.keys()) {
-      if (!skipped.has(x)) { id = x; break }
+    if (chain) {
+      for (const x of queue.keys()) {
+        if (skipped.has(x)) continue
+        const t = taskSystem.tasks.value.find((tt) => tt.id === x)
+        if (t && chainFor(t)) { id = x; break }
+      }
+    }
+    // FIFO among entries we haven't already skipped this pass.
+    if (!id) {
+      for (const x of queue.keys()) {
+        if (!skipped.has(x)) { id = x; break }
+      }
     }
     // Nothing consumable left — either the queue is empty or every remaining
     // item belongs to a different consumer. Exit; manual items are the
@@ -118,10 +172,17 @@ async function drain(taskSystem: ReturnType<typeof useTasks>): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`[annotask:autorun] starting ${id}`)
     try {
-      await runHeadless(id, description)
+      const harvested = await runHeadless(id, description, chainFor(task))
+      // The run's own session becomes the chain for the NEXT compatible task.
+      // No session harvested (HTTP provider, failed run, resume-free CLI) —
+      // drop the chain rather than resuming something stale.
+      chain = harvested
+        ? { ...harvested, taskType: String(task.type ?? '') }
+        : null
       // eslint-disable-next-line no-console
       console.log(`[annotask:autorun] finished ${id}`)
     } catch (err) {
+      chain = null
       // Without this catch, errors bubble through the `void drain(...)`
       // call in the watcher and vanish into unhandled-promise-rejection
       // limbo — leaving the user with a task stuck "running" and no UI
@@ -134,7 +195,12 @@ async function drain(taskSystem: ReturnType<typeof useTasks>): Promise<void> {
   }
 }
 
-async function runHeadless(taskId: string, prompt: string): Promise<void> {
+/** Session info harvested from a completed headless run, for chaining. */
+interface HarvestedSession extends ChainSessionHint {
+  lastInputTokens: number
+}
+
+async function runHeadless(taskId: string, prompt: string, chainSession?: ChainSessionHint): Promise<HarvestedSession | null> {
   // Fresh thread + agent instance per run. The composables don't use
   // lifecycle hooks so they're safe to construct outside a component.
   const thread = useTaskThread()
@@ -158,7 +224,7 @@ async function runHeadless(taskId: string, prompt: string): Promise<void> {
     const watchdogMs = Math.max(s.maxRunDurationMs, s.idleTimeoutMs, 0)
     const ceilingMs = watchdogMs > 0 ? watchdogMs + 60_000 : 20 * 60_000
     let timer: ReturnType<typeof setTimeout> | null = null
-    const sendPromise = agent.send(prompt, { isSeed: true })
+    const sendPromise = agent.send(prompt, { isSeed: true, chainSession })
     // Swallow a late rejection so aborting via the ceiling doesn't surface as an
     // unhandled rejection after the race already settled.
     void sendPromise.catch(() => {})
@@ -175,6 +241,18 @@ async function runHeadless(taskId: string, prompt: string): Promise<void> {
     } finally {
       if (timer) clearTimeout(timer)
     }
+    // Harvest the run's CLI session for cross-task chaining. The last
+    // session-bearing assistant turn carries the id to resume and — as its
+    // usage.inputTokens — a serviceable measure of the session's context
+    // size, which drives the recycle threshold.
+    const msgs = thread.messages.value
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role === 'assistant' && m.sessionId && m.providerId) {
+        return { sessionId: m.sessionId, providerId: m.providerId, lastInputTokens: m.usage?.inputTokens ?? 0 }
+      }
+    }
+    return null
   } finally {
     cancelHooks.delete(taskId)
     thread.close()
@@ -196,6 +274,7 @@ export function requestAutoRunCancel(taskId: string): boolean {
 export function resetAutoRunDriverForTests(): void {
   started = false
   runningId = null
+  chain = null
   cancelHooks.clear()
 }
 

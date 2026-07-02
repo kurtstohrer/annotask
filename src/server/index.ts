@@ -85,6 +85,7 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
         outputTokens: u.outputTokens,
         cacheReadTokens: u.cacheReadTokens,
         cacheCreationTokens: u.cacheCreationTokens,
+        estimated: u.estimated,
       }).catch((err) => {
         // eslint-disable-next-line no-console
         console.warn(`[annotask] usage ledger append failed for task ${taskId}:`, err)

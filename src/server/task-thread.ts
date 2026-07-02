@@ -43,6 +43,8 @@ export interface ThreadMessage {
     outputTokens: number
     cacheReadTokens?: number
     cacheCreationTokens?: number
+    /** Some counts were estimated from character length (CLI reported none). */
+    estimated?: boolean
   }
   /**
    * For assistant turns that called tools. Stored alongside content so a
@@ -52,6 +54,15 @@ export interface ThreadMessage {
   toolCalls?: Array<{ id: string; name: string; input: unknown }>
   /** For tool-role messages: which tool_use this is a result for. */
   toolUseId?: string
+  /**
+   * CLI session id for assistant turns run by a local-CLI provider, captured
+   * from the CLI's own stream (claude stream-json init/result, codex
+   * thread.started, …). The next turn on this thread resumes the session
+   * (`claude --resume <id>` etc.) instead of replaying the transcript —
+   * paired with `providerId` so a mid-thread provider switch never resumes a
+   * foreign session.
+   */
+  sessionId?: string
   /**
    * Ordered work-stream blocks for the turn — text deltas interleaved with
    * tool_call / tool_result blocks. The Conversation tab renders these as
@@ -95,6 +106,7 @@ export interface AppendInput {
   usage?: ThreadMessage['usage']
   toolCalls?: ThreadMessage['toolCalls']
   toolUseId?: string
+  sessionId?: string
   blocks?: WorkStreamBlock[]
   isPartial?: boolean
   lastEventAt?: number
@@ -102,7 +114,7 @@ export interface AppendInput {
 
 /** Mutable fields an `update()` may patch on an existing message. */
 export type UpdateInput = Partial<
-  Pick<ThreadMessage, 'content' | 'blocks' | 'usage' | 'isPartial' | 'lastEventAt' | 'model' | 'providerId'>
+  Pick<ThreadMessage, 'content' | 'blocks' | 'usage' | 'isPartial' | 'lastEventAt' | 'model' | 'providerId' | 'sessionId'>
 >
 
 type Listener = (msg: ThreadMessage) => void
@@ -220,6 +232,7 @@ export function createTaskThreadStore(opts: TaskThreadOptions): TaskThreadStore 
       usage: input.usage,
       toolCalls: input.toolCalls,
       toolUseId: input.toolUseId,
+      sessionId: input.sessionId,
       blocks: input.blocks,
       isPartial: input.isPartial,
       lastEventAt: input.lastEventAt,

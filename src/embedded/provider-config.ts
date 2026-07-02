@@ -351,6 +351,15 @@ export const ProviderSettingsSchema = z.object({
   /** Local event log toggle. Defaults on. Logged data never leaves the box. */
   eventLogEnabled: z.boolean().default(true),
   /**
+   * Session resume for local-CLI providers. When on (default), follow-up
+   * turns on a task thread resume the CLI's own session (`claude --resume`,
+   * `codex exec resume`, …) instead of replaying the whole transcript into a
+   * cold spawn — a large input-token saving on multi-turn tasks. Kill switch
+   * for when a CLI update changes resume semantics; the replay path is the
+   * always-correct fallback.
+   */
+  sessionResumeEnabled: z.boolean().default(true),
+  /**
    * Global permission mode for agent actions. Default `'default'` ("Auto"):
    * each CLI runs the least-permissive mode that still applies tasks headlessly
    * — codex stays in its `--full-auto` OS sandbox and copilot at the minimal
@@ -429,6 +438,7 @@ export const DEFAULT_PROVIDER_SETTINGS: ProviderSettings = {
   onboardingDismissed: false,
   redactionEnabled: true,
   eventLogEnabled: true,
+  sessionResumeEnabled: true,
   // "Auto" — least-permissive headless-capable mode per CLI (see the schema
   // comment above and normalizeHeadlessMode). Bypass is an explicit opt-in.
   permissionMode: 'default',
@@ -551,6 +561,7 @@ export function parseProviderSettings(raw: unknown): ProviderSettings {
     onboardingDismissed: parsed.data.onboardingDismissed,
     redactionEnabled: parsed.data.redactionEnabled,
     eventLogEnabled: parsed.data.eventLogEnabled,
+    sessionResumeEnabled: parsed.data.sessionResumeEnabled,
     permissionMode: parsed.data.permissionMode,
     providers: {
       ...DEFAULT_PROVIDER_SETTINGS.providers,

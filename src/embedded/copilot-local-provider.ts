@@ -18,10 +18,17 @@
  * Many other event types (session.*, user.message, assistant.turn_start,
  * assistant.reasoning, …) are surfaced too but carry no user-visible payload;
  * we ignore them silently rather than fail.
+ *
+ * KNOWN LIMITATION (evenness): copilot surfaces tool REQUESTS on the final
+ * assistant.message but never tool RESULTS, so the work-stream shows calls
+ * without their outcomes — unlike claude/codex. No documented result event
+ * exists in the JSON mode as of 1.0.x; revisit when the CLI grows one.
  */
 
 import {
   CliLocalProvider,
+  estimateTokensFromChars,
+  lastUserMessageText,
   rollupHistoryAsPrompt,
   type ParsedLineResult,
   type SpawnRequest,
@@ -45,6 +52,10 @@ export interface CopilotLocalProviderOptions {
 export class CopilotLocalProvider extends CliLocalProvider {
   private readonly model?: string
   private readonly extraArgs: string[]
+  /** Prompt size of the most recent buildSpawn — backs the input-token
+   *  estimate below. One turn streams at a time per provider instance (the
+   *  same invariant lastRunId already relies on). */
+  private lastPromptChars = 0
 
   constructor(opts: CopilotLocalProviderOptions = {}) {
     super({
@@ -74,11 +85,17 @@ export class CopilotLocalProvider extends CliLocalProvider {
       args.push('--reasoning-effort', options.effort)
     }
     args.push(...this.extraArgs)
-    // Copilot consumes the prompt via `-p <text>`. Prepend the system prompt
-    // (there's no separate system-prompt flag) and roll up the prior turns
-    // as a transcript — each turn spawns a fresh `copilot -p` with no
-    // session memory of its own.
-    args.push('-p', rollupHistoryAsPrompt(messages, options.systemPrompt))
+    // Resume copilot's persisted session (prior turns + instructions live in
+    // ~/.copilot session state): send ONLY the new user message. Cold spawns
+    // prepend the system prompt (there's no separate system-prompt flag) and
+    // roll up the prior turns as a transcript — the only memory a fresh
+    // `copilot -p` gets. Base class retries cold on a stale session.
+    const prompt = options.resumeSessionId
+      ? lastUserMessageText(messages)
+      : rollupHistoryAsPrompt(messages, options.systemPrompt)
+    this.lastPromptChars = prompt.length
+    if (options.resumeSessionId) args.push('--resume', options.resumeSessionId)
+    args.push('-p', prompt)
     return { cli: 'copilot', args }
   }
 
@@ -88,7 +105,16 @@ export class CopilotLocalProvider extends CliLocalProvider {
     let event: CopilotCliEvent
     try { event = JSON.parse(trimmed) as CopilotCliEvent }
     catch { return [] }
-    return mapCopilotEvent(event)
+    // Older copilot builds report only outputTokens (input stays 0), which
+    // makes the ledger systematically undercount the expensive side. When the
+    // CLI gave us real output but no input, substitute a character-length
+    // estimate of the prompt we just sent — flagged so downstream stays honest.
+    return mapCopilotEvent(event).map((ev) => {
+      if (ev.type === 'usage' && ev.inputTokens === 0 && ev.outputTokens > 0) {
+        return { ...ev, inputTokens: estimateTokensFromChars(this.lastPromptChars), estimated: true }
+      }
+      return ev
+    })
   }
 }
 
@@ -104,6 +130,11 @@ interface CopilotEventData {
   deltaContent?: string
   /** Final cumulative message content. */
   content?: string
+  /** Session identifier spellings seen across CLI versions on `session.*`
+   *  events — `copilot --resume <id>` continues the session. */
+  sessionId?: string
+  session_id?: string
+  id?: string
   /** Token counts reported on the final message. Copilot historically surfaces
    *  only output tokens at this layer; we read input/cache too if a newer CLI
    *  starts emitting them rather than hardcoding the input side to 0. */
@@ -131,6 +162,15 @@ interface CopilotResultUsage {
 export function mapCopilotEvent(ev: CopilotCliEvent): ProviderEvent[] {
   const out: ProviderEvent[] = []
   const data = ev.data ?? undefined
+
+  // Session id for `--resume`, read off the session.* envelopes (session.start
+  // et al). Key spelling varies by CLI version; when none parses, resume simply
+  // never activates for copilot and the replay path keeps working.
+  if (typeof ev.type === 'string' && ev.type.startsWith('session') && data) {
+    const sid = [data.sessionId, data.session_id, data.id]
+      .find((v): v is string => typeof v === 'string' && v.length > 0)
+    if (sid) out.push({ type: 'session', sessionId: sid })
+  }
 
   // Streaming text deltas. message_delta is the per-chunk surface; assistant
   // .message at end-of-turn carries the full content but emitting it would

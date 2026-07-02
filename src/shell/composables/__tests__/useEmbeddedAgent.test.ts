@@ -172,7 +172,7 @@ describe('useEmbeddedAgent — surfaces', () => {
 
   it('exposes informational usage totals', () => {
     const agent = useEmbeddedAgent(makeStubThread())
-    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estimated: false })
   })
 })
 
@@ -429,10 +429,10 @@ describe('useEmbeddedAgent — usage accounting (no double-count across turns)',
     await agent.send('first turn')
     // After the turn persists, the live accumulator is cleared (so the idle
     // gap between turns can't double-count it against the persisted message).
-    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estimated: false })
 
     await agent.send('second turn')
-    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+    expect(agent.usage.value).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estimated: false })
 
     // Each assistant turn's persisted message carries exactly its OWN turn's
     // tokens — never the running cumulative — so the header summing them lands

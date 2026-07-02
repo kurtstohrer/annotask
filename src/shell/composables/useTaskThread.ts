@@ -34,9 +34,15 @@ export interface ThreadMessage {
     outputTokens: number
     cacheReadTokens?: number
     cacheCreationTokens?: number
+    /** Some counts were estimated from character length (CLI reported none). */
+    estimated?: boolean
   }
   toolCalls?: Array<{ id: string; name: string; input: unknown }>
   toolUseId?: string
+  /** CLI session id for local-CLI assistant turns — the next turn on this
+   *  thread resumes it (`claude --resume <id>` etc.) instead of replaying the
+   *  transcript. Paired with `providerId`; never resume across providers. */
+  sessionId?: string
   /** Ordered work-stream timeline for the turn. Rendered by the rich UI. */
   blocks?: WorkStreamBlock[]
   /** True while the assistant turn is still streaming (updated in place). */
@@ -51,6 +57,7 @@ export interface AppendInput {
   providerId?: string
   model?: string
   usage?: ThreadMessage['usage']
+  sessionId?: string
   blocks?: WorkStreamBlock[]
   isPartial?: boolean
   lastEventAt?: number
@@ -65,6 +72,7 @@ export interface UpdateInput {
   lastEventAt?: number
   model?: string
   providerId?: string
+  sessionId?: string
 }
 
 export type ThreadStatus = 'idle' | 'loading' | 'live' | 'error' | 'reconnecting'
@@ -205,6 +213,7 @@ export function useTaskThread(): UseTaskThread {
         providerId: input.providerId,
         model: input.model,
         usage: input.usage,
+        sessionId: input.sessionId,
         blocks: input.blocks,
         isPartial: input.isPartial,
         lastEventAt: input.lastEventAt,

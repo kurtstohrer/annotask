@@ -15,6 +15,7 @@
 
 import {
   CliLocalProvider,
+  lastUserMessageText,
   rollupHistoryAsPrompt,
   type ParsedLineResult,
   type SpawnRequest,
@@ -61,6 +62,11 @@ export class OpencodeLocalProvider extends CliLocalProvider {
     // See permission-mode-flags.ts for the rationale.
     args.push(...opencodePermissionFlags(options.permissionMode ?? defaultPermissionModeFor('opencode')))
     if (this.model) args.push('--model', this.model)
+    // Resume opencode's own persisted session: prior turns + instructions
+    // already live server-side in the session store, so the positional is
+    // ONLY the new user message. The base class retries cold when the
+    // session turns out to be stale.
+    if (options.resumeSessionId) args.push('--session', options.resumeSessionId)
     args.push(...this.extraArgs)
     // Prepend the annotask system prompt to the positional — opencode has
     // no separate system-prompt flag in headless mode — and roll up the
@@ -68,7 +74,9 @@ export class OpencodeLocalProvider extends CliLocalProvider {
     // `opencode run` with no memory of its own. The `--` separator is
     // required: skill bodies often start with `---` (YAML frontmatter),
     // and without it the CLI parses the leading `--` as an unknown long flag.
-    args.push('--', rollupHistoryAsPrompt(messages, options.systemPrompt))
+    args.push('--', options.resumeSessionId
+      ? lastUserMessageText(messages)
+      : rollupHistoryAsPrompt(messages, options.systemPrompt))
     return { cli: 'opencode', args }
   }
 
@@ -93,6 +101,10 @@ interface OpencodeEvent {
   //   { type: 'step_finish', part: { type: 'step-finish',
   //       tokens: { input, output, cache: { read, write } }, reason, ... } }
   part?: OpencodePart
+  // Session id spellings across versions — `opencode run --session <id>`
+  // continues the session. v1.14+ stamps sessionID on part envelopes.
+  sessionID?: string
+  session_id?: string
   // Tool envelopes that some versions emit at the top level.
   id?: string
   name?: string
@@ -107,6 +119,7 @@ interface OpencodeEvent {
 interface OpencodePart {
   type?: string
   text?: string
+  sessionID?: string
   tokens?: {
     input?: number
     output?: number
@@ -128,6 +141,11 @@ interface OpencodeContentBlock {
 
 export function mapOpencodeEvent(ev: OpencodeEvent): ProviderEvent[] {
   const out: ProviderEvent[] = []
+  // Session id for resume — spellings vary by version (top-level sessionID,
+  // part.sessionID on v1.14+ envelopes, snake_case on older builds). Events
+  // repeat it; the runner keeps the last one seen, so re-emitting is fine.
+  const sid = firstNonEmpty(ev.sessionID, ev.part?.sessionID, ev.session_id)
+  if (sid) out.push({ type: 'session', sessionId: sid })
   // Text-bearing shapes:
   //   1. v1.14+: { type: 'text', part: { type: 'text', text } }
   //   2. v1.14+: step_finish event carries usage totals on part.tokens
@@ -198,4 +216,11 @@ function coerceToString(v: unknown): string {
   if (typeof v === 'string') return v
   if (v == null) return ''
   try { return JSON.stringify(v) } catch { return String(v) }
+}
+
+function firstNonEmpty(...vals: Array<string | undefined>): string | undefined {
+  for (const v of vals) {
+    if (typeof v === 'string' && v.length > 0) return v
+  }
+  return undefined
 }

@@ -1,6 +1,7 @@
 import WebSocket from 'ws'
 import { existsSync, mkdirSync, cpSync, readdirSync, symlinkSync, lstatSync, rmSync, readlinkSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { resolve, dirname, relative } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { buildTaskSummary, stripTaskVisual, stripTaskForList, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
 import { loadSkill, TASK_TYPE_COMPANIONS } from '../skills/loader.js'
@@ -726,11 +727,43 @@ function initMcp() {
    * `initMcp` is dispatched from a top-level `if` block triggers a TDZ error
    * because the dispatch runs before the const initializer.
    */
-  const MCP_EDITORS: Record<string, { name: string; path: string; key: 'mcpServers' | 'servers'; hint: string }> = {
-    claude:   { name: 'Claude Code', path: '.mcp.json',                          key: 'mcpServers', hint: 'Restart Claude Code to pick up the new server.' },
-    cursor:   { name: 'Cursor',      path: '.cursor/mcp.json',                   key: 'mcpServers', hint: 'Enable the server in Cursor Settings → MCP.' },
-    vscode:   { name: 'VS Code',     path: '.vscode/mcp.json',                   key: 'servers',    hint: 'Open the MCP panel in VS Code and start the server.' },
-    windsurf: { name: 'Windsurf',    path: '.codeium/windsurf/mcp_config.json',  key: 'mcpServers', hint: 'Open Windsurf → MCP settings and refresh.' },
+  interface McpTarget {
+    name: string
+    path: string
+    /** `project` resolves against cwd; `home` against the user's home dir —
+     *  codex and copilot only read user-global config. */
+    scope: 'project' | 'home'
+    /** JSON targets: wrapper key + per-target entry shape (`entry` defaults
+     *  to the shared `annotaskEntry`). TOML targets set `format: 'toml'` and
+     *  are handled by the codex-specific branch below. */
+    format: 'json' | 'toml'
+    key?: 'mcpServers' | 'servers' | 'mcp'
+    entry?: (transport: 'stdio' | 'http') => Record<string, unknown>
+    hint: string
+  }
+  const MCP_EDITORS: Record<string, McpTarget> = {
+    claude:   { name: 'Claude Code', path: '.mcp.json',                          scope: 'project', format: 'json', key: 'mcpServers', hint: 'Restart Claude Code to pick up the new server.' },
+    cursor:   { name: 'Cursor',      path: '.cursor/mcp.json',                   scope: 'project', format: 'json', key: 'mcpServers', hint: 'Enable the server in Cursor Settings → MCP.' },
+    vscode:   { name: 'VS Code',     path: '.vscode/mcp.json',                   scope: 'project', format: 'json', key: 'servers',    hint: 'Open the MCP panel in VS Code and start the server.' },
+    windsurf: { name: 'Windsurf',    path: '.codeium/windsurf/mcp_config.json',  scope: 'project', format: 'json', key: 'mcpServers', hint: 'Open Windsurf → MCP settings and refresh.' },
+    // The three CLIs the embedded agent can spawn besides claude. Without
+    // these, a spawned codex/opencode/copilot run has NO annotask MCP tools
+    // and works purely off the inlined seed grounding.
+    codex:    { name: 'Codex CLI',   path: '.codex/config.toml',                 scope: 'home',    format: 'toml', hint: 'User-global config — every codex run (not just this project) sees the server.' },
+    opencode: {
+      name: 'opencode', path: 'opencode.json', scope: 'project', format: 'json', key: 'mcp',
+      entry: (t) => t === 'http'
+        ? { type: 'remote', url: baseUrl + '/__annotask/mcp', enabled: true }
+        : { type: 'local', command: ['npx', 'annotask', 'mcp'], enabled: true },
+      hint: 'opencode picks up opencode.json on next run.',
+    },
+    copilot:  {
+      name: 'Copilot CLI', path: '.copilot/mcp-config.json', scope: 'home', format: 'json', key: 'mcpServers',
+      entry: (t) => t === 'http'
+        ? { type: 'http', url: baseUrl + '/__annotask/mcp', tools: ['*'] }
+        : { type: 'local', command: 'npx', args: ['annotask', 'mcp'], tools: ['*'] },
+      hint: 'User-global config — every copilot run sees the server.',
+    },
   }
 
   const editorArg = args.find(a => a.startsWith('--editor='))?.split('=')[1] || 'claude'
@@ -764,19 +797,52 @@ function initMcp() {
 
   for (const key of targetKeys) {
     const target = MCP_EDITORS[key]
-    const filePath = resolve(process.cwd(), target.path)
+    const baseDir = target.scope === 'home' ? homedir() : process.cwd()
+    const filePath = resolve(baseDir, target.path)
     const parent = dirname(filePath)
+    // Home-scoped files print with `~/` so it's obvious the write is
+    // user-global, not part of the project.
+    const displayPath = target.scope === 'home' ? `~/${target.path}` : target.path
+    const exists = existsSync(filePath)
+
+    // Codex reads TOML — merge textually: replace our table if present (only
+    // with --force), else append it. Never touches other tables.
+    if (target.format === 'toml') {
+      let text = exists ? readFileSync(filePath, 'utf-8') : ''
+      // `[ \t]*` (not `\s*`) so a blank line before the table isn't swallowed
+      // by a --force replacement.
+      const hasEntry = /(^|\n)[ \t]*\[mcp_servers\.annotask\]/.test(text)
+      if (hasEntry && !force) {
+        console.log(`  \x1b[33mskip\x1b[0m  ${target.name} → ${displayPath} (annotask entry already present; use --force to overwrite)`)
+        skipped++
+        continue
+      }
+      const block = transportArg === 'http'
+        ? `[mcp_servers.annotask]\nurl = "${baseUrl}/__annotask/mcp"\n`
+        : `[mcp_servers.annotask]\ncommand = "npx"\nargs = ["annotask", "mcp"]\n`
+      if (hasEntry) {
+        // Replace from our table header to the next table header (or EOF).
+        text = text.replace(/(^|\n)[ \t]*\[mcp_servers\.annotask\][^]*?(?=\n[ \t]*\[|$)/, (_m, lead: string) => `${lead}${block.trimEnd()}`)
+      } else {
+        text = text.length === 0 ? block : `${text.replace(/\n*$/, '\n\n')}${block}`
+      }
+      if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
+      writeFileSync(filePath, text, 'utf-8')
+      console.log(`  \x1b[32m${exists ? 'merge' : 'write'}\x1b[0m ${target.name} → \x1b[36m${displayPath}\x1b[0m`)
+      console.log(`         ${target.hint}`)
+      written++
+      continue
+    }
 
     // Merge with any existing config so we don't clobber other servers the user
     // already configured (e.g. they've got a Linear MCP alongside).
     let existing: Record<string, unknown> = {}
-    const exists = existsSync(filePath)
     if (exists) {
       try {
         existing = JSON.parse(readFileSync(filePath, 'utf-8')) as Record<string, unknown>
       } catch {
         if (!force) {
-          console.log(`  \x1b[33mskip\x1b[0m  ${target.name} → ${target.path} (file exists and isn't valid JSON; use --force to overwrite)`)
+          console.log(`  \x1b[33mskip\x1b[0m  ${target.name} → ${displayPath} (file exists and isn't valid JSON; use --force to overwrite)`)
           skipped++
           continue
         }
@@ -784,22 +850,23 @@ function initMcp() {
       }
     }
 
-    const wrapper = (existing[target.key] && typeof existing[target.key] === 'object' && !Array.isArray(existing[target.key]))
-      ? existing[target.key] as Record<string, unknown>
+    const wrapperKey = target.key ?? 'mcpServers'
+    const wrapper = (existing[wrapperKey] && typeof existing[wrapperKey] === 'object' && !Array.isArray(existing[wrapperKey]))
+      ? existing[wrapperKey] as Record<string, unknown>
       : {}
 
     if (wrapper.annotask && !force) {
-      console.log(`  \x1b[33mskip\x1b[0m  ${target.name} → ${target.path} (annotask entry already present; use --force to overwrite)`)
+      console.log(`  \x1b[33mskip\x1b[0m  ${target.name} → ${displayPath} (annotask entry already present; use --force to overwrite)`)
       skipped++
       continue
     }
 
-    wrapper.annotask = annotaskEntry
-    existing[target.key] = wrapper
+    wrapper.annotask = target.entry ? target.entry(transportArg as 'stdio' | 'http') : annotaskEntry
+    existing[wrapperKey] = wrapper
 
     if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
     writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n', 'utf-8')
-    console.log(`  \x1b[32m${exists ? 'merge' : 'write'}\x1b[0m ${target.name} → \x1b[36m${target.path}\x1b[0m`)
+    console.log(`  \x1b[32m${exists ? 'merge' : 'write'}\x1b[0m ${target.name} → \x1b[36m${displayPath}\x1b[0m`)
     console.log(`         ${target.hint}`)
     written++
   }
@@ -1500,9 +1567,11 @@ function printHelp() {
                   (Claude Code / Cursor / VS Code / Windsurf). Skip this when
                   using Annotask's built-in agent — the shell handles init
                   in the UI and runs apply through local-CLI providers.
-  init-mcp        Write editor MCP config (Claude Code / Cursor / VS Code / Windsurf).
-                  Same audience as init-skills — only needed when an editor
-                  agent should reach Annotask's tool surface.
+  init-mcp        Write MCP config for editors (Claude Code / Cursor / VS Code /
+                  Windsurf) and agent CLIs (codex / opencode / copilot). The
+                  CLI targets are what give embedded codex/opencode/copilot
+                  runs their annotask tools — without them those providers
+                  work purely off the inlined task grounding.
   mcp             Start MCP server (stdio transport, proxies to dev server)
   help            Show this help
 
@@ -1547,9 +1616,10 @@ function printHelp() {
   --target=NAME     Comma-separated targets (default: claude,agents)
                     Built-in: claude, agents, copilot
                     Custom: --target=.my-tool/skills
-  --editor=NAME     Target editor for init-mcp (default: claude)
-                    Valid: claude, cursor, vscode, windsurf, all
-                    Multiple: --editor=claude,cursor
+  --editor=NAME     Target for init-mcp (default: claude)
+                    Valid: claude, cursor, vscode, windsurf, codex, opencode,
+                    copilot, all (codex/copilot write user-global config)
+                    Multiple: --editor=claude,codex
   --transport=T     init-mcp transport: stdio (default) or http. stdio uses
                     'npx annotask mcp' and auto-resolves the dev-server port
                     per request — survives port changes without editing

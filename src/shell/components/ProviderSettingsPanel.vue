@@ -351,6 +351,31 @@ function onClearEventLog() {
       </div>
     </section>
 
+    <!-- Token efficiency: CLI session resume across turns and batch tasks. -->
+    <section class="ai-section" aria-label="Token efficiency">
+      <div class="ai-section-head">
+        <h3 class="ai-section-title">Token efficiency</h3>
+        <p class="ai-section-desc">
+          Follow-up turns and batch runs resume the CLI's own session instead
+          of replaying the whole conversation into a fresh process.
+        </p>
+      </div>
+
+      <label class="ai-toggle">
+        <input
+          type="checkbox"
+          :checked="settings.sessionResumeEnabled"
+          data-testid="session-resume-enabled"
+          @change="store.setSessionResumeEnabled(($event.target as HTMLInputElement).checked)"
+        />
+        <span>Reuse CLI sessions (resume) — large input-token saving on multi-turn tasks</span>
+      </label>
+      <p class="ai-hint">
+        Only used when the installed CLI supports it; a stale session silently
+        falls back to a full replay. Turn off if a CLI update misbehaves.
+      </p>
+    </section>
+
     <section class="ai-section" aria-label="Run safety">
       <div class="ai-section-head">
         <h3 class="ai-section-title">Run safety</h3>

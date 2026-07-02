@@ -36,6 +36,9 @@ export interface UsageEntry {
   outputTokens: number
   cacheReadTokens?: number
   cacheCreationTokens?: number
+  /** Counts derived from character length because the CLI reported no (or
+   *  output-only) usage — closer to truth than 0, but not authoritative. */
+  estimated?: boolean
 }
 
 export interface UsageTotals {
@@ -45,6 +48,9 @@ export interface UsageTotals {
   cacheCreationTokens: number
   /** Number of ledger entries folded in. */
   turns: number
+  /** How many of those entries carried character-length estimates instead of
+   *  provider-reported counts (CLIs that report no/partial usage). */
+  estimatedTurns: number
 }
 
 export interface UsageSummary {
@@ -79,6 +85,7 @@ function emptyTotals(): UsageTotals {
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     turns: 0,
+    estimatedTurns: 0,
   }
 }
 
@@ -88,6 +95,7 @@ function addInto(target: UsageTotals, e: UsageEntry): void {
   target.cacheReadTokens += clamp(e.cacheReadTokens)
   target.cacheCreationTokens += clamp(e.cacheCreationTokens)
   target.turns += 1
+  if (e.estimated === true) target.estimatedTurns += 1
 }
 
 function clamp(n: number | undefined): number {
@@ -118,6 +126,7 @@ export function createUsageLedger(opts: UsageLedgerOptions): UsageLedger {
       outputTokens: clamp(input.outputTokens),
       cacheReadTokens: clamp(input.cacheReadTokens),
       cacheCreationTokens: clamp(input.cacheCreationTokens),
+      ...(input.estimated === true ? { estimated: true } : {}),
     }
     // Skip purely-empty turns — they add noise without adding signal.
     if (

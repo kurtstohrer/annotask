@@ -180,6 +180,12 @@ function create(
     settings.value = { ...settings.value, eventLogEnabled: on }
   }
 
+  /** Session-resume kill switch (default on). Off = every turn replays the
+   *  full transcript into a cold spawn — always correct, just expensive. */
+  function setSessionResumeEnabled(on: boolean) {
+    settings.value = { ...settings.value, sessionResumeEnabled: on }
+  }
+
   /** Run-safety watchdog knobs. Stored in ms; `0` disables that timer. */
   function setIdleTimeoutMs(ms: number) {
     settings.value = { ...settings.value, idleTimeoutMs: Math.max(0, Math.floor(ms)) }
@@ -285,6 +291,7 @@ function create(
     setOnboardingDismissed,
     setRedactionEnabled,
     setEventLogEnabled,
+    setSessionResumeEnabled,
     setIdleTimeoutMs,
     setMaxRunDurationMs,
     personas,

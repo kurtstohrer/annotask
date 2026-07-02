@@ -1682,10 +1682,15 @@ interface ThreadAppendBody {
   usage?: ThreadMessage['usage']
   toolCalls?: ThreadMessage['toolCalls']
   toolUseId?: string
+  sessionId?: string
   blocks?: WorkStreamBlock[]
   isPartial?: boolean
   lastEventAt?: number
 }
+
+/** CLI session ids are short opaque tokens (UUIDs, ULIDs). Cap defensively so
+ *  a hostile body can't stuff kilobytes into every thread line. */
+const MAX_SESSION_ID_CHARS = 200
 
 function validateThreadAppend(raw: unknown): ThreadAppendBody | string {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'body must be an object'
@@ -1701,6 +1706,9 @@ function validateThreadAppend(raw: unknown): ThreadAppendBody | string {
   if (typeof body.providerId === 'string') out.providerId = body.providerId
   if (typeof body.model === 'string') out.model = body.model
   if (typeof body.toolUseId === 'string') out.toolUseId = body.toolUseId
+  if (typeof body.sessionId === 'string' && body.sessionId.length > 0 && body.sessionId.length <= MAX_SESSION_ID_CHARS) {
+    out.sessionId = body.sessionId
+  }
   const usage = parseUsage(body.usage)
   if (usage) out.usage = usage
   if (Array.isArray(body.toolCalls)) {
@@ -1733,6 +1741,7 @@ function parseUsage(raw: unknown): ThreadMessage['usage'] | undefined {
     outputTokens: u.outputTokens,
     cacheReadTokens: typeof u.cacheReadTokens === 'number' ? u.cacheReadTokens : undefined,
     cacheCreationTokens: typeof u.cacheCreationTokens === 'number' ? u.cacheCreationTokens : undefined,
+    estimated: u.estimated === true ? true : undefined,
   }
 }
 
@@ -1748,6 +1757,9 @@ function validateThreadPatch(raw: unknown): UpdateInput | string {
   if (typeof body.content === 'string') out.content = body.content
   if (typeof body.providerId === 'string') out.providerId = body.providerId
   if (typeof body.model === 'string') out.model = body.model
+  if (typeof body.sessionId === 'string' && body.sessionId.length > 0 && body.sessionId.length <= MAX_SESSION_ID_CHARS) {
+    out.sessionId = body.sessionId
+  }
   if (typeof body.isPartial === 'boolean') out.isPartial = body.isPartial
   if (typeof body.lastEventAt === 'number') out.lastEventAt = body.lastEventAt
   const usage = parseUsage(body.usage)

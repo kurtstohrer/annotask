@@ -46,15 +46,26 @@ import type { WorkStreamBlock } from '../../shared/work-stream'
 import { summarizeToolCall, summarizeToolResult } from '../utils/toolSummary'
 import { buildTaskSummary } from '../../shared/task-summary'
 import { fetchMcpToolCatalog } from '../services/mcpClient'
+import { cliCapabilities, type CliCapabilityFlags } from '../services/agentCapabilities'
 import type { ThreadMessage, UseTaskThread } from './useTaskThread'
 
 export type RunStatus = 'idle' | 'running' | 'completed' | 'aborted' | 'error'
+
+/** Cross-task session-chain hint (see `send`). providerId is load-bearing:
+ *  the runner drops the hint unless it matches the provider this run resolved
+ *  to, so a mid-batch provider/persona switch can't resume a foreign session. */
+export interface ChainSessionHint {
+  sessionId: string
+  providerId: string
+}
 
 interface UsageTotals {
   input: number
   output: number
   cacheRead: number
   cacheWrite: number
+  /** True when any counted event was estimated from character length. */
+  estimated: boolean
 }
 
 export interface UseEmbeddedAgent {
@@ -77,8 +88,14 @@ export interface UseEmbeddedAgent {
    * canonical annotask flow on the task: lock-on-start (pending|denied →
    * in_progress) and flip-to-review with a resolution on clean completion.
    * Free-form chat turns omit the flag and never touch task.status.
+   *
+   * `chainSession` is the auto-run driver's cross-task batch hint: the CLI
+   * session of the PREVIOUS task's run (same provider + same task type), used
+   * as the resume target when this task's own thread has none. Tasks 2..N of
+   * a batch then skip the CLI bootstrap + skill prompt and inherit the warm
+   * repo context. Ignored unless it matches the resolved provider.
    */
-  send(userText: string, opts?: { isSeed?: boolean }): Promise<void>
+  send(userText: string, opts?: { isSeed?: boolean; chainSession?: ChainSessionHint }): Promise<void>
   /** Remove a queued message by index without firing it. */
   cancelQueued(index: number): void
   abort(): void
@@ -366,23 +383,29 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
   const status = ref<RunStatus>('idle')
   const currentBlocks = shallowRef<WorkStreamBlock[]>([])
   const errorMessage = ref<string | null>(null)
-  const usage = ref<UsageTotals>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+  const usage = ref<UsageTotals>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estimated: false })
   const queuedMessages = ref<string[]>([])
 
   const running = computed(() => status.value === 'running')
 
   let aborter: AbortController | null = null
   let currentProvider: import('../../embedded/provider.js').LLMProvider | null = null
+  // CLI session id parsed from the in-flight turn's stream (`session` events).
+  // Persisted onto the turn's thread message at the final flush so the NEXT
+  // turn can resume the session instead of replaying the transcript. Later
+  // events win — claude's `result` envelope re-states the id at end-of-turn.
+  let capturedSessionId: string | null = null
 
   function reset() {
     currentBlocks.value = []
     errorMessage.value = null
+    capturedSessionId = null
     // `usage` is the live accumulator for the CURRENT (not-yet-persisted) turn
     // only — each completed turn's tokens land on its persisted ThreadMessage
     // (via flushPartial's final write), and the header sums those. Resetting
     // here keeps `agent.usage` from carrying prior turns' tokens forward, which
     // would otherwise be double-counted on top of the persisted-message sum.
-    usage.value = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    usage.value = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estimated: false }
   }
 
   /**
@@ -438,7 +461,11 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
           output: usage.value.output + ev.outputTokens,
           cacheRead: usage.value.cacheRead + (ev.cacheReadTokens ?? 0),
           cacheWrite: usage.value.cacheWrite + (ev.cacheCreationTokens ?? 0),
+          estimated: usage.value.estimated || ev.estimated === true,
         }
+        return
+      case 'session':
+        capturedSessionId = ev.sessionId
         return
       // done + error are handled in send() so they affect status/control flow.
       default:
@@ -462,7 +489,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     return parts.join('\n').trim()
   }
 
-  async function runOne(userText: string, isSeed = false): Promise<void> {
+  async function runOne(userText: string, isSeed = false, chainSession?: ChainSessionHint): Promise<void> {
     reset()
     status.value = 'running'
     // Broadcast "this task has an active run" so TaskCard can pulse its
@@ -527,6 +554,47 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     }
 
     const history = toProviderMessages(thread.messages.value)
+
+    // Probed feature flags for the resolved CLI (help-text capability probe,
+    // cached). Gates session resume below and lets the provider pick its
+    // native prompt transports (claude --append-system-prompt, codex stdin).
+    // {} for HTTP providers and on any probe failure — every flag defaults
+    // to the legacy invocation.
+    const cliCaps: CliCapabilityFlags = isLocalCliProvider(activeProviderId)
+      ? await cliCapabilities(activeProviderId)
+      : {}
+
+    // Session resume: when a prior turn on this thread captured a CLI session
+    // id FROM THE SAME PROVIDER, and the installed CLI advertises resume
+    // support, hand the id to the provider — it spawns `--resume <id>` with
+    // only the new user message instead of replaying the whole transcript
+    // (the single biggest input-token saving on multi-turn/retry threads).
+    // Every guard failing is fine: the provider ignores an absent id and the
+    // replay path is always correct. Provider match is load-bearing — a
+    // mid-thread provider switch must never resume a foreign session.
+    let resumeSessionId: string | undefined
+    if (
+      isLocalCliProvider(activeProviderId)
+      && providerSettings.settings.value.sessionResumeEnabled !== false
+      && cliCaps.resume === true
+    ) {
+      const msgs = thread.messages.value
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]
+        if (m.role !== 'assistant' || !m.sessionId) continue
+        if (m.providerId === activeProviderId) {
+          resumeSessionId = m.sessionId
+        }
+        break // only the LATEST session-bearing turn counts, match or not
+      }
+      // No session of our own — accept the driver's cross-task batch hint
+      // (the previous same-type task's session). Own-thread sessions win:
+      // they carry THIS task's context; the chain only carries warm repo
+      // state + the already-ingested skill prompt.
+      if (!resumeSessionId && chainSession && chainSession.providerId === activeProviderId) {
+        resumeSessionId = chainSession.sessionId
+      }
+    }
 
     // Pre-warm the MCP tool catalog so the first tool-using turn (Phase 3+)
     // doesn't pay an extra round-trip. Errors are non-fatal — the catalog
@@ -603,12 +671,16 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       : resolvedPermissionMode
 
     // Plan mode needs model-level enforcement on opencode/copilot (no native
-    // read-only flag in their headless modes). Prepend a strong directive so
-    // the model refuses write tools on its own. Claude/codex still get
-    // CLI/sandbox enforcement on top via `permissionMode` below.
+    // read-only flag in their headless modes). Append a strong directive so
+    // the model refuses write tools on its own (a trailing directive is at
+    // least as binding as a leading one). Claude/codex still get CLI/sandbox
+    // enforcement on top via `permissionMode` below. APPENDED — not prepended
+    // — so the stable skill prompt stays a byte-identical PREFIX across runs
+    // and provider-side prompt caching can cover it; a leading mode banner
+    // used to invalidate the whole cacheable prefix whenever the mode toggled.
     const permissionPrefix = permissionModeSystemPromptPrefix(effectivePermissionMode)
     const systemPromptWithPermission = permissionPrefix
-      ? `${permissionPrefix}\n\n---\n\n${systemPrompt}`
+      ? `${systemPrompt}\n\n---\n\n${permissionPrefix}`
       : systemPrompt
 
     // Redact secrets from outgoing messages/prompt when enabled.
@@ -667,7 +739,12 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
                   outputTokens: usage.value.output,
                   cacheReadTokens: usage.value.cacheRead,
                   cacheCreationTokens: usage.value.cacheWrite,
+                  ...(usage.value.estimated ? { estimated: true } : {}),
                 },
+                // CLI session id for the NEXT turn's resume. Only stamped on
+                // the final flush — a mid-stream id could still be superseded
+                // (claude re-states it on the closing `result` envelope).
+                ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
               }
             : {}),
         })
@@ -717,6 +794,8 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
         // Lets the server key its run registry by task: one live run per task
         // (no cross-tab double-spawn) + orphaned-task finalization.
         taskId: taskId ?? undefined,
+        resumeSessionId,
+        cliCapabilities: cliCaps,
       })) {
         lastEventAt = Date.now()
         applyEvent(ev)
@@ -801,7 +880,9 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
             outputTokens: usage.value.output,
             cacheReadTokens: usage.value.cacheRead,
             cacheCreationTokens: usage.value.cacheWrite,
+            ...(usage.value.estimated ? { estimated: true } : {}),
           },
+          ...(capturedSessionId ? { sessionId: capturedSessionId } : {}),
           blocks,
         })
       } catch (err) {
@@ -813,7 +894,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
     // accumulator so the header's `tokenSummary` (persisted-message sum + live
     // accumulator) doesn't count this turn twice in the idle gap before the
     // next turn's `reset()` clears it.
-    usage.value = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    usage.value = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, estimated: false }
 
     // Surface a watchdog stall or a failed seed run as a system message so
     // it's part of the persisted transcript (visible to every observer +
@@ -1008,7 +1089,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
    * are always free-form turns — the seed always fires immediately or not
    * at all (the auto-run driver enforces concurrency at the driver layer).
    */
-  async function send(userText: string, opts: { isSeed?: boolean } = {}): Promise<void> {
+  async function send(userText: string, opts: { isSeed?: boolean; chainSession?: ChainSessionHint } = {}): Promise<void> {
     const trimmed = userText.trim()
     if (!trimmed) return
 
@@ -1017,7 +1098,7 @@ export function useEmbeddedAgent(thread: UseTaskThread): UseEmbeddedAgent {
       return
     }
 
-    await runOne(trimmed, opts.isSeed === true)
+    await runOne(trimmed, opts.isSeed === true, opts.chainSession)
 
     // Drain the queue. Queued items are free-form (no isSeed) — they
     // shouldn't bounce the task through status transitions.
