@@ -235,6 +235,10 @@ export interface WireframeDirectionChange extends BaseChange {
   op: 'move' | 'resize' | 'delete' | 'add' | 'note'
   /** The block's identity as captured/created — tool-derived, never invented. */
   block: { label: string; component?: string; tag?: string }
+  /** Set when N>1 captured blocks share this (file, line) anchor — likely
+   *  loop-rendered, so ONE source edit affects every instance. `ordinal` is
+   *  the block's 1-based position among the sharers in document order. */
+  sharedAnchor?: { ordinal: number; of: number }
   /** TOOL-MEASURED spatial facts. Never user-authored. */
   measured?: {
     before?: WireframeRect

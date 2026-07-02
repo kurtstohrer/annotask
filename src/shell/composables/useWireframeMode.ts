@@ -130,8 +130,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   const wireframeDoc = useWireframeDoc()
   const session = useDesignSession()
   const workspace = useWorkspace()
-  // The MFE filter loads this elsewhere; ensure it's available for anchor
-  // translation even if capture is the first thing the user touches (idempotent).
+  // Prefetch for the MFE filter and anchor translation. Fire-and-forget here
+  // (init must not block); the capture/explode paths AWAIT their own load()
+  // call — cached and idempotent — before building anchors, so a capture can
+  // no longer race this and persist package-local MFE paths.
   void workspace.load()
 
   /** Rewrite a block's package-local `file` into a HOST-resolvable path using
@@ -253,6 +255,12 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     progress.value = null
     error.value = null
     try {
+      // Anchor translation (toAnchorFile) needs the workspace catalog — await
+      // it so a capture can't race the init prefetch and persist package-local
+      // MFE paths (which the host would resolve to its own same-named files).
+      // A failed load still resolves (info stays null, identity translation);
+      // the server-side attribution guard catches those anchors at apply time.
+      await workspace.load()
       const res = await iframe.captureWireframe()
       if (res.error || !res.blocks?.length || !res.viewport) {
         error.value = res.error ?? 'nothing to capture'
@@ -747,6 +755,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     if (!active.value || block.kind !== 'captured' || block.shell || block.deleted) return []
     if (!block.originalRect) return []
     try {
+      // toLocalFile needs the catalog to undo the anchor's MFE prefix.
+      await workspace.load()
       // Anchored blocks re-resolve via their durable source anchor; anchorless
       // ones (un-instrumented MFE/library DOM) re-resolve by captured geometry.
       // Mirrors explodeBlock so the hover highlights preview exactly what an
@@ -803,6 +813,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       return false
     }
     error.value = null
+
+    // Explode both reads (toLocalFile) and mints (buildAnchor) MFE anchors —
+    // same workspace-catalog dependency as capture, same await.
+    await workspace.load()
 
     // Resolve the live element to re-capture a level deeper. ANCHORED blocks
     // re-resolve from their durable source anchor (eids are volatile) — the DOM
@@ -975,7 +989,9 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       for (const d of directions) {
         session.record({
           change: d,
-          anchor: { file: d.file, line: d.line, ...(d.block.tag ? { targetTag: d.block.tag } : {}) },
+          // The owning MFE rides the anchor so the server's apply-time
+          // attribution guard can verify the file against that package.
+          anchor: { file: d.file, line: d.line, ...(d.block.tag ? { targetTag: d.block.tag } : {}), ...(d.mfe ? { mfe: d.mfe } : {}) },
           route,
         })
       }

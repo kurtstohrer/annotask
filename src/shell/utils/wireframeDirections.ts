@@ -46,26 +46,32 @@ function anchorDonors(blocks: WireframeBlock[]): WireframeBlock[] {
  * Anchor an added block at its nearest anchored neighbor. Position describes
  * where the new markup goes relative to the NEIGHBOR in source order:
  * neighbor visually above → insert 'after' it; below → 'before' it;
- * containing → 'append' into it.
+ * containing → 'append' into it. `runnerUp` names the second-nearest donor
+ * when it was a close call (edge distance ≤ 1.5x the winner's) — an honest
+ * alternative for the agent to sanity-check the anchor choice against.
  */
 export function directionAnchor(
   block: WireframeBlock,
   blocks: WireframeBlock[],
-): { neighbor: WireframeBlock | null; position: 'before' | 'after' | 'append' | 'prepend' } {
+): { neighbor: WireframeBlock | null; position: 'before' | 'after' | 'append' | 'prepend'; runnerUp?: WireframeBlock } {
   const donors = anchorDonors(blocks).filter((d) => d.id !== block.id)
   if (donors.length === 0) return { neighbor: null, position: 'append' }
-  let best = donors[0]
+  let best: WireframeBlock | null = null
   let bestDist = Infinity
+  let second: WireframeBlock | null = null
+  let secondDist = Infinity
   for (const d of donors) {
     const dist = edgeDistance(block.rect, d.rect)
-    if (dist < bestDist) { best = d; bestDist = dist }
+    if (dist < bestDist) { second = best; secondDist = bestDist; best = d; bestDist = dist }
+    else if (dist < secondDist) { second = d; secondDist = dist }
   }
-  const r = best.rect
+  const runnerUp = second && secondDist <= 1.5 * bestDist ? { runnerUp: second } : {}
+  const r = best!.rect
   const contains = block.rect.x >= r.x && block.rect.y >= r.y
     && block.rect.x + block.rect.width <= r.x + r.width
     && block.rect.y + block.rect.height <= r.y + r.height
-  if (contains) return { neighbor: best, position: 'append' }
-  return { neighbor: best, position: centerY(block.rect) >= centerY(r) ? 'after' : 'before' }
+  if (contains) return { neighbor: best, position: 'append', ...runnerUp }
+  return { neighbor: best, position: centerY(block.rect) >= centerY(r) ? 'after' : 'before', ...runnerUp }
 }
 
 /** Relational facts for a moved block vs every other surviving block.
@@ -135,6 +141,52 @@ function rectStr(r: WireframeRect): string {
   return `${Math.round(r.width)}x${Math.round(r.height)}`
 }
 
+/** Fallback relation when the overlap-gated rules produce nothing (diagonal
+ *  move into empty space): a pixels-only direction is one the agent is told
+ *  to distrust, so always name the nearest surviving block and the rough
+ *  side the block landed on (dominant center-delta axis). */
+function nearestRelation(after: WireframeRect, others: WireframeBlock[]): string | null {
+  let nearest: WireframeBlock | null = null
+  let nearestDist = Infinity
+  for (const o of others) {
+    const dist = edgeDistance(after, o.rect)
+    if (dist < nearestDist) { nearest = o; nearestDist = dist }
+  }
+  if (!nearest) return null
+  const dxc = centerX(after) - centerX(nearest.rect)
+  const dyc = centerY(after) - centerY(nearest.rect)
+  const side = Math.abs(dyc) >= Math.abs(dxc)
+    ? (dyc < 0 ? 'above' : 'below')
+    : (dxc < 0 ? 'left of' : 'right of')
+  return `nearest the ${label(nearest)}${fileLine(nearest)}, roughly ${side} it`
+}
+
+/** Blocks minted by one v-for/map render all share a single (file, line)
+ *  anchor — a source-level edit there hits EVERY instance, so directions on
+ *  a sharer must say so. Deleted sharers still count (they share the anchor
+ *  too). Ordinal is document order, proxied by capture rect (y, then x). */
+function computeAnchorSharers(blocks: WireframeBlock[]): Map<string, { ordinal: number; of: number }> {
+  const groups = new Map<string, WireframeBlock[]>()
+  for (const b of blocks) {
+    if (b.kind !== 'captured' || b.duplicateOf || !b.anchor?.file) continue
+    const key = `${b.anchor.file}:${b.anchor.line}`
+    const g = groups.get(key)
+    if (g) g.push(b)
+    else groups.set(key, [b])
+  }
+  const shared = new Map<string, { ordinal: number; of: number }>()
+  for (const g of groups.values()) {
+    if (g.length < 2) continue
+    g.sort((a, c) => {
+      const ar = a.originalRect ?? a.rect
+      const cr = c.originalRect ?? c.rect
+      return ar.y - cr.y || ar.x - cr.x
+    })
+    g.forEach((b, i) => shared.set(b.id, { ordinal: i + 1, of: g.length }))
+  }
+  return shared
+}
+
 export function computeWireframeDirections(canvas: WireframeCanvasState): WireframeDirectionChange[] {
   const blocks = canvas.blocks
   const survivors = blocks.filter((b) => !b.deleted)
@@ -144,6 +196,32 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       - Math.min(...capturedOriginals.map((b) => b.originalRect!.x))
     : canvas.viewport.width
   const contentWidth = Math.max(canvas.viewport.width, unionWidth)
+  const sharedAnchors = computeAnchorSharers(blocks)
+
+  // Exploded children ride a parent drag, so a group move diffs as N+1
+  // identical deltas — suppress the children's moves and let the parent's
+  // single direction carry the relocation, or the agent double-applies it.
+  const delta = (x: WireframeBlock) => {
+    const o = x.originalRect ?? x.rect
+    return { dx: x.rect.x - o.x, dy: x.rect.y - o.y }
+  }
+  const movedPastThreshold = (x: WireframeBlock) => {
+    const d = delta(x)
+    return Math.abs(d.dx) + Math.abs(d.dy) > MOVE_THRESHOLD_PX
+  }
+  const suppressedChildMoves = new Set<string>()
+  const parentsOfSuppressed = new Set<string>()
+  for (const b of blocks) {
+    if (b.kind !== 'captured' || b.duplicateOf || b.deleted || !b.parentId || !movedPastThreshold(b)) continue
+    const parent = blocks.find((p) => p.id === b.parentId)
+    if (!parent || parent.kind !== 'captured' || parent.deleted || !movedPastThreshold(parent)) continue
+    const d = delta(b)
+    const pd = delta(parent)
+    if (Math.abs(d.dx - pd.dx) <= 2 && Math.abs(d.dy - pd.dy) <= 2) {
+      suppressedChildMoves.add(b.id)
+      parentsOfSuppressed.add(parent.id)
+    }
+  }
 
   const directions: WireframeDirectionChange[] = []
 
@@ -164,17 +242,21 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       // surviving captured neighbor.
       let neighbor: WireframeBlock | null
       let position: 'before' | 'after' | 'append' | 'prepend'
+      let runnerUp: WireframeBlock | undefined
       if (isCapturedDup && !original.deleted && original.anchor?.file) {
         neighbor = original
         position = centerY(b.rect) >= centerY(original.rect) ? 'after' : 'before'
       } else {
-        ({ neighbor, position } = directionAnchor(b, blocks))
+        ({ neighbor, position, runnerUp } = directionAnchor(b, blocks))
       }
 
       const componentName = b.component?.componentName
       const where = neighbor
         ? `${position === 'append' ? 'inside' : position} the ${label(neighbor)}${fileLine(neighbor)}`
         : 'on the page'
+      // A near-tie donor is worth naming: the agent can sanity-check the
+      // anchor choice instead of trusting one edge-distance winner blindly.
+      const altNote = runnerUp ? `; alternative anchor: the ${label(runnerUp)}${fileLine(runnerUp)}` : ''
       // A duplicate whose original LEFT the sketch (deleted/exploded) has no
       // anchor to copy from — say so honestly instead of claiming the user
       // sketched a box. A placeholder WITH md is a drawn section: the spec in
@@ -214,7 +296,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         id: `wd-${b.id}-add`,
         type: 'wireframe_direction',
         op: 'add',
-        description: `ADD ${what} ${where}${mdNote}${dataNote}${mfeNote}${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `ADD ${what} ${where}${altNote}${mdNote}${dataNote}${mfeNote}${b.note ? ` — user said: "${b.note}"` : ''}`,
         file: neighbor?.anchor?.file ?? '',
         section: 'template',
         line: neighbor?.anchor?.line ?? 0,
@@ -246,6 +328,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
     // (LOCATION semantics, distinct from an add's import-from). See
     // WIREFRAME_APPLY.md.
     const mfeLoc = b.anchor?.mfe ? ` in MFE "${b.anchor.mfe}"` : ''
+    const shared = sharedAnchors.get(b.id)
     const base = {
       type: 'wireframe_direction' as const,
       file: b.anchor?.file ?? '',
@@ -254,14 +337,23 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       ...(b.anchor?.component ? { component: b.anchor.component } : {}),
       ...(b.anchor?.mfe ? { mfe: b.anchor.mfe } : {}),
       block: { label: ownLabel, ...(b.anchor?.component ? { component: b.anchor.component } : {}), ...(b.anchor?.tag ? { tag: b.anchor.tag } : {}) },
+      ...(shared ? { sharedAnchor: shared } : {}),
     }
+    // One anchor, many blocks = loop-rendered: a source edit hits every
+    // instance, so the description must warn — deletes loudest of all.
+    const sharedDeleteNote = shared
+      ? ` — CAUTION: ${shared.of} blocks share this anchor (likely loop-rendered); removing the source element removes ALL of them. Verify with annotask_get_binding_classification; if the user meant one item, ask via needs_info.`
+      : ''
+    const sharedEditNote = shared
+      ? ` — note: ${shared.of} blocks share this anchor (loop-rendered); the source-level change applies to every instance.`
+      : ''
 
     if (b.deleted) {
       directions.push({
         ...base,
         id: `wd-${b.id}-delete`,
         op: 'delete',
-        description: `DELETE the ${ownLabel}${fileLine(b)}${mfeLoc}${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `DELETE the ${ownLabel}${fileLine(b)}${mfeLoc}${b.note ? ` — user said: "${b.note}"` : ''}${sharedDeleteNote}`,
         measured: { before: { ...(b.originalRect ?? b.rect) } },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -280,11 +372,23 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
     const wPct = Math.round((after.width / Math.max(before.width, 1)) * 100)
     const hPct = Math.round((after.height / Math.max(before.height, 1)) * 100)
 
-    if (movedFar) {
+    if (movedFar && !suppressedChildMoves.has(b.id)) {
       // Moved (and possibly resized) — ONE direction so the agent never
       // double-applies; resize facts ride the move.
       const others = survivors.filter((o) => o.id !== b.id)
-      const relations = computeRelations(b, others, contentWidth)
+      let relations = computeRelations(b, others, contentWidth)
+      if (!relations.length) {
+        const fallback = nearestRelation(after, others)
+        if (fallback) relations = [fallback]
+      }
+      // A child that moved DIFFERENTLY from its moved parent is a real
+      // in-container restructure — but the agent must know the container
+      // itself relocated too, or the child's coordinates read as absolute.
+      const parent = b.parentId ? blocks.find((p) => p.id === b.parentId) : undefined
+      const containerNote = parent && parent.kind === 'captured' && !parent.deleted && movedPastThreshold(parent)
+        ? ` — within the ${label(parent)} container (which also moved)`
+        : ''
+      const childrenNote = parentsOfSuppressed.has(b.id) ? ' (its children move with it)' : ''
       const parts = [
         ...(relations.length ? [relations.join('; ')] : []),
         `position ${Math.round(before.x)},${Math.round(before.y)} → ${Math.round(after.x)},${Math.round(after.y)} (measured)`,
@@ -294,7 +398,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-move`,
         op: 'move',
-        description: `MOVE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${parts.join('; ')}${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `MOVE the ${ownLabel}${fileLine(b)}${mfeLoc}${childrenNote}: ${parts.join('; ')}${containerNote}${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}`,
         measured: {
           before: { ...before }, after: { ...after },
           dx: Math.round(dx), dy: Math.round(dy),
@@ -311,7 +415,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-resize`,
         op: 'resize',
-        description: `RESIZE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}`,
+        description: `RESIZE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}`,
         measured: { before: { ...before }, after: { ...after }, wPct, hPct },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -324,6 +428,9 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         id: `wd-${b.id}-note`,
         op: 'note',
         description: `NOTE on the ${ownLabel}${fileLine(b)}${mfeLoc}: user said: "${b.note}"`,
+        // Note-only directions still sort by where the block sits — without
+        // a rect the top-down sort would pin them all to y=0.
+        measured: { after: { ...b.rect } },
         note: b.note,
       })
     }

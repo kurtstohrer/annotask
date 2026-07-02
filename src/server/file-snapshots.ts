@@ -37,9 +37,13 @@ const execFileAsync = promisify(execFile)
  * then at seal `git diff` the tree against it and fold EVERY touched tracked
  * file into the batch (pre-apply bytes pulled from `git show`), so undo/discard
  * restore the agent's whole footprint, not a partial subset. An agent-DELETED
- * file is recreated from its held bytes on restore. Outside a git project (or a
- * monorepo whose toplevel isn't the project root) coverage falls back to the
- * predicted anchor files only — documented, never silent.
+ * file is recreated from its held bytes on restore. In a monorepo the git
+ * toplevel is usually the WORKSPACE root, not projectRoot — the git machinery
+ * then runs at the toplevel and repo-relative paths are translated back to
+ * projectRoot-relative (`../mfe-x/…`), which resolveAbs already contains under
+ * the workspace root. Outside a git project (or when the toplevel escapes the
+ * workspace root, where translation could escape containment) coverage falls
+ * back to the predicted anchor files only — documented, never silent.
  */
 
 function sha256(s: string): string {
@@ -68,8 +72,13 @@ interface SnapshotBatch extends ApplyBatch {
   /** `git stash create` SHA (or HEAD when the tree was clean) captured at
    *  snapshot time — the pre-apply tree the seal diffs against to discover
    *  agent-touched files and recover their pre-apply bytes. Absent outside a
-   *  git project / when the repo toplevel isn't the project root. */
+   *  git project / when the repo toplevel escapes the workspace root. */
   gitBaseline?: string
+  /** Repo toplevel the baseline was captured at — set ONLY in a monorepo where
+   *  the git root is an ancestor of projectRoot (inside the workspace root).
+   *  Seal reruns diff/show/status there and translates repo-relative paths back
+   *  to projectRoot-relative. Persisted so rehydrated batches seal correctly. */
+  gitToplevel?: string
   /** Files the agent created during this batch (rel path → sha256 at seal).
    *  Undo deletes them hash-guarded; a user-edited created file is kept. */
   created?: Record<string, string>
@@ -196,21 +205,32 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
   }
   const ready = Promise.all([rehydrate(), resolveWorkspaceRoot()]).then(() => undefined)
 
+  /** Translate a repo-toplevel-relative git path to the projectRoot-relative
+   *  shape the journal keys on. A sibling-package file becomes `../mfe-x/…`,
+   *  which resolveAbs accepts (workspace-root containment). */
+  function fromRepoRel(toplevel: string, file: string): string {
+    return path.relative(projectRoot, path.join(toplevel, file)).split(path.sep).join('/')
+  }
+
   /** Untracked files per `git status --porcelain -uall` (gitignore-aware), or
    *  null when this isn't a usable git project — the created-files net is then
-   *  silently off (snapshotted files still restore byte-exact). */
-  async function gitUntracked(): Promise<string[] | null> {
+   *  silently off (snapshotted files still restore byte-exact). Porcelain paths
+   *  are repo-root-relative; in monorepo mode (`toplevel` set) they're
+   *  translated to projectRoot-relative. */
+  async function gitUntracked(toplevel?: string): Promise<string[] | null> {
     try {
       const { stdout } = await execFileAsync(
         'git', ['status', '--porcelain', '-uall', '--no-renames'],
-        { cwd: projectRoot, maxBuffer: 10 * 1024 * 1024 },
+        { cwd: toplevel ?? projectRoot, maxBuffer: 10 * 1024 * 1024 },
       )
       return stdout.split('\n')
         .filter((l) => l.startsWith('?? '))
         .map((l) => l.slice(3).trim())
         // git quotes paths with special chars — those stay un-netted rather
         // than risking a wrong unlink target.
-        .filter((f) => f && !f.startsWith('"') && !f.startsWith('.annotask/'))
+        .filter((f) => f && !f.startsWith('"'))
+        .map((f) => (toplevel ? fromRepoRel(toplevel, f) : f))
+        .filter((f) => !f.startsWith('.annotask/'))
     } catch {
       return null
     }
@@ -220,18 +240,31 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
    *  commits the dirty working tree + index to a dangling commit WITHOUT
    *  touching the tree/index/refs, returning its SHA — exactly the pre-apply
    *  snapshot we need. A clean tree produces no stash commit, so HEAD already
-   *  IS the baseline. Returns null when not a git project, or when the repo
-   *  toplevel isn't the project root (then `git show repo-rel:path` and our
-   *  project-relative paths would disagree — coverage falls back to anchors). */
-  async function gitBaselineRef(): Promise<string | null> {
+   *  IS the baseline. In a monorepo the toplevel is an ancestor of projectRoot
+   *  (the usual pnpm/yarn workspace shape) — the baseline is KEPT and the git
+   *  machinery runs at the toplevel (`toplevel` set on the result), with paths
+   *  translated back to projectRoot-relative at seal. Returns null when not a
+   *  git project, or when the toplevel escapes the workspace root (then a
+   *  translated `../` path could escape containment — anchors-only coverage). */
+  async function gitBaselineRef(): Promise<{ ref: string; toplevel?: string } | null> {
     try {
       const { stdout: top } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: projectRoot })
-      if (path.resolve(top.trim()) !== path.resolve(projectRoot)) return null
-      const { stdout: stash } = await execFileAsync('git', ['stash', 'create'], { cwd: projectRoot, maxBuffer: 1024 * 1024 })
+      const toplevel = path.resolve(top.trim())
+      let batchToplevel: string | undefined
+      if (toplevel !== path.resolve(projectRoot)) {
+        if (!workspaceRoot) return null
+        const ws = path.resolve(workspaceRoot)
+        const wsWithSep = ws.endsWith(path.sep) ? ws : ws + path.sep
+        if (toplevel !== ws && !toplevel.startsWith(wsWithSep)) return null
+        batchToplevel = toplevel
+      }
+      const cwd = batchToplevel ?? projectRoot
+      const { stdout: stash } = await execFileAsync('git', ['stash', 'create'], { cwd, maxBuffer: 1024 * 1024 })
       const sha = stash.trim()
-      if (sha) return sha
-      const { stdout: head } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot })
-      return head.trim() || null
+      if (sha) return { ref: sha, ...(batchToplevel ? { toplevel: batchToplevel } : {}) }
+      const { stdout: head } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd })
+      const headSha = head.trim()
+      return headSha ? { ref: headSha, ...(batchToplevel ? { toplevel: batchToplevel } : {}) } : null
     } catch {
       return null
     }
@@ -239,23 +272,31 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
 
   /** Tracked files that differ between `baseline` and the current working tree
    *  (added/modified/deleted) — the agent's footprint beyond the anchor set.
-   *  Created (still-untracked) files don't appear here; they ride the
-   *  untracked net. Project-relative, .annotask/ and quoted paths filtered. */
-  async function gitChangedSince(baseline: string): Promise<string[]> {
+   *  Created (still-untracked) files don't appear here; STAGED new files do
+   *  (handled at the seal). Project-relative (`--relative` in single-repo mode;
+   *  translated from repo-relative in monorepo mode, where `--relative` would
+   *  drop sibling-package files), .annotask/ and quoted paths filtered. */
+  async function gitChangedSince(baseline: string, toplevel?: string): Promise<string[]> {
     const { stdout } = await execFileAsync(
-      'git', ['diff', '--name-only', '--no-renames', '--relative', baseline, '--'],
-      { cwd: projectRoot, maxBuffer: 50 * 1024 * 1024 },
+      'git', ['diff', '--name-only', '--no-renames', ...(toplevel ? [] : ['--relative']), baseline, '--'],
+      { cwd: toplevel ?? projectRoot, maxBuffer: 50 * 1024 * 1024 },
     )
     return stdout.split('\n').map((s) => s.trim())
-      .filter((f) => f && !f.startsWith('"') && !f.startsWith('.annotask/'))
+      .filter((f) => f && !f.startsWith('"'))
+      .map((f) => (toplevel ? fromRepoRel(toplevel, f) : f))
+      .filter((f) => !f.startsWith('.annotask/'))
   }
 
-  /** Pre-apply content of one tracked file from the baseline tree. null when the
-   *  file didn't exist there (i.e. the agent CREATED it — handled by the
-   *  untracked net, not here). */
-  async function gitShow(baseline: string, file: string): Promise<string | null> {
+  /** Pre-apply content of one tracked file from the baseline tree. `file` is
+   *  projectRoot-relative — translated back to a repo-relative pathspec in
+   *  monorepo mode. null when the file didn't exist there (i.e. the agent
+   *  CREATED it — netted into batch.created at the seal). */
+  async function gitShow(baseline: string, file: string, toplevel?: string): Promise<string | null> {
+    const spec = toplevel
+      ? path.relative(toplevel, path.resolve(projectRoot, file)).split(path.sep).join('/')
+      : file
     try {
-      const { stdout } = await execFileAsync('git', ['show', `${baseline}:${file}`], { cwd: projectRoot, maxBuffer: 50 * 1024 * 1024 })
+      const { stdout } = await execFileAsync('git', ['show', `${baseline}:${spec}`], { cwd: toplevel ?? projectRoot, maxBuffer: 50 * 1024 * 1024 })
       return stdout
     } catch {
       return null
@@ -268,16 +309,33 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
    *  Idempotent enough to re-run on a second review — pre-apply bytes are only
    *  ever captured once per file (first touch wins). */
   async function sealBatchInternal(batch: SnapshotBatch, opts?: { failed?: boolean }): Promise<void> {
+    // Agent-created files netted this seal (rel path → sha256) — filled by the
+    // auto-extend (staged new files) and the untracked net below.
+    const createdBySeal: Record<string, string> = {}
     // Auto-extend: fold every tracked file the agent changed beyond the
     // predicted anchor set into the batch, recovering its pre-apply bytes from
     // the baseline tree. Undo/discard then restore the agent's whole footprint.
     if (batch.gitBaseline) {
       try {
         const known = new Set(batch.files)
-        for (const file of await gitChangedSince(batch.gitBaseline)) {
+        const untrackedBaseline = new Set(batch.untrackedBefore ?? [])
+        for (const file of await gitChangedSince(batch.gitBaseline, batch.gitToplevel)) {
           if (known.has(file)) continue
-          const pre = await gitShow(batch.gitBaseline, file)
-          if (pre === null) continue // created (not in baseline) — netted separately
+          const pre = await gitShow(batch.gitBaseline, file, batch.gitToplevel)
+          if (pre === null) {
+            // Not in the baseline tree — the agent CREATED it. A still-untracked
+            // copy rides the untracked net below, but a STAGED (`git add`-ed)
+            // new file never shows up as '??' — net it here under the same
+            // hash-guarded deletion contract, unless it pre-existed as the
+            // user's own untracked file (then it's theirs, never deleted).
+            if (!untrackedBaseline.has(file)) {
+              try {
+                const abs = resolveAbs(file)
+                createdBySeal[file] = sha256(await fsp.readFile(abs, 'utf-8'))
+              } catch { /* unreadable/escaping — leave it alone */ }
+            }
+            continue
+          }
           let absPath: string
           try { absPath = resolveAbs(file) } catch { continue } // escapes root — leave it
           batch.before[file] = pre
@@ -302,21 +360,20 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
     // the snapshot baseline (and not already a snapshotted target) belongs to
     // this apply, hashed so undo only deletes pristine copies.
     if (batch.untrackedBefore) {
-      const after = await gitUntracked()
+      const after = await gitUntracked(batch.gitToplevel)
       if (after) {
         const baseline = new Set(batch.untrackedBefore)
         const snapshotted = new Set(batch.files)
-        const created: Record<string, string> = {}
         for (const file of after) {
           if (baseline.has(file) || snapshotted.has(file)) continue
           try {
             const abs = resolveAbs(file)
-            created[file] = sha256(await fsp.readFile(abs, 'utf-8'))
+            createdBySeal[file] = sha256(await fsp.readFile(abs, 'utf-8'))
           } catch { /* unreadable/escaping — leave it alone */ }
         }
-        if (Object.keys(created).length > 0) batch.created = created
       }
     }
+    if (Object.keys(createdBySeal).length > 0) batch.created = createdBySeal
     batch.finishedAt = Date.now()
     batch.status = opts?.failed ? 'failed' : 'done'
   }
@@ -383,12 +440,16 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
             journal.files[file] = { absPath, base: bytes, baseHash: sha256(bytes), status: 'clean' }
           }
         }
-        const untrackedBefore = await gitUntracked()
+        // Baseline first: its toplevel (monorepo mode) keys the untracked
+        // list's path translation, so both sides of the created-net compare
+        // in the same projectRoot-relative shape.
         const gitBaseline = await gitBaselineRef()
+        const untrackedBefore = await gitUntracked(gitBaseline?.toplevel)
         journal.batches.push({
           id: batch.id, taskId: batch.taskId, files: [...files], startedAt: Date.now(), status: 'running', before,
           ...(untrackedBefore !== null ? { untrackedBefore } : {}),
-          ...(gitBaseline ? { gitBaseline } : {}),
+          ...(gitBaseline ? { gitBaseline: gitBaseline.ref } : {}),
+          ...(gitBaseline?.toplevel ? { gitToplevel: gitBaseline.toplevel } : {}),
         })
         await persist()
       })

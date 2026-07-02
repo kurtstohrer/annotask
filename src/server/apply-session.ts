@@ -1,6 +1,8 @@
+import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { RevConflictError } from './json-cas-store.js'
+import { getWorkspaceCatalog } from './workspace-catalog.js'
 import { WireframeRevConflictError } from './wireframe-store.js'
 import { classifyBindings } from './binding-classify.js'
 import { resolveProjectFile } from './path-safety.js'
@@ -130,6 +132,51 @@ export async function closeWireframeLifecycle(
   console.warn(`[Annotask] wireframe ${mode} for ${taskId} gave up after rev conflicts`)
 }
 
+/** Strict containment: `abs` lives under `base` (never equal, no `..` escape). */
+function containedIn(base: string, abs: string): boolean {
+  const rel = path.relative(base, abs)
+  return rel.length > 0 && !rel.startsWith('..') && !path.isAbsolute(rel)
+}
+
+/**
+ * MFE anchor attribution — the wrong-file guard for multi-MFE workspaces.
+ * The shell translates a captured block's package-local path (`src/App.vue`)
+ * into a host-relative one (`../mfe-x/src/App.vue`), but that translation is
+ * best-effort client-side: a capture racing the workspace-catalog load — or a
+ * catalog that couldn't see the MFE — persists the package-local path, which
+ * the host resolves to its OWN same-named file. So every anchor claiming an
+ * MFE must actually land under that MFE's package dir: re-root a
+ * package-local path when the file exists there (mutating `anchor.file` in
+ * place, BEFORE the dominant file / task context / snapshot set read it), and
+ * refuse the apply when the anchor can't be attributed — snapshotting and
+ * letting the agent edit a same-named host file, then "correctly" undoing
+ * into it, is the silent failure this blocks. Honest empty anchors (file '')
+ * are never attribution candidates.
+ */
+async function attributeMfeAnchors(
+  projectRoot: string,
+  items: Array<{ label: string; mfe: string | undefined; anchor: { file: string } }>,
+): Promise<{ error: string } | null> {
+  const claimed = items.filter((it) => it.mfe && it.anchor.file.length > 0)
+  if (claimed.length === 0) return null
+  const catalog = await getWorkspaceCatalog(projectRoot)
+  for (const it of claimed) {
+    const pkg = catalog.packages.find((p) => p.mfe === it.mfe)
+    if (pkg) {
+      if (containedIn(pkg.absDir, path.resolve(projectRoot, it.anchor.file))) continue
+      // Package-local capture (the client-side translation never ran): the
+      // same path under the MFE's own package dir is the intended file.
+      const rerooted = path.resolve(pkg.absDir, it.anchor.file)
+      if (containedIn(pkg.absDir, rerooted) && fs.existsSync(rerooted)) {
+        it.anchor.file = path.relative(projectRoot, rerooted).replace(/\\/g, '/')
+        continue
+      }
+    }
+    return { error: `${it.label}: anchor '${it.anchor.file}' could not be attributed to MFE '${it.mfe}'` }
+  }
+  return null
+}
+
 export async function applyDesignSession(
   options: ApplySessionOptions,
   route: string,
@@ -148,6 +195,16 @@ export async function applyDesignSession(
     .filter((i) => (i.status ?? 'placed') === 'placed')
   if (entries.length === 0 && instances.length === 0) return { error: 'nothing to apply' }
   const hasDirections = entries.some((e) => e.change.type === 'wireframe_direction')
+
+  // MFE anchors attribute FIRST — the dominant file, the task context, and
+  // the snapshot set below all read anchor.file, and a refusal has to land
+  // before any task is minted. Entries recorded before the anchor carried
+  // `mfe` still claim one at the change level — honour either.
+  const attributionError = await attributeMfeAnchors(options.projectRoot, [
+    ...entries.map((e) => ({ label: `entry ${e.id}`, mfe: e.anchor.mfe ?? e.change.mfe, anchor: e.anchor })),
+    ...instances.map((i) => ({ label: `instance ${i.id}`, mfe: (i.anchor as { mfe?: string }).mfe, anchor: i.anchor })),
+  ])
+  if (attributionError) return attributionError
 
   // Dominant anchor file → the task-level anchor (buildWireframeRoute precedent).
   // Empty anchors are honest "couldn't ground this block" (a captured element
@@ -252,12 +309,17 @@ export async function applyDesignSession(
     }
   }
 
-  // Stamp entries 'applying' against the batch + task.
+  // Stamp entries 'applying' against the batch + task. Attribution-corrected
+  // anchor files persist here too, so verify/undo read the same path the
+  // snapshot set used.
   const entryIds = new Set(entries.map((e) => e.id))
+  const anchorFileById = new Map(entries.map((e) => [e.id, e.anchor.file]))
   await mutateSession(options, (doc) => {
     let touched = false
     for (const e of doc.entries) {
       if (!entryIds.has(e.id) || !isPendingEntry(e)) continue
+      const file = anchorFileById.get(e.id)
+      if (file !== undefined && file !== e.anchor.file) e.anchor.file = file
       e.live = { status: 'applying', applyBatchId: batchId }
       e.taskId = taskId
       touched = true

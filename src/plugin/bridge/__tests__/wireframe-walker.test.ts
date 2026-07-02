@@ -44,7 +44,7 @@ function makeDeps(): any {
   let n = 0
   return {
     getComputedStyle(el: any) {
-      return { display: el.style?.display || 'block', visibility: el.style?.visibility || 'visible' }
+      return { display: el.style?.display || 'block', visibility: el.style?.visibility || 'visible', opacity: el.style?.opacity || '1' }
     },
     findSourceElement(el: any) {
       let c = el
@@ -342,6 +342,78 @@ describe('wireframe walker — chrome vs region', () => {
     // Nav (non-region chrome) and the page section survive as page blocks.
     expect(r.blocks.some((b) => b.meta.file === 'src/Nav.vue')).toBe(true)
     expect(r.blocks.some((b) => b.meta.file === 'src/Home.vue')).toBe(true)
+  })
+})
+
+describe('wireframe walker — chrome-pass garbage filters', () => {
+  // A classic page: skip-nav is the accessible-hide FIRST child, then real
+  // chrome around a <main> content root. Garbage chrome must vanish entirely —
+  // not just from the chrome list but from the block set (the straggler pass
+  // must not resurrect a rejected candidate).
+  function chromePage(win: any, garbage: any[]) {
+    const header = el(win, 'header', { cls: 'site-head', attrs: { 'data-annotask-file': 'src/Header.vue', 'data-annotask-line': '1' }, rect: [0, 0, 800, 60] })
+    const nav = el(win, 'nav', { cls: 'site-nav', attrs: { 'data-annotask-file': 'src/Nav.vue', 'data-annotask-line': '2' }, rect: [0, 60, 800, 40] })
+    const main = el(win, 'main', { rect: [0, 100, 800, 500] }, [
+      el(win, 'section', { cls: 'hero', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '3' }, rect: [0, 100, 800, 250] }),
+      el(win, 'section', { cls: 'body', attrs: { 'data-annotask-file': 'src/App.vue', 'data-annotask-line': '9' }, rect: [0, 350, 800, 250] }),
+    ])
+    const footer = el(win, 'footer', { cls: 'site-foot', attrs: { 'data-annotask-file': 'src/Footer.vue', 'data-annotask-line': '1' }, rect: [0, 600, 800, 60] })
+    mount(win, el(win, 'div', { cls: 'app', rect: [0, 0, 800, 660] }, [...garbage, header, nav, main, footer]))
+  }
+  const norm = (d: Disc) => d.blocks.map((b) => ({ file: b.meta.file, role: b.meta.role, cls: b.meta.cls }))
+  const HAPPY = [
+    { file: 'src/Header.vue', role: 'header', cls: 'site-head' },
+    { file: 'src/Nav.vue', role: 'nav', cls: 'site-nav' },
+    { file: 'src/App.vue', role: 'content', cls: 'hero' },
+    { file: 'src/App.vue', role: 'content', cls: 'body' },
+    { file: 'src/Footer.vue', role: 'footer', cls: 'site-foot' },
+  ]
+
+  it('regression pin: normal-size on-document chrome emits exactly as before', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    chromePage(win, [])
+    expect(norm(discover(win.document.body, deps))).toEqual(HAPPY)
+  })
+
+  it('an off-document skip-nav (left:-9999px accessible-hide) is excluded — and does not resurface as a straggler', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const skipNav = el(win, 'nav', { cls: 'skip-nav', rect: [-9999, 0, 800, 40] })
+    chromePage(win, [skipNav])
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.some((b) => b.el === skipNav)).toBe(false)
+    expect(norm(r)).toEqual(HAPPY)
+  })
+
+  it('a 1x1 footer pixel is excluded (chrome pass enforces the 48x24 footprint)', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const pixel = el(win, 'footer', { cls: 'tracker', rect: [0, 0, 1, 1] })
+    chromePage(win, [pixel])
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.some((b) => b.el === pixel)).toBe(false)
+    expect(norm(r)).toEqual(HAPPY)
+  })
+
+  it('an opacity:0 header is excluded — and does not resurface as a straggler', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    const ghost = el(win, 'header', { cls: 'ghost', rect: [0, 0, 800, 60] })
+    ghost.style.opacity = '0'
+    chromePage(win, [ghost])
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.some((b) => b.el === ghost)).toBe(false)
+    expect(norm(r)).toEqual(HAPPY)
+  })
+
+  it('chrome mostly off-document (translate(-100%)-style, <25% overlap) is excluded; a partial overhang above 25% survives', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // jsdom scrollWidth is 0 → the walker falls back to the 1024x768 viewport.
+    // Hidden: only 80 of 800 px wide on-document (10% < 25%). Overhang: 400 of
+    // 800 px (50% >= 25%) — a drawer peeking in is real furniture.
+    const drawer = el(win, 'aside', { cls: 'hidden-drawer', rect: [-720, 0, 800, 400] })
+    const overhang = el(win, 'aside', { cls: 'overhang', rect: [-400, 0, 800, 400] })
+    chromePage(win, [drawer, overhang])
+    const r = discover(win.document.body, deps)
+    expect(r.blocks.some((b) => b.el === drawer)).toBe(false)
+    expect(r.blocks.some((b) => b.el === overhang)).toBe(true)
   })
 })
 

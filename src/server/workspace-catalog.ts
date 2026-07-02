@@ -8,8 +8,9 @@
  *   1. `.annotask/server.json` → `mfe` — populated by the annotask plugin
  *      the first time that MFE's dev server boots.
  *   2. Regex match of `annotask({ mfe: '...' })` in the package's
- *      `vite.config.{ts,js,mjs}` — catches MFEs whose dev server hasn't run
- *      yet (e.g. right after `git clone`).
+ *      `vite.config.{ts,js,mjs}`, or `new AnnotaskWebpackPlugin({ mfe: '...' })`
+ *      in `webpack.config.{js,ts,cjs,mjs}` — catches MFEs whose dev server
+ *      hasn't run yet (e.g. right after `git clone`).
  *   3. Unset (the package is a plain library / shared deps bucket).
  *
  * This is a read-only derivation — no state is persisted back to disk.
@@ -93,13 +94,27 @@ async function resolveMfeId(absDir: string): Promise<string | undefined> {
     if (typeof info?.mfe === 'string' && info.mfe.length > 0) return info.mfe
   } catch { /* server.json not present */ }
 
-  // 2. vite.config source sniff — catches MFEs whose dev server hasn't run yet
-  for (const name of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
+  // 2. Config source sniff — catches MFEs whose dev server hasn't run yet.
+  const vite = await sniffConfig(absDir,
+    ['vite.config.ts', 'vite.config.js', 'vite.config.mjs'],
+    /annotask\s*\(\s*\{[^}]*?\bmfe\s*:\s*['"`]([^'"`]+)['"`]/s)
+  if (vite) return vite
+  // Webpack MFEs configure `new AnnotaskWebpackPlugin({ mfe: '...' })`
+  // (src/webpack/plugin.ts) — without this sniff they'd be invisible until
+  // their dev server first boots, and package-local anchor paths from them
+  // could never be attributed.
+  return sniffConfig(absDir,
+    ['webpack.config.js', 'webpack.config.ts', 'webpack.config.cjs', 'webpack.config.mjs'],
+    /AnnotaskWebpackPlugin\s*\(\s*\{[^}]*?\bmfe\s*:\s*['"`]([^'"`]+)['"`]/s)
+}
+
+async function sniffConfig(absDir: string, names: string[], pattern: RegExp): Promise<string | undefined> {
+  for (const name of names) {
     const full = path.join(absDir, name)
     if (!fs.existsSync(full)) continue
     try {
       const src = await fsp.readFile(full, 'utf-8')
-      const m = src.match(/annotask\s*\(\s*\{[^}]*?\bmfe\s*:\s*['"`]([^'"`]+)['"`]/s)
+      const m = src.match(pattern)
       if (m) return m[1]
     } catch { /* unreadable — skip */ }
   }

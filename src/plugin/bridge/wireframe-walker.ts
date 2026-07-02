@@ -193,19 +193,47 @@ export function bridgeWireframeWalker(): string {
       }
       return { kids: kids, cursor: cursor };
     }
-    // Page furniture outside the content root, outermost only.
+    // Chrome-candidate garbage filters. wfQualifies stays lean (the explode
+    // path shares it), so the chrome pass enforces its own footprint — the same
+    // 48x24 the content/straggler passes use — plus two checks display/visibility
+    // can't catch: accessible-hide chrome parked off-document (left:-9999px /
+    // translate(-100%) skip-navigation rasterizes blank and lands off-canvas)
+    // and opacity:0 furniture. Both would otherwise eat WF_BLOCK_CAP slots.
+    function wfChromeGarbage(el) {
+      var r = el.getBoundingClientRect();
+      if (r.width < 48 || r.height < 24) return true;
+      if (getCS(el).opacity === '0') return true;
+      // Document-space box (same rect+scroll arithmetic as wfBuildMeta) must
+      // overlap [0, docW) x [0, docH) by >=25% of the element's own area.
+      // scrollWidth/Height with a viewport fallback (jsdom reports zero).
+      var de = document.documentElement;
+      var docW = (de && de.scrollWidth) || window.innerWidth || 0;
+      var docH = (de && de.scrollHeight) || window.innerHeight || 0;
+      var x = r.x + (window.scrollX || 0);
+      var y = r.y + (window.scrollY || 0);
+      var ow = Math.min(x + r.width, docW) - Math.max(x, 0);
+      var oh = Math.min(y + r.height, docH) - Math.max(y, 0);
+      return ow <= 0 || oh <= 0 || ow * oh < r.width * r.height * 0.25;
+    }
+    // Page furniture outside the content root, outermost only. Garbage chrome is
+    // dropped from the emitted set but kept in \`covered\` so the straggler pass
+    // still treats it as chrome-owned — a rejected skip-nav must not resurface
+    // as a straggler block (pre-filter, every candidate was in the chrome list).
     function wfChromePass(rootEl, content) {
       var chrome = [];
+      var covered = [];
       var cand = rootEl.querySelectorAll('header, nav, footer, aside');
       for (var i = 0; i < cand.length; i++) {
         var el = cand[i];
         if (!wfQualifies(el)) continue;
         if (content !== rootEl && content.contains(el) && content !== el) continue;
         var contained = false;
-        for (var j = 0; j < chrome.length; j++) { if (chrome[j].contains(el)) { contained = true; break; } }
-        if (!contained) chrome.push(el);
+        for (var j = 0; j < covered.length; j++) { if (covered[j].contains(el)) { contained = true; break; } }
+        if (contained) continue;
+        covered.push(el);
+        if (!wfChromeGarbage(el)) chrome.push(el);
       }
-      return chrome;
+      return { chrome: chrome, covered: covered };
     }
     // Content OUTSIDE the content root that isn't semantic chrome (a floating
     // button/banner mounted as a sibling of <main>).
@@ -358,14 +386,14 @@ export function bridgeWireframeWalker(): string {
     // ---- orchestration -------------------------------------------------------
     var regions = descentEnabled ? wfCollectMfeRegions(root) : [];
     var content = wfContentRoot(root, regions);
-    var chrome = wfChromePass(root, content);
+    var cp = wfChromePass(root, content);
     var ck = wfContentKids(content);
     var contentKids = ck.kids;
     if (contentKids.length === 0) {
       if (wfQualifies(ck.cursor)) contentKids = [ck.cursor];
     }
-    var stragglers = wfStragglerPass(root, content, chrome);
-    var wfAll = wfMerge(chrome, contentKids, stragglers);
+    var stragglers = wfStragglerPass(root, content, cp.covered);
+    var wfAll = wfMerge(cp.chrome, contentKids, stragglers);
 
     var truncated = false;
 

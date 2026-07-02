@@ -238,6 +238,52 @@ describe('file-snapshots', () => {
       expect(fs.existsSync(path.join(root, 'src/B.vue'))).toBe(false)
     })
 
+    it('nets a STAGED new file (created + `git add`-ed by the agent); undo deletes it', async () => {
+      gitInit()
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+
+      // The agent creates a component AND stages it — it shows up as 'A ' in
+      // porcelain (never '??'), so the untracked net alone would miss it.
+      await write('src/Staged.vue', '<template>staged</template>')
+      execFileSync('git', ['add', 'src/Staged.vue'], { cwd: root, stdio: 'ignore' })
+      await store.sealBatch('ab-1')
+
+      expect((await store.state()).batches[0].created).toEqual(['src/Staged.vue'])
+
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted).toContain('src/Staged.vue')
+      expect(fs.existsSync(path.join(root, 'src/Staged.vue'))).toBe(false)
+    })
+
+    it('a user-edited STAGED created file is kept (hash guard) on undo', async () => {
+      gitInit()
+      const store = createSnapshotStore(root)
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+      await write('src/Staged.vue', '<template>agent</template>')
+      execFileSync('git', ['add', 'src/Staged.vue'], { cwd: root, stdio: 'ignore' })
+      await store.sealBatch('ab-1')
+
+      await write('src/Staged.vue', '<template>agent + my edits</template>')
+      const result = await store.revertBatch('ab-1')
+      expect(result.skipped).toEqual(['src/Staged.vue'])
+      expect(await read('src/Staged.vue')).toBe('<template>agent + my edits</template>')
+    })
+
+    it('a pre-existing user untracked file the agent stages is NEVER netted', async () => {
+      gitInit()
+      const store = createSnapshotStore(root)
+      await write('src/UserDraft.vue', '<template>mine</template>')
+      await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
+
+      execFileSync('git', ['add', 'src/UserDraft.vue'], { cwd: root, stdio: 'ignore' })
+      await store.sealBatch('ab-1')
+
+      expect((await store.state()).batches[0].created).toBeUndefined()
+      await store.revertBatch('ab-1')
+      expect(await read('src/UserDraft.vue')).toBe('<template>mine</template>')
+    })
+
     it('non-git projects skip the net silently (snapshotted files still restore)', async () => {
       const store = createSnapshotStore(root) // no git init
       await store.snapshotFiles([file], { id: 'ab-1', taskId: 'task-1' })
@@ -453,5 +499,132 @@ describe('file-snapshots — workspace-aware (cross-MFE)', () => {
     await store.snapshotFiles(['../../../../../../etc/hosts', '../mfe-a/src/App.tsx'], { id: 'ab-1', taskId: 't1' })
     const files = Object.keys((await store.state()).files)
     expect(files).toEqual(['../mfe-a/src/App.tsx'])
+  })
+})
+
+// In a pnpm/yarn monorepo the git toplevel is the WORKSPACE root, not the
+// package running the dev server. The baseline must survive that shape: git
+// runs at the toplevel and repo-relative paths translate to projectRoot-
+// relative (`../mfe-child/…`) — otherwise the auto-extend and created-net are
+// silently OFF in exactly the multi-MFE topology they exist for.
+describe('file-snapshots — monorepo git baseline (toplevel = workspace root)', () => {
+  let ws: string       // workspace (monorepo) root = git toplevel
+  let host: string     // the running package = snapshot store's projectRoot
+
+  const git = (args: string[], cwd: string) => execFileSync('git', args, { cwd, stdio: 'ignore' })
+  function gitInit(cwd: string): void {
+    git(['init', '-q'], cwd)
+    // Repo-level identity so `git stash create` (the baseline) can commit.
+    git(['config', 'user.email', 'ci@annotask.test'], cwd)
+    git(['config', 'user.name', 'annotask-ci'], cwd)
+    git(['add', '-A'], cwd)
+    git(['commit', '-q', '-m', 'baseline'], cwd)
+  }
+
+  beforeEach(async () => {
+    ws = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-mono-'))
+    await fsp.writeFile(path.join(ws, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n", 'utf-8')
+    host = path.join(ws, 'packages', 'host')
+    for (const pkg of ['host', 'mfe-child']) {
+      await fsp.mkdir(path.join(ws, 'packages', pkg, 'src'), { recursive: true })
+      await fsp.writeFile(path.join(ws, 'packages', pkg, 'package.json'), JSON.stringify({ name: `@x/${pkg}` }), 'utf-8')
+    }
+    await fsp.writeFile(path.join(host, 'src', 'Page.vue'), 'HOST-ORIGINAL\n', 'utf-8')
+    await fsp.writeFile(path.join(ws, 'packages', 'mfe-child', 'src', 'App.tsx'), 'CHILD-ORIGINAL\n', 'utf-8')
+  })
+
+  afterEach(async () => { await fsp.rm(ws, { recursive: true, force: true }) })
+
+  it('seal auto-extends with a sibling-package file the agent edited; revert restores its bytes', async () => {
+    gitInit(ws)
+    const store = createSnapshotStore(host)
+    // The apply predicts only the host anchor…
+    await store.snapshotFiles(['src/Page.vue'], { id: 'ab-1', taskId: 't1' })
+    // …but the agent edits the anchor AND a sibling MFE's file.
+    await fsp.writeFile(path.join(host, 'src', 'Page.vue'), 'HOST-EDITED\n', 'utf-8')
+    await fsp.writeFile(path.join(ws, 'packages', 'mfe-child', 'src', 'App.tsx'), 'CHILD-EDITED\n', 'utf-8')
+    await store.sealBatch('ab-1')
+
+    expect((await store.state()).batches[0].files).toContain('../mfe-child/src/App.tsx')
+
+    const result = await store.revertBatch('ab-1')
+    expect(result.reverted.sort()).toEqual(['../mfe-child/src/App.tsx', 'src/Page.vue'].sort())
+    expect(result.skipped).toEqual([])
+    expect(await fsp.readFile(path.join(host, 'src', 'Page.vue'), 'utf-8')).toBe('HOST-ORIGINAL\n')
+    expect(await fsp.readFile(path.join(ws, 'packages', 'mfe-child', 'src', 'App.tsx'), 'utf-8')).toBe('CHILD-ORIGINAL\n')
+  })
+
+  it('nets agent-created files (untracked AND staged) with translated paths; undo deletes them', async () => {
+    gitInit(ws)
+    const store = createSnapshotStore(host)
+    await store.snapshotFiles(['src/Page.vue'], { id: 'ab-1', taskId: 't1' })
+
+    await fsp.writeFile(path.join(host, 'src', 'New.vue'), 'agent-new\n', 'utf-8')
+    await fsp.writeFile(path.join(ws, 'packages', 'mfe-child', 'src', 'Staged.tsx'), 'agent-staged\n', 'utf-8')
+    git(['add', 'packages/mfe-child/src/Staged.tsx'], ws)
+    await store.sealBatch('ab-1')
+
+    const created = (await store.state()).batches[0].created ?? []
+    expect([...created].sort()).toEqual(['../mfe-child/src/Staged.tsx', 'src/New.vue'].sort())
+
+    const result = await store.revertBatch('ab-1')
+    expect(result.reverted).toContain('src/New.vue')
+    expect(result.reverted).toContain('../mfe-child/src/Staged.tsx')
+    expect(fs.existsSync(path.join(host, 'src', 'New.vue'))).toBe(false)
+    expect(fs.existsSync(path.join(ws, 'packages', 'mfe-child', 'src', 'Staged.tsx'))).toBe(false)
+  })
+
+  it('the monorepo baseline survives a restart (gitToplevel persisted; a rehydrated store seals correctly)', async () => {
+    gitInit(ws)
+    const store = createSnapshotStore(host)
+    await store.snapshotFiles(['src/Page.vue'], { id: 'ab-1', taskId: 't1' })
+    await store.flush()
+
+    await fsp.writeFile(path.join(ws, 'packages', 'mfe-child', 'src', 'App.tsx'), 'CHILD-EDITED\n', 'utf-8')
+
+    // "Restart": a fresh store rehydrates the running batch and seals it —
+    // the persisted toplevel must still key the path translation.
+    const restarted = createSnapshotStore(host)
+    await restarted.sealBatchByTask('t1')
+    expect((await restarted.state()).batches[0].files).toContain('../mfe-child/src/App.tsx')
+
+    const result = await restarted.revertBatch('ab-1')
+    expect(result.reverted).toContain('../mfe-child/src/App.tsx')
+    expect(await fsp.readFile(path.join(ws, 'packages', 'mfe-child', 'src', 'App.tsx'), 'utf-8')).toBe('CHILD-ORIGINAL\n')
+  })
+
+  it('refuses the baseline when the git toplevel is OUTSIDE the workspace root (anchors-only coverage)', async () => {
+    // Git repo an ancestor of the workspace root — translated `../` paths
+    // could escape containment, so the baseline must be refused (today's
+    // conservative fallback: predicted anchor files only).
+    const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-outer-'))
+    try {
+      const wsRoot = path.join(outer, 'ws')
+      const hostRoot = path.join(wsRoot, 'packages', 'host')
+      for (const pkg of ['host', 'mfe-child']) {
+        await fsp.mkdir(path.join(wsRoot, 'packages', pkg, 'src'), { recursive: true })
+        await fsp.writeFile(path.join(wsRoot, 'packages', pkg, 'package.json'), JSON.stringify({ name: `@x/${pkg}` }), 'utf-8')
+      }
+      await fsp.writeFile(path.join(wsRoot, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n", 'utf-8')
+      await fsp.writeFile(path.join(hostRoot, 'src', 'Page.vue'), 'HOST-ORIGINAL\n', 'utf-8')
+      await fsp.writeFile(path.join(wsRoot, 'packages', 'mfe-child', 'src', 'App.tsx'), 'CHILD-ORIGINAL\n', 'utf-8')
+      gitInit(outer)
+
+      const store = createSnapshotStore(hostRoot)
+      await store.snapshotFiles(['src/Page.vue'], { id: 'ab-1', taskId: 't1' })
+      await fsp.writeFile(path.join(hostRoot, 'src', 'Page.vue'), 'HOST-EDITED\n', 'utf-8')
+      await fsp.writeFile(path.join(wsRoot, 'packages', 'mfe-child', 'src', 'App.tsx'), 'CHILD-EDITED\n', 'utf-8')
+      await store.sealBatch('ab-1')
+
+      // No auto-extend happened — the batch stayed anchors-only.
+      expect((await store.state()).batches[0].files).toEqual(['src/Page.vue'])
+      const result = await store.revertBatch('ab-1')
+      expect(result.reverted).toEqual(['src/Page.vue'])
+      expect(await fsp.readFile(path.join(hostRoot, 'src', 'Page.vue'), 'utf-8')).toBe('HOST-ORIGINAL\n')
+      // The sibling edit is untouched (undo never claimed to cover it).
+      expect(await fsp.readFile(path.join(wsRoot, 'packages', 'mfe-child', 'src', 'App.tsx'), 'utf-8')).toBe('CHILD-EDITED\n')
+    } finally {
+      await fsp.rm(outer, { recursive: true, force: true })
+    }
   })
 })

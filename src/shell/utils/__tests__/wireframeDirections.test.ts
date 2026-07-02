@@ -280,6 +280,151 @@ describe('computeWireframeDirections', () => {
   })
 })
 
+describe('computeWireframeDirections — shared anchors (loop-rendered)', () => {
+  // A v-for/map mints N blocks that all share ONE (file, line) anchor — a
+  // source-level edit there hits every instance, so directions must say so.
+  function loopCards(): WireframeBlock[] {
+    return [
+      captured('card-1', 0, 100, 200),
+      captured('card-2', 110, 100, 200),
+      captured('card-3', 220, 100, 200),
+    ]
+  }
+
+  it('a delete on one loop card carries sharedAnchor ordinal + the CAUTION text', () => {
+    const blocks = loopCards()
+    blocks[1].deleted = true
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0].op).toBe('delete')
+    // Document order (y then x): card-2 is the 2nd of 3 sharers — the
+    // deleted block itself counts among them.
+    expect(dirs[0].sharedAnchor).toEqual({ ordinal: 2, of: 3 })
+    expect(dirs[0].description).toContain(
+      ' — CAUTION: 3 blocks share this anchor (likely loop-rendered); removing the source element removes ALL of them. '
+      + 'Verify with annotask_get_binding_classification; if the user meant one item, ask via needs_info.',
+    )
+  })
+
+  it('a move on one loop card carries sharedAnchor + the every-instance note; deleted sharers still count', () => {
+    const blocks = loopCards()
+    blocks[2].deleted = true // still shares the anchor
+    blocks[0].rect = { ...blocks[0].rect, y: 400 }
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const move = dirs.find((d) => d.op === 'move')!
+    expect(move.sharedAnchor).toEqual({ ordinal: 1, of: 3 })
+    expect(move.description).toContain(
+      ' — note: 3 blocks share this anchor (loop-rendered); the source-level change applies to every instance.',
+    )
+  })
+
+  it('uniquely-anchored blocks carry no sharedAnchor and no loop text', () => {
+    const blocks = planetsBlocks()
+    blocks[1].deleted = true
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect('sharedAnchor' in dirs[0]).toBe(false)
+    expect(dirs[0].description).not.toContain('share this anchor')
+  })
+})
+
+describe('computeWireframeDirections — exploded parent/child moves', () => {
+  // An exploded container (shell) whose children carry parentId — dragging
+  // the parent moves the children with it on the canvas.
+  function explodedBlocks(): WireframeBlock[] {
+    return [
+      captured('layout', 0, 400, 10, { shell: true }),
+      captured('child-a', 50, 100, 20, { parentId: 'layout' }),
+      captured('child-b', 200, 100, 30, { parentId: 'layout' }),
+    ]
+  }
+
+  it('children dragged with the parent (same delta ±2px) are suppressed; the parent says so', () => {
+    const blocks = explodedBlocks()
+    blocks[0].rect = { ...blocks[0].rect, y: 300 }
+    blocks[1].rect = { ...blocks[1].rect, y: 351 } // dy 301 vs parent's 300 — within ±2
+    blocks[2].rect = { ...blocks[2].rect, y: 500 } // dy 300 exactly
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0].block.label).toBe('layout')
+    expect(dirs[0].op).toBe('move')
+    expect(dirs[0].description).toContain(' (its children move with it)')
+  })
+
+  it('a child that moved DIFFERENTLY from its moved parent keeps its direction with the container note', () => {
+    const blocks = explodedBlocks()
+    blocks[0].rect = { ...blocks[0].rect, y: 300 }
+    blocks[1].rect = { ...blocks[1].rect, x: 200, y: 351 } // dx 200 diverges
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const parent = dirs.find((d) => d.block.label === 'layout')!
+    const child = dirs.find((d) => d.block.label === 'child-a')!
+    expect(child.op).toBe('move')
+    expect(child.description).toContain(' — within the layout container (which also moved)')
+    // No child was suppressed, so the parent claims nothing about children.
+    expect(parent.description).not.toContain('its children move with it')
+  })
+
+  it('a child whose parent did NOT move keeps its direction unchanged', () => {
+    const blocks = explodedBlocks()
+    blocks[1].rect = { ...blocks[1].rect, y: 351 }
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0].block.label).toBe('child-a')
+    expect(dirs[0].op).toBe('move')
+    expect(dirs[0].description).not.toContain('within the')
+    expect(dirs[0].description).not.toContain('also moved')
+  })
+})
+
+describe('computeWireframeDirections — relation guarantee', () => {
+  it('a diagonal move into empty space gains the nearest-block fallback relation', () => {
+    const blocks = planetsBlocks()
+    // Grid heads off to the right — no order flip, no full width, no alignment.
+    blocks[2].rect = { ...blocks[2].rect, x: 900, y: 50 }
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const move = dirs.find((d) => d.block.label === 'grid')!
+    expect(move.measured?.relations).toEqual([
+      'nearest the page-header (src/pages/PlanetsPage.vue:85), roughly right of it',
+    ])
+    expect(move.description).toContain('nearest the page-header')
+  })
+
+  it('a near-tie anchor donor on an ADD is named as the alternative anchor', () => {
+    const blocks = planetsBlocks()
+    // Squeezed between filters (2px above) and grid (2px below) — a near-tie.
+    blocks.push({
+      id: 'ph-mid', kind: 'placeholder', rect: { x: 60, y: 162, width: 360, height: 16 },
+      z: 9, createdAt: 2, label: 'promo',
+    })
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect(dirs).toHaveLength(1)
+    expect(dirs[0].file).toBe('src/pages/PlanetsPage.vue')
+    expect(dirs[0].line).toBe(94) // filters won
+    expect(dirs[0].description).toContain('; alternative anchor: the grid (src/pages/PlanetsPage.vue:128)')
+  })
+
+  it('a clear anchor winner names no alternative', () => {
+    const blocks = planetsBlocks()
+    blocks.push({
+      id: 'ph-far', kind: 'placeholder', rect: { x: 60, y: 790, width: 360, height: 80 },
+      z: 9, createdAt: 2, label: 'pagination here',
+    })
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    expect(dirs[0].description).not.toContain('alternative anchor')
+  })
+})
+
+describe('computeWireframeDirections — note-op sort position', () => {
+  it('a note direction sorts by its block rect, not y=0', () => {
+    const blocks = planetsBlocks()
+    blocks[1].note = 'make this a carousel' // filters, y100
+    blocks[2].rect = { ...blocks[2].rect, y: 20 } // grid moves above it
+    const dirs = computeWireframeDirections(canvasWith(blocks))
+    const note = dirs.find((d) => d.op === 'note')!
+    expect(note.measured?.after?.y).toBe(100)
+    expect(dirs.map((d) => d.block.label)).toEqual(['grid', 'filters'])
+  })
+})
+
 describe('directionAnchor', () => {
   it('prefers the nearest surviving captured donor; position describes the neighbor side', () => {
     const blocks = planetsBlocks()

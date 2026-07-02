@@ -8,6 +8,8 @@ import { createSessionStore } from '../session-store'
 import { createWireframeStore } from '../wireframe-store'
 import { createSnapshotStore } from '../file-snapshots'
 import { clearBindingClassifyCache } from '../binding-classify'
+import { clearWorkspaceCatalogCache } from '../workspace-catalog'
+import { clearWorkspaceCache } from '../workspace'
 import type { DesignSessionDocument, SessionEntry } from '../../shared/design-session-types'
 import type { WireframeInstance } from '../../shared/wireframe-types'
 
@@ -408,6 +410,146 @@ describe('apply-session', () => {
       expect(rotated).toBe(true)
       expect((await options.getDesignSession()).entries).toEqual([])
       expect((await options.snapshots.state()).batches).toEqual([])
+    })
+  })
+
+  describe('MFE anchor attribution', () => {
+    // A pnpm workspace with a host (the projectRoot) and one vite MFE child —
+    // BOTH carry a src/App.vue, the same-named trap a mis-attributed
+    // package-local anchor would silently snapshot and edit on the host side.
+    let ws: string
+    let host: string
+    let wsOptions: ApplySessionOptions
+    let wsTasks: Array<Record<string, unknown>>
+
+    function mfeDirectionEntry(id: string, anchor: SessionEntry['anchor'], changeMfe?: string): SessionEntry {
+      const e = directionEntry(id)
+      e.anchor = anchor
+      const change = e.change as unknown as Record<string, unknown>
+      change.file = anchor.file
+      if (changeMfe) change.mfe = changeMfe
+      return e
+    }
+
+    async function seedWsSession(entries: SessionEntry[]): Promise<void> {
+      const store = createSessionStore(host)
+      const current = await store.get()
+      await store.set({ version: '1.0', sessionId: 'ds-mfe', startedAt: 1, updatedAt: 1, rev: current.rev, entries })
+    }
+
+    beforeEach(async () => {
+      ws = fs.mkdtempSync(path.join(os.tmpdir(), 'annotask-apply-mfe-'))
+      clearWorkspaceCache()
+      clearWorkspaceCatalogCache()
+      await fsp.writeFile(path.join(ws, 'pnpm-workspace.yaml'), "packages:\n  - '*'\n", 'utf-8')
+      host = path.join(ws, 'host')
+      await fsp.mkdir(path.join(host, 'src'), { recursive: true })
+      await fsp.writeFile(path.join(host, 'package.json'), JSON.stringify({ name: 'host' }), 'utf-8')
+      await fsp.writeFile(path.join(host, 'src/App.vue'), '<template><div>HOST</div></template>\n', 'utf-8')
+      const child = path.join(ws, 'mfe-child')
+      await fsp.mkdir(path.join(child, 'src'), { recursive: true })
+      await fsp.writeFile(path.join(child, 'package.json'), JSON.stringify({ name: 'mfe-child' }), 'utf-8')
+      await fsp.writeFile(path.join(child, 'vite.config.ts'), "export default { plugins: [annotask({ mfe: 'child' })] }\n", 'utf-8')
+      await fsp.writeFile(path.join(child, 'src/App.vue'), '<template><div>CHILD</div></template>\n', 'utf-8')
+      wsTasks = []
+      const sessionStore = createSessionStore(host)
+      const wireframeStore = createWireframeStore(host)
+      wsOptions = {
+        projectRoot: host,
+        getDesignSession: () => sessionStore.get(),
+        setDesignSession: (doc) => sessionStore.set(doc),
+        getWireframe: () => wireframeStore.get(),
+        setWireframe: (doc) => wireframeStore.set(doc),
+        addTask: (task) => {
+          const t = { ...task, id: `task-${wsTasks.length + 1}` }
+          wsTasks.push(t)
+          return t
+        },
+        snapshots: createSnapshotStore(host),
+      }
+    })
+
+    afterEach(async () => {
+      await fsp.rm(ws, { recursive: true, force: true })
+    })
+
+    it('a host-relative anchor already under its MFE package passes through unchanged', async () => {
+      await seedWsSession([mfeDirectionEntry('wd-ok', { file: '../mfe-child/src/App.vue', line: 1, mfe: 'child' })])
+
+      const result = await applyDesignSession(wsOptions, '/planets')
+      expect('error' in result).toBe(false)
+      if ('error' in result) return
+      const snap = await wsOptions.snapshots.state()
+      expect(Object.keys(snap.files)).toEqual(['../mfe-child/src/App.vue'])
+    })
+
+    it('a package-local anchor is re-rooted under its MFE package (never the same-named host file)', async () => {
+      // The catalog race: the shell persisted the bridge's package-local path.
+      // An empty anchor with an MFE claim rides along untouched (honest
+      // "couldn't ground" stays honest — never an attribution candidate).
+      const grounded = mfeDirectionEntry('wd-local', { file: 'src/App.vue', line: 1, mfe: 'child' })
+      const anchorless = mfeDirectionEntry('wd-empty', { file: '', line: 0 }, 'child')
+      await seedWsSession([grounded, anchorless])
+
+      const result = await applyDesignSession(wsOptions, '/planets')
+      expect('error' in result).toBe(false)
+      if ('error' in result) return
+
+      // The snapshot set, the task context, AND the journal all carry the
+      // corrected path — the host's src/App.vue is never touched.
+      const snap = await wsOptions.snapshots.state()
+      expect(Object.keys(snap.files)).toEqual(['../mfe-child/src/App.vue'])
+      const ctx = wsTasks[0].context as { session: { entries: Array<{ id: string; anchor: { file: string } }> } }
+      expect(ctx.session.entries.find((e) => e.id === 'wd-local')!.anchor.file).toBe('../mfe-child/src/App.vue')
+      expect(ctx.session.entries.find((e) => e.id === 'wd-empty')!.anchor.file).toBe('')
+      const session = await wsOptions.getDesignSession()
+      expect(session.entries.find((e) => e.id === 'wd-local')!.anchor.file).toBe('../mfe-child/src/App.vue')
+    })
+
+    it('honours a change-level mfe claim when the anchor predates the mfe field', async () => {
+      await seedWsSession([mfeDirectionEntry('wd-legacy', { file: 'src/App.vue', line: 1 }, 'child')])
+
+      const result = await applyDesignSession(wsOptions, '/planets')
+      expect('error' in result).toBe(false)
+      const snap = await wsOptions.snapshots.state()
+      expect(Object.keys(snap.files)).toEqual(['../mfe-child/src/App.vue'])
+    })
+
+    it('re-roots a placement instance anchor claiming an MFE', async () => {
+      const inst = instance('wfi-mfe')
+      inst.anchor = { ...inst.anchor, file: 'src/App.vue', mfe: 'child' } as unknown as WireframeInstance['anchor']
+      const wf = await wsOptions.getWireframe()
+      await wsOptions.setWireframe({ ...wf, updatedAt: 1, routes: [{ route: '/planets', instances: [inst] }] })
+
+      const result = await applyDesignSession(wsOptions, '/planets')
+      expect('error' in result).toBe(false)
+      if ('error' in result) return
+      const snap = await wsOptions.snapshots.state()
+      expect(Object.keys(snap.files)).toEqual(['../mfe-child/src/App.vue'])
+      const ctx = wsTasks[0].context as { wireframe: { instances: Array<{ anchor: { file: string } }> } }
+      expect(ctx.wireframe.instances[0].anchor.file).toBe('../mfe-child/src/App.vue')
+    })
+
+    it('refuses the apply when the anchor cannot be attributed to its MFE — no task, no batch', async () => {
+      // The file exists on the HOST but not under the MFE package: proceeding
+      // would snapshot + edit the wrong same-named file.
+      await fsp.writeFile(path.join(host, 'src/Only.vue'), '<template><i/></template>\n', 'utf-8')
+      await seedWsSession([mfeDirectionEntry('wd-bad', { file: 'src/Only.vue', line: 1, mfe: 'child' })])
+
+      const result = await applyDesignSession(wsOptions, '/planets')
+      expect(result).toEqual({ error: "entry wd-bad: anchor 'src/Only.vue' could not be attributed to MFE 'child'" })
+      expect(wsTasks).toHaveLength(0)
+      expect((await wsOptions.snapshots.state()).batches).toEqual([])
+      // Entries stay pending — nothing was stamped.
+      expect((await wsOptions.getDesignSession()).entries[0].live.status).toBe('pending')
+    })
+
+    it('refuses an anchor claiming an MFE the catalog cannot see', async () => {
+      await seedWsSession([mfeDirectionEntry('wd-ghost', { file: 'src/App.vue', line: 1, mfe: 'ghost' })])
+
+      const result = await applyDesignSession(wsOptions, '/planets')
+      expect(result).toEqual({ error: "entry wd-ghost: anchor 'src/App.vue' could not be attributed to MFE 'ghost'" })
+      expect(wsTasks).toHaveLength(0)
     })
   })
 })
