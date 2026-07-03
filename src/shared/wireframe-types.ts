@@ -216,6 +216,17 @@ export interface WireframeBlockAnchor {
   mfe?: string
   /** Carried only when `file` is '' — see WireframeBlockFingerprint. */
   fingerprint?: WireframeBlockFingerprint
+  /** How `file`/`line` were obtained when the capture itself was anchorless:
+   *  'grep' = the shell auto-resolved the fingerprint via
+   *  `resolve-fingerprint` at capture time. Usable but not gospel — the agent
+   *  re-verifies with `annotask_get_source_excerpt` before editing. Absent on
+   *  DOM-stamped anchors (those ARE gospel). */
+  resolvedBy?: 'grep'
+  /** Server-swapped fragment root (htmx/Turbo): '<METHOD> <path>' of the
+   *  request that produced the markup (e.g. "POST /search"), carried when
+   *  `file` is '' — the honest "edit the server template behind this
+   *  endpoint" anchor. */
+  fragmentUrl?: string
 }
 
 /** What a palette block stands for — REAL scanner names, mirrors
@@ -426,6 +437,10 @@ export function isWireframeBlock(value: unknown): value is WireframeBlock {
         if (typeof fp[k] !== 'string') return false
       }
     }
+    // Auto-resolve provenance + fragment anchor — optional, but a wrong shape
+    // would mislead the honesty chip and the apply-time direction notes.
+    if (anchor.resolvedBy !== undefined && anchor.resolvedBy !== 'grep') return false
+    if (anchor.fragmentUrl !== undefined && typeof anchor.fragmentUrl !== 'string') return false
     if (!isBlockRect(value.originalRect)) return false
   }
   if (value.kind === 'palette') {

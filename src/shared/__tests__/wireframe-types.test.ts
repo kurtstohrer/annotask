@@ -172,4 +172,21 @@ describe('WireframeBlockAnchor.fingerprint validation', () => {
     expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fingerprint: { selector: 'div', textHead: 'x' } as never } }))).toBe(false)
     expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fingerprint: { ...fp, htmlHead: 42 } as never } }))).toBe(false)
   })
+
+  it('accepts a grep-resolved anchor (resolvedBy + retained fingerprint) and round-trips the document', () => {
+    const anchor = { file: 'src/Widget.vue', line: 12, resolvedBy: 'grep' as const, fingerprint: fp }
+    expect(isWireframeBlock(capturedBlock({ anchor }))).toBe(true)
+    expect(isWireframeDocument(docWith([capturedBlock({ anchor })]))).toBe(true)
+  })
+
+  it('rejects a resolvedBy value other than "grep"', () => {
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: 'src/Widget.vue', line: 12, resolvedBy: 'guess' as never } }))).toBe(false)
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: 'src/Widget.vue', line: 12, resolvedBy: 1 as never } }))).toBe(false)
+  })
+
+  it('accepts a fragment anchor (file "" + fragmentUrl) and rejects a non-string fragmentUrl', () => {
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fragmentUrl: 'POST /search' } }))).toBe(true)
+    expect(isWireframeDocument(docWith([capturedBlock({ anchor: { file: '', line: 0, fragmentUrl: 'POST /search' } })]))).toBe(true)
+    expect(isWireframeBlock(capturedBlock({ anchor: { file: '', line: 0, fragmentUrl: 42 as never } }))).toBe(false)
+  })
 })

@@ -62,8 +62,8 @@ export interface ResolvedElement {
    *  Turbo, stamped data-annotask-fragment-url) before any file-bearing
    *  anchor: '<METHOD> <path>' of the request that produced the markup (e.g.
    *  "POST /search"), alongside the usual empty-file shape. An honest "this
-   *  markup came over the wire" signal from the bridge's getSourceData — not
-   *  yet plumbed into tasks/directions. */
+   *  markup came over the wire" signal from the bridge's getSourceData —
+   *  annotation tasks carry it as `context.fragment_url`. */
   fragmentUrl?: string
 }
 
@@ -396,6 +396,11 @@ export interface WireframeCaptureBlock {
    *  enough for `annotask_resolve_fingerprint` to find the source. Anchored
    *  blocks never carry it (zero payload growth on the happy path). */
   fingerprint?: { selector: string; textHead: string; htmlHead: string }
+  /** Server-swapped fragment root (htmx/Turbo, `data-annotask-fragment-url`):
+   *  '<METHOD> <path>' of the request that produced this markup. Only when
+   *  `file` is '' — the fragment arrived over the wire, so there is no client
+   *  source to anchor to; the shell maps it onto the block anchor. */
+  fragmentUrl?: string
 }
 
 export interface WireframeCaptureResult {
@@ -497,6 +502,10 @@ export interface ClickElementEvent {
   /** Set when the click landed inside an annotask-mounted wireframe placement —
    *  see ResolvedElement.instance_id. The eid is the placement container's eid. */
   instance_id?: string
+  /** '<METHOD> <path>' of the server request that produced this markup, when
+   *  the element sits inside an htmx/Turbo-swapped fragment and has no file
+   *  anchor — see ResolvedElement.fragmentUrl. */
+  fragmentUrl?: string
 }
 
 export interface RouteChangedEvent {
@@ -511,6 +520,9 @@ export interface SelectionTextEvent {
   component: string
   source_tag?: string
   mfe?: string
+  /** '<METHOD> <path>' fragment provenance when `file` is empty —
+   *  see ResolvedElement.fragmentUrl. */
+  fragmentUrl?: string
   tag: string
   rect?: { x: number; y: number; width: number; height: number }
   rects?: { x: number; y: number; width: number; height: number }[]

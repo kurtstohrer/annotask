@@ -346,7 +346,11 @@ export function bridgeWireframeWalker(): string {
     function wfBoundedSource(el, boundary) {
       var c = el;
       while (c && c !== boundary) {
-        if (c.hasAttribute && (c.hasAttribute('data-annotask-file') || c.hasAttribute('data-astro-source-file'))) {
+        // data-annotask-fragment-url stops the walk exactly like registry.ts's
+        // hasSourceAttr: htmx/Turbo-swapped markup must anchor to the request
+        // that produced it, never to the instrumented ancestor whose contents
+        // the swap replaced.
+        if (c.hasAttribute && (c.hasAttribute('data-annotask-file') || c.hasAttribute('data-astro-source-file') || c.hasAttribute('data-annotask-fragment-url'))) {
           return deps.getSourceData(c);
         }
         c = c.parentElement;
@@ -412,6 +416,11 @@ export function bridgeWireframeWalker(): string {
       // Only carry mfe when it resolved — keeps legacy/non-MFE output free of
       // the field (and the shell omits an empty anchor.mfe).
       if (data.mfe) meta.mfe = data.mfe;
+      // Server-swapped fragment root (htmx/Turbo): getSourceData returns the
+      // request that produced the markup ('POST /search') alongside an empty
+      // file. Every anchor-resolution branch flows through \`data\`, so this
+      // one copy covers legacy, MFE, and bounded-explode paths alike.
+      if (data.fragmentUrl) meta.fragmentUrl = data.fragmentUrl;
       // Honesty stamps — additive, absent on ordinary blocks. An <iframe> is an
       // embedded document: geometry/anchor are real (moving the mount is
       // legitimate) but the interior is another app — never descended, and

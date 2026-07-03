@@ -5,6 +5,7 @@ import { useWorkspace } from './useWorkspace'
 import { useCanvasSelection } from './useCanvasSelection'
 import { useCanvasHistory } from './useCanvasHistory'
 import { computeWireframeDirections } from '../utils/wireframeDirections'
+import { resolveFingerprintAnchor } from '../utils/fingerprintResolve'
 import { composeWireframeDiff } from '../utils/wireframeComposite'
 import { normalizeRoute } from '../utils/routes'
 import type { WireframeBlock, WireframeBlockAnchor, WireframeCanvasState, WireframeDataBinding, WireframeFidelity, WireframePaletteRef } from '../../shared/wireframe-types'
@@ -116,6 +117,9 @@ function buildAnchor(b: WireframeCaptureBlock, toAnchorFile: (mfe: string | unde
     // Anchorless blocks (file '') carry the bridge's DOM fingerprint so the
     // apply-time direction stays resolvable (annotask_resolve_fingerprint).
     ...(b.fingerprint ? { fingerprint: b.fingerprint } : {}),
+    // Server-swapped fragment root (htmx/Turbo): the honest anchor is the
+    // request that produced the markup, not a file.
+    ...(b.fragmentUrl ? { fragmentUrl: b.fragmentUrl } : {}),
   }
 }
 
@@ -305,6 +309,8 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       canvas.value = next
       canvasRoute.value = route
       history.clear()
+      // Fire-and-forget: grep-resolve anchorless blocks while the canvas shows.
+      autoResolveAnchorless(blocks)
 
       // Uploads are sequential-ish but independent: a failed upload leaves the
       // block image-less on disk (renders from memory this session, honest
@@ -404,6 +410,29 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   function flushPersist(): void {
     if (persistTimer) { clearTimeout(persistTimer); persistTimer = null }
     if (canvas.value && canvasRoute.value) void wireframeDoc.saveCanvas(canvasRoute.value, canvas.value)
+  }
+
+  /** Capture-time fingerprint auto-resolve: fire-and-forget grep of every
+   *  anchorless captured block's fingerprint against project source. A
+   *  CONFIDENT hit patches the anchor IN PLACE (`resolvedBy: 'grep'` marks it
+   *  usable-but-not-gospel for the chip and the apply-time directions) and
+   *  rides the same debounced persistence an edit uses; ambiguous or
+   *  low-confidence results leave the block honestly anchorless. Never blocks
+   *  canvas display — one bounded Promise.all per capture (blocks ≤ 24). */
+  function autoResolveAnchorless(blocks: WireframeBlock[]): void {
+    const eligible = blocks.filter((b) =>
+      b.kind === 'captured' && !!b.anchor && b.anchor.file === '' && !!b.anchor.fingerprint)
+    if (!eligible.length) return
+    void Promise.all(eligible.map(async (b) => {
+      const hit = await resolveFingerprintAnchor(fetch, b.anchor!.fingerprint!)
+      // Re-check: an explode/recapture may have replaced the anchor meanwhile.
+      if (!hit || b.anchor!.file !== '') return
+      b.anchor!.file = hit.file
+      b.anchor!.line = hit.line
+      b.anchor!.resolvedBy = 'grep'
+      b.updatedAt = Date.now()
+      persistSoon()
+    }))
   }
 
   // ── Block operations (W2 manipulation) ────────────────────
@@ -767,7 +796,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       // explode would produce — anchorless blocks included.
       let payload: WireframeCapturePayload
       let rootEid: string | null = null
-      if (block.anchor?.file) {
+      // A grep-resolved anchor names a file the DOM never carried a stamp for
+      // (that's why the block was anchorless) — findTemplateGroup would miss,
+      // so those blocks keep the geometric path.
+      if (block.anchor?.file && block.anchor.resolvedBy !== 'grep') {
         const group = await iframe.findTemplateGroup(
           toLocalFile(block.anchor.mfe, block.anchor.file),
           String(block.anchor.line),
@@ -838,7 +870,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     // (anchorless) geometric children for layout wireframing.
     let payload: WireframeCapturePayload
     let rootEid: string | null = null
-    if (parent.anchor?.file) {
+    // Grep-resolved anchors re-resolve by GEOMETRY like the anchorless blocks
+    // they were: the file came from a repo grep, not from a DOM stamp, so a
+    // findTemplateGroup lookup on it would always miss (see resolveBlockChildren).
+    if (parent.anchor?.file && parent.anchor.resolvedBy !== 'grep') {
       const group = await iframe.findTemplateGroup(
         toLocalFile(parent.anchor.mfe, parent.anchor.file),
         String(parent.anchor.line),
@@ -929,6 +964,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       if (oldParentImage && !c.blocks.some((b) => b.image === oldParentImage)) {
         void deleteSnapshot(oldParentImage)
       }
+
+      // Fire-and-forget: explode children of an un-instrumented region land
+      // anchorless too — grep-resolve them just like a fresh capture.
+      autoResolveAnchorless(children)
 
       const byId = new Map(children.map((b) => [b.id, b]))
       await Promise.all(uploads.map(async ({ id: childId, dataUrl }) => {

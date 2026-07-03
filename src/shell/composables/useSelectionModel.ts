@@ -14,6 +14,10 @@ export interface SelectionData {
   parentComponent?: string
   /** Visible label text, used for agent disambiguation in task context. */
   text?: string
+  /** '<METHOD> <path>' of the request that produced the selected markup, when
+   *  the element lives inside a server-swapped fragment (htmx/Turbo) and has
+   *  no `file`. Rides into task context as `fragment_url`. */
+  fragmentUrl?: string
   /** Set when the selection is an annotask-mounted wireframe placement — the
    *  eid is the placement container's; file/line are empty (no source exists
    *  yet) and template-group/source-anchored flows must not run. */

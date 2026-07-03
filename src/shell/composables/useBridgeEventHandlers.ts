@@ -120,7 +120,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
         label: `Pin on ${describeElement({ file, line, component, tag: tagName, classes, text })}`,
         file, line, component,
         annotationId: pin.id,
-        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY, elementText: text || '', ...(source_tag ? { elementSourceTag: source_tag } : {}) },
+        meta: { elementTag: tagName, elementClasses: classes, pinX, pinY, elementText: text || '', ...(source_tag ? { elementSourceTag: source_tag } : {}), ...(data.fragmentUrl ? { elementFragmentUrl: data.fragmentUrl } : {}) },
       }
       pendingTaskText.value = ''
       return
@@ -161,7 +161,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
         }
       }
     } else {
-      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}), ...(data.instance_id ? { instanceId: data.instance_id } : {}) }
+      primarySelection.value = { file, line, component, mfe: mfe || '', tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}), ...(data.instance_id ? { instanceId: data.instance_id } : {}), ...(data.fragmentUrl ? { fragmentUrl: data.fragmentUrl } : {}) }
       selectedEids.value = [eid]
       if (data.instance_id) {
         // A placement has no source anchor — there is no template group to
@@ -188,6 +188,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
           meta: {
             elementTag: tagName, elementClasses: classes, elementText: text || '',
             ...(source_tag ? { elementSourceTag: source_tag } : {}),
+            ...(data.fragmentUrl ? { elementFragmentUrl: data.fragmentUrl } : {}),
             selectedElements: [{ eid, file, line, component, tag: tagName, classes, text: text || '', ...(source_tag ? { source_tag } : {}), ...(parent_component ? { parent_component } : {}) }],
           },
         }
@@ -201,7 +202,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
   async function onContextMenu(data: ClickElementEvent) {
     const { file, line, component, source_tag, parent_component, mfe = '', tag: tagName, classes, eid, text } = data
     const shellRect = iframe.toShellRect(data.rect)
-    primarySelection.value = { file, line, component, mfe, tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}) }
+    primarySelection.value = { file, line, component, mfe, tagName, classes, eid, text, ...(source_tag ? { sourceTag: source_tag } : {}), ...(parent_component ? { parentComponent: parent_component } : {}), ...(data.fragmentUrl ? { fragmentUrl: data.fragmentUrl } : {}) }
     selectedEids.value = [eid]
     await readLiveStyles()
     await refreshElementRole()
@@ -215,6 +216,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
   async function onSelectionText(data: {
     text: string; eid: string; file: string; line: number; component: string; tag: string
     source_tag?: string
+    fragmentUrl?: string
     rect?: { x: number; y: number; width: number; height: number }
     rects?: { x: number; y: number; width: number; height: number }[]
   }) {
@@ -246,7 +248,7 @@ export function useBridgeEventHandlers(deps: BridgeEventHandlerDeps) {
       line: data.line,
       component: data.component,
       annotationId: hl.id,
-      meta: { selectedText: data.text, elementTag: data.tag, ...(data.source_tag ? { elementSourceTag: data.source_tag } : {}) },
+      meta: { selectedText: data.text, elementTag: data.tag, ...(data.source_tag ? { elementSourceTag: data.source_tag } : {}), ...(data.fragmentUrl ? { elementFragmentUrl: data.fragmentUrl } : {}) },
     }
     pendingTaskText.value = data.text
   }

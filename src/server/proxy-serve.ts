@@ -130,7 +130,10 @@ export async function startProxyServer(options: ProxyServerOptions): Promise<{
       }
 
       const contentType = String(pres.headers['content-type'] ?? '')
-      if (!contentType.includes('text/html')) {
+      // HEAD responses have no body to inject into — buffering one would
+      // "inject" the whole bridge into emptiness and return it as a body a
+      // HEAD must not have. Pass headers through untouched.
+      if (req.method === 'HEAD' || !contentType.includes('text/html')) {
         res.writeHead(status, outHeaders)
         pres.pipe(res)
         return

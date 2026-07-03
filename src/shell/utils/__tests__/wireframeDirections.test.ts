@@ -533,9 +533,11 @@ describe('computeWireframeDirections — anchorless DOM fingerprints', () => {
     expect(del.description).not.toContain('annotask_resolve_fingerprint')
   })
 
-  it('regression pin: an anchored block never carries a fingerprint even when its anchor has one persisted', () => {
-    // Defensive: fingerprint should never coexist with a real file, but if a
-    // doc carried both, the direction must trust the file and drop the hint.
+  it('regression pin: a DOM-stamped anchor never carries a fingerprint — only resolvedBy "grep" legitimizes the pair', () => {
+    // Defensive: fingerprint should never coexist with a real STAMPED file
+    // (no resolvedBy), but if a doc carried both, the direction must trust
+    // the file and drop the hint. Grep-resolved anchors are the exception —
+    // see the dedicated tests below.
     const blocks = planetsBlocks()
     blocks[1].deleted = true
     blocks[1].anchor = { ...blocks[1].anchor!, fingerprint: FP }
@@ -543,6 +545,7 @@ describe('computeWireframeDirections — anchorless DOM fingerprints', () => {
     expect(del.file).toBe('src/pages/PlanetsPage.vue')
     expect('fingerprint' in del).toBe(false)
     expect(del.description).not.toContain('annotask_resolve_fingerprint')
+    expect(del.description).not.toContain('grep-resolved')
   })
 
   it('an ADD whose donors are all unanchored invents nothing — no fingerprint, no hint', () => {
@@ -555,5 +558,95 @@ describe('computeWireframeDirections — anchorless DOM fingerprints', () => {
     expect(add.line).toBe(0)
     expect('fingerprint' in add).toBe(false)
     expect(add.description).not.toContain('annotask_resolve_fingerprint')
+  })
+})
+
+describe('computeWireframeDirections — grep-resolved anchors', () => {
+  const FP = {
+    selector: 'main:nth-of-type(1) > div:nth-of-type(2)',
+    textHead: 'Remote widget',
+    htmlHead: '<div class="remote-widget">Remote widget</div>',
+  }
+  const GREP_HINT = ' — anchor grep-resolved from a DOM fingerprint; verify with annotask_get_source_excerpt before editing'
+
+  /** A block whose anchor the shell auto-resolved at capture time. */
+  function grepResolved(id: string, y: number, height: number, extra: Partial<WireframeBlock> = {}): WireframeBlock {
+    const rect = { x: 0, y, width: 800, height }
+    return {
+      id,
+      kind: 'captured',
+      rect: { ...rect },
+      originalRect: { ...rect },
+      z: 1,
+      createdAt: 1,
+      anchor: { file: 'src/Widget.vue', line: 12, tag: 'div', cssClass: 'remote-widget', resolvedBy: 'grep', fingerprint: FP },
+      ...extra,
+    }
+  }
+
+  it('a deleted grep-resolved block keeps the anchor, STILL rides the fingerprint, and flags the description', () => {
+    const blocks = [...planetsBlocks(), grepResolved('remote', 800, 200, { deleted: true })]
+    const del = computeWireframeDirections(canvasWith(blocks)).find((d) => d.op === 'delete')!
+    expect(del.file).toBe('src/Widget.vue')
+    expect(del.line).toBe(12)
+    expect(del.fingerprint).toEqual(FP)
+    expect(del.description.endsWith(GREP_HINT)).toBe(true)
+    // The anchored form, not the unanchored one.
+    expect(del.description).not.toContain('annotask_resolve_fingerprint')
+  })
+
+  it('a moved grep-resolved block flags the description too', () => {
+    const blocks = [...planetsBlocks(), grepResolved('remote', 800, 200)]
+    blocks[3].rect = { ...blocks[3].rect, y: 90 }
+    const move = computeWireframeDirections(canvasWith(blocks)).find((d) => d.block.label === 'remote-widget')!
+    expect(move.op).toBe('move')
+    expect(move.fingerprint).toEqual(FP)
+    expect(move.description.endsWith(GREP_HINT)).toBe(true)
+  })
+})
+
+describe('computeWireframeDirections — server-rendered fragment anchors', () => {
+  const FRAG_HINT = ' — markup produced by POST /search; edit the server template behind that endpoint'
+
+  /** A block whose markup an htmx/Turbo swap produced: file '' + fragmentUrl. */
+  function fragmentBlock(id: string, y: number, height: number, extra: Partial<WireframeBlock> = {}): WireframeBlock {
+    const rect = { x: 0, y, width: 800, height }
+    return {
+      id,
+      kind: 'captured',
+      rect: { ...rect },
+      originalRect: { ...rect },
+      z: 1,
+      createdAt: 1,
+      anchor: { file: '', line: 0, tag: 'div', cssClass: 'results', fragmentUrl: 'POST /search' },
+      ...extra,
+    }
+  }
+
+  it('a deleted fragment block points the agent at the endpoint template', () => {
+    const blocks = [...planetsBlocks(), fragmentBlock('results', 800, 200, { deleted: true })]
+    const del = computeWireframeDirections(canvasWith(blocks)).find((d) => d.op === 'delete')!
+    expect(del.file).toBe('')
+    expect(del.description.endsWith(FRAG_HINT)).toBe(true)
+  })
+
+  it('a fragment block that ALSO carries a fingerprint rides both notes (fingerprint first)', () => {
+    const fp = { selector: 'div:nth-of-type(1)', textHead: 'Results', htmlHead: '<div class="results">Results</div>' }
+    const blocks = [...planetsBlocks(), fragmentBlock('results', 800, 200, {
+      deleted: true,
+      anchor: { file: '', line: 0, tag: 'div', cssClass: 'results', fragmentUrl: 'POST /search', fingerprint: fp },
+    })]
+    const del = computeWireframeDirections(canvasWith(blocks)).find((d) => d.op === 'delete')!
+    expect(del.fingerprint).toEqual(fp)
+    expect(del.description).toContain('annotask_resolve_fingerprint')
+    expect(del.description.endsWith(FRAG_HINT)).toBe(true)
+  })
+
+  it('an anchored block never grows a fragment note even if a doc carried fragmentUrl alongside a file', () => {
+    const blocks = planetsBlocks()
+    blocks[1].deleted = true
+    blocks[1].anchor = { ...blocks[1].anchor!, fragmentUrl: 'POST /search' }
+    const del = computeWireframeDirections(canvasWith(blocks)).find((d) => d.op === 'delete')!
+    expect(del.description).not.toContain('markup produced by')
   })
 })

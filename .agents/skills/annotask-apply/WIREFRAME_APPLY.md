@@ -59,6 +59,8 @@ A block from an un-instrumented region (production MFE remote, third-party bundl
 3. Confirm the winning candidate with `annotask_get_source_excerpt` — the excerpt must actually contain the fingerprinted markup.
 4. Candidates with similar scores are AMBIGUOUS — ask via `needs_info`, **never guess between them**. No candidate at all → `blocked_reason` (the source likely isn't in this repo).
 
+A direction whose description says the anchor was **grep-resolved from a DOM fingerprint** carries a `file`/`line` the tool auto-resolved at capture time — treat it as a strong lead, not gospel: verify with `annotask_get_source_excerpt` that the excerpt actually contains the fingerprinted markup before editing (the `fingerprint` still rides the direction for re-resolution if it doesn't). A direction whose description says the markup was **produced by** an endpoint (e.g. `POST /search`) is a server-rendered fragment (htmx/Turbo) — there is no client component to edit, so find the server template behind that endpoint (grep routes/handlers for the path) and apply the change there.
+
 ### Data bindings on adds (`added.data`)
 
 > **Gated off this release.** Wireframe data binding is DEFERRED (`WIREFRAME_DATA_BINDING_ENABLED=false` in `src/shell/wireframeFeatures.ts`), so new `wireframe_apply` tasks won't carry `added.data`. This section applies to legacy/older task files that already contain a binding — when one is present, wire it per the rules below.

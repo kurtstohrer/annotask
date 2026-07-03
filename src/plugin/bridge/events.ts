@@ -202,6 +202,7 @@ export function bridgeEvents(): string {
       source_tag: data.source_tag,
       parent_component: findParentComponent(source.sourceEl, data.component),
       mfe: data.mfe,
+      fragmentUrl: data.fragmentUrl,
       tag: targetEl.tagName.toLowerCase(),
       classes: classes,
       rect: getRect(targetEl),
@@ -273,6 +274,7 @@ export function bridgeEvents(): string {
       component: data.component,
       source_tag: data.source_tag,
       mfe: data.mfe,
+      fragmentUrl: data.fragmentUrl,
       tag: anchorEl.tagName.toLowerCase(),
       rect: selRect,
       rects: selRects
@@ -296,6 +298,7 @@ export function bridgeEvents(): string {
       line: data.line,
       component: data.component,
       mfe: data.mfe,
+      fragmentUrl: data.fragmentUrl,
       tag: targetEl.tagName.toLowerCase(),
       classes: classes,
       rect: getRect(targetEl),

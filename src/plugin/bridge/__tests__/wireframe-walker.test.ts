@@ -17,7 +17,7 @@ import { bridgeWireframeWalker } from '../wireframe-walker'
 const openWindows: JSDOM[] = []
 afterEach(() => { while (openWindows.length) openWindows.pop()!.window.close() })
 
-interface Meta { eid: string; file: string; line: string; component: string; source_tag: string; tag: string; cls: string; role: string; mfe?: string; fidelity?: string; embedded?: string; fingerprint?: { selector: string; textHead: string; htmlHead: string }; rect: { x: number; y: number; width: number; height: number }; dataUrl: null }
+interface Meta { eid: string; file: string; line: string; component: string; source_tag: string; tag: string; cls: string; role: string; mfe?: string; fidelity?: string; embedded?: string; fingerprint?: { selector: string; textHead: string; htmlHead: string }; fragmentUrl?: string; rect: { x: number; y: number; width: number; height: number }; dataUrl: null }
 interface Disc { blocks: Array<{ el: any; meta: Meta }>; truncated: boolean }
 type DiscoverFn = (root: any, deps: any, opts?: { mfeDescentEnabled?: boolean; anchorBoundary?: any }) => Disc
 type RectFn = (root: any, rect: { x: number; y: number; width: number; height: number }, deps: any) => any
@@ -49,18 +49,22 @@ function makeDeps(): any {
     findSourceElement(el: any) {
       let c = el
       while (c) {
-        if (c.getAttribute && c.getAttribute('data-annotask-file')) return { sourceEl: c, targetEl: el }
+        // Mirrors registry.ts hasSourceAttr: a fragment root stops the walk too.
+        if (c.getAttribute && (c.getAttribute('data-annotask-file') || c.getAttribute('data-annotask-fragment-url'))) return { sourceEl: c, targetEl: el }
         c = c.parentElement
       }
       return { sourceEl: el, targetEl: el }
     },
     getSourceData(el: any) {
       const g = (k: string) => (el.getAttribute && el.getAttribute(k)) || ''
-      return {
+      const data: Record<string, string> = {
         file: g('data-annotask-file'), line: g('data-annotask-line'),
         component: g('data-annotask-component'), source_tag: g('data-annotask-source-tag'),
         mfe: g('data-annotask-mfe'),
       }
+      // Mirrors registry.ts: the fragment anchor applies only when no file does.
+      if (!data.file && g('data-annotask-fragment-url')) data.fragmentUrl = g('data-annotask-fragment-url')
+      return data
     },
     getEid(el: any) {
       let id = eids.get(el)
@@ -725,6 +729,66 @@ describe('wireframe walker — anchorless DOM fingerprints', () => {
     expect(r.blocks.length).toBe(2)
     expect(r.blocks.every((b) => b.meta.file === 'src/App.vue')).toBe(true)
     expect(r.blocks.every((b) => !('fingerprint' in b.meta))).toBe(true)
+  })
+})
+
+describe('wireframe walker — server-rendered fragment anchors (htmx/Turbo)', () => {
+  it('a fragment-root block rides fragmentUrl (plus its fingerprint) alongside the empty file', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // An htmx page: one region was swapped in over the wire (fragment-url
+    // stamped by events.ts), the other is ordinary instrumented markup.
+    const page = el(win, 'main', { rect: [0, 0, 800, 600] }, [
+      el(win, 'div', { cls: 'results', attrs: { 'data-annotask-fragment-url': 'POST /search' }, rect: [0, 0, 800, 300] }),
+      el(win, 'section', { cls: 'static', attrs: { 'data-annotask-file': 'src/index.html', 'data-annotask-line': '9' }, rect: [0, 300, 800, 300] }),
+    ])
+    mount(win, page)
+
+    const r = discover(win.document.body, deps)
+    const results = r.blocks.find((b) => b.meta.cls === 'results')!.meta
+    expect(results.file).toBe('')
+    expect(results.fragmentUrl).toBe('POST /search')
+    expect(results.fingerprint).toBeTruthy() // still grep-resolvable
+    // The anchored sibling never grows the field.
+    const stat = r.blocks.find((b) => b.meta.cls === 'static')!.meta
+    expect(stat.file).toBe('src/index.html')
+    expect('fragmentUrl' in stat).toBe(false)
+  })
+
+  it('a block INSIDE a fragment root anchors to the fragment, not to whatever the source walk finds above it', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // The swap target sits inside instrumented markup — the walk-up must stop
+    // at the fragment root instead of anchoring the block to src/index.html
+    // (whose contents the swap replaced).
+    const page = el(win, 'main', { attrs: { 'data-annotask-file': 'src/index.html', 'data-annotask-line': '1' }, rect: [0, 0, 800, 600] }, [
+      el(win, 'div', { cls: 'frag-root', attrs: { 'data-annotask-fragment-url': 'GET /rows' }, rect: [0, 0, 800, 600] }, [
+        el(win, 'section', { cls: 'row-a', rect: [0, 0, 800, 300] }),
+        el(win, 'section', { cls: 'row-b', rect: [0, 300, 800, 300] }),
+      ]),
+    ])
+    mount(win, page)
+
+    const r = discover(win.document.body, deps)
+    const rowA = r.blocks.find((b) => b.meta.cls === 'row-a')!.meta
+    expect(rowA.file).toBe('')
+    expect(rowA.fragmentUrl).toBe('GET /rows')
+  })
+
+  it('bounded explode (anchorBoundary): wfBoundedSource stops at a fragment root before a file-bearing ancestor', () => {
+    const win = makeWindow(); const discover: DiscoverFn = win.__discoverBlocks; const deps = makeDeps()
+    // boundary > file-bearing wrapper > fragment root > two sections. The
+    // bounded walk-up from a section must stop at the fragment root — walking
+    // past it to src/Page.vue would mis-anchor server-produced markup.
+    const secA = el(win, 'section', { cls: 'frag-a', rect: [0, 0, 800, 300] })
+    const secB = el(win, 'section', { cls: 'frag-b', rect: [0, 300, 800, 300] })
+    const fragRoot = el(win, 'div', { cls: 'swap', attrs: { 'data-annotask-fragment-url': 'POST /search' }, rect: [0, 0, 800, 600] }, [secA, secB])
+    const fileWrap = el(win, 'div', { attrs: { 'data-annotask-file': 'src/Page.vue', 'data-annotask-line': '2' }, rect: [0, 0, 800, 600] }, [fragRoot])
+    const root = el(win, 'div', { cls: 'boundary', rect: [0, 0, 800, 600] }, [fileWrap])
+    mount(win, root)
+
+    const r = discover(root, deps, { mfeDescentEnabled: true, anchorBoundary: root })
+    const metas = r.blocks.map((b) => b.meta).filter((m) => m.cls === 'frag-a' || m.cls === 'frag-b')
+    expect(metas).toHaveLength(2)
+    expect(metas.every((m) => m.file === '' && m.fragmentUrl === 'POST /search')).toBe(true)
   })
 })
 

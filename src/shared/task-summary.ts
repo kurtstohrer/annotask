@@ -32,6 +32,9 @@ const LOCATOR_CONTEXT_FIELDS = [
   'element_tag', 'element_classes', 'element_text',
   'selected_text',
   'from_element_tag', 'from_element_classes', 'from_element_text',
+  // Server-rendered fragment provenance ('POST /search') — present when the
+  // task has no `file`; the file to edit is the template behind that endpoint.
+  'fragment_url',
 ] as const
 
 /**

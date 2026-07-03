@@ -95,9 +95,24 @@ function blockLabel(b: WireframeBlock): string {
   return b.anchor?.cssClass || b.anchor?.sourceTag || b.anchor?.tag || b.anchor?.component || 'block'
 }
 
-function anchorChip(b: WireframeBlock): string | null {
-  if (b.kind !== 'captured' || !b.anchor?.file) return null
-  return `${b.anchor.file}:${b.anchor.line}`
+/** The block-header anchor chip. Honesty-graded: a DOM-stamped anchor shows
+ *  bare `file:line`; a grep-resolved one appends a muted "(grep)" so the user
+ *  knows the tool guessed (confidently) rather than read a stamp; an
+ *  anchorless block from a server-swapped fragment (htmx/Turbo) shows the
+ *  request that produced the markup ('POST /search') instead of a file. */
+function anchorChip(b: WireframeBlock): { text: string; suffix?: string; title?: string } | null {
+  if (b.kind !== 'captured') return null
+  if (b.anchor?.file) {
+    const text = `${b.anchor.file}:${b.anchor.line}`
+    if (b.anchor.resolvedBy === 'grep') {
+      return { text, suffix: '(grep)', title: 'anchor resolved by fingerprint grep — verify before trusting' }
+    }
+    return { text }
+  }
+  if (b.anchor?.fragmentUrl) {
+    return { text: b.anchor.fragmentUrl, title: 'server-rendered fragment — edit the template behind this endpoint' }
+  }
+  return null
 }
 
 /** Why a snapshot isn't a live render — shown as the fidelity pill's tooltip so
@@ -737,7 +752,7 @@ function onRecaptureConfirmed(): void {
           <template v-if="primaryBlock?.id === b.id && selectedIds.length === 1">
             <div class="wf-block-header" @pointerdown.stop="beginDrag($event, b, 'move')">
               <span class="wf-block-name">{{ blockLabel(b) }}</span>
-              <code v-if="anchorChip(b)" class="wf-anchor-chip" data-testid="wf-anchor-chip">{{ anchorChip(b) }}</code>
+              <code v-if="anchorChip(b)" class="wf-anchor-chip" data-testid="wf-anchor-chip" :title="anchorChip(b)!.title">{{ anchorChip(b)!.text }}<span v-if="anchorChip(b)!.suffix" class="wf-anchor-suffix"> {{ anchorChip(b)!.suffix }}</span></code>
               <span class="wf-header-spacer" />
               <button v-if="explodeEnabled && b.kind === 'captured' && !b.shell" class="wf-hbtn" data-testid="wf-explode-btn" @pointerdown.stop @click.stop="onBlockDblClick(b)" title="Explode into child blocks (double-click)">
                 <Icon name="maximize-2" :size="10" />
@@ -1241,6 +1256,9 @@ function onRecaptureConfirmed(): void {
   font-size: 9px;
   opacity: 0.9;
 }
+/* Grep-resolved provenance suffix — muted below the chip's own 0.9 so the
+   "verify before trusting" grade reads at a glance. */
+.wf-anchor-suffix { opacity: 0.65; }
 .wf-header-spacer { width: 6px; }
 .wf-hbtn {
   display: inline-flex;

@@ -195,6 +195,12 @@ export interface AnnotationChange extends BaseChange {
     element_classes?: string
     parent_layout?: string
     siblings_count?: number
+    /** Server-rendered fragment: METHOD /path that produced the selected
+     *  markup (e.g. "POST /search") — the file to edit is the template behind
+     *  that endpoint. Only present when the element has NO source file: the
+     *  bridge stamps it on htmx/Turbo-swapped subtrees instead of mis-anchoring
+     *  them to the nearest instrumented ancestor. */
+    fragment_url?: string
   }
 }
 

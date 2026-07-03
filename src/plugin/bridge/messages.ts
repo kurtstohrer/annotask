@@ -228,6 +228,7 @@ export function bridgeMessages(): string {
         source_tag: srcData.source_tag,
         parent_component: findParentComponent(src.sourceEl, srcData.component),
         mfe: srcData.mfe,
+        fragmentUrl: srcData.fragmentUrl,
         tag: src.sourceEl.tagName.toLowerCase(),
         rect: getRect(src.sourceEl),
         classes: typeof src.targetEl.className === 'string' ? src.targetEl.className : '',
@@ -1061,11 +1062,15 @@ export function bridgeMessages(): string {
 
     if (type === 'wireframe:capture') {
       // Rasterize the current route into per-block images for the snapshot
-      // wireframe canvas. Sequential captures (html2canvas costs 100-500ms per
-      // block) with progress pushes; one full-document pass at the end is the
-      // honest "before" the apply composite needs. Rects are document CSS px:
-      // we capture at scroll (0,0) so viewport rects equal document rects and
-      // fixed/sticky elements can't mis-crop.
+      // wireframe canvas. Fast path: render the document ONCE into a master
+      // canvas and crop every block from it (see wfRunMaster); legacy path:
+      // sequential per-block html2canvas renders (a full document clone+render
+      // EACH, seconds apiece on heavy pages), kept as the refine path and the
+      // silent fallback. Progress pushes either way; the full-document "before"
+      // the apply composite needs comes from the master (fast path) or its own
+      // final pass (legacy). Rects are document CSS px: we capture at scroll
+      // (0,0) so viewport rects equal document rects and fixed/sticky elements
+      // can't mis-crop.
       var wfScale = Math.min(window.devicePixelRatio || 1, 2);
       if (payload && typeof payload.scale === 'number' && payload.scale > 0) wfScale = Math.min(payload.scale, 3);
       var wfSavedX = window.scrollX || 0;
@@ -1349,7 +1354,71 @@ export function bridgeMessages(): string {
             if (wfIsRefine) result.rootEid = getEid(wfRoot);
             respond(id, result);
           }
-          wfCaptureNext();
+          // ---- master-render fast path ------------------------------------
+          // One full-document render (two when an inner scroller exists), then
+          // every block is a cheap canvas crop — versus the legacy loop's one
+          // full clone+render PER BLOCK plus a final full-page pass (up to 25
+          // document renders, seconds each on heavy pages). allowTaint is
+          // FALSE here on purpose: a tainted master would fail EVERY crop's
+          // toDataURL, so non-CORS images render blank instead of poisoning
+          // the whole capture — which still beats the legacy path, where such
+          // a block fails entirely.
+          function wfRunMaster() {
+            // Canvas side limit (Safari-conservative 16384px): a master past
+            // it would silently rasterize blank, so take the legacy path.
+            var wfDocWidth = document.documentElement.scrollWidth;
+            if (wfDocWidth * wfScale > 16384 || wfDocHeight() * wfScale > 16384) { wfCaptureNext(); return; }
+            sendToShell('wireframe:capture-progress', { index: 0, total: wfMetas.length + 1, label: 'rendering page' });
+            wfH2c(h2c, document.body, { useCORS: true, allowTaint: false, logging: false, scale: wfScale }, 20000)
+              .then(function(plainMaster) {
+                // Two masters when an inner scroller exists: in-scroller
+                // blocks crop from the EXPANDED clone render, everything else
+                // from the plain one — same containment rule as the per-block
+                // path (expansion shifts content after the scroller in flow).
+                if (!wfScroller) return { plain: plainMaster, expanded: plainMaster };
+                return wfH2c(h2c, document.body, { useCORS: true, allowTaint: false, logging: false, scale: wfScale, onclone: wfExpandScrollerInClone }, 20000)
+                  .then(function(expandedMaster) { return { plain: plainMaster, expanded: expandedMaster }; });
+              })
+              .then(function(masters) {
+                for (var ci = 0; ci < wfMetas.length; ci++) {
+                  var cMeta = wfMetas[ci];
+                  sendToShell('wireframe:capture-progress', { index: ci, total: wfMetas.length + 1, label: cMeta.component || cMeta.source_tag || cMeta.tag });
+                  var cH = Math.min(cMeta.rect.height, 4000);
+                  var cSrc = (wfScroller && wfScroller.contains(wfAll[ci])) ? masters.expanded : masters.plain;
+                  var cCrop = document.createElement('canvas');
+                  cCrop.width = Math.max(1, Math.round(cMeta.rect.width * wfScale));
+                  cCrop.height = Math.max(1, Math.round(cH * wfScale));
+                  cCrop.getContext('2d').drawImage(cSrc, cMeta.rect.x * wfScale, cMeta.rect.y * wfScale, cMeta.rect.width * wfScale, cH * wfScale, 0, 0, cCrop.width, cCrop.height);
+                  cMeta.dataUrl = cCrop.toDataURL('image/png');
+                  if (cH < cMeta.rect.height) cMeta.clipped = true;
+                }
+                sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
+                // The "before" is the (expanded, when present) master
+                // downscaled to scale 1 — same composite-budget rule as the
+                // legacy full-page pass, minus its extra document render.
+                if (wfScale === 1) return masters.expanded.toDataURL('image/png');
+                var wfFull = document.createElement('canvas');
+                wfFull.width = Math.max(1, Math.round(masters.expanded.width / wfScale));
+                wfFull.height = Math.max(1, Math.round(masters.expanded.height / wfScale));
+                wfFull.getContext('2d').drawImage(masters.expanded, 0, 0, wfFull.width, wfFull.height);
+                return wfFull.toDataURL('image/png');
+              })
+              .then(
+                function(fullDataUrl) { wfFinish(fullDataUrl, null); },
+                function() {
+                  // Silent fallback: master render failed/timed out, or a
+                  // crop's toDataURL threw (belt-and-suspenders). Rerun the
+                  // whole legacy sequence from block 0 — idempotent, any
+                  // partial dataUrls just get overwritten.
+                  wfIdx = 0;
+                  wfCaptureNext();
+                }
+              );
+          }
+          // Refine keeps the legacy loop: its shell pass needs its own
+          // hide-children onclone and its block count is small.
+          if (wfIsRefine) wfCaptureNext();
+          else wfRunMaster();
         }
 
         function wfResolveH2c() {

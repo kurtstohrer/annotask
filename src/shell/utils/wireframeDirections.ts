@@ -331,11 +331,23 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
     const shared = sharedAnchors.get(b.id)
     // Anchorless block (file '') carrying a capture-time DOM fingerprint: ride
     // it on the direction and tell the agent to resolve it FIRST — a bare
-    // class label + measured rects is honest but not actionable.
-    const fingerprint = !b.anchor?.file && b.anchor?.fingerprint ? b.anchor.fingerprint : undefined
-    const fingerprintNote = fingerprint
+    // class label + measured rects is honest but not actionable. A GREP-
+    // resolved anchor (the shell's capture-time auto-resolve stamped file/line
+    // from that fingerprint) is usable but not gospel: keep the fingerprint
+    // riding and tell the agent to verify the anchor before editing.
+    const grepResolved = b.anchor?.resolvedBy === 'grep'
+    const fingerprint = (!b.anchor?.file || grepResolved) && b.anchor?.fingerprint ? b.anchor.fingerprint : undefined
+    const fingerprintNote = !b.anchor?.file && fingerprint
       ? ' — unanchored: DOM fingerprint attached; resolve it to source with annotask_resolve_fingerprint before editing'
+      : grepResolved
+        ? ' — anchor grep-resolved from a DOM fingerprint; verify with annotask_get_source_excerpt before editing'
+        : ''
+    // Anchorless markup that a server produced (htmx/Turbo swap): there is no
+    // client file — point the agent at the endpoint's template instead.
+    const fragmentNote = !b.anchor?.file && b.anchor?.fragmentUrl
+      ? ` — markup produced by ${b.anchor.fragmentUrl}; edit the server template behind that endpoint`
       : ''
+    const anchorNotes = fingerprintNote + fragmentNote
     const base = {
       type: 'wireframe_direction' as const,
       file: b.anchor?.file ?? '',
@@ -361,7 +373,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-delete`,
         op: 'delete',
-        description: `DELETE the ${ownLabel}${fileLine(b)}${mfeLoc}${b.note ? ` — user said: "${b.note}"` : ''}${sharedDeleteNote}${fingerprintNote}`,
+        description: `DELETE the ${ownLabel}${fileLine(b)}${mfeLoc}${b.note ? ` — user said: "${b.note}"` : ''}${sharedDeleteNote}${anchorNotes}`,
         measured: { before: { ...(b.originalRect ?? b.rect) } },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -406,7 +418,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-move`,
         op: 'move',
-        description: `MOVE the ${ownLabel}${fileLine(b)}${mfeLoc}${childrenNote}: ${parts.join('; ')}${containerNote}${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}${fingerprintNote}`,
+        description: `MOVE the ${ownLabel}${fileLine(b)}${mfeLoc}${childrenNote}: ${parts.join('; ')}${containerNote}${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}${anchorNotes}`,
         measured: {
           before: { ...before }, after: { ...after },
           dx: Math.round(dx), dy: Math.round(dy),
@@ -423,7 +435,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-resize`,
         op: 'resize',
-        description: `RESIZE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}${fingerprintNote}`,
+        description: `RESIZE the ${ownLabel}${fileLine(b)}${mfeLoc}: ${rectStr(before)} → ${rectStr(after)} (${wPct - 100 >= 0 ? '+' : ''}${wPct - 100}% w, ${hPct - 100 >= 0 ? '+' : ''}${hPct - 100}% h) (measured)${b.note ? ` — user said: "${b.note}"` : ''}${sharedEditNote}${anchorNotes}`,
         measured: { before: { ...before }, after: { ...after }, wPct, hPct },
         ...(b.note ? { note: b.note } : {}),
       })
@@ -435,7 +447,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
         ...base,
         id: `wd-${b.id}-note`,
         op: 'note',
-        description: `NOTE on the ${ownLabel}${fileLine(b)}${mfeLoc}: user said: "${b.note}"${fingerprintNote}`,
+        description: `NOTE on the ${ownLabel}${fileLine(b)}${mfeLoc}: user said: "${b.note}"${anchorNotes}`,
         // Note-only directions still sort by where the block sits — without
         // a rect the top-down sort would pin them all to y=0.
         measured: { after: { ...b.rect } },

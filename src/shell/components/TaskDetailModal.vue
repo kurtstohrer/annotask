@@ -214,8 +214,17 @@ const fileRefs = computed<FileRef[]>(() => {
   return refs
 })
 
+// ── Server-rendered fragment provenance ──
+// 'POST /search'-style anchor for elements inside htmx/Turbo-swapped fragments.
+// Only meaningful when the task has no file — the markup came over the wire,
+// so the chip replaces the file ref rather than accompanying one.
+const fragmentUrl = computed(() => {
+  if (props.task.file) return undefined
+  return (props.task.context as any)?.fragment_url as string | undefined
+})
+
 // ── Context entries (filtered — skip element/arrow fields already shown above) ──
-const contextSkipKeys = new Set(['element_tag', 'element_classes', 'element_text', 'elements', 'from_element_tag', 'from_element_classes', 'from_element_text', 'to_element', 'changes', 'selected_text'])
+const contextSkipKeys = new Set(['element_tag', 'element_classes', 'element_text', 'elements', 'from_element_tag', 'from_element_classes', 'from_element_text', 'to_element', 'changes', 'selected_text', 'fragment_url'])
 
 const contextEntries = computed(() => {
   if (!props.task.context) return []
@@ -433,6 +442,10 @@ function onKeydown(e: KeyboardEvent) {
             <span v-if="f.label" class="td-file-label">{{ f.label }}</span>
             <code class="td-file-path">{{ f.file }}{{ f.line ? ':' + f.line : '' }}</code>
             <span v-if="f.component" class="td-file-comp">{{ f.component }}</span>
+          </div>
+          <div v-if="fragmentUrl" class="td-file-ref" title="server-rendered fragment — edit the template behind this endpoint">
+            <span class="td-file-label">fragment</span>
+            <code class="td-fragment-url">{{ fragmentUrl }}</code>
           </div>
           <div v-if="task.route" class="td-file-ref">
             <span class="td-file-label">route</span>
@@ -782,6 +795,11 @@ function onKeydown(e: KeyboardEvent) {
 }
 .td-file-path { color: var(--accent); font-family: monospace; font-size: 11px; }
 .td-file-comp { color: var(--role-component); font-size: 10px; margin-left: auto; }
+.td-fragment-url {
+  color: var(--cyan); font-family: monospace; font-size: 11px;
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+  padding: 1px 5px; border-radius: 3px;
+}
 
 /* Meta grid */
 .td-meta-grid { display: flex; flex-wrap: wrap; gap: 8px 20px; }

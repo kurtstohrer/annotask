@@ -24,6 +24,16 @@ export interface PendingTaskContext {
   meta: Record<string, unknown>
 }
 
+/**
+ * `context.fragment_url` payload for an element inside a server-swapped
+ * fragment (htmx/Turbo): '<METHOD> <path>' of the request that produced the
+ * markup. Only rides when the element has NO source file — a real file anchor
+ * always wins, and the bridge never stamps both.
+ */
+export function fragmentUrlContext(file: string | undefined, fragmentUrl: string | undefined): { fragment_url?: string } {
+  return !file && fragmentUrl ? { fragment_url: fragmentUrl } : {}
+}
+
 export function useTaskWorkflows(deps: {
   iframe: ReturnType<typeof useIframeManager>
   annotations: ReturnType<typeof useAnnotations>
@@ -337,6 +347,7 @@ export function useTaskWorkflows(deps: {
           fromClasses: fromCtx?.classes || '',
           fromComponent: fromCtx?.component || '',
           fromText: fromCtx?.text || '',
+          fromFragmentUrl: fromCtx?.fragmentUrl || '',
           toFile: arrow.toFile || toCtx?.file || '',
           toLine: arrow.toLine || toCtx?.line || 0,
           toTag: toCtx?.tag || '',
@@ -366,7 +377,7 @@ export function useTaskWorkflows(deps: {
     }
   }
 
-  function onArrowCreated(arrowId: string, fromCtx: { file: string; line: string; component: string; tag: string; classes?: string; text?: string } | null, toCtx: { file: string; line: string; component: string; tag: string; classes?: string; text?: string } | null) {
+  function onArrowCreated(arrowId: string, fromCtx: { file: string; line: string; component: string; tag: string; classes?: string; text?: string; fragmentUrl?: string } | null, toCtx: { file: string; line: string; component: string; tag: string; classes?: string; text?: string } | null) {
     const arrow = deps.annotations.arrows.value.find(a => a.id === arrowId)
     if (!arrow) return
 
@@ -386,6 +397,7 @@ export function useTaskWorkflows(deps: {
         fromClasses: fromCtx?.classes || '',
         fromComponent: fromCtx?.component || '',
         fromText: fromCtx?.text || '',
+        fromFragmentUrl: fromCtx?.fragmentUrl || '',
         toFile: arrow.toFile || toCtx?.file || '',
         toLine: arrow.toLine || toCtx?.line || 0,
         toTag: toCtx?.tag || '',
@@ -429,6 +441,7 @@ export function useTaskWorkflows(deps: {
         from_element_tag: (meta.fromTag as string) || '',
         from_element_classes: (meta.fromClasses as string) || '',
         ...(fromText ? { from_element_text: fromText } : {}),
+        ...fragmentUrlContext(arrow.fromFile || '', (meta.fromFragmentUrl as string) || undefined),
         to_element: {
           tag: (meta.toTag as string) || '',
           classes: (meta.toClasses as string) || '',
@@ -464,7 +477,7 @@ export function useTaskWorkflows(deps: {
       // reason for the UI to surface.
       let created: Task | null = null
       if (ctx.kind === 'pin') {
-        const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number; elementText?: string; elementSourceTag?: string }
+        const meta = ctx.meta as { elementTag: string; elementClasses: string; pinX: number; pinY: number; elementText?: string; elementSourceTag?: string; elementFragmentUrl?: string }
         deps.annotations.updatePinNote(ctx.annotationId!, description)
         deps.styleEditor.recordAnnotation({
           file: ctx.file, line: String(ctx.line), component: ctx.component,
@@ -481,12 +494,13 @@ export function useTaskWorkflows(deps: {
             element_classes: meta.elementClasses,
             ...(meta.elementText ? { element_text: meta.elementText } : {}),
             ...(meta.elementSourceTag ? { element_source_tag: meta.elementSourceTag } : {}),
+            ...fragmentUrlContext(ctx.file, meta.elementFragmentUrl),
           },
         })
       } else if (ctx.kind === 'arrow') {
         created = await submitPendingArrowTask(ctx.annotationId!, description)
       } else if (ctx.kind === 'highlight') {
-        const meta = ctx.meta as { selectedText: string; elementTag: string; elementSourceTag?: string }
+        const meta = ctx.meta as { selectedText: string; elementTag: string; elementSourceTag?: string; elementFragmentUrl?: string }
         deps.annotations.updateHighlight(ctx.annotationId!, { prompt: description })
         const hl = deps.annotations.highlights.value.find(h => h.id === ctx.annotationId)
         const intent = `Change "${meta.selectedText}" → ${description}`
@@ -498,10 +512,10 @@ export function useTaskWorkflows(deps: {
           type: 'annotation', description: intent, file: ctx.file, line: parseInt(String(ctx.line)) || 0,
           component: ctx.component, action: 'text_edit',
           visual: { kind: 'highlight', annotationId: ctx.annotationId, eid: hl?.eid, rect: hl?.rect, rects: hl?.rects, color: hl?.color },
-          context: { element_tag: meta.elementTag, selected_text: meta.selectedText, ...(meta.elementSourceTag ? { element_source_tag: meta.elementSourceTag } : {}) },
+          context: { element_tag: meta.elementTag, selected_text: meta.selectedText, ...(meta.elementSourceTag ? { element_source_tag: meta.elementSourceTag } : {}), ...fragmentUrlContext(ctx.file, meta.elementFragmentUrl) },
         })
       } else if (ctx.kind === 'select') {
-        const meta = ctx.meta as { elementTag: string; elementClasses: string; elementText?: string; elementSourceTag?: string }
+        const meta = ctx.meta as { elementTag: string; elementClasses: string; elementText?: string; elementSourceTag?: string; elementFragmentUrl?: string }
         deps.styleEditor.recordAnnotation({
           file: ctx.file, line: String(ctx.line), component: ctx.component,
           intent: description, elementTag: meta.elementTag, elementClasses: meta.elementClasses,
@@ -517,6 +531,7 @@ export function useTaskWorkflows(deps: {
             element_classes: meta.elementClasses,
             ...(meta.elementText ? { element_text: meta.elementText } : {}),
             ...(meta.elementSourceTag ? { element_source_tag: meta.elementSourceTag } : {}),
+            ...fragmentUrlContext(ctx.file, meta.elementFragmentUrl),
           },
         })
         if (task && currentRects.length) {
@@ -573,6 +588,7 @@ export function useTaskWorkflows(deps: {
         element_classes: primary.classes,
         ...(primary.text ? { element_text: primary.text } : {}),
         ...(sel.sourceTag ? { element_source_tag: sel.sourceTag } : {}),
+        ...fragmentUrlContext(primary.file, sel.fragmentUrl),
         ...(targets.length > 1 ? {
           elements: targets.map(t => ({
             tag: t.tag, classes: t.classes, component: t.component,
@@ -609,6 +625,7 @@ export function useTaskWorkflows(deps: {
         element_classes: primary.classes,
         ...(primary.text ? { element_text: primary.text } : {}),
         ...(sel.sourceTag ? { element_source_tag: sel.sourceTag } : {}),
+        ...fragmentUrlContext(primary.file, sel.fragmentUrl),
       },
     })
   }
@@ -765,6 +782,7 @@ export function useTaskWorkflows(deps: {
           ...(sel?.classes ? { element_classes: sel.classes } : {}),
           ...(sel?.text ? { element_text: sel.text } : {}),
           ...(sel?.sourceTag ? { element_source_tag: sel.sourceTag } : {}),
+          ...fragmentUrlContext(sel?.file, sel?.fragmentUrl),
         },
       } : {}),
     })
