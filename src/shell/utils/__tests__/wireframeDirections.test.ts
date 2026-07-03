@@ -144,7 +144,12 @@ describe('computeWireframeDirections', () => {
     expect(dirs[0].description).not.toContain('bind to the')
   })
 
-  it('a section (md + binding) rides added.md/.data verbatim; the description summarizes honestly', () => {
+  it('a section rides added.md verbatim; a persisted binding is GATED OUT of the new direction', () => {
+    // Data binding is deferred this release (WIREFRAME_DATA_BINDING_ENABLED
+    // = false). A block may still carry a persisted `data` (older docs render
+    // it read-only), but a NEW apply direction must not inherit it — the md
+    // channel still rides. Flip-on threading is locked in
+    // wireframeDirections.binding.test.ts.
     const blocks = planetsBlocks()
     const md = '## Related planets\n- name and type for each'
     blocks.push({
@@ -166,29 +171,21 @@ describe('computeWireframeDirections', () => {
     })
     const dirs = computeWireframeDirections(canvasWith(blocks))
     expect(dirs).toHaveLength(1)
-    // Verbatim channels — never paraphrased, never blended with geometry.
+    // md rides verbatim; the binding is stripped while gated.
     expect(dirs[0].added!.md).toBe(md)
-    expect(dirs[0].added!.data).toEqual({
-      kind: 'composable',
-      name: 'usePlanets',
-      module: 'src/composables/usePlanets.ts',
-      path: 'planets[]',
-      fields: ['name', 'type'],
-      shape_source: 'api-schema',
-    })
+    expect(dirs[0].added!.data).toBeUndefined()
     expect(dirs[0].measured!.after).toBeDefined()
-    // The description quotes only the md's first line + an honest binding summary.
     expect(dirs[0].description).toContain('drawn section "related planets"')
     expect(dirs[0].description).not.toContain('keep it visibly a placeholder') // the md spec IS the contract
     expect(dirs[0].description).toContain('first line: "Related planets"')
     expect(dirs[0].description).not.toContain('name and type for each')
-    expect(dirs[0].description).toContain('bind to the composable usePlanets → planets[] (show name, type)')
-    expect(dirs[0].description).toContain('[shape: api-schema]')
-    // A list path adds a v-for loop note (render all items, not the sketch count).
-    expect(dirs[0].description).toContain('render a v-for over planets[]')
+    // No binding summary leaks into the description while the gate is off.
+    expect(dirs[0].description).not.toContain('bind to the')
+    expect(dirs[0].description).not.toContain('[shape:')
+    expect(dirs[0].description).not.toContain('render a v-for')
   })
 
-  it('a bound palette component carries added.data too', () => {
+  it('a bound palette component drops its persisted binding while gated (component still adds)', () => {
     const blocks = planetsBlocks()
     blocks.push({
       id: 'pal-2',
@@ -202,12 +199,10 @@ describe('computeWireframeDirections', () => {
     })
     const dirs = computeWireframeDirections(canvasWith(blocks))
     expect(dirs).toHaveLength(1)
-    expect(dirs[0].added).toMatchObject({
-      kind: 'component',
-      componentName: 'PlanetCard',
-      data: { name: 'usePlanets', path: 'planets[]' },
-    })
-    expect(dirs[0].description).toContain('bind to the composable usePlanets')
+    expect(dirs[0].added).toMatchObject({ kind: 'component', componentName: 'PlanetCard' })
+    expect(dirs[0].added!.data).toBeUndefined()
+    expect(dirs[0].description).toContain('ADD component <PlanetCard>')
+    expect(dirs[0].description).not.toContain('bind to the')
   })
 
   it('a note on an otherwise-unchanged block emits op note with the verbatim text', () => {

@@ -7,7 +7,9 @@
 import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 import { z } from 'zod'
-import { scanComponentLibraries } from '../server/component-scanner.js'
+import { scanComponentLibraries, scanProjectComponents } from '../server/component-scanner.js'
+import { scanComponentUsage } from '../server/component-usage.js'
+import { getWorkspaceCatalog } from '../server/workspace-catalog.js'
 import { buildTaskSummary, filterTasksByMfe, stripTaskVisual, stripTaskForList, trimAgentFeedback, compactJson } from '../shared/task-summary.js'
 import { isSafeScreenshot } from '../server/validation.js'
 import { getCodeContext } from '../server/code-context.js'
@@ -21,6 +23,7 @@ import { scanDataSources } from '../server/data-source-scanner.js'
 import { mergeRuntimeOrphansIntoEntries, findMatchingStaticEntries } from '../server/runtime-endpoints.js'
 import { getDataSourceExamples } from '../server/data-source-examples.js'
 import { resolveDataSourceDetails } from '../server/data-source-details.js'
+import { resolveDataSourceShape } from '../server/data-source-shape.js'
 import { scanApiSchemas } from '../server/api-schema-scanner.js'
 import { resolveEndpoint } from '../server/api-schema-resolver.js'
 import { resolveWorkspace } from '../server/workspace.js'
@@ -44,6 +47,7 @@ import {
   McpGetDataSourcesArgs,
   McpGetDataSourceExamplesArgs,
   McpGetDataSourceDetailsArgs,
+  McpGetDataSourceShapeArgs,
   McpGetApiSchemasArgs,
   McpGetApiOperationArgs,
   McpResolveEndpointArgs,
@@ -97,6 +101,20 @@ const McpGetAgentDirectionsArgs = z.object({
   persona_id: z.string().regex(/^[a-z0-9-]+$/, 'Invalid persona id').optional(),
 })
 
+/** `annotask_get_components` extended with an `mfe` filter (findings P0-5:
+ *  "Agents are blind to project components") that scopes the project's own
+ *  src/ scan to one workspace package, and `.strict()` so a typo'd or
+ *  unknown filter arg errors instead of being silently dropped (findings:
+ *  "silently strips unknown filter args"). */
+const McpGetComponentsFullArgs = McpGetComponentsArgs.extend({
+  mfe: z.string().optional(),
+}).strict()
+
+/** `annotask_get_component` extended with the same `mfe` scoping + `.strict()`. */
+const McpGetComponentFullArgs = McpGetComponentArgs.extend({
+  mfe: z.string().optional(),
+}).strict()
+
 export interface ToolDef {
   name: string
   description: string
@@ -116,6 +134,17 @@ export interface McpDeps {
   getRuntimeEndpointCatalog?: () => RuntimeEndpointCatalog
   /** Per-task conversation thread store. When omitted, the conversation tools return errors. */
   taskThread?: TaskThreadStore
+  /** Dev-server base URL (e.g. http://localhost:5173) for live API-schema
+   *  probes. Derived per-request from the Host header in src/mcp/server.ts
+   *  so MCP schema scans probe the same origin the shell's HTTP scan does
+   *  (findings: "MCP schema scans pass no ScanOptions"). */
+  devServerUrl?: string
+  /** Extra HTTP endpoints to probe for OpenAPI/GraphQL schemas — same config
+   *  as AnnotaskServerOptions.apiSchemaUrls, threaded through when the host
+   *  populates it on McpDeps. */
+  apiSchemaUrls?: string[]
+  /** Extra project-relative schema file paths — same as apiSchemaFiles above. */
+  apiSchemaFiles?: string[]
 }
 
 export interface ToolResult {
@@ -151,6 +180,11 @@ interface ScannedComponentLike {
   props?: Array<{ name: string }>
   slots?: Array<{ name: string }>
   events?: Array<{ name: string }>
+  /** Extraction provenance (findings P0-2). 'name-only' means props/slots/
+   *  events were never successfully read — NOT verified as empty. Optional:
+   *  component-scanner.ts may not carry this field on every build, so code
+   *  defensively rather than assume its presence. */
+  extraction?: 'cem' | 'dts' | 'dts-guessed' | 'source' | 'name-only'
 }
 interface ScannedLibraryLike {
   name: string
@@ -160,6 +194,7 @@ interface ScannedLibraryLike {
 
 /** Compact summary for an agent-facing component list — no props/slots/events bodies. */
 function componentSummary(c: ScannedComponentLike) {
+  const propsUnknown = c.extraction === 'name-only'
   return {
     name: c.name,
     module: c.module,
@@ -169,6 +204,34 @@ function componentSummary(c: ScannedComponentLike) {
     slotCount: c.slots?.length ?? 0,
     eventCount: c.events?.length ?? 0,
     deprecated: c.deprecated ? true : undefined,
+    // propCount:0 is wire-identical for "verified propless" and "extraction
+    // failed" unless qualified — a name-only component's props were never
+    // read, not confirmed absent (findings P0-2).
+    ...(propsUnknown ? { props_unknown: true, props_note: 'props unknown — extraction failed' } : {}),
+  }
+}
+
+/** Shared filter+page pass for one library's component list — used for both
+ *  node_modules libraries and the project's own "Project" library so
+ *  annotask_get_components treats them identically (findings P0-5). */
+function buildLibraryEntry(
+  lib: ScannedLibraryLike,
+  opts: { searchLc: string; category?: string; usedSet: Set<string> | null; detail: boolean; limit: number; offset: number },
+): Record<string, unknown> {
+  const { searchLc, category, usedSet, detail, limit, offset } = opts
+  const components = (lib.components || []).filter((c) => {
+    if (searchLc && !c.name.toLowerCase().includes(searchLc)) return false
+    if (category && c.category !== category) return false
+    if (usedSet && !usedSet.has(c.name)) return false
+    return true
+  })
+  const total = components.length
+  const paged = components.slice(offset, offset + limit)
+  return {
+    name: lib.name,
+    version: lib.version,
+    total,
+    components: paged.map(c => detail ? c : componentSummary(c)),
   }
 }
 
@@ -303,16 +366,20 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: 'annotask_get_components',
     description:
-      'Search component libraries detected in node_modules. By default returns compact summaries (name, module, category) — set detail=true for full props/slots/events/description. ' +
-      'Filters: `search` (name substring), `library` (exact library name), `category` (e.g. "button", "form"), `used_only` (restrict to components actually imported in this codebase — highest-signal filter). ' +
-      'Paginate with `limit` (default 50, max 500) and `offset`. For a single component use annotask_get_component.',
+      'Search component libraries — both node_modules packages AND the project\'s own src/ components (surfaced as library "Project", same catalog /api/project-components serves). ' +
+      'By default returns compact summaries (name, module, category) — set detail=true for full props/slots/events/description. ' +
+      'Filters: `search` (name substring), `library` (exact library name, or "Project" for local components), `category` (e.g. "button", "form"), ' +
+      '`used_only` (restrict to components with a real hit in the live usage index — actually referenced somewhere in src/; NOT the often-empty design-spec field), ' +
+      '`mfe` (scope the "Project" library to one workspace package by its configured MFE id). ' +
+      'Paginate with `limit` (default 50, max 500) and `offset`. For a single component use annotask_get_component. Unknown filter args are rejected, not silently dropped.',
     inputSchema: {
       type: 'object',
       properties: {
         search: { type: 'string', description: 'Filter components by name (case-insensitive substring match)' },
-        library: { type: 'string', description: 'Exact library name (e.g. "primevue")' },
+        library: { type: 'string', description: 'Exact library name (e.g. "primevue", or "Project" for the project\'s own src/ components)' },
         category: { type: 'string', description: 'Category filter (e.g. "button", "form", "overlay", "data", "layout")' },
-        used_only: { type: 'boolean', description: 'Return only components that are actually imported in the codebase (from design-spec.components.used)' },
+        used_only: { type: 'boolean', description: 'Return only components with a real hit in the live component-usage index (actually referenced in src/) — not the design-spec.components.used field, which is often empty.' },
+        mfe: { type: 'string', description: 'Scope the "Project" library to one workspace package by its configured MFE id (e.g. "@myorg/my-mfe"). No effect on node_modules libraries.' },
         detail: { type: 'boolean', description: 'Include full props, slots, events, and description. Default false returns compact summaries.' },
         limit: { type: 'number', description: 'Max results per library. Default 50, max 500.' },
         offset: { type: 'number', description: 'Skip the first N results (pagination). Default 0.' },
@@ -322,13 +389,14 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: 'annotask_get_component',
     description:
-      'Get full detail for a single component by name: props, slots, events, description, category, import module. ' +
-      'Use after annotask_get_components identifies candidates. Provide `library` to disambiguate when the same name exists in multiple libraries.',
+      'Get full detail for a single component by name: props, slots, events, description, category, import module. Searches node_modules packages AND the project\'s own src/ components (library "Project"). ' +
+      'Use after annotask_get_components identifies candidates. Provide `library` to disambiguate when the same name exists in multiple libraries (pass "Project" for local components), or `mfe` to search a specific workspace package\'s Project components.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Component name (e.g. "Button", "DataTable")' },
-        library: { type: 'string', description: 'Library name to disambiguate (e.g. "primevue")' },
+        library: { type: 'string', description: 'Library name to disambiguate (e.g. "primevue", or "Project")' },
+        mfe: { type: 'string', description: 'Workspace package MFE id to scope the Project-library search to (e.g. "@myorg/my-mfe").' },
       },
       required: ['name'],
     },
@@ -548,7 +616,7 @@ export const MCP_TOOLS: ToolDef[] = [
       'This is the runtime counterpart to `annotask_get_data_sources`, whose regex-driven static scan can miss endpoints built from computed strings, generated clients, or dynamic libraries. ' +
       'Each row carries `count`, `routes[]` (per iframe route with per-route counts), `statuses[]`, and a rotating `sampleUrls[]` for debugging. ' +
       'When `enrich` is true (default), rows also include `matchedSources` (static `ProjectDataEntry` names whose endpoint aligns with this call) and `matchedSchemaLocation` / `matchedOperationId` for the best OpenAPI / GraphQL / tRPC operation match. ' +
-      'Use `orphans_only: true` to surface endpoints the static scanner missed — those are the highest-value gaps to look at.',
+      'Use `orphans_only: true` to surface endpoints the static scanner missed — those are the highest-value gaps to look at. `orphans_only` is computed against the reconciled static/schema set regardless of `enrich` (it will not flip meaning when enrich=false).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -625,6 +693,25 @@ export const MCP_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'annotask_get_data_source_shape',
+    description:
+      'Resolve "what shape does this data source yield?" down an honesty ladder — the same resolution the wireframe binding picker uses, exposed so you can re-ground a `wireframe_apply` binding before wiring it. ' +
+      'Returns `shape_source`: `"api-schema"` (a real API contract matched the endpoint — `shape` is a walkable tree, `match_confidence`≥0.5, `schema_location`/`op`/`resolved_endpoint` name the exact operation), `"source-details"` (no schema; regex-inferred `return_type`/`referenced_types`/`signature` with `details_confidence`, NO tree — expanding a type name would fabricate), or `"none"` (nothing known). ' +
+      'A binding\'s `path_source` tells you whether its `path` was drilled from the tree (`"schema-picked"`, trust it) or typed blind (`"user-typed"`, re-verify). ' +
+      'Ambiguous name (a GET query + same-named mutation) → `{ error: "ambiguous", candidates }`; narrow with `method` and/or `line`. Not found → `{ error: "not_found", name }`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Data source name (case-sensitive identifier).' },
+        kind: { type: 'string', enum: ['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc'], description: 'Optional disambiguation when multiple kinds share a name.' },
+        file: { type: 'string', description: 'Optional disambiguation — project-relative file path of the definition.' },
+        method: { type: 'string', description: 'Optional disambiguation — request method (GET/POST/…) when a name collides across verbs.' },
+        line: { type: 'number', description: 'Optional disambiguation — definition line when a name repeats in one file.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'annotask_get_playbook',
     description:
       'Fetch the task-type companion playbook — detailed apply instructions that supplement the base annotask-apply skill. ' +
@@ -654,6 +741,21 @@ export const MCP_TOOLS: ToolDef[] = [
     },
   },
 ]
+
+/** Build ScanOptions for `scanApiSchemas` from MCP deps — keeps the MCP
+ *  schema catalog in sync with the HTTP surface's ScanOptions instead of an
+ *  always-empty `{}` (findings: "MCP schema scans pass no ScanOptions...
+ *  poisons an options-blind 60s cache shared with HTTP"). `devServerUrl` is
+ *  derived per-request from the Host header in src/mcp/server.ts;
+ *  `apiSchemaUrls`/`apiSchemaFiles` ride through only when the host
+ *  populates them on McpDeps. */
+function apiScanOptions(deps: McpDeps): { devServerUrl?: string; apiSchemaUrls?: string[]; apiSchemaFiles?: string[] } {
+  return {
+    devServerUrl: deps.devServerUrl,
+    apiSchemaUrls: deps.apiSchemaUrls,
+    apiSchemaFiles: deps.apiSchemaFiles,
+  }
+}
 
 function toolError(text: string): ToolResult {
   return { content: [{ type: 'text', text }], isError: true }
@@ -817,45 +919,59 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
     }
 
     case 'annotask_get_components': {
-      const parsed = parseWith(McpGetComponentsArgs, rawArgs)
+      const parsed = parseWith(McpGetComponentsFullArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
-      const { search = '', library, category, used_only, detail = false, limit = 50, offset = 0 } = parsed.data
+      const { search = '', library, category, used_only, detail = false, limit = 50, offset = 0, mfe } = parsed.data
       const catalog = await scanComponentLibraries(deps.projectRoot) as { libraries?: ScannedLibraryLike[] }
 
+      // used_only is backed by the live usage index, not
+      // design-spec.components.used — that field is frequently empty
+      // (scanner-init, no-library projects) and would otherwise reject
+      // every component (findings P0-5). Absence of a usage hit just means
+      // "no detected usage," never "reject everything."
       let usedSet: Set<string> | null = null
       if (used_only) {
-        const spec = deps.getDesignSpec() as { components?: { used?: unknown } } | null
-        const used = Array.isArray(spec?.components?.used) ? spec!.components!.used as unknown[] : []
-        usedSet = new Set(used.filter((u): u is string => typeof u === 'string'))
+        const usageMap = await scanComponentUsage(deps.projectRoot)
+        usedSet = new Set(Object.keys(usageMap.usage).filter(name => usageMap.usage[name].length > 0))
       }
 
       const searchLc = search.toLowerCase()
-      const libraries = (catalog.libraries || [])
+      const buildOpts = { searchLc, category, usedSet, detail, limit, offset }
+      const libraries: Record<string, unknown>[] = (catalog.libraries || [])
         .filter(lib => !library || lib.name === library)
-        .map((lib) => {
-          let components = (lib.components || []).filter(c => {
-            if (searchLc && !c.name.toLowerCase().includes(searchLc)) return false
-            if (category && c.category !== category) return false
-            if (usedSet && !usedSet.has(c.name)) return false
-            return true
-          })
-          const total = components.length
-          const paged = components.slice(offset, offset + limit)
-          return {
-            name: lib.name,
-            version: lib.version,
-            total,
-            components: paged.map(c => detail ? c : componentSummary(c)),
-          }
-        }).filter(lib => lib.components.length > 0)
+        .map(lib => buildLibraryEntry(lib, buildOpts))
+        .filter(lib => (lib.components as unknown[]).length > 0)
+
+      // Project components (findings P0-5) — the project's own src/
+      // components had no MCP/CLI surface at all, even though the shell's
+      // palette and /api/project-components serve them. Included unless a
+      // specific non-Project library was requested. `mfe` scopes the scan
+      // to one workspace package (mirrors apply-session.ts's mfe→package
+      // lookup) instead of always the running package.
+      if (!library || library === 'Project') {
+        let projectRoot = deps.projectRoot
+        let mfeId: string | undefined
+        if (mfe) {
+          const wsCatalog = await getWorkspaceCatalog(deps.projectRoot)
+          const pkg = wsCatalog.packages.find(p => p.mfe === mfe)
+          if (!pkg) return toolError(`Unknown mfe: ${mfe}`)
+          projectRoot = pkg.absDir
+          mfeId = pkg.mfe
+        }
+        const projectLib = await scanProjectComponents(projectRoot) as unknown as ScannedLibraryLike
+        const entry = buildLibraryEntry(projectLib, buildOpts)
+        if ((entry.components as unknown[]).length > 0) {
+          libraries.push(mfeId ? { ...entry, mfe: mfeId } : entry)
+        }
+      }
 
       return { content: [{ type: 'text', text: compact({ libraries }) }] }
     }
 
     case 'annotask_get_component': {
-      const parsed = parseWith(McpGetComponentArgs, rawArgs)
+      const parsed = parseWith(McpGetComponentFullArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
-      const { name, library } = parsed.data
+      const { name, library, mfe } = parsed.data
       const catalog = await scanComponentLibraries(deps.projectRoot) as { libraries?: ScannedLibraryLike[] }
       const matches: Array<{ library: string; version: string | undefined; component: ScannedComponentLike }> = []
       for (const lib of catalog.libraries || []) {
@@ -864,6 +980,23 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
           if (c.name === name) matches.push({ library: lib.name, version: lib.version, component: c })
         }
       }
+
+      // Project components (findings P0-5) — searched unless a specific
+      // non-Project library was requested.
+      if (!library || library === 'Project') {
+        let projectRoot = deps.projectRoot
+        if (mfe) {
+          const wsCatalog = await getWorkspaceCatalog(deps.projectRoot)
+          const pkg = wsCatalog.packages.find(p => p.mfe === mfe)
+          if (!pkg) return toolError(`Unknown mfe: ${mfe}`)
+          projectRoot = pkg.absDir
+        }
+        const projectLib = await scanProjectComponents(projectRoot) as unknown as ScannedLibraryLike
+        for (const c of projectLib.components || []) {
+          if (c.name === name) matches.push({ library: 'Project', version: projectLib.version, component: c })
+        }
+      }
+
       if (matches.length === 0) return toolError(`Component not found: ${name}${library ? ` (library: ${library})` : ''}`)
       if (matches.length > 1 && !library) {
         return {
@@ -1016,7 +1149,7 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       const parsed = parseWith(McpGetApiSchemasArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
       const { kind, detail } = parsed.data
-      const catalog = await scanApiSchemas(deps.projectRoot)
+      const catalog = await scanApiSchemas(deps.projectRoot, apiScanOptions(deps))
       let schemas = catalog.schemas
       if (kind) schemas = schemas.filter(s => s.kind === kind)
       const emitted = detail ? schemas : schemas.map(s => ({ ...s, operations: [] }))
@@ -1027,7 +1160,7 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       const parsed = parseWith(McpGetApiOperationArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
       const { path, method, schema_location } = parsed.data
-      const catalog = await scanApiSchemas(deps.projectRoot)
+      const catalog = await scanApiSchemas(deps.projectRoot, apiScanOptions(deps))
       const normMethod = method ? method.toUpperCase() : undefined
       const matches: Array<Record<string, unknown>> = []
       for (const schema of catalog.schemas) {
@@ -1047,7 +1180,7 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
       const parsed = parseWith(McpResolveEndpointArgs, rawArgs)
       if (!parsed.ok) return toolError(parsed.error)
       const { url, method } = parsed.data
-      const catalog = await scanApiSchemas(deps.projectRoot)
+      const catalog = await scanApiSchemas(deps.projectRoot, apiScanOptions(deps))
       const match = resolveEndpoint(catalog, url, method)
       return { content: [{ type: 'text', text: compact({ match }) }] }
     }
@@ -1074,15 +1207,25 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
           || ep.sampleUrls.some(u => u.toLowerCase().includes(q)),
         )
       }
-      if (enrich) {
+      // orphans_only must be well-defined regardless of `enrich` — computing
+      // it only when enrich defaulted on meant it inverted (everything reads
+      // as an orphan) whenever enrich=false (findings: "MCP/CLI/HTTP
+      // disagree on orphans_only").
+      if (enrich || args.orphans_only) {
         const [staticCat, schemaCat] = await Promise.all([
           scanDataSources(deps.projectRoot),
-          scanApiSchemas(deps.projectRoot),
+          scanApiSchemas(deps.projectRoot, apiScanOptions(deps)),
         ])
         endpoints = endpoints.map(ep => enrichRuntimeEndpoint(ep, staticCat.project_entries, schemaCat))
       }
       if (args.orphans_only) {
         endpoints = endpoints.filter(ep => !ep.matchedSources || ep.matchedSources.length === 0)
+      }
+      if (!enrich) {
+        // Caller asked for no enrichment display — strip the matched* fields
+        // computed above purely to make orphans_only well-defined, so the
+        // response shape still honors enrich:false.
+        endpoints = endpoints.map(({ matchedSources: _matchedSources, matchedSchemaLocation: _matchedSchemaLocation, matchedOperationId: _matchedOperationId, ...rest }) => rest as RuntimeEndpoint)
       }
       return { content: [{ type: 'text', text: compact({ version: catalog.version, updatedAt: catalog.updatedAt, endpoints }) }] }
     }
@@ -1107,6 +1250,24 @@ export async function callTool(name: string, rawArgs: Record<string, unknown>, d
         file,
         contextLines: context_lines,
         workspaceRoot,
+      })
+      return { content: [{ type: 'text', text: compact(result) }] }
+    }
+
+    case 'annotask_get_data_source_shape': {
+      const parsed = parseWith(McpGetDataSourceShapeArgs, rawArgs)
+      if (!parsed.ok) return toolError(parsed.error)
+      const { name, kind, file, method, line } = parsed.data
+      const workspaceRoot = await getWorkspaceRoot(deps.projectRoot)
+      const result = await resolveDataSourceShape({
+        projectRoot: deps.projectRoot,
+        name,
+        kind: kind as DataSource['kind'] | undefined,
+        file,
+        method,
+        line,
+        workspaceRoot,
+        schemaScan: apiScanOptions(deps),
       })
       return { content: [{ type: 'text', text: compact(result) }] }
     }

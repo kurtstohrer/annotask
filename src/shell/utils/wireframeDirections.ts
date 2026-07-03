@@ -1,5 +1,6 @@
 import type { WireframeDirectionChange, WireframeRect } from '../../schema'
 import type { WireframeBlock, WireframeCanvasState } from '../../shared/wireframe-types'
+import { WIREFRAME_DATA_BINDING_ENABLED } from '../wireframeFeatures'
 
 /**
  * Diff the original capture against the current canvas into anchored,
@@ -232,6 +233,12 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
     if (isAddition) {
       if (b.deleted) continue // added then deleted — never existed
       const ownLabel = label(b)
+      // Data binding is gated for this release: a block may still carry a
+      // PERSISTED binding (older docs render it read-only), but a NEW apply
+      // task must not inherit it — strip it here so "new tasks won't carry
+      // bindings" (WIREFRAME_APPLY.md) is literally true. When the gate flips
+      // on, the persisted/picker binding flows through unchanged.
+      const data = WIREFRAME_DATA_BINDING_ENABLED ? b.data : undefined
       const original = b.duplicateOf ? blocks.find((x) => x.id === b.duplicateOf) : undefined
       const isCapturedDup = !!original && original.kind === 'captured'
       const kind: 'component' | 'placeholder' | 'duplicate' =
@@ -276,14 +283,16 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
       // real source + the shape_source honesty tag.
       const mdFirstLine = b.md ? b.md.split('\n')[0].replace(/^#+\s*/, '').slice(0, 120) : ''
       const mdNote = b.md ? `; user wrote a markdown spec (rides added.md verbatim) — first line: "${mdFirstLine}"` : ''
-      const mapNote = b.data?.propMap && Object.keys(b.data.propMap).length
-        ? `; map ${Object.entries(b.data.propMap).map(([prop, field]) => `${field}→${prop}`).join(', ')}`
+      const mapNote = data?.propMap && Object.keys(data.propMap).length
+        ? `; map ${Object.entries(data.propMap).map(([prop, field]) => `${field}→${prop}`).join(', ')}`
         : ''
-      const loopNote = b.data?.path && b.data.path.includes('[]')
-        ? `; render a v-for over ${b.data.path} — render ALL items (the ×${b.data.repeat ?? 'N'} on the canvas is a sketch hint)`
+      const loopNote = data?.path && data.path.includes('[]')
+        ? `; render a v-for over ${data.path} — render ALL items (the ×${data.repeat ?? 'N'} on the canvas is a sketch hint)`
         : ''
-      const dataNote = b.data
-        ? `; bind to the ${b.data.kind} ${b.data.name}${b.data.path ? ` → ${b.data.path}` : ''}${b.data.fields?.length ? ` (show ${b.data.fields.join(', ')})` : ''}${mapNote}${loopNote} [shape: ${b.data.shape_source}]`
+      // Honest tags: the path provenance (schema-picked vs user-typed) tells the
+      // agent whether to trust `path` or re-ground it before wiring.
+      const dataNote = data
+        ? `; bind to the ${data.kind} ${data.name}${data.path ? ` → ${data.path}` : ''}${data.fields?.length ? ` (show ${data.fields.join(', ')})` : ''}${mapNote}${loopNote} [shape: ${data.shape_source}${data.path_source ? `, path: ${data.path_source}` : ''}]`
         : ''
       // Multi-MFE: import the dropped component FROM its own package when it has
       // one; otherwise inherit the anchored DONOR's MFE — a placeholder/dup
@@ -313,7 +322,7 @@ export function computeWireframeDirections(canvas: WireframeCanvasState): Wirefr
           ...(b.component?.previewProps ? { previewProps: b.component.previewProps } : {}),
           ...(kind === 'placeholder' ? { label: ownLabel } : {}),
           ...(b.md ? { md: b.md } : {}),
-          ...(b.data ? { data: JSON.parse(JSON.stringify(b.data)) as typeof b.data } : {}),
+          ...(data ? { data: JSON.parse(JSON.stringify(data)) as typeof data } : {}),
           position,
         },
         ...(b.note ? { note: b.note } : {}),

@@ -14,6 +14,7 @@
  * catalog speak the same language.
  */
 import fsp from 'node:fs/promises'
+import path from 'node:path'
 import type { DataContext, DataSource } from '../schema.js'
 import { DATA_LIB_PATTERNS, LIB_NAME_TO_KIND, libKind } from './data-source-scanner.js'
 import { resolveProjectFile } from './path-safety.js'
@@ -27,6 +28,35 @@ export interface DataContextProbe {
   primaryName?: string
 }
 
+/**
+ * Honesty tag on a resolved `DataSource` — how the identifier was attributed:
+ *   dependency-confirmed  Matched a `DATA_LIB_PATTERNS` identifier AND the
+ *                         owning library is an actual dependency in this
+ *                         project's package.json.
+ *   project-own           Resolves to a local (relative/aliased) import —
+ *                         the project's own hook/composable, not a known
+ *                         library.
+ *   heuristic             Structural pattern match (`axios`/`$fetch` dotted
+ *                         calls, tRPC chains) that is not cross-checked
+ *                         against package.json — best-effort, not
+ *                         dependency-verified.
+ *   builtin               Native platform primitive requiring no dependency
+ *                         at all (bare `fetch`).
+ */
+export type DataSourceProvenance = 'dependency-confirmed' | 'project-own' | 'heuristic' | 'builtin'
+
+/** `DataSource` (schema.ts) plus the provenance tag above. */
+export interface ResolvedDataSource extends DataSource {
+  provenance: DataSourceProvenance
+}
+
+/** `DataContext` (schema.ts) plus an explicit scope marker and provenance-tagged sources. */
+export interface ScopedDataContext extends DataContext {
+  /** 'file' — whole-file resolve; 'element' — narrowed to a bound element via the binding graph. */
+  scope: 'file' | 'element'
+  sources: ResolvedDataSource[]
+}
+
 // ── Pattern tables ──────────────────────────────────────
 
 /** Kind precedence for tie-breaking "which source is primary?". */
@@ -34,10 +64,39 @@ const KIND_ORDER: Record<DataSource['kind'], number> = {
   composable: 0, signal: 1, store: 2, fetch: 3, graphql: 4, loader: 5, rpc: 6,
 }
 
-/** Flattened identifier → kind map built once from DATA_LIB_PATTERNS. */
-const IDENTIFIER_KIND = (() => {
+/**
+ * Reads dependencies for the RUNNING package's package.json (mirrors
+ * data-source-scanner.ts's readDeps — not exported there, so reimplemented
+ * here rather than editing that file). Cached per projectRoot, invalidated
+ * on package.json mtime change.
+ */
+interface DepsCacheEntry { mtime: number; deps: Record<string, string> }
+const depsCache = new Map<string, DepsCacheEntry>()
+
+async function readProjectDeps(projectRoot: string): Promise<Record<string, string>> {
+  const pkgPath = path.join(projectRoot, 'package.json')
+  let mtime = 0
+  try { mtime = (await fsp.stat(pkgPath)).mtimeMs } catch { return {} }
+  const cached = depsCache.get(projectRoot)
+  if (cached && cached.mtime === mtime) return cached.deps
+  try {
+    const pkg = JSON.parse(await fsp.readFile(pkgPath, 'utf-8'))
+    const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) }
+    depsCache.set(projectRoot, { mtime, deps })
+    return deps
+  } catch { return {} }
+}
+
+/**
+ * Flattened identifier → kind map, gated on the identifier's owning library
+ * actually being a dependency — fixes fabricated detections (e.g. mobx's
+ * `computed`, zustand's `create`) surfacing in any project that merely uses
+ * those words, regardless of whether the library is installed.
+ */
+function buildIdentifierKind(deps: Record<string, string>): Map<string, DataSource['kind']> {
   const map = new Map<string, DataSource['kind']>()
   for (const [libName, patterns] of Object.entries(DATA_LIB_PATTERNS)) {
+    if (!(libName in deps)) continue
     for (const p of patterns) {
       // Skip dotted patterns (axios.get) and the bare `fetch` — both are
       // handled by dedicated regexes below.
@@ -49,11 +108,34 @@ const IDENTIFIER_KIND = (() => {
       if (!map.has(p)) map.set(p, kind)
     }
   }
-  // Generic fallbacks — things we want to detect even when no library is declared.
-  if (!map.has('useFetch')) map.set('useFetch', 'composable')
-  if (!map.has('useAsyncData')) map.set('useAsyncData', 'composable')
+  // Nuxt built-in composables — not tied to a DATA_LIB_PATTERNS entry, so
+  // gate them on the 'nuxt' dependency itself rather than detecting them
+  // unconditionally.
+  if ('nuxt' in deps) {
+    if (!map.has('useFetch')) map.set('useFetch', 'composable')
+    if (!map.has('useAsyncData')) map.set('useAsyncData', 'composable')
+  }
   return map
-})()
+}
+
+/** Per-project cache of the dependency-gated identifier map (deps read is itself cached/mtime-checked). */
+async function getIdentifierKind(projectRoot: string): Promise<Map<string, DataSource['kind']>> {
+  const deps = await readProjectDeps(projectRoot)
+  return buildIdentifierKind(deps)
+}
+
+/**
+ * Naming-convention regex for project-owned hooks/composables that aren't in
+ * any known library's pattern table — `use*` / `create*` calls. Only
+ * attributed as a source when the identifier resolves to a local (relative
+ * or aliased) import; see the `project-own` provenance branch below.
+ */
+const PROJECT_HOOK_RE = /\b(use[A-Z]\w*|create[A-Z]\w*)\s*\(/g
+
+function isLocalImportPath(modulePath: string): boolean {
+  return modulePath.startsWith('.') || modulePath.startsWith('/') ||
+    modulePath.startsWith('@/') || modulePath.startsWith('~/')
+}
 
 /** Dotted call sites — HTTP clients exposed as a namespace object. */
 const DOTTED_CALL_RE = /\b(axios|\$fetch)\.(get|post|put|patch|delete|request)\s*\(/g
@@ -119,7 +201,8 @@ export async function probeDataContext(
     return { hasData: false }
   }
 
-  const first = findFirstDataReference(content)
+  const identifierKind = await getIdentifierKind(projectRoot)
+  const first = findFirstDataReference(content, identifierKind)
   const result: DataContextProbe = first
     ? { hasData: true, primaryKind: first.kind, primaryName: first.name }
     : { hasData: false }
@@ -134,17 +217,18 @@ export async function resolveDataContext(
   line: number,
   schemaOpts: ScanOptions = {},
   workspaceRoot?: string,
-): Promise<DataContext> {
+): Promise<ScopedDataContext> {
   const resolved = resolveProjectFile(projectRoot, relFile, workspaceRoot)
-  if (!resolved) return { sources: [] }
+  if (!resolved) return { sources: [], scope: 'file' }
   const absPath = resolved.absolutePath
   let content: string
   try { content = await fsp.readFile(absPath, 'utf-8') } catch {
-    return { sources: [] }
+    return { sources: [], scope: 'file' }
   }
 
+  const identifierKind = await getIdentifierKind(projectRoot)
   const imports = parseImports(content)
-  const allSources = findAllDataReferences(content, imports)
+  const allSources = findAllDataReferences(content, imports, identifierKind)
 
   // Drop loader-kind sources without an endpoint — route hooks (useRouter,
   // useParams, etc.) carry no data payload; the useful signal lives in
@@ -191,7 +275,7 @@ export async function resolveDataContext(
   const rendered_identifiers = extractRenderedIdentifiers(content)
   const route_bindings = extractRouteBindings(content)
 
-  const result: DataContext = { sources }
+  const result: ScopedDataContext = { sources, scope: 'file' }
   if (rendered_identifiers) result.rendered_identifiers = rendered_identifiers
   if (route_bindings) result.route_bindings = route_bindings
   return result
@@ -211,13 +295,13 @@ export async function resolveElementDataContext(
   line: number,
   schemaOpts: ScanOptions = {},
   workspaceRoot?: string,
-): Promise<DataContext> {
-  if (!relFile || !line) return { sources: [] }
+): Promise<ScopedDataContext> {
+  if (!relFile || !line) return { sources: [], scope: 'element' }
   const full = await resolveDataContext(projectRoot, relFile, line, schemaOpts, workspaceRoot)
-  if (full.sources.length === 0) return { sources: [] }
+  if (full.sources.length === 0) return { sources: [], scope: 'element' }
 
   const LINE_TOLERANCE = 3
-  const bound: DataSource[] = []
+  const bound: ResolvedDataSource[] = []
   for (const source of full.sources) {
     try {
       const graph = await resolveBindingGraph(projectRoot, source.name)
@@ -225,10 +309,10 @@ export async function resolveElementDataContext(
       if (hit) bound.push(source)
     } catch { /* binding graph is best-effort */ }
   }
-  if (bound.length === 0) return { sources: [] }
+  if (bound.length === 0) return { sources: [], scope: 'element' }
 
   // `full.sources` is already sorted primary-first; `bound` preserves that order.
-  const narrowed: DataContext = { sources: bound }
+  const narrowed: ScopedDataContext = { sources: bound, scope: 'element' }
   if (full.rendered_identifiers) narrowed.rendered_identifiers = full.rendered_identifiers
   if (full.route_bindings) narrowed.route_bindings = full.route_bindings
   return narrowed
@@ -238,13 +322,13 @@ export async function resolveElementDataContext(
 
 interface DataHit { kind: DataSource['kind']; name: string }
 
-function findFirstDataReference(content: string): DataHit | null {
+function findFirstDataReference(content: string, identifierKind: Map<string, DataSource['kind']>): DataHit | null {
   // Named identifiers — scan once using a single alternation regex for speed.
-  const ids = [...IDENTIFIER_KIND.keys()]
+  const ids = [...identifierKind.keys()]
   if (ids.length > 0) {
     const re = new RegExp(`\\b(${ids.map(escapeRegex).join('|')})\\s*\\(`)
     const m = re.exec(content)
-    if (m) return { kind: IDENTIFIER_KIND.get(m[1])!, name: m[1] }
+    if (m) return { kind: identifierKind.get(m[1])!, name: m[1] }
   }
   const dot = DOTTED_CALL_RE.exec(content)
   DOTTED_CALL_RE.lastIndex = 0
@@ -258,11 +342,15 @@ function findFirstDataReference(content: string): DataHit | null {
   return null
 }
 
-function findAllDataReferences(content: string, imports: Map<string, string>): DataSource[] {
-  const sources: DataSource[] = []
+function findAllDataReferences(
+  content: string,
+  imports: Map<string, string>,
+  identifierKind: Map<string, DataSource['kind']>,
+): ResolvedDataSource[] {
+  const sources: ResolvedDataSource[] = []
   const seen = new Set<string>()   // name+line dedup
 
-  const ids = [...IDENTIFIER_KIND.keys()]
+  const ids = [...identifierKind.keys()]
   if (ids.length > 0) {
     const re = new RegExp(`\\b(${ids.map(escapeRegex).join('|')})\\s*\\(([^)]*)`, 'g')
     let m: RegExpExecArray | null
@@ -272,12 +360,12 @@ function findAllDataReferences(content: string, imports: Map<string, string>): D
       const key = `${name}:${line}`
       if (seen.has(key)) continue
       seen.add(key)
-      const kind = IDENTIFIER_KIND.get(name)!
+      const kind = identifierKind.get(name)!
       // Grab a larger slice for object-form argument scanning (queryKey).
       const argSlice = content.slice(m.index + m[0].length, m.index + m[0].length + 500)
       const firstArg = m[2]
       const ep = extractEndpointArg(firstArg, argSlice)
-      const src: DataSource = { kind, name, line }
+      const src: ResolvedDataSource = { kind, name, line, provenance: 'dependency-confirmed' }
       if (imports.has(name)) src.module = imports.get(name)
       if (ep) {
         src.endpoint = ep.value
@@ -287,12 +375,43 @@ function findAllDataReferences(content: string, imports: Map<string, string>): D
     }
   }
 
+  // Project's own hooks/composables — identifiers not covered by any
+  // dependency-confirmed library pattern, but resolvable to a local
+  // (relative/aliased) import. Without this pass, custom project hooks were
+  // silently omitted in favor of the (now dep-gated) library detections.
+  PROJECT_HOOK_RE.lastIndex = 0
+  let ph: RegExpExecArray | null
+  while ((ph = PROJECT_HOOK_RE.exec(content)) !== null) {
+    const name = ph[1]
+    if (identifierKind.has(name)) continue  // already handled above as a confirmed dependency source
+    const modulePath = imports.get(name)
+    if (!modulePath || !isLocalImportPath(modulePath)) continue  // can't confirm this is project-owned
+    const line = lineOf(content, ph.index)
+    const key = `${name}:${line}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const argSlice = content.slice(ph.index + ph[0].length, ph.index + ph[0].length + 500)
+    const ep = extractEndpointArg('', argSlice)
+    const src: ResolvedDataSource = {
+      kind: /^create/.test(name) ? 'signal' : 'composable',
+      name,
+      module: modulePath,
+      line,
+      provenance: 'project-own',
+    }
+    if (ep) {
+      src.endpoint = ep.value
+      if (ep.dynamic) src.dynamic_endpoint = true
+    }
+    sources.push(src)
+  }
+
   DOTTED_CALL_RE.lastIndex = 0
   let d: RegExpExecArray | null
   while ((d = DOTTED_CALL_RE.exec(content)) !== null) {
     const line = lineOf(content, d.index)
     const name = `${d[1]}.${d[2]}`
-    const src: DataSource = { kind: 'fetch', name, method: d[2].toUpperCase(), line }
+    const src: ResolvedDataSource = { kind: 'fetch', name, method: d[2].toUpperCase(), line, provenance: 'heuristic' }
     if (imports.has(d[1])) src.module = imports.get(d[1])
     const after = content.slice(d.index + d[0].length, d.index + d[0].length + 300)
     const ep = extractEndpointArg('', after)
@@ -307,7 +426,7 @@ function findAllDataReferences(content: string, imports: Map<string, string>): D
   let f: RegExpExecArray | null
   while ((f = BARE_FETCH_RE.exec(content)) !== null) {
     const line = lineOf(content, f.index)
-    const src: DataSource = { kind: 'fetch', name: 'fetch', line }
+    const src: ResolvedDataSource = { kind: 'fetch', name: 'fetch', line, provenance: 'builtin' }
     if (f[2]) src.endpoint = f[2]
     else if (f[4] !== undefined) {
       // Template literal — pull the static prefix (up to the first ${) and flag it.
@@ -325,7 +444,7 @@ function findAllDataReferences(content: string, imports: Map<string, string>): D
     const line = lineOf(content, t.index)
     const procedurePath = `trpc${t[1]}`
     const method = t[2]
-    const src: DataSource = { kind: 'rpc', name: procedurePath, line, endpoint: t[1].replace(/^\./, '').replace(/\./g, '/'), method: method.startsWith('use') ? undefined : method.toUpperCase() }
+    const src: ResolvedDataSource = { kind: 'rpc', name: procedurePath, line, endpoint: t[1].replace(/^\./, '').replace(/\./g, '/'), method: method.startsWith('use') ? undefined : method.toUpperCase(), provenance: 'heuristic' }
     sources.push(src)
   }
 

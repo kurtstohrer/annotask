@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
+import { resolveWorkspace } from './workspace.js'
 
 export interface ComponentExample {
   file: string
@@ -31,6 +32,18 @@ const SNIPPET_CONTEXT = 5
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Count attribute-like tokens in the opening tag so an example showing more
+ *  props outranks a bare `<Button />` — a stronger "how is this really used"
+ *  signal than file-walk order. Window-capped so a giant minified line can't
+ *  blow up the scan; stops at the first unescaped `>` when found sooner. */
+function computeRichness(content: string, matchIndex: number): number {
+  const window = content.slice(matchIndex, matchIndex + 500)
+  const closeIdx = window.indexOf('>')
+  const tagText = closeIdx === -1 ? window : window.slice(0, closeIdx)
+  const attrs = tagText.match(/[A-Za-z_:][\w:.-]*\s*=/g)
+  return attrs ? attrs.length : 0
 }
 
 async function walk(dir: string, acc: string[]): Promise<void> {
@@ -70,9 +83,11 @@ export async function getComponentExamples(
   // compound components (e.g. <Callout.Root>, <Select.Trigger>). Refuses
   // <NameSuffix (no lookahead hit).
   const usageRe = new RegExp(`<${esc}(?:\\.[A-Z][A-Za-z0-9_$]*)?(?=[\\s/>])`, 'g')
-  // Matches: import X from 'path' / import { X } from 'path' / import { X as Y } from 'path'
+  // Matches: import X from 'path' / import { X } from 'path' / import { X as Y } from 'path' /
+  // import X, { type Y } from 'path' (name is the default import, possibly
+  // combined with a named — optionally `type`-qualified — import group).
   const importRe = new RegExp(
-    `import\\s+(?:${esc}|\\{[^}]*\\b${esc}\\b[^}]*\\}|\\w+\\s*,\\s*\\{[^}]*\\b${esc}\\b[^}]*\\})\\s+from\\s+['"]([^'"]+)['"]`,
+    `import\\s+(?:${esc}(?:\\s*,\\s*\\{[^}]*\\})?|\\{[^}]*\\b${esc}\\b[^}]*\\}|\\w+\\s*,\\s*\\{[^}]*\\b${esc}\\b[^}]*\\})\\s+from\\s+['"]([^'"]+)['"]`,
     'g',
   )
 
@@ -81,10 +96,19 @@ export async function getComponentExamples(
   const scanRoot = fs.existsSync(srcDir) ? srcDir : projectRoot
   await walk(scanRoot, files)
 
-  const examples: ComponentExample[] = []
+  // Path base matches the other catalogs (component-usage, resolve-fingerprint):
+  // workspace root when the project is part of a monorepo, else projectRoot
+  // itself. Using projectRoot unconditionally here produced paths that didn't
+  // line up with the usage index in monorepos.
+  const ws = await resolveWorkspace(projectRoot)
+  const relRoot = ws.root
+
+  interface Candidate extends ComponentExample {
+    richness: number
+  }
+  const candidates: Candidate[] = []
   const importCounts = new Map<string, number>()
   let totalFound = 0
-  let truncated = false
 
   for (const filePath of files) {
     let content: string
@@ -127,22 +151,24 @@ export async function getComponentExamples(
 
     usageRe.lastIndex = 0
     let m: RegExpExecArray | null
+    let lines: string[] | null = null
     while ((m = usageRe.exec(content)) !== null) {
       totalFound++
-      if (examples.length >= limit) { truncated = true; continue }
-      // Compute 1-based line of the match and build a context snippet.
+      // Gather every raw hit first — ranking/dedup happens once across the
+      // whole scan, below, instead of taking the first N in readdir order.
+      if (!lines) lines = content.split(/\r?\n/)
       const before = content.slice(0, m.index)
       const line = before.split('\n').length
-      const lines = content.split(/\r?\n/)
       const startIdx = Math.max(0, line - 1 - SNIPPET_CONTEXT)
       const endIdx = Math.min(lines.length - 1, line - 1 + SNIPPET_CONTEXT)
       const snippet = lines.slice(startIdx, endIdx + 1).join('\n')
-      const rel = nodePath.relative(projectRoot, filePath).replace(/\\/g, '/')
-      examples.push({
+      const rel = nodePath.relative(relRoot, filePath).replace(/\\/g, '/')
+      candidates.push({
         file: rel,
         line,
         snippet,
         import_path: fileImportPath,
+        richness: computeRichness(content, m.index),
       })
     }
   }
@@ -151,6 +177,24 @@ export async function getComponentExamples(
     .map(([path, count]) => ({ path, count }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 5)
+
+  // Rank by richness (more props shown = a more useful example) and dedup
+  // snippets that overlap — several usages close together in the same file
+  // produce near-identical `SNIPPET_CONTEXT`-wide windows, which used to show
+  // up as 2-3 copies of essentially the same lines.
+  candidates.sort((a, b) => b.richness - a.richness || a.file.localeCompare(b.file) || a.line - b.line)
+
+  const examples: ComponentExample[] = []
+  const acceptedLines = new Map<string, number[]>()
+  let truncated = false
+  for (const c of candidates) {
+    const taken = acceptedLines.get(c.file) ?? []
+    if (taken.some(l => Math.abs(l - c.line) <= SNIPPET_CONTEXT * 2)) continue
+    if (examples.length >= limit) { truncated = true; continue }
+    examples.push({ file: c.file, line: c.line, snippet: c.snippet, import_path: c.import_path })
+    taken.push(c.line)
+    acceptedLines.set(c.file, taken)
+  }
 
   return {
     name,

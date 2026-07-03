@@ -91,10 +91,15 @@ export function schemaToShape(schema: Record<string, unknown>, depth = 0): DataS
 
   const variants = Array.isArray(schema.oneOf) ? schema.oneOf : Array.isArray(schema.anyOf) ? schema.anyOf : null
   if (variants) {
+    // Count the structural variants so the picker can say "1 of N" — the tree
+    // shows only the first, and hiding that it's a collapse would over-claim.
+    const structural = variants.filter(isPlainObject).length
     for (const member of variants) {
       if (!isPlainObject(member)) continue
       const walked = schemaToShape(member, depth + 1)
-      if (walked.kind === 'object' || walked.kind === 'array' || walked.kind === 'ref') return walked
+      if (walked.kind === 'object' || walked.kind === 'array' || walked.kind === 'ref') {
+        return structural > 1 ? { ...walked, variant_of: structural } : walked
+      }
     }
     return { kind: 'unknown' }
   }
@@ -108,26 +113,51 @@ export interface ShapeArgs {
   name: string
   kind?: DataSource['kind']
   file?: string
+  /** Disambiguators for a name+kind+file collision (e.g. a GET query and a
+   *  mutation sharing all three): `method` picks by request verb, `line` by
+   *  the definition line. Either narrows an otherwise-ambiguous candidate set
+   *  to one before the shape ladder runs. */
+  method?: string
+  line?: number
   workspaceRoot?: string
   /** Schema-scan options (devServerUrl, explicit files/urls). Explicit
    *  files/urls skip dev-server probes — tests stay offline. */
   schemaScan?: ScanOptions
 }
 
+/** Rung-1 admission floor: a match below this is too weak to present as a real
+ *  contract — one literal segment of three (0.33) is a coincidence, not
+ *  evidence. Method disagreement is already excluded upstream (resolver returns
+ *  null), so a surviving match ≥0.5 means "≥half the path literally agrees and
+ *  the method didn't disagree." */
+const RUNG1_MIN_CONFIDENCE = 0.5
+
 export async function resolveDataSourceShape(args: ShapeArgs): Promise<DataSourceShapeResult> {
-  const { projectRoot, name, kind, file, workspaceRoot } = args
+  const { projectRoot, name, kind, file, method, line, workspaceRoot } = args
 
   const catalog = await scanDataSources(projectRoot)
   // Runtime-promoted entries have no code identity to bind to — exclude.
   let candidates = catalog.project_entries.filter(e => e.name === name && e.discovered_by !== 'runtime')
   if (kind) candidates = candidates.filter(e => e.kind === kind)
   if (file) candidates = candidates.filter(e => e.file === file)
+  // Disambiguate a still-colliding set by request method / definition line
+  // before declaring ambiguity — a GET+mutation pair sharing name+kind+file is
+  // resolvable, not permanently blind.
+  if (candidates.length > 1 && method) {
+    const m = method.toUpperCase()
+    const byMethod = candidates.filter(e => (e.method ?? 'GET').toUpperCase() === m)
+    if (byMethod.length > 0) candidates = byMethod
+  }
+  if (candidates.length > 1 && line != null) {
+    const byLine = candidates.filter(e => (e.line ?? 1) === line)
+    if (byLine.length > 0) candidates = byLine
+  }
 
   if (candidates.length === 0) return { error: 'not_found', name }
   if (candidates.length > 1) {
     return {
       error: 'ambiguous',
-      candidates: candidates.map(c => ({ name: c.name, kind: c.kind, file: c.file, line: c.line ?? 1 })),
+      candidates: candidates.map(c => ({ name: c.name, kind: c.kind, file: c.file, line: c.line ?? 1, method: c.method })),
     }
   }
 
@@ -141,26 +171,35 @@ export async function resolveDataSourceShape(args: ShapeArgs): Promise<DataSourc
     shape_source: 'none',
   }
 
-  // Rung 1 — a real API contract behind the entry's endpoint.
+  // Rung 1 — a real API contract behind the entry's endpoint. Admit only a
+  // match at or above the confidence floor: below it (a single literal segment
+  // agreeing by chance) the "green" tier would over-claim, so fall through to
+  // the regex tier instead. Method disagreement is already excluded upstream.
   const url = entry.resolved_endpoint ?? entry.endpoint
   if (url) {
     const schemas = await scanApiSchemas(projectRoot, args.schemaScan ?? {})
     const match = resolveEndpoint(schemas, url, entry.method)
-    if (match?.operation.response_schema) {
+    if (match?.operation.response_schema && match.confidence >= RUNG1_MIN_CONFIDENCE) {
       return {
         ...base,
         shape_source: 'api-schema',
         shape: schemaToShape(match.operation.response_schema),
         ...(match.response_schema_ref ? { schema_ref: match.response_schema_ref } : {}),
         schema_kind: match.schema_kind,
+        schema_location: match.schema_location,
+        op: { method: match.operation.method, path: match.operation.path },
+        resolved_endpoint: url,
         match_confidence: match.confidence,
       }
     }
   }
 
-  // Rung 2 — regex-inferred hints, verbatim.
+  // Rung 2 — regex-inferred hints, verbatim. Require an actual return-position
+  // type annotation (`return_type`) before promoting out of 'none' — bare
+  // `referenced_types` alone can be sourced from parameter types with nothing
+  // said about what the source yields, which would be a fabricated promotion.
   const details = await resolveDataSourceDetails({ projectRoot, name: entry.name, kind: entry.kind, file: entry.file, workspaceRoot })
-  if (!('error' in details) && (details.return_type || (details.referenced_types?.length ?? 0) > 0)) {
+  if (!('error' in details) && details.return_type) {
     return {
       ...base,
       shape_source: 'source-details',

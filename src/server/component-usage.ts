@@ -20,7 +20,19 @@ import { resolveWorkspace } from './workspace.js'
 const CACHE_TTL_MS = 60_000
 const MAX_FILES_SCANNED = 5000
 const SCAN_EXTS = new Set(['.vue', '.tsx', '.jsx', '.ts', '.js', '.svelte', '.astro', '.html', '.mjs'])
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.annotask', '.next', '.nuxt', 'coverage', '.vite', '.turbo', '.svelte-kit', '.output'])
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.annotask', '.next', '.nuxt', 'coverage', '.vite', '.turbo', '.svelte-kit', '.output', '__tests__'])
+const COMPONENT_EXT_RE = /\.(vue|tsx|jsx|ts|js|svelte|astro)$/i
+/** `Foo.test.ts`, `Foo.spec.tsx`, etc. — test-only files feed the catalog
+ *  with fixtures/mocks that don't reflect real usage (a test-only import can
+ *  otherwise rank above every real component). */
+const TEST_FILE_RE = /\.(test|spec)\.[^./]+$/i
+/** React/Vue-composable naming convention (`useTheme`, `useUser`). Hooks are
+ *  real code but not components — counting them as "usage" pollutes the
+ *  catalog with non-visual bindings. */
+const HOOK_LIKE_RE = /^use[A-Z0-9_]/
+/** CSS Modules default import (`import styles from './Foo.module.css'`) —
+ *  never a component, just a class-name map. */
+const CSS_MODULE_RE = /\.module\.(css|scss|sass|less)$/i
 
 export interface ComponentUsageMap {
   /** Map of component name → project-relative file list referencing it. */
@@ -83,7 +95,9 @@ async function scanUncached(projectRoot: string): Promise<ComponentUsageMap> {
   // JSX / Vue / Svelte / Astro tag usage: `<Foo` followed by space, `>`,
   // `/`, or `\n`. PascalCase only. Also records `<Foo.Bar>` as a Foo usage
   // so compound components (Callout.Root, Select.Trigger, etc.) show up.
-  const TAG_RE = /<([A-Z][A-Za-z0-9_$]*)(?:\.[A-Z][A-Za-z0-9_$]*)?(?=[\s/>])/g
+  // The `<` must NOT be immediately preceded by an identifier char — that's
+  // a TS generic (`Array<Foo>`, `useState<Foo>()`), never a real tag.
+  const TAG_RE = /(?<![A-Za-z0-9_$])<([A-Z][A-Za-z0-9_$]*)(?:\.[A-Z][A-Za-z0-9_$]*)?(?=[\s/>])/g
   // ESM named import: `import { Foo, Bar as Baz } from 'x'` — collects Foo
   // and Baz plus the source module, which lets the shell map a tag to the
   // specific library it came from. Lowercase bindings are kept too so
@@ -97,6 +111,13 @@ async function scanUncached(projectRoot: string): Promise<ComponentUsageMap> {
   // filter. Skips side-effect imports (`import 'x'`) and namespace/type
   // imports by requiring an identifier binding.
   const DEFAULT_IMPORT_RE = /import\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*(['"`])([^'"`]+)\2/g
+  // Dynamic route/lazy-loaded components never carry a static named binding
+  // (`component: () => import('./FooPage.vue')`, `lazy(() => import('./Foo'))`),
+  // so without this they show zero usage no matter how central they are to
+  // the app. Derives the name from the imported file's basename when it
+  // looks like a component (PascalCase) — same heuristic as everywhere else
+  // in this best-effort scanner.
+  const DYNAMIC_IMPORT_RE = /import\(\s*(['"`])([^'"`]+)\1\s*\)/g
 
   for (const abs of files) {
     let content: string
@@ -114,13 +135,16 @@ async function scanUncached(projectRoot: string): Promise<ComponentUsageMap> {
       const specifiers = m[1]
       const from = m[3]
       for (const rawPart of specifiers.split(',').map(s => s.trim()).filter(Boolean)) {
-        // Strip `type` prefix from inline type imports (`import { type Foo }`)
-        const part = rawPart.replace(/^type\s+/, '')
+        // Inline `type` imports (`import { type Foo }`) are type-only — they
+        // can never be a real component reference, so drop them instead of
+        // stripping the qualifier and counting them anyway.
+        if (/^type\s+/.test(rawPart)) continue
         // `Foo` or `Foo as Bar` — both `Foo` and `Bar` count as imported
-        const pair = part.split(/\s+as\s+/).map(s => s.trim())
+        const pair = rawPart.split(/\s+as\s+/).map(s => s.trim())
         for (const id of pair) {
           if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(id)) continue
           if (id === 'default') continue
+          if (HOOK_LIKE_RE.test(id)) continue
           push(id, rel)
           pushImport(rel, id, from)
         }
@@ -130,8 +154,18 @@ async function scanUncached(projectRoot: string): Promise<ComponentUsageMap> {
     while ((m = DEFAULT_IMPORT_RE.exec(content)) !== null) {
       const id = m[1]
       const from = m[3]
+      if (HOOK_LIKE_RE.test(id)) continue
+      if (CSS_MODULE_RE.test(from)) continue
       push(id, rel)
       pushImport(rel, id, from)
+    }
+    DYNAMIC_IMPORT_RE.lastIndex = 0
+    while ((m = DYNAMIC_IMPORT_RE.exec(content)) !== null) {
+      const spec = m[2]
+      const base = nodePath.basename(spec).replace(COMPONENT_EXT_RE, '')
+      if (!/^[A-Z][A-Za-z0-9_$]*$/.test(base)) continue
+      push(base, rel)
+      pushImport(rel, base, spec)
     }
   }
 
@@ -156,6 +190,6 @@ async function walk(dir: string, acc: string[]): Promise<void> {
     if (entry.name.startsWith('.')) continue
     const full = nodePath.join(dir, entry.name)
     if (entry.isDirectory()) await walk(full, acc)
-    else if (entry.isFile() && SCAN_EXTS.has(nodePath.extname(entry.name))) acc.push(full)
+    else if (entry.isFile() && SCAN_EXTS.has(nodePath.extname(entry.name)) && !TEST_FILE_RE.test(entry.name)) acc.push(full)
   }
 }

@@ -55,23 +55,28 @@ export async function startStandaloneServer(options: StandaloneServerOptions): P
   }
 
   return new Promise((resolve, reject) => {
+    let fallingBack = false
+
+    // A single persistent 'listening' listener, so whichever listen() call
+    // actually succeeds (preferred port or the listen(0) fallback) is the
+    // one whose result we report — no stale closed-over `port` variable.
+    httpServer.on('listening', () => {
+      const addr = httpServer.address() as { port: number; address: string }
+      writeServerInfo(options.projectRoot, addr.port, addr.address)
+      extraAllowedHosts.push(addr.address)
+      resolve({ port: addr.port, close: shutdown })
+    })
+
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        httpServer.listen(0, '127.0.0.1', () => {
-          const addr = httpServer.address() as { port: number; address: string }
-          writeServerInfo(options.projectRoot, addr.port, addr.address)
-          extraAllowedHosts.push(addr.address)
-          resolve({ port: addr.port, close: shutdown })
-        })
+      if (err.code === 'EADDRINUSE' && !fallingBack) {
+        fallingBack = true
+        console.warn(`[Annotask] Port ${port} is already in use — falling back to a random port.`)
+        httpServer.listen(0, '127.0.0.1')
       } else {
         reject(err)
       }
     })
 
-    httpServer.listen(port, '127.0.0.1', () => {
-      writeServerInfo(options.projectRoot, port, '127.0.0.1')
-      extraAllowedHosts.push('127.0.0.1')
-      resolve({ port, close: shutdown })
-    })
+    httpServer.listen(port, '127.0.0.1')
   })
 }

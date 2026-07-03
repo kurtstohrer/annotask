@@ -71,8 +71,39 @@ const INTROSPECTION_QUERY = `{
 let cachedCatalog: ApiSchemaCatalog | null = null
 let cachedAt = 0
 let inflight: Promise<ApiSchemaCatalog> | null = null
-/** URLs known to be dead so we don't re-probe every scan window. */
-const negativeProbeCache = new Set<string>()
+/**
+ * URLs known to be dead, with the timestamp of that negative result. Entries
+ * older than `NEGATIVE_PROBE_TTL_MS` are treated as expired and re-probed —
+ * without a TTL a backend that starts up after the first scan stays invisible
+ * for the dev-server's entire lifetime (only an explicit `clearApiSchemaCache`
+ * call, which normal scanning never triggers, used to reset this).
+ */
+const negativeProbeCache = new Map<string, number>()
+const NEGATIVE_PROBE_TTL_MS = CACHE_TTL_MS
+
+function isNegativelyCached(url: string): boolean {
+  const at = negativeProbeCache.get(url)
+  if (at == null) return false
+  if (Date.now() - at > NEGATIVE_PROBE_TTL_MS) {
+    negativeProbeCache.delete(url)
+    return false
+  }
+  return true
+}
+
+/**
+ * Set once per scan when at least one probed base refused the connection
+ * outright (backend down), as opposed to responding with 404s (backend up,
+ * no schema published there). Lets callers distinguish "we looked and there's
+ * nothing" from "we couldn't even reach a backend to look" — a bare `[]`
+ * schema list can't tell those apart on its own.
+ */
+let lastScanHadUnreachableBase = false
+
+/** Probe-health telemetry for the most recent scan — see `lastScanHadUnreachableBase`. */
+export function getApiSchemaProbeHealth(): { backendUnreachable: boolean } {
+  return { backendUnreachable: lastScanHadUnreachableBase }
+}
 
 export function clearApiSchemaCache() {
   cachedCatalog = null
@@ -134,6 +165,7 @@ async function detectBackendInRepo(root: string): Promise<boolean> {
 
 async function scanUncached(projectRoot: string, opts: ScanOptions): Promise<ApiSchemaCatalog> {
   const schemas: ApiSchema[] = []
+  lastScanHadUnreachableBase = false
   // Backend + schema discovery anchors on the workspace root so a monorepo's
   // `services/` folder (sibling of the MFE apps) is visible to every MFE's
   // annotask panel.
@@ -143,23 +175,28 @@ async function scanUncached(projectRoot: string, opts: ScanOptions): Promise<Api
   // 1. Explicit config takes precedence — if set, we still do auto-discovery
   //    but skip directories we'd otherwise walk. Explicit paths remain
   //    relative to the declaring MFE for back-compat.
+  let explicitParsedCount = 0
   if (opts.apiSchemaFiles && opts.apiSchemaFiles.length > 0) {
     for (const relPath of opts.apiSchemaFiles) {
       const parsed = await tryParseFile(projectRoot, relPath)
-      if (parsed) schemas.push(parsed)
+      if (parsed) { schemas.push(parsed); explicitParsedCount++ }
     }
   }
   if (opts.apiSchemaUrls && opts.apiSchemaUrls.length > 0) {
     for (const url of opts.apiSchemaUrls) {
-      const parsed = await tryProbeUrl(url)
+      const { schema: parsed } = await tryProbeUrl(url)
       if (parsed) {
         // Explicit config URLs — trust the user's configuration as "they know this is their API" when a backend dir is also present.
         parsed.in_repo = backendInRepo
         schemas.push(parsed)
+        explicitParsedCount++
       }
     }
   }
-  const hasExplicit = (opts.apiSchemaFiles?.length ?? 0) + (opts.apiSchemaUrls?.length ?? 0) > 0
+  // Reflects whether explicit config actually yielded a parsed schema, not
+  // just that config *paths were configured* — a stale `apiSchemaFiles` entry
+  // pointing at nothing must not suppress auto-discovery/probing below.
+  const hasExplicit = explicitParsedCount > 0
 
   // 2. Filesystem auto-discovery — scope to the RUNNING package, not the whole
   //    workspace. Walking ws.root surfaced sibling apps' schema files (a Vue app
@@ -194,42 +231,60 @@ async function scanUncached(projectRoot: string, opts: ScanOptions): Promise<Api
     const seenFingerprints = new Set<string>()
     for (const s of schemas) seenFingerprints.add(schemaFingerprint(s))
 
+    // Compose-discovered bases come from a docker-compose file that is
+    // itself checked into this repo/workspace — those services are
+    // genuinely in-repo regardless of the generic directory-name heuristic.
+    // The plain dev-server URL falls back to that heuristic since it's an
+    // arbitrary "is there a backend-shaped dir anywhere" signal.
+    const composeBases = await discoverComposeServiceBases(projectRoot, ws.root)
+    const composeBaseSet = new Set(composeBases)
     const probeBases = new Set<string>()
     if (opts.devServerUrl) probeBases.add(trimSlash(opts.devServerUrl))
-    for (const base of await discoverComposeServiceBases(projectRoot, ws.root)) {
-      probeBases.add(base)
-    }
+    for (const base of composeBases) probeBases.add(base)
+
     for (const base of probeBases) {
+      const baseInRepo = composeBaseSet.has(base) ? true : backendInRepo
+      // Circuit breaker: once a base refuses the connection outright (no
+      // backend listening at all), skip the remaining probe paths against it
+      // instead of repeating the same failed connection up to 13 times per
+      // scan — this is the main source of ECONNREFUSED console spam on
+      // projects with no backend running.
+      let baseUnreachable = false
+
       // OpenAPI
       for (const p of OPENAPI_PROBE_PATHS) {
+        if (baseUnreachable) break
         const url = base + p
-        if (negativeProbeCache.has(url)) continue
-        const s = await tryProbeUrl(url)
+        if (isNegativelyCached(url)) continue
+        const { schema: s, connectionRefused } = await tryProbeUrl(url)
+        if (connectionRefused) { baseUnreachable = true; lastScanHadUnreachableBase = true }
         if (s) {
-          s.in_repo = backendInRepo
+          s.in_repo = baseInRepo
           const fp = schemaFingerprint(s)
           if (!schemas.some(x => x.location === s.location) && !seenFingerprints.has(fp)) {
             schemas.push(s)
             seenFingerprints.add(fp)
           }
         } else {
-          negativeProbeCache.add(url)
+          negativeProbeCache.set(url, Date.now())
         }
       }
       // GraphQL introspection
       for (const p of GRAPHQL_PROBE_PATHS) {
+        if (baseUnreachable) break
         const url = base + p
-        if (negativeProbeCache.has(url)) continue
-        const s = await tryProbeGraphQL(url)
+        if (isNegativelyCached(url)) continue
+        const { schema: s, connectionRefused } = await tryProbeGraphQL(url)
+        if (connectionRefused) { baseUnreachable = true; lastScanHadUnreachableBase = true }
         if (s) {
-          s.in_repo = backendInRepo
+          s.in_repo = baseInRepo
           const fp = schemaFingerprint(s)
           if (!schemas.some(x => x.location === s.location) && !seenFingerprints.has(fp)) {
             schemas.push(s)
             seenFingerprints.add(fp)
           }
         } else {
-          negativeProbeCache.add(url)
+          negativeProbeCache.set(url, Date.now())
         }
       }
     }
@@ -393,7 +448,15 @@ async function tryParseFile(projectRoot: string, relPath: string): Promise<ApiSc
   if (ext === '.ts' || ext === '.tsx' || ext === '.js' || ext === '.mjs') {
     const raw = await readText(abs)
     if (raw == null) return null
-    if (!raw.includes('createTRPCRouter') && !/\btrpc\./.test(raw)) return null
+    // Broadened beyond `createTRPCRouter`/`trpc.` literals: the equally-common
+    // convention destructures `router`/`publicProcedure` off `initTRPC` and
+    // never spells "trpc." anywhere in the file, which used to make this gate
+    // silently reject the standard tRPC style entirely.
+    const looksTrpc = raw.includes('createTRPCRouter')
+      || /\btrpc\./.test(raw)
+      || raw.includes('initTRPC')
+      || /\.procedure\s*\.(?:input|output|query|mutation|subscription|use|meta)\s*\(/.test(raw)
+    if (!looksTrpc) return null
     return tryAsTrpcRouter(raw, relPath)
   }
 
@@ -407,16 +470,15 @@ async function tryParseFile(projectRoot: string, relPath: string): Promise<ApiSc
  *     createTRPCRouter({
  *       foo: publicProcedure.input(z.object({...})).output(z.object({...})).query(...),
  *       bar: t.procedure.mutation(async ({ input }) => ...),
+ *       nested: router({ list: publicProcedure.query(({ input }) => ...) }),
  *     })
- * and emit one ApiOperation per procedure. Zod literals are converted to a
+ * and emit one ApiOperation per procedure (dotted `nested.list` for entries
+ * under an inline nested router). Zod literals are converted to a
  * JSON-Schema-lite dict inline; we don't dynamically import the user's code.
  */
 function tryAsTrpcRouter(raw: string, location: string): ApiSchema | null {
-  const routerRe = /createTRPCRouter\s*\(\s*\{([\s\S]*?)\}\s*\)/g
   const operations: ApiOperation[] = []
-  let m: RegExpExecArray | null
-  while ((m = routerRe.exec(raw)) !== null) {
-    const body = m[1]
+  for (const body of findRouterObjectBodies(raw)) {
     collectTrpcProcedures(body, operations)
   }
   if (operations.length === 0) return null
@@ -431,23 +493,86 @@ function tryAsTrpcRouter(raw: string, location: string): ApiSchema | null {
   }
 }
 
-function collectTrpcProcedures(body: string, operations: ApiOperation[]): void {
-  // Each procedure is roughly: `name: base.input(...).output(...).query(...)`
-  // We allow any chain of .input/.output/.use/.meta; the final .query / .mutation
-  // determines the method. Capture lazily, one procedure per outermost key.
-  const keyRe = /\b(\w+)\s*:\s*([a-zA-Z_$][\w$.]*(?:\s*\.\s*\w+\s*\([^()]*(?:\([^()]*\)[^()]*)*\))*)/g
-  let km: RegExpExecArray | null
-  while ((km = keyRe.exec(body)) !== null) {
-    const name = km[1]
-    const chain = km[2]
+/**
+ * Find every top-level `createTRPCRouter({...})` / `router({...})` /
+ * `t.router({...})` call and return its object-literal body, using proper
+ * brace-depth counting rather than a non-greedy regex. The previous
+ * `\{([\s\S]*?)\}\s*\)` pattern truncated at the *first* `})` it saw —
+ * which a router body full of `z.object({ id: z.string() })` calls hits
+ * almost immediately, well before the router's own closing brace.
+ */
+function findRouterObjectBodies(raw: string): string[] {
+  const bodies: string[] = []
+  const callRe = /\b(?:createTRPCRouter|(?:[\w$]+\.)?router)\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = callRe.exec(raw)) !== null) {
+    let i = callRe.lastIndex
+    while (i < raw.length && /\s/.test(raw[i])) i++
+    if (raw[i] !== '{') continue
+    let depth = 0
+    let j = i
+    for (; j < raw.length; j++) {
+      const c = raw[j]
+      if (c === '{') depth++
+      else if (c === '}') { depth--; if (depth === 0) { j++; break } }
+    }
+    if (depth !== 0) continue // unbalanced — bail on this call
+    bodies.push(raw.slice(i + 1, j - 1))
+    callRe.lastIndex = j // don't re-descend into this body as a new top-level call
+  }
+  return bodies
+}
+
+/**
+ * A router entry whose value is itself a nested router call
+ * (`users: router({ list: ..., create: ... })`) — returns the inner object
+ * body so the caller can recurse with a dotted path prefix. `null` when the
+ * chain isn't a nested-router call.
+ */
+function extractNestedRouterBody(chain: string): string | null {
+  const c = chain.trim()
+  const m = /^(?:createTRPCRouter|(?:[\w$]+\.)?router)\s*\(/.exec(c)
+  if (!m) return null
+  const inner = extractParenContent(c, m[0])
+  if (!inner) return null
+  const trimmed = inner.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null
+  return trimmed.slice(1, -1)
+}
+
+function collectTrpcProcedures(body: string, operations: ApiOperation[], prefix = ''): void {
+  // Split on top-level commas (brace/paren/bracket-aware) so each entry is
+  // `name: <chain>` as a whole, however deep the handler body's own control
+  // flow / call nesting goes — a naive single regex over the whole chain
+  // (including the `.query(async ({ input }) => { ... })` handler body) broke
+  // on any handler containing more than one level of nested parens, which is
+  // the common case (`.map(x => ({ id: x.id }))`, `.filter(...).map(...)`, …).
+  for (const entry of splitTopLevel(body, ',')) {
+    const colonIdx = findTopLevel(entry, ':')
+    if (colonIdx < 0) continue
+    const name = entry.slice(0, colonIdx).trim().replace(/^['"]|['"]$/g, '')
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue
+    const chain = entry.slice(colonIdx + 1).trim()
+    const path = prefix ? `${prefix}.${name}` : name
+
+    const nestedBody = extractNestedRouterBody(chain)
+    if (nestedBody != null) {
+      collectTrpcProcedures(nestedBody, operations, path)
+      continue
+    }
+
     if (!/\.(query|mutation|subscription)\s*\(/.test(chain)) continue
     const method = /\.mutation\s*\(/.test(chain) ? 'mutation' : /\.subscription\s*\(/.test(chain) ? 'subscription' : 'query'
+    // `extractCallArg` is balanced-paren-aware, so it finds `.input(...)` /
+    // `.output(...)` correctly regardless of what the handler body (which
+    // sits inside `.query(...)`/`.mutation(...)`, elsewhere in the chain)
+    // contains — standard `({ input }) => {...}` handlers included.
     const request_schema = parseFirstZodArg(extractCallArg(chain, 'input'))
     const response_schema = parseFirstZodArg(extractCallArg(chain, 'output'))
     operations.push({
-      id: name,
+      id: path,
       method,
-      path: name,
+      path,
       request_schema,
       response_schema,
     })
@@ -623,32 +748,53 @@ function tryAsOpenApi(doc: unknown, location: string, source: ApiSchema['source'
   const d = doc as Record<string, unknown>
   const version = typeof d.openapi === 'string' ? d.openapi : typeof d.swagger === 'string' ? d.swagger : undefined
   if (!version) return null
+  const isSwagger2 = typeof d.swagger === 'string'
   const info = (d.info && typeof d.info === 'object') ? d.info as Record<string, unknown> : {}
   const title = typeof info.title === 'string' ? info.title : undefined
   const infoVersion = typeof info.version === 'string' ? info.version : undefined
   const origin = extractOpenApiOrigin(d, location, source)
-  const components = (d.components && typeof d.components === 'object') ? (d.components as Record<string, unknown>).schemas as Record<string, unknown> | undefined : undefined
+  const basePathPrefix = extractOpenApiBasePath(d, isSwagger2)
+
+  // Full-ref-path keyed pool (`#/components/schemas/User`, `#/definitions/User`,
+  // `#/components/pathItems/Foo`) so resolution isn't just a name-tail lookup
+  // against a single flattened pool — a `components.schemas.User` and a
+  // `definitions.User` no longer silently collide into one entry.
+  const refPool: Record<string, unknown> = {}
+  const componentsObj = (d.components && typeof d.components === 'object') ? d.components as Record<string, unknown> : undefined
+  const componentSchemas = (componentsObj?.schemas && typeof componentsObj.schemas === 'object') ? componentsObj.schemas as Record<string, unknown> : undefined
+  const pathItems = (componentsObj?.pathItems && typeof componentsObj.pathItems === 'object') ? componentsObj.pathItems as Record<string, unknown> : undefined
   const definitions = (d.definitions && typeof d.definitions === 'object') ? d.definitions as Record<string, unknown> : undefined
-  const refPool: Record<string, unknown> = { ...(components ?? {}), ...(definitions ?? {}) }
+  if (componentSchemas) for (const [k, v] of Object.entries(componentSchemas)) refPool[`#/components/schemas/${k}`] = v
+  if (definitions) for (const [k, v] of Object.entries(definitions)) refPool[`#/definitions/${k}`] = v
+  if (pathItems) for (const [k, v] of Object.entries(pathItems)) refPool[`#/components/pathItems/${k}`] = v
 
   const operations: ApiOperation[] = []
   const paths = (d.paths && typeof d.paths === 'object') ? d.paths as Record<string, unknown> : {}
   const METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
-  for (const [path, pathItem] of Object.entries(paths)) {
-    if (!pathItem || typeof pathItem !== 'object' || Array.isArray(pathItem)) continue
-    const item = pathItem as Record<string, unknown>
+  for (const [path, pathItemRaw] of Object.entries(paths)) {
+    if (!pathItemRaw || typeof pathItemRaw !== 'object' || Array.isArray(pathItemRaw)) continue
+    let item = pathItemRaw as Record<string, unknown>
+    // Path items can themselves be a `$ref` (OpenAPI 3.1 `components.pathItems`,
+    // or some Swagger tooling) — resolve it before reading HTTP methods off it,
+    // instead of silently seeing zero operations for that path.
+    if (typeof item.$ref === 'string') {
+      const resolved = lookupRef(item.$ref, refPool)
+      if (!resolved || typeof resolved !== 'object' || Array.isArray(resolved)) continue
+      item = resolved as Record<string, unknown>
+    }
+    const fullPath = basePathPrefix ? basePathPrefix + (path.startsWith('/') ? path : '/' + path) : path
     for (const method of METHODS) {
       const op = item[method]
       if (!op || typeof op !== 'object' || Array.isArray(op)) continue
       const o = op as Record<string, unknown>
       const opId = typeof o.operationId === 'string' ? o.operationId : undefined
       const summary = typeof o.summary === 'string' ? o.summary : (typeof o.description === 'string' ? o.description as string : undefined)
-      const request_schema = extractOpenApiRequestBody(o, refPool)
-      const { response_schema, schema_refs } = extractOpenApiResponse(o, refPool)
+      const request_schema = isSwagger2 ? extractSwagger2RequestBody(o, refPool) : extractOpenApiRequestBody(o, refPool)
+      const { response_schema, schema_refs } = isSwagger2 ? extractSwagger2Response(o, refPool) : extractOpenApiResponse(o, refPool)
       operations.push({
         id: opId,
         method: method.toUpperCase(),
-        path,
+        path: fullPath,
         summary,
         request_schema,
         response_schema,
@@ -675,7 +821,9 @@ function tryAsOpenApi(doc: unknown, location: string, source: ApiSchema['source'
  * probes we parse it off `location` (e.g. `http://localhost:4320/openapi.json`
  * → `http://localhost:4320`). For filesystem specs we read `servers[0].url`;
  * localhost URLs in `servers` are common in dev-focused OpenAPI files. Returns
- * `undefined` when no usable origin can be derived.
+ * `undefined` when no usable origin can be derived. Strictly scheme+host+port
+ * — any path component on `servers[].url` is a base path, handled separately
+ * by `extractOpenApiBasePath` and baked into each operation's `path`.
  */
 function extractOpenApiOrigin(doc: Record<string, unknown>, location: string, source: ApiSchema['source']): string | undefined {
   if (source === 'dev-server') {
@@ -691,6 +839,39 @@ function extractOpenApiOrigin(doc: Record<string, unknown>, location: string, so
     }
   }
   return undefined
+}
+
+/**
+ * Base path every operation is actually served behind — OpenAPI 3.x
+ * `servers[0].url`'s path component (absolute or relative: `/api/v1`,
+ * `https://api.example.com/v1`), or Swagger 2.0's `basePath`. Without this,
+ * a spec's `/users/{id}` never matches a runtime request to
+ * `/api/v1/users/42`. Baked directly into each operation's `path` at parse
+ * time (rather than stored as a separate field) so the resolver's existing
+ * literal-segment matching just works, unmodified, against real URLs.
+ */
+function extractOpenApiBasePath(doc: Record<string, unknown>, isSwagger2: boolean): string {
+  if (isSwagger2) {
+    const bp = doc.basePath
+    if (typeof bp === 'string' && bp) return bp.replace(/\/+$/, '')
+    return ''
+  }
+  const servers = doc.servers
+  if (Array.isArray(servers)) {
+    for (const s of servers) {
+      if (!s || typeof s !== 'object') continue
+      const rawUrl = (s as Record<string, unknown>).url
+      if (typeof rawUrl !== 'string' || !rawUrl) continue
+      try {
+        // A base of `http://placeholder.invalid` lets relative server URLs
+        // (the common case: `servers: [{ url: '/api/v1' }]`) parse too.
+        const u = new URL(rawUrl, 'http://placeholder.invalid')
+        const p = u.pathname.replace(/\/+$/, '')
+        return p === '/' ? '' : p
+      } catch { /* try next */ }
+    }
+  }
+  return ''
 }
 
 function extractOpenApiRequestBody(op: Record<string, unknown>, refPool: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -727,6 +908,42 @@ function extractOpenApiResponse(op: Record<string, unknown>, refPool: Record<str
   return { response_schema: resolved, schema_refs: [...new Set(refs)] }
 }
 
+/**
+ * Swagger 2.0 request body — carried as a `parameters[]` entry with
+ * `in: 'body'` rather than OpenAPI 3's `requestBody.content[...].schema`.
+ */
+function extractSwagger2RequestBody(op: Record<string, unknown>, refPool: Record<string, unknown>): Record<string, unknown> | undefined {
+  const params = op.parameters
+  if (!Array.isArray(params)) return undefined
+  for (const p of params) {
+    if (!p || typeof p !== 'object') continue
+    const po = p as Record<string, unknown>
+    if (po.in === 'body' && po.schema && typeof po.schema === 'object') {
+      return resolveRefs(po.schema as Record<string, unknown>, refPool) as Record<string, unknown>
+    }
+  }
+  return undefined
+}
+
+/**
+ * Swagger 2.0 response — the schema sits directly on `responses[code].schema`,
+ * not behind a `content['application/json']` wrapper like OpenAPI 3.
+ */
+function extractSwagger2Response(op: Record<string, unknown>, refPool: Record<string, unknown>): { response_schema?: Record<string, unknown>; schema_refs: string[] } {
+  const responses = op.responses
+  if (!responses || typeof responses !== 'object') return { schema_refs: [] }
+  const r = responses as Record<string, unknown>
+  const pickKey = ['200', '201', ...Object.keys(r).filter(k => k.startsWith('2')), 'default'].find(k => k in r)
+  if (!pickKey) return { schema_refs: [] }
+  const resp = r[pickKey]
+  if (!resp || typeof resp !== 'object') return { schema_refs: [] }
+  const schema = (resp as Record<string, unknown>).schema
+  if (!schema || typeof schema !== 'object') return { schema_refs: [] }
+  const refs = collectRefNames(schema as Record<string, unknown>)
+  const resolved = resolveRefs(schema as Record<string, unknown>, refPool) as Record<string, unknown>
+  return { response_schema: resolved, schema_refs: [...new Set(refs)] }
+}
+
 function collectRefNames(node: unknown, acc: string[] = []): string[] {
   if (!node) return acc
   if (Array.isArray(node)) {
@@ -744,18 +961,45 @@ function collectRefNames(node: unknown, acc: string[] = []): string[] {
   return acc
 }
 
-function resolveRefs(schema: Record<string, unknown>, refPool: Record<string, unknown>, depth = 0, seen = new Set<string>()): unknown {
+/**
+ * Resolve a `$ref` string against the full-path-keyed pool, falling back to a
+ * name-tail match (against both `components/schemas` and `definitions`) for
+ * refs that don't carry the exact section prefix we indexed under.
+ */
+function lookupRef(ref: string, refPool: Record<string, unknown>): unknown {
+  if (ref in refPool) return refPool[ref]
+  const tail = ref.split('/').pop()
+  if (!tail) return undefined
+  const schemaKey = `#/components/schemas/${tail}`
+  if (schemaKey in refPool) return refPool[schemaKey]
+  const defKey = `#/definitions/${tail}`
+  if (defKey in refPool) return refPool[defKey]
+  const pathItemKey = `#/components/pathItems/${tail}`
+  if (pathItemKey in refPool) return refPool[pathItemKey]
+  return undefined
+}
+
+/**
+ * Depth-limited `$ref` expansion. `seen` tracks the ref chain of the CURRENT
+ * branch only — it's cloned (not mutated in place) at the point a ref is
+ * followed, so two sibling properties that both reference the same shared,
+ * non-cyclic type (`{ author: {$ref: '#/…/User'}, editor: {$ref: '#/…/User'} }`)
+ * each get the full expansion instead of the second one falsely reading as a
+ * cycle because the first branch's visit was never rolled back.
+ */
+function resolveRefs(schema: Record<string, unknown>, refPool: Record<string, unknown>, depth = 0, seen: ReadonlySet<string> = new Set<string>()): unknown {
   if (depth > 8) return schema
   const ref = schema.$ref
   if (typeof ref === 'string') {
-    const tail = ref.split('/').pop()
-    if (!tail || !(tail in refPool)) return schema
-    if (seen.has(tail)) return { $ref: `#/components/schemas/${tail}` }
-    seen.add(tail)
-    const target = refPool[tail]
+    const target = lookupRef(ref, refPool)
+    if (target === undefined) return schema
+    if (seen.has(ref)) return { $ref: ref } // genuine cycle along this branch
     if (target && typeof target === 'object' && !Array.isArray(target)) {
-      return resolveRefs(target as Record<string, unknown>, refPool, depth + 1, seen)
+      const nextSeen = new Set(seen)
+      nextSeen.add(ref)
+      return resolveRefs(target as Record<string, unknown>, refPool, depth + 1, nextSeen)
     }
+    return schema
   }
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(schema)) {
@@ -778,7 +1022,14 @@ function tryAsGraphQlSdl(raw: string, location: string, source: ApiSchema['sourc
   let m: RegExpExecArray | null
   while ((m = typeBlockRe.exec(raw)) !== null) {
     const opType = m[2].toLowerCase() as 'query' | 'mutation' | 'subscription'
+    // Strip GraphQL description docstrings (`"""...multi-line..."""` blocks
+    // and standalone single-line `"..."` descriptions) before scanning for
+    // fields — a description line that happens to contain a colon (e.g.
+    // `"""Example: GET /users/1"""`) was previously misread as a field named
+    // "Example" with response type "GET /users/1", minting a phantom operation.
     const body = m[3]
+      .replace(/"""[\s\S]*?"""/g, '')
+      .replace(/^[ \t]*"[^"\n]*"\s*$/gm, '')
     // Each field inside: `  fieldName(args): ReturnType!`  — keep it lenient.
     const fieldRe = /^\s*(\w+)\s*(?:\(([^)]*)\))?\s*:\s*([^\n#]+?)\s*(?:#.*)?$/gm
     let f: RegExpExecArray | null
@@ -786,7 +1037,12 @@ function tryAsGraphQlSdl(raw: string, location: string, source: ApiSchema['sourc
       const name = f[1]
       if (name.startsWith('#')) continue
       const args = f[2]
-      const returnType = f[3].trim().replace(/[!,]/g, '')
+      // A trailing `@directive(...)` (e.g. `@deprecated(reason: "...")`) is
+      // not part of the type — strip it before further processing so it
+      // doesn't leak into the response type / schema_refs.
+      const atIdx = f[3].indexOf('@')
+      const typeOnly = atIdx >= 0 ? f[3].slice(0, atIdx) : f[3]
+      const returnType = typeOnly.trim().replace(/[!,]/g, '')
       const inner = returnType.replace(/[\[\]!]/g, '').trim()
       const request_schema = args ? parseGqlArgsToSchema(args) : undefined
       operations.push({
@@ -835,25 +1091,30 @@ function parseGqlArgsToSchema(args: string): Record<string, unknown> {
 
 // ── GraphQL introspection ─────────────────────────────
 
-async function tryProbeGraphQL(url: string): Promise<ApiSchema | null> {
-  if (!isLocalUrl(url)) return null
+async function tryProbeGraphQL(url: string): Promise<ProbeResult> {
+  if (!isLocalUrl(url)) return { schema: null, connectionRefused: false }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ query: INTROSPECTION_QUERY }),
       signal: controller.signal,
     })
-    clearTimeout(timer)
-    if (!res.ok) return null
+    if (!res.ok) return { schema: null, connectionRefused: false }
     const body = await res.json() as { data?: { __schema?: Record<string, unknown> } }
     const sch = body?.data?.__schema
-    if (!sch) return null
-    return gqlIntrospectionToSchema(sch, url)
-  } catch {
-    return null
+    if (!sch) return { schema: null, connectionRefused: false }
+    return { schema: gqlIntrospectionToSchema(sch, url), connectionRefused: false }
+  } catch (err) {
+    return { schema: null, connectionRefused: isConnectionRefused(err) }
+  } finally {
+    // Always clear immediately — leaving the timer pending after the fetch
+    // has already rejected (the common case for ECONNREFUSED, which fires
+    // near-instantly) means `controller.abort()` fires ~500ms later against
+    // an already-settled request, which is its own source of console noise.
+    clearTimeout(timer)
   }
 }
 
@@ -952,30 +1213,51 @@ function tryAsJsonSchema(doc: unknown, location: string): ApiSchema | null {
 
 // ── HTTP probes ──────────────────────────────────────
 
-async function tryProbeUrl(url: string): Promise<ApiSchema | null> {
-  if (!isLocalUrl(url)) return null
+/**
+ * A probe's outcome, discriminating "we got a clean negative" (404, non-schema
+ * body, timeout) from "the connection itself was refused" — the latter means
+ * no backend is listening at all, which callers use both to short-circuit
+ * further probes against the same base (fewer redundant connection attempts
+ * → less ECONNREFUSED console noise) and, via `getApiSchemaProbeHealth`, to
+ * tell "no API" apart from "couldn't even reach a backend".
+ */
+interface ProbeResult {
+  schema: ApiSchema | null
+  connectionRefused: boolean
+}
+
+function isConnectionRefused(err: unknown): boolean {
+  const e = err as { cause?: { code?: string }; code?: string; message?: string } | null | undefined
+  const code = e?.cause?.code ?? e?.code
+  if (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EHOSTUNREACH' || code === 'ECONNRESET') return true
+  return typeof e?.message === 'string' && /ECONNREFUSED/.test(e.message)
+}
+
+async function tryProbeUrl(url: string): Promise<ProbeResult> {
+  if (!isLocalUrl(url)) return { schema: null, connectionRefused: false }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
     const res = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json, application/yaml' } })
-    clearTimeout(timer)
-    if (!res.ok) return null
+    if (!res.ok) return { schema: null, connectionRefused: false }
     const ct = res.headers.get('content-type') ?? ''
     const text = await res.text()
-    if (text.length > MAX_SCHEMA_BYTES) return null
+    if (text.length > MAX_SCHEMA_BYTES) return { schema: null, connectionRefused: false }
     const looksYaml = ct.includes('yaml') || url.endsWith('.yaml') || url.endsWith('.yml')
     const parsed = looksYaml ? (safeYamlParse(text) ?? safeJsonParse(text)) : (safeJsonParse(text) ?? safeYamlParse(text))
-    if (!parsed) return null
+    if (!parsed) return { schema: null, connectionRefused: false }
     const openapi = tryAsOpenApi(parsed, url, 'dev-server')
-    if (openapi) return openapi
+    if (openapi) return { schema: openapi, connectionRefused: false }
     const js = tryAsJsonSchema(parsed, url)
     if (js) {
       js.source = 'dev-server'
-      return js
+      return { schema: js, connectionRefused: false }
     }
-    return null
-  } catch {
-    return null
+    return { schema: null, connectionRefused: false }
+  } catch (err) {
+    return { schema: null, connectionRefused: isConnectionRefused(err) }
+  } finally {
+    clearTimeout(timer)
   }
 }
 

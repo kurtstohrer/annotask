@@ -64,6 +64,14 @@ function fidelityLabel(hint: LibraryComponent['fidelityHint']): string {
   return ''
 }
 
+// An empty `props` array is ambiguous between "verified propless" and
+// "extraction failed" (findings P0-2). The scanner tags the latter with
+// `extraction: 'name-only'` — LibraryComponent doesn't declare the field
+// yet, so read it defensively rather than assume its presence.
+function propsUnknown(c: LibraryComponent): boolean {
+  return (c as unknown as { extraction?: string }).extraction === 'name-only'
+}
+
 // Synthesize minimum-viable props so a component renders with visible content
 // instead of empty (a Button with no `label` is an empty box). Display-only —
 // these are NOT persisted as the placed component's real props.
@@ -513,6 +521,14 @@ function componentTooltip(lib: string, c: LibraryComponent): string {
               </span>
             </div>
           </div>
+        </div>
+        <!-- Props section is hidden only when extraction genuinely confirmed
+             the component takes none. When extraction itself failed
+             (findings P0-2), say so instead of silently disappearing — an
+             empty array otherwise reads as "verified propless." -->
+        <div v-else-if="propsUnknown(cl.selectedComponent.value)" class="detail-section">
+          <div class="ds-label">Props</div>
+          <div class="detail-description">props unknown — extraction failed</div>
         </div>
 
         <!-- Slots -->

@@ -68,6 +68,12 @@ describe('scanComponentUsage', () => {
     const r = await scanComponentUsage(root)
     expect(r.usage['box']).toContain('src/mixed.tsx')
     expect(r.usage['Box']).toContain('src/mixed.tsx')
-    expect(r.usage['useTheme']).toContain('src/mixed.tsx')
+  })
+
+  it('excludes hook-like imports (use*) from the component usage index', async () => {
+    // `useTheme` is a hook, not a component — counting it pollutes the map
+    // (findings: usage polluted by hooks, 860 keys vs 75 real components).
+    const r = await scanComponentUsage(root)
+    expect(r.usage['useTheme']).toBeUndefined()
   })
 })

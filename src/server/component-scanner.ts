@@ -44,6 +44,13 @@ export interface ScannedComponent {
    *  context), 'isolated-preview' (detached, provider-dependent), or 'unknown'
    *  (source unavailable — the live mount itself confirms). */
   fidelityHint: 'live' | 'isolated-preview' | 'placeholder' | 'unknown'
+  /** Which strategy actually produced this component's data — lets consumers tell a
+   *  verified-propless component apart from one where extraction simply failed.
+   *  'cem' = Custom Elements Manifest JSON; 'dts' = exact `<Name>Props` interface match;
+   *  'dts-guessed' = first-`*Props`-interface-wins fallback (barrel had no exact name);
+   *  'source' = parsed from the component's own source (.vue/.tsx/.svelte/.astro/...);
+   *  'name-only' = we only ever confirmed the export name, never its shape. */
+  extraction?: 'cem' | 'dts' | 'dts-guessed' | 'source' | 'name-only'
 }
 
 export interface ScannedLibrary {
@@ -194,6 +201,7 @@ export function clearComponentCache() {
   refreshing = null
   cachedProjectLibrary = null
   cachedProjectLibraryAt = 0
+  dtsContentCache.clear()
 }
 
 // ── Project components (the user's own src/ components, as a palette group) ──
@@ -217,6 +225,7 @@ export async function scanProjectComponents(projectRoot: string): Promise<Scanne
   const components: ScannedComponent[] = []
   const seen = new Set<string>()
   const srcDir = path.join(projectRoot, 'src')
+  const bundler = detectBundler(projectRoot)
   try {
     const files = await findLocalComponentFilesRecursive(srcDir)
     for (const filePath of files) {
@@ -236,6 +245,8 @@ export async function scanProjectComponents(projectRoot: string): Promise<Scanne
         description: details.description,
         sourceFile: filePath,
         providerSignals: details.providerSignals,
+        extraction: detailsExtractionTag(details),
+        bundler,
       }))
     }
   } catch { /* src/ may not exist */ }
@@ -266,6 +277,11 @@ function makeComponent(fields: {
   deprecated?: boolean
   sourceFile?: string | null
   providerSignals?: string[]
+  /** Required (not optional) here even though it's optional on the wire type — every
+   *  call site in this file knows exactly which strategy produced its data, so we force
+   *  that choice at construction time rather than let it default to undefined. */
+  extraction: ScannedComponent['extraction']
+  bundler?: 'vite' | 'webpack' | 'unknown'
 }): ScannedComponent {
   const providerSignals = fields.providerSignals ?? []
   return {
@@ -280,8 +296,31 @@ function makeComponent(fields: {
     events: fields.events ?? [],
     sourceFile: fields.sourceFile ?? null,
     providerSignals,
-    fidelityHint: deriveFidelityHint(fields.sourceFile ?? null, providerSignals),
+    extraction: fields.extraction,
+    fidelityHint: deriveFidelityHint(fields.sourceFile ?? null, providerSignals, fields.extraction, fields.bundler ?? 'unknown'),
   }
+}
+
+/** Detect the project's active bundler from its own manifest/config. Self-contained
+ *  (reads projectRoot directly) rather than threaded in from HTTP/MCP/CLI callers,
+ *  since scanComponentLibraries()/scanProjectComponents() are a stable external
+ *  contract this fix must not change the signature of. Used only to make
+ *  `fidelityHint` honest (see below) — /__annotask/preview-module is Vite-only and
+ *  hard-404s under webpack by design. */
+function detectBundler(projectRoot: string): 'vite' | 'webpack' | 'unknown' {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'))
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies }
+    if ('webpack' in deps || 'webpack-dev-server' in deps || 'webpack-cli' in deps) return 'webpack'
+    if ('vite' in deps) return 'vite'
+  } catch { /* fall through to config-file detection */ }
+  for (const ext of ['.js', '.ts', '.cjs', '.mjs']) {
+    if (fs.existsSync(path.join(projectRoot, `webpack.config${ext}`))) return 'webpack'
+  }
+  for (const ext of ['.ts', '.js', '.mjs']) {
+    if (fs.existsSync(path.join(projectRoot, `vite.config${ext}`))) return 'vite'
+  }
+  return 'unknown'
 }
 
 /** Coarse fidelity hint for the palette. We only assert when we actually read
@@ -290,12 +329,23 @@ function makeComponent(fields: {
  *  share the host app's provides/router/components by reference, so a
  *  provider-dependent Vue component usually still renders in context ('live');
  *  React/Svelte/Solid mount detached with no provider tree, so provider deps
- *  degrade ('isolated-preview'). */
+ *  degrade ('isolated-preview').
+ *
+ *  Two further honesty guards: a 'name-only' extraction means we never actually
+ *  parsed source/types at all, so 'live' would assert confidence we don't have; and
+ *  under webpack, no component can be live-previewed regardless of extraction
+ *  quality (there's no dedicated fidelity value for "can't preview, but source is
+ *  known" without widening this union — which other consumers switch on outside
+ *  this file — so 'unknown' is the closest honest fit). */
 function deriveFidelityHint(
   sourceFile: string | null,
   providerSignals: string[],
+  extraction: ScannedComponent['extraction'],
+  bundler: 'vite' | 'webpack' | 'unknown',
 ): ScannedComponent['fidelityHint'] {
   if (!sourceFile) return 'unknown'
+  if (extraction === 'name-only') return 'unknown'
+  if (bundler === 'webpack') return 'unknown'
   if (providerSignals.length === 0) return 'live'
   return path.extname(sourceFile) === '.vue' ? 'live' : 'isolated-preview'
 }
@@ -355,7 +405,9 @@ const LOCAL_SFC_EXTS = new Set(['.vue', '.tsx', '.jsx', '.svelte', '.astro'])
 // or a render-style export) before we count them — otherwise every PascalCase
 // utility class would get catalogued as a component.
 const LOCAL_SCRIPT_EXTS = new Set(['.ts', '.js', '.mjs', '.cjs'])
-const COMPONENT_SIGNAL_RE = /\bdefineComponent\s*\(|\.component\s*\(\s*['"`]|\bcreateComponent\s*\(|export\s+default\s+\{[^}]*\b(?:template|render|setup|components)\b/
+// customElements.define(...) covers plain native web components — previously invisible
+// to project scans (measured: a planted ProbeBadge.js was never catalogued).
+const COMPONENT_SIGNAL_RE = /\bdefineComponent\s*\(|\.component\s*\(\s*['"`]|\bcreateComponent\s*\(|\bcustomElements\.define\s*\(|export\s+default\s+\{[^}]*\b(?:template|render|setup|components)\b/
 
 async function findLocalComponentFilesRecursive(dir: string): Promise<string[]> {
   const results: string[] = []
@@ -478,26 +530,45 @@ function runScanOffThread(projectRoot: string): Promise<ComponentCatalog> {
   return new Promise<ComponentCatalog>((resolve, reject) => {
     let settled = false
     const worker = new Worker(workerUrl, { workerData: { projectRoot } })
+    let timeoutHandle: ReturnType<typeof setTimeout>
     const done = (fn: () => void) => {
       if (settled) return
       settled = true
+      clearTimeout(timeoutHandle)
       worker.terminate().catch(() => {})
       fn()
     }
+    // Guard against a wedged worker (e.g. a pathological package sending the scan into
+    // a runaway loop) — without this, a hung worker never settles the promise and every
+    // future request/refresh sharing this scan blocks forever.
+    const SCAN_TIMEOUT_MS = 60_000
+    timeoutHandle = setTimeout(() => {
+      done(() => reject(new Error(`Component scan worker timed out after ${SCAN_TIMEOUT_MS}ms`)))
+    }, SCAN_TIMEOUT_MS)
     worker.once('message', (msg: { ok: boolean; result?: ComponentCatalog; error?: string }) => {
       if (msg?.ok && msg.result) done(() => resolve(msg.result!))
       else done(() => reject(new Error(msg?.error ?? 'Component scan worker failed')))
     })
     worker.once('error', (err) => done(() => reject(err)))
     worker.once('exit', (code) => {
-      if (code !== 0) done(() => reject(new Error(`Component scan worker exited with code ${code}`)))
+      // A clean exit (code 0) reaching this point means the worker exited WITHOUT ever
+      // posting a message (the 'message' handler would already have settled us via
+      // `done` otherwise, making this a no-op). That's still a failure case — previously
+      // nothing rejected here, so the promise (and every caller awaiting it) hung forever.
+      done(() => reject(new Error(code === 0
+        ? 'Component scan worker exited before producing a result'
+        : `Component scan worker exited with code ${code}`)))
     })
   }).catch(err => {
-    // If worker setup fails for any reason, degrade to an in-process scan so
-    // the Components tab still works. The caller already coalesces concurrent
-    // requests, so this fallback runs at most once per cache window.
-    console.warn('[Annotask] Component scan worker failed, falling back to main thread:', err)
-    return scanComponentLibrariesUncached(projectRoot)
+    // Do NOT re-run the identical scan in-process here: for the case that most needs
+    // this fallback (a worker OOM/crash on a pathological package — see the lucide-style
+    // barrel budget guard in scanBarrelExports), re-running synchronously on the main
+    // thread just turns a contained worker crash into a killed dev-server process.
+    // Degrade to a safe result instead — the last good catalog if we have one, otherwise
+    // empty — and log loudly so the cause is visible instead of silently repeating (and
+    // re-crashing) every boot.
+    console.warn('[Annotask] Component scan worker failed — not retrying on the main thread. Serving a degraded catalog. Cause:', err)
+    return cachedCatalog ?? { libraries: [], scannedAt: Date.now() }
   })
 }
 
@@ -524,6 +595,8 @@ export async function scanComponentLibrariesUncached(projectRoot: string): Promi
   } catch { /* missing or unreadable package.json */ }
   if (Object.keys(deps).length === 0) return { libraries: [], scannedAt: Date.now() }
 
+  const bundler = detectBundler(projectRoot)
+
   // Scan every dependency in parallel. Each `scanLibrary` is largely async
   // file I/O — serializing them left the scanner idle between `await`s and
   // made first-paint unbearable on large workspaces (~20s+ for a handful of
@@ -549,8 +622,11 @@ export async function scanComponentLibrariesUncached(projectRoot: string): Promi
     }
 
     scanTasks.push((async () => {
-      const library = await scanLibrary(depName, depDir, sourceDir)
-      if (!library || library.components.length < 3) return null
+      const library = await scanLibrary(depName, depDir, sourceDir, bundler)
+      // Admission gate relaxed from "< 3 components" to "empty" — the old threshold
+      // hid legitimate small design systems (a package that exports one or two real
+      // components is still a real component library, not noise).
+      if (!library || library.components.length === 0) return null
       // Require at least one component with props OR a framework peer
       // dependency — bundled libraries don't expose props but are still
       // valid if they declare vue/react/svelte as a peer.
@@ -591,7 +667,7 @@ function resolvePackageDir(projectRoot: string, packageName: string): string | n
   return null
 }
 
-async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Promise<ScannedLibrary | null> {
+async function scanLibrary(name: string, pkgDir: string, sourceDir?: string, bundler: 'vite' | 'webpack' | 'unknown' = 'unknown'): Promise<ScannedLibrary | null> {
   // Read package version + optional custom-elements-manifest pointer
   let version = '0.0.0'
   let cemField: string | undefined
@@ -604,7 +680,7 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
   // Strategy 0 — Custom Elements Manifest (CEM) for web component libraries
   // (Shoelace, Fluent UI, Lit-based libs). Standardized JSON: no regex, no AST. Very reliable.
   {
-    const cemComponents = await scanFromCem(name, pkgDir, cemField)
+    const cemComponents = await scanFromCem(name, pkgDir, cemField, bundler)
     if (cemComponents.length > 0) {
       return { name, version, components: cemComponents.sort((a, b) => a.name.localeCompare(b.name)) }
     }
@@ -678,6 +754,7 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
     let events: ScannedEvent[] = []
     let description: string | null = null
     let providerSignals: string[] = []
+    let extraction: ScannedComponent['extraction'] = 'name-only'
 
     // Try to extract props from .d.ts first (most reliable)
     let dtsDescription: string | null = null
@@ -685,7 +762,8 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
       const dtsPath = path.join(subdir, 'index.d.ts')
       const dtsResult = await extractPropsFromDts(dtsPath, componentName)
       props = dtsResult.props
-      if (dtsResult.resolvedName) componentName = dtsResult.resolvedName
+      if (dtsResult.resolvedName) { componentName = dtsResult.resolvedName; extraction = 'dts-guessed' }
+      else if (props.length > 0) extraction = 'dts'
       try {
         dtsDescription = extractComponentJsDoc(await fsp.readFile(dtsPath, 'utf-8'))
       } catch { /* ignore */ }
@@ -696,7 +774,9 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
       const vueFile = await findVueFile(subdir, componentName)
       if (vueFile) {
         const vueDetails = await extractComponentDetails(vueFile)
-        if (props.length === 0) props = vueDetails.props
+        // Whichever source's props end up populated is what determined the final
+        // answer for this component — tag extraction accordingly.
+        if (props.length === 0) { props = vueDetails.props; extraction = 'source' }
         slots = vueDetails.slots
         events = vueDetails.events
         description = vueDetails.description ?? dtsDescription
@@ -713,6 +793,8 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
       events,
       description,
       providerSignals,
+      extraction,
+      bundler,
     }))
   }
 
@@ -723,14 +805,14 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
   const seenNames = new Set(components.map(c => c.name))
 
   // Strategy 2: Barrel-exported packages (e.g. @radix-ui/themes, @mantine/core)
-  const barrelComponents = await scanBarrelExports(name, pkgDir)
+  const barrelComponents = await scanBarrelExports(name, pkgDir, bundler)
   for (const c of barrelComponents) {
     if (!seenNames.has(c.name)) { components.push(c); seenNames.add(c.name) }
   }
 
   // Strategy 3: Follow package entry point — handles any library structure
   if (components.length < 3 || barrelComponents.length === 0) {
-    const entryComponents = await scanFromEntryPoint(name, pkgDir, sourceDir)
+    const entryComponents = await scanFromEntryPoint(name, pkgDir, sourceDir, bundler)
     for (const c of entryComponents) {
       if (!seenNames.has(c.name)) { components.push(c); seenNames.add(c.name) }
     }
@@ -759,7 +841,7 @@ async function scanLibrary(name: string, pkgDir: string, sourceDir?: string): Pr
  * schema produced by @custom-elements-manifest/analyzer; used by Shoelace, Fluent UI, Ionic,
  * and most Lit-based libraries. No regex or AST needed — just JSON.
  */
-async function scanFromCem(pkgName: string, pkgDir: string, cemField?: string): Promise<ScannedComponent[]> {
+async function scanFromCem(pkgName: string, pkgDir: string, cemField?: string, bundler: 'vite' | 'webpack' | 'unknown' = 'unknown'): Promise<ScannedComponent[]> {
   const candidates = [
     cemField ? path.resolve(pkgDir, cemField) : null,
     path.join(pkgDir, 'custom-elements.json'),
@@ -856,6 +938,8 @@ async function scanFromCem(pkgName: string, pkgDir: string, cemField?: string): 
         description: d.description ?? d.summary ?? null,
         deprecated: !!d.deprecated,
         sourceFile: modulePath ? path.resolve(pkgDir, modulePath) : null,
+        extraction: 'cem',
+        bundler,
       }))
     }
   }
@@ -871,7 +955,7 @@ function simplifyCemType(raw: string | null): string | null {
   return t || null
 }
 
-async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedComponent[]> {
+async function scanBarrelExports(name: string, pkgDir: string, bundler: 'vite' | 'webpack' | 'unknown' = 'unknown'): Promise<ScannedComponent[]> {
   // Find the component index — try common paths
   const candidatePaths = [
     path.join(pkgDir, 'dist', 'esm', 'components', 'index.d.ts'),
@@ -931,23 +1015,30 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
     seen.add(componentName)
 
     let props: ScannedProp[] = []
+    let extraction: ScannedComponent['extraction'] = 'name-only'
 
     // Try .props.d.ts file first (Radix pattern: badge.props.d.ts)
     const propDefsPath = path.join(componentsDir!, `${fileStem}.props.d.ts`)
     if (fs.existsSync(propDefsPath)) {
       props = await extractPropsFromPropDefs(propDefsPath)
+      if (props.length > 0) extraction = 'dts'
     }
 
-    // Fallback: try the component .d.ts for *Props interface
+    // Fallback: try the component .d.ts for *Props interface — following one-hop
+    // re-export forwarders (e.g. an `index.d.ts` that just does
+    // `export * from './Button'`), the common shape in Mantine/naive-ui/bits-ui
+    // where the barrel's per-component .d.ts sits one file away from the interface
+    // itself, which previously made these land name-only despite real props on disk.
     if (props.length === 0) {
       const compDtsPath = path.join(componentsDir!, `${fileStem}.d.ts`)
       if (fs.existsSync(compDtsPath)) {
-        const dtsResult = await extractPropsFromDts(compDtsPath, componentName)
+        const dtsResult = await extractPropsFromDtsFollowingReExports(compDtsPath, componentName)
         props = dtsResult.props
+        if (props.length > 0) extraction = dtsResult.resolvedName ? 'dts-guessed' : 'dts'
       }
     }
 
-    components.push(makeComponent({ name: componentName, module: name, props }))
+    components.push(makeComponent({ name: componentName, module: name, props, extraction, bundler }))
   }
 
   let blockMatch: RegExpExecArray | null
@@ -968,8 +1059,19 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
 
   // Fallback: single-barrel .d.ts with inline declarations (no per-file re-exports).
   // Parse `export { Name1, Name2, ... };` lines and match to `interface NameProps` in the same file.
+  //
+  // This is the exact shape that OOM-crashed the dev server on a stock `lucide-vue-next`
+  // dependency: a flat multi-MB .d.ts with thousands of exports and zero per-file
+  // re-exports, each one calling extractPropsFromDts → re-reading + re-scanning the WHOLE
+  // file (measured: 3,895 exports × a 2.14 MB read ≈ 8.3 GB, fatal at Node's default heap).
+  // Three defenses, in order: (1) exactMatchOnly so a barrel with hundreds of `*Props`
+  // interfaces never falls back to "first one wins" garbage; (2) extractPropsFromDts now
+  // shares one cached read of the file across every export (see readDtsCached) instead of
+  // re-reading per export; (3) a size/export budget below that skips prop extraction
+  // altogether (name-only) for barrels this large — no read, no parse, no AST fallback.
   if (components.length === 0) {
     const inlineExportRe = /export\s*\{([^}]+)\}\s*;/g
+    const candidateNames: string[] = []
     let m: RegExpExecArray | null
     while ((m = inlineExportRe.exec(indexContent)) !== null) {
       for (const token of m[1].split(',')) {
@@ -983,11 +1085,32 @@ async function scanBarrelExports(name: string, pkgDir: string): Promise<ScannedC
         if (/^(use|create|get|set|is|has|with|to|from)[A-Z]/.test(exportName)) continue
         if (seen.has(exportName)) continue
         seen.add(exportName)
-
-        // Extract props from inline interface in the same file
-        const dtsResult = await extractPropsFromDts(indexPath!, exportName)
-        components.push(makeComponent({ name: exportName, module: name, props: dtsResult.props }))
+        candidateNames.push(exportName)
       }
+    }
+
+    const DTS_SIZE_BUDGET = 500_000   // bytes
+    const DTS_EXPORT_BUDGET = 300     // exports
+    let dtsSize = 0
+    try { dtsSize = (await fsp.stat(indexPath)).size } catch { /* proceed as if small */ }
+    const overBudget = dtsSize > DTS_SIZE_BUDGET || candidateNames.length > DTS_EXPORT_BUDGET
+
+    for (const exportName of candidateNames) {
+      if (overBudget) {
+        components.push(makeComponent({ name: exportName, module: name, props: [], extraction: 'name-only', bundler }))
+        continue
+      }
+      // Extract props from inline interface in the same file. exactMatchOnly: true —
+      // a flat barrel .d.ts has many *Props interfaces; falling back to "first one wins"
+      // would give every component the same wrong props.
+      const dtsResult = await extractPropsFromDts(indexPath, exportName, { exactMatchOnly: true })
+      components.push(makeComponent({
+        name: exportName,
+        module: name,
+        props: dtsResult.props,
+        extraction: dtsResult.props.length > 0 ? 'dts' : 'name-only',
+        bundler,
+      }))
     }
   }
 
@@ -1155,6 +1278,7 @@ async function collectComponentExports(
   components: ScannedComponent[],
   visited: Set<string>,
   maxDepth: number,
+  bundler: 'vite' | 'webpack' | 'unknown' = 'unknown',
 ): Promise<void> {
   if (maxDepth <= 0 || visited.has(filePath)) return
   visited.add(filePath)
@@ -1183,6 +1307,8 @@ async function collectComponentExports(
         description: details.description,
         sourceFile: resolved,
         providerSignals: details.providerSignals,
+        extraction: detailsExtractionTag(details),
+        bundler,
       }))
     } else {
       // JS/TS file — follow the chain. If the chain produces nothing AND the
@@ -1190,7 +1316,7 @@ async function collectComponentExports(
       // from "./src/Button.mjs"` in compiled Vue/React libs), record it as a
       // name-only component so consumers still see it in the catalog.
       const before = components.length
-      await collectComponentExports(resolved, pkgName, components, visited, maxDepth - 1)
+      await collectComponentExports(resolved, pkgName, components, visited, maxDepth - 1, bundler)
       if (components.length === before &&
           ref.exportName !== '*' &&
           /^[A-Z]/.test(ref.exportName) &&
@@ -1198,11 +1324,26 @@ async function collectComponentExports(
           !ref.exportName.endsWith('Emits') &&
           !ref.exportName.endsWith('Icon') &&
           await looksLikeComponentModule(resolved)) {
+        // Compiled ESM/CJS component modules (.mjs/.js/.cjs) often ship a sibling .d.ts
+        // with the real Props interface even though the compiled output itself carries
+        // no types — try that before giving up to name-only.
+        let props: ScannedProp[] = []
+        let extraction: ScannedComponent['extraction'] = 'name-only'
+        const siblingDts = resolved.replace(/\.(mjs|cjs|js)$/, '.d.ts')
+        if (siblingDts !== resolved && fs.existsSync(siblingDts)) {
+          const dtsResult = await extractPropsFromDts(siblingDts, pascalCase(ref.exportName))
+          if (dtsResult.props.length > 0) {
+            props = dtsResult.props
+            extraction = dtsResult.resolvedName ? 'dts-guessed' : 'dts'
+          }
+        }
         components.push(makeComponent({
           name: pascalCase(ref.exportName),
           module: pkgName,
-          props: [],
+          props,
           sourceFile: resolved,
+          extraction,
+          bundler,
         }))
       }
     }
@@ -1230,7 +1371,7 @@ async function looksLikeComponentModule(filePath: string): Promise<boolean> {
 }
 
 /** Entry-point-driven component scanner */
-async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: string): Promise<ScannedComponent[]> {
+async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: string, bundler: 'vite' | 'webpack' | 'unknown' = 'unknown'): Promise<ScannedComponent[]> {
   // Prefer source directory (for file: deps where node_modules only has dist/)
   const scanDir = sourceDir || pkgDir
   const entryPath = findPackageEntry(scanDir)
@@ -1244,7 +1385,7 @@ async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: stri
 
     if (!isBundled) {
       const components: ScannedComponent[] = []
-      await collectComponentExports(entryPath, name, components, new Set(), 4)
+      await collectComponentExports(entryPath, name, components, new Set(), 4, bundler)
       if (components.length > 0) return components
     }
   }
@@ -1254,7 +1395,7 @@ async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: stri
   // We can extract component names (no props) from this.
   const distEntry = findPackageEntry(pkgDir)
   if (distEntry) {
-    const nameOnly = await extractExportNames(distEntry, name)
+    const nameOnly = await extractExportNames(distEntry, name, bundler)
     // Try to hydrate props from the types .d.ts file
     if (nameOnly.length > 0) {
       let typesPath: string | null = null
@@ -1272,7 +1413,10 @@ async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: stri
         for (const comp of nameOnly) {
           if (comp.props.length === 0) {
             const dtsResult = await extractPropsFromDts(typesPath, comp.name, { exactMatchOnly: true })
-            comp.props = dtsResult.props
+            if (dtsResult.props.length > 0) {
+              comp.props = dtsResult.props
+              comp.extraction = dtsResult.resolvedName ? 'dts-guessed' : 'dts'
+            }
           }
         }
       }
@@ -1284,7 +1428,7 @@ async function scanFromEntryPoint(name: string, pkgDir: string, sourceDir?: stri
 }
 
 /** Extract component names from a bundled ESM file's export statement */
-async function extractExportNames(filePath: string, pkgName: string): Promise<ScannedComponent[]> {
+async function extractExportNames(filePath: string, pkgName: string, bundler: 'vite' | 'webpack' | 'unknown' = 'unknown'): Promise<ScannedComponent[]> {
   let content: string
   try { content = await fsp.readFile(filePath, 'utf-8') } catch { return [] }
 
@@ -1307,11 +1451,16 @@ async function extractExportNames(filePath: string, pkgName: string): Promise<Sc
       if (exportName === 'default' || exportName === 'install') continue
       if (exportName.endsWith('Props') || exportName.endsWith('Emits')) continue
       if (exportName === exportName.toUpperCase()) continue // CONSTANTS
+      // Require the ORIGINAL export name to already be PascalCase. Without this, any
+      // lowercase/camelCase utility not matching the use/create/... prefix list below
+      // (e.g. @mantine/hooks' `clamp`, `randomId`) gets pascalCased into a fake
+      // "component" (measured: 12 fabricated entries from @mantine/hooks alone).
+      if (!exportName[0] || exportName[0] !== exportName[0].toUpperCase() || exportName[0] === exportName[0].toLowerCase()) continue
       if (/^(use|create|get|set|is|has|with|to|from)[A-Z]/.test(exportName)) continue // utility functions
       if (seen.has(exportName)) continue
       seen.add(exportName)
 
-      components.push(makeComponent({ name: pascalCase(exportName), module: pkgName, props: [] }))
+      components.push(makeComponent({ name: pascalCase(exportName), module: pkgName, props: [], extraction: 'name-only', bundler }))
     }
   }
 
@@ -1328,11 +1477,14 @@ async function extractPropsFromPropDefs(filePath: string): Promise<ScannedProp[]
 
   const props: ScannedProp[] = []
 
-  // Find the propDefs object body — skip the variable declaration
-  // Pattern: declare const xxxPropDefs: { ...properties... }
-  const objStart = content.indexOf('PropDefs:')
-  if (objStart === -1) return []
-  const braceStart = content.indexOf('{', objStart)
+  // Find the propDefs object body — skip the variable declaration. Tolerates both
+  // `declare const xxxPropDefs: { ... }` (type annotation) and `export const
+  // xxxPropDefs = { ... }` (value assignment) — the previous `indexOf('PropDefs:')`
+  // search only matched the first form and silently returned nothing for the second
+  // (measured: Radix Button 0 props).
+  const declMatch = content.match(/\w*PropDefs\s*[:=]/)
+  if (!declMatch) return []
+  const braceStart = content.indexOf('{', declMatch.index!)
   if (braceStart === -1) return []
 
   // Extract the top-level properties (depth 1 inside the outer braces)
@@ -1392,6 +1544,71 @@ async function extractPropsFromPropDefs(filePath: string): Promise<ScannedProp[]
   return props
 }
 
+// Per-.d.ts-file content memo. extractPropsFromDts/extractPropsFromDtsViaTs are called once
+// PER EXPORT from a shared barrel file — for a normal per-component barrel that's a handful
+// of calls against small files, but for a flat single-barrel .d.ts (see the lucide-vue-next
+// case in scanBarrelExports) it can be hundreds to thousands of calls against the SAME
+// multi-MB file. Without this cache each call re-read the whole file from disk.
+const dtsContentCache = new Map<string, Promise<string | null>>()
+function readDtsCached(dtsPath: string): Promise<string | null> {
+  let cached = dtsContentCache.get(dtsPath)
+  if (!cached) {
+    cached = fsp.readFile(dtsPath, 'utf-8').catch(() => null)
+    dtsContentCache.set(dtsPath, cached)
+  }
+  return cached
+}
+
+/** Force a fresh, unshared string copy. V8 represents the result of `.slice()`/`.substring()`
+ *  on a sufficiently long string as a SlicedString that keeps the ENTIRE parent string alive —
+ *  for a multi-MB `.d.ts` read once (via {@link readDtsCached}) and sliced into hundreds of
+ *  small prop-type strings, that would otherwise pin the whole file in memory for as long as
+ *  any single prop string survives, which for `cachedCatalog` is the process lifetime.
+ *  Round-tripping through Buffer forces a real, independent copy. */
+function unslice(str: string): string
+function unslice(str: string | null): string | null
+function unslice(str: string | null): string | null {
+  if (str === null) return null
+  return Buffer.from(str, 'utf-8').toString('utf-8')
+}
+
+/**
+ * extractPropsFromDts, but when the target .d.ts is itself just a thin re-export forwarder
+ * (`export * from './Button'` / `export { ButtonProps } from './Button'`) — common in
+ * Mantine/naive-ui/bits-ui-style per-component folders, where the barrel's per-component
+ * .d.ts sits one hop away from the file that actually declares `FooProps` — follow the
+ * re-export chain a few levels before giving up.
+ */
+async function extractPropsFromDtsFollowingReExports(
+  dtsPath: string,
+  componentName: string,
+  options: { exactMatchOnly?: boolean } = {},
+  depth = 3,
+): Promise<{ props: ScannedProp[]; resolvedName: string | null }> {
+  const direct = await extractPropsFromDts(dtsPath, componentName, options)
+  if (direct.props.length > 0 || depth <= 0) return direct
+
+  const content = await readDtsCached(dtsPath)
+  if (content === null) return direct
+
+  const dir = path.dirname(dtsPath)
+  const reExportRe = /export\s*(?:\*|\{[^}]*\})\s*from\s*['"](\.[^'"]+)['"]/g
+  let m: RegExpExecArray | null
+  while ((m = reExportRe.exec(content)) !== null) {
+    const specifier = m[1]
+    const candidates = [
+      path.resolve(dir, specifier.endsWith('.d.ts') ? specifier : `${specifier}.d.ts`),
+      path.join(path.resolve(dir, specifier), 'index.d.ts'),
+    ]
+    for (const candidate of candidates) {
+      if (candidate === dtsPath || !fs.existsSync(candidate)) continue
+      const nested = await extractPropsFromDtsFollowingReExports(candidate, componentName, options, depth - 1)
+      if (nested.props.length > 0) return nested
+    }
+  }
+  return direct
+}
+
 /**
  * AST-based fallback for .d.ts prop extraction. Parses the file with the TypeScript compiler
  * (parser only — no type checker) and walks InterfaceDeclaration members. Handles multi-line
@@ -1412,8 +1629,8 @@ async function extractPropsFromDtsViaTs(
     return { props: [], resolvedName: null }
   }
 
-  let content: string
-  try { content = await fsp.readFile(dtsPath, 'utf-8') } catch { return { props: [], resolvedName: null } }
+  const content = await readDtsCached(dtsPath)
+  if (content === null) return { props: [], resolvedName: null }
 
   const sf = ts.createSourceFile(dtsPath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const interfaces = new Map<string, import('typescript').InterfaceDeclaration>()
@@ -1484,7 +1701,7 @@ async function extractPropsFromDtsViaTs(
       const typeText = member.type ? simplifyType(member.type.getText(sf)) : null
       const { description, default: def } = readJsDoc(member)
       seen.add(name)
-      props.push({ name, type: typeText, required: !optional, description, default: def })
+      props.push({ name, type: unslice(typeText), required: !optional, description: unslice(description), default: unslice(def) })
     }
 
     if (iface.heritageClauses) {
@@ -1511,8 +1728,8 @@ async function extractPropsFromDts(
   componentName: string,
   options: { exactMatchOnly?: boolean } = {},
 ): Promise<{ props: ScannedProp[]; resolvedName: string | null }> {
-  let content: string
-  try { content = await fsp.readFile(dtsPath, 'utf-8') } catch { return { props: [], resolvedName: null } }
+  const content = await readDtsCached(dtsPath)
+  if (content === null) return { props: [], resolvedName: null }
 
   // `export` is optional — bundler outputs (tsup/rollup) often emit `interface FooProps {…}`
   // without `export`, relying on a single `export { … }` block at the bottom of the file.
@@ -1587,18 +1804,25 @@ async function extractPropsFromDts(
 
     props.push({
       name: propName,
-      type: type || null,
+      type: unslice(type || null),
       required: optional !== '?',
-      description,
-      default: defaultValue,
+      description: unslice(description),
+      default: unslice(defaultValue),
     })
   }
 
-  // Fallback: if regex failed to extract anything (e.g. multi-line types, complex generics),
-  // try the TypeScript AST parser. Keeps the fast regex path for the 95% case.
-  if (props.length === 0) {
+  // Prefer the AST fallback outright when the regex path is structurally incomplete,
+  // rather than only trying it when regex found NOTHING. The regex here never follows
+  // `extends` heritage chains (the AST path does, via collectMembers' recursion), and its
+  // prop-name pattern doesn't match quoted names (`'aria-label': string`) — either one
+  // means a "successful" partial match (props.length > 0) was previously silently
+  // dropping real props by short-circuiting past the strictly-better AST result.
+  const regexIsIncomplete =
+    /\bextends\b/.test(match[0]) ||
+    /^\s*(?:\/\*\*[\s\S]*?\*\/\s*)?['"][\w$-]+['"]\s*\??:/m.test(body)
+  if (props.length === 0 || regexIsIncomplete) {
     const astResult = await extractPropsFromDtsViaTs(dtsPath, componentName, options)
-    if (astResult.props.length > 0) return astResult
+    if (astResult.props.length > props.length) return astResult
   }
 
   return { props, resolvedName }
@@ -1659,7 +1883,70 @@ async function extractComponentDetails(filePath: string): Promise<ExtractedCompo
       providerSignals,
     }
   }
+  if (ext === '.astro') {
+    return {
+      props: extractPropsFromAstroFrontmatter(content),
+      slots: extractSlotsFromAstroContent(content),
+      events: [],
+      description: extractComponentJsDoc(content),
+      providerSignals,
+    }
+  }
+  if (ext === '.js' || ext === '.ts' || ext === '.mjs' || ext === '.cjs') {
+    // Script-only components (notably native web components registered via
+    // customElements.define — see COMPONENT_SIGNAL_RE) have no reliable prop source
+    // without a manifest, but description/providerSignals are still worth surfacing
+    // rather than discarding them via the generic `empty` fallback below.
+    return { props: [], slots: [], events: [], description: extractComponentJsDoc(content), providerSignals }
+  }
   return empty
+}
+
+/** Extract the Astro frontmatter block (the `---\n...\n---` fenced region at the top of
+ *  the file) as plain TS so the existing interface/type-literal parsers can be reused. */
+function extractAstroFrontmatter(content: string): string | null {
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  return m ? m[1] : null
+}
+
+/** Astro components declare props via a frontmatter `interface Props { ... }` (or
+ *  `type Props = { ... }`), destructured from `Astro.props`. There's no `defineProps<X>()`-
+ *  style call to auto-detect a custom name from, so we look for the conventional `Props`
+ *  name directly — previously there was no `.astro` branch at all (0/9 props measured). */
+function extractPropsFromAstroFrontmatter(content: string): ScannedProp[] {
+  const frontmatter = extractAstroFrontmatter(content)
+  if (!frontmatter) return []
+  return extractPropsFromTsInterface(frontmatter, 'Props')
+}
+
+/** Parse `<slot>` tags from an Astro component's template body. Astro has no `<template>`
+ *  wrapper like Vue — everything after the frontmatter fence is markup. */
+function extractSlotsFromAstroContent(content: string): ScannedSlot[] {
+  const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---/, '')
+  const slots: ScannedSlot[] = []
+  const seen = new Set<string>()
+  const slotRe = /<slot\b([^>]*?)\/?>/g
+  let m: RegExpExecArray | null
+  while ((m = slotRe.exec(body)) !== null) {
+    const attrs = m[1]
+    const nameMatch = attrs.match(/\bname\s*=\s*["']([^"']+)["']/)
+    const name = nameMatch ? nameMatch[1] : 'default'
+    if (seen.has(name)) continue
+    seen.add(name)
+    const scoped = /\s[:v-]|\s[a-z-]+\s*=/i.test(attrs.replace(/\bname\s*=\s*["'][^"']+["']/, ''))
+    slots.push({ name, description: null, scoped })
+  }
+  return slots
+}
+
+/** Tag the extraction strategy for an ExtractedComponentDetails result: 'source' when we
+ *  genuinely parsed the file and got SOMETHING back (even a verified-empty props list is
+ *  still a real result if slots/events/description/provider-signals came through), otherwise
+ *  'name-only' — e.g. an unsupported extension or an unreadable file. */
+function detailsExtractionTag(details: ExtractedComponentDetails): ScannedComponent['extraction'] {
+  if (details.props.length > 0 || details.slots.length > 0 || details.events.length > 0 ||
+      details.description || details.providerSignals.length > 0) return 'source'
+  return 'name-only'
 }
 
 /** Parse `<slot>` tags from a Vue SFC template. Handles named and scoped slots. */
@@ -1808,25 +2095,76 @@ async function extractPropsFromVue(vuePath: string): Promise<ScannedProp[]> {
   return props
 }
 
-/** Extract props from a React .tsx/.jsx component file */
+/** Extract props from a React/Solid .tsx/.jsx component file. Tries, in order:
+ *  `React.FC<X>`/`FunctionComponent<X>` binding annotations, `forwardRef<Ref, X>` generics,
+ *  forwardRef's inline `(props: X, ref)` signature, then any typed first parameter of a
+ *  function/arrow head — regardless of the parameter's own name, so Solid's `mergeProps`
+ *  rename idiom (`(rawProps: FooProps) => { const props = mergeProps(...) }`) is covered
+ *  alongside the conventional `props` name. Previously only the last of these matched, and
+ *  only when the parameter was literally named `props` — arrow components, forwardRef, and
+ *  renamed params all fell through to an empty result (measured 0 props on all three). */
 async function extractPropsFromTsx(filePath: string): Promise<ScannedProp[]> {
   let content: string
   try { content = await fsp.readFile(filePath, 'utf-8') } catch { return [] }
 
-  // Look for Props/XProps interface or type used in component function
-  // Pattern: function Component(props: Props) or (props: ComponentProps)
-  // Pattern: const Component: React.FC<Props>
-  // Pattern: export default function Component({ prop1, prop2 }: Props)
-  const propsTypeMatch = content.match(
-    /(?:function\s+\w+|const\s+\w+\s*(?::\s*React\.FC)?)\s*(?:<[^>]*>)?\s*\(\s*(?:\{[^}]*\}\s*:\s*|(?:props)\s*:\s*)(\w+)/
-  )
+  let props: ScannedProp[] = []
 
-  if (propsTypeMatch) {
-    return extractPropsFromTsInterface(content, propsTypeMatch[1])
+  // const Foo: React.FC<FooProps> = (props) => ... — the type is on the binding, not
+  // the parameter, so it must be tried before the parameter-based patterns below.
+  const fcAnnotation = content.match(/:\s*(?:React\.)?(?:FC|FunctionComponent)\s*<\s*(\w+)\s*>/)
+  if (fcAnnotation) props = extractPropsFromTsInterface(content, fcAnnotation[1])
+
+  // const Foo = forwardRef<HTMLDivElement, FooProps>((props, ref) => ...) — the props
+  // type is the SECOND generic argument, not a parameter annotation.
+  if (props.length === 0) {
+    const forwardRefGeneric = content.match(/forwardRef\s*<\s*[\w.]+\s*,\s*(\w+)\s*>/)
+    if (forwardRefGeneric) props = extractPropsFromTsInterface(content, forwardRefGeneric[1])
+  }
+
+  // forwardRef((props: FooProps, ref) => ...) — no generics, type inline on the first param.
+  if (props.length === 0) {
+    const forwardRefInline = content.match(/forwardRef\s*\(\s*\(\s*(?:\{[^}]*\}|\w+)\s*:\s*(\w+)/)
+    if (forwardRefInline) props = extractPropsFromTsInterface(content, forwardRefInline[1])
+  }
+
+  // Any function/arrow head with a typed first parameter: `function Foo(props: FooProps)`,
+  // `const Foo = (props: FooProps) =>`, the destructured `({ a, b }: FooProps)` form, and
+  // Solid's renamed-param idiom `const Foo = (rawProps: FooProps) =>` — matched by parameter
+  // NAME-AGNOSTIC pattern (`\w+` instead of the literal word `props`).
+  if (props.length === 0) {
+    const propsTypeMatch = content.match(
+      /(?:function\s+\w+|const\s+\w+\s*=)\s*(?:<[^>]*>)?\s*\(\s*(?:\{[^}]*\}|\w+)\s*:\s*(\w+)/
+    )
+    if (propsTypeMatch) props = extractPropsFromTsInterface(content, propsTypeMatch[1])
   }
 
   // Fallback: look for any exported Props-like interface
-  return extractPropsFromTsInterface(content)
+  if (props.length === 0) props = extractPropsFromTsInterface(content)
+
+  // Layer in destructuring defaults the type interface can't carry (React's
+  // `function Foo({ count = 3 }: FooProps)` — measured: previously always `default: null`).
+  if (props.length > 0) applyParamDestructureDefaults(props, content)
+
+  return props
+}
+
+/** Fill in JS default values from a destructured first parameter (`{ count = 3, label }`)
+ *  onto already-typed props — the TS interface only carries optionality, not the runtime
+ *  default. Handles the rename form (`{ count: renamedCount = 3 }`) by matching on the
+ *  PROP key (before the colon), not the local binding name. */
+function applyParamDestructureDefaults(props: ScannedProp[], content: string): void {
+  const m = content.match(/\(\s*\{([\s\S]*?)\}\s*:\s*\w+/)
+  if (!m) return
+  for (const entry of splitTopLevel(m[1])) {
+    const part = entry.trim()
+    if (!part || part.startsWith('...')) continue
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    const name = part.slice(0, eq).trim().split(':')[0].trim()
+    const def = part.slice(eq + 1).trim()
+    const prop = props.find(p => p.name === name)
+    if (prop && prop.default === null && def) prop.default = def
+  }
 }
 
 /** Extract props from a Svelte component file */
@@ -1860,12 +2198,79 @@ async function extractPropsFromSvelte(filePath: string): Promise<ScannedProp[]> 
     props.push({ name: propName, type, required: !rawDefault, description, default: def })
   }
 
-  // Svelte 5: interface Props { ... } with $props()
+  // Svelte 5 runes: `$props()` destructuring — the auto-detect regex above only ever
+  // matched `export let` (Svelte 4), so every runes component previously extracted 0
+  // props (measured 0/8). Handles `let {..}: Props = $props()`, the bare `interface Props`
+  // convention, and untyped destructuring-only props.
   if (props.length === 0) {
-    const svelte5 = extractPropsFromTsInterface(content)
+    const svelte5 = extractPropsFromSvelte5Runes(content)
     if (svelte5.length > 0) return svelte5
+    // Last resort: a defineProps-style generic match some Svelte 5 code may still use.
+    const generic = extractPropsFromTsInterface(content)
+    if (generic.length > 0) return generic
   }
 
+  return props
+}
+
+/** Svelte 5 runes: `let { a, b = 1 }: Props = $props()` or the untyped `let { a, b } =
+ *  $props()`. Prefers a named/conventional type (`interface Props`/`type Props`) when
+ *  present — the real source of truth for types/optionality — and layers destructuring
+ *  defaults on top (interface members don't carry runtime defaults); falls back to
+ *  building props from the destructuring pattern alone when there's no type at all. */
+function extractPropsFromSvelte5Runes(content: string): ScannedProp[] {
+  const destructureMatch = content.match(/(?:let|const)\s*\{([\s\S]*?)\}\s*(?::\s*(\w+))?\s*=\s*\$props\s*\(/)
+  if (!destructureMatch) return []
+
+  const [, bindingBody, typeName] = destructureMatch
+
+  if (typeName) {
+    const typed = extractPropsFromTsInterface(content, typeName)
+    if (typed.length > 0) {
+      applyDestructureDefaults(typed, bindingBody)
+      return typed
+    }
+  }
+  // No named type (or it didn't resolve) — fall back to the conventional bare
+  // `interface Props`/`type Props` in the same file.
+  const conventional = extractPropsFromTsInterface(content, 'Props')
+  if (conventional.length > 0) {
+    applyDestructureDefaults(conventional, bindingBody)
+    return conventional
+  }
+
+  // Nothing typed at all — build props straight from the destructuring pattern.
+  return parseDestructureOnlyProps(bindingBody)
+}
+
+/** Fill in `default` values on already-typed props from a destructuring pattern like
+ *  `name, age = 3, active = true`. Shared shape with applyParamDestructureDefaults
+ *  (React), kept separate since Svelte's binding has no rename syntax to handle. */
+function applyDestructureDefaults(props: ScannedProp[], bindingBody: string): void {
+  for (const entry of splitTopLevel(bindingBody)) {
+    const eq = entry.indexOf('=')
+    if (eq === -1) continue
+    const name = entry.slice(0, eq).trim()
+    const def = entry.slice(eq + 1).trim()
+    const prop = props.find(p => p.name === name)
+    if (prop && prop.default === null && def) prop.default = def
+  }
+}
+
+/** Build props straight from a destructuring pattern with no type annotation at all —
+ *  `let { size = 14, label } = $props()`. Types are unknown (`null`); required is inferred
+ *  from the absence of a default. Rest patterns (`...rest`) are skipped. */
+function parseDestructureOnlyProps(bindingBody: string): ScannedProp[] {
+  const props: ScannedProp[] = []
+  for (const entry of splitTopLevel(bindingBody)) {
+    const part = entry.trim()
+    if (!part || part.startsWith('...')) continue
+    const eq = part.indexOf('=')
+    const name = (eq === -1 ? part : part.slice(0, eq)).trim()
+    if (!/^\w+$/.test(name)) continue
+    const def = eq === -1 ? null : part.slice(eq + 1).trim()
+    props.push({ name, type: null, required: def === null, description: null, default: def })
+  }
   return props
 }
 
@@ -1905,6 +2310,27 @@ function parseTypeLiteralProps(body: string): ScannedProp[] {
   return props
 }
 
+/** Split a comma-separated list at bracket/paren/brace depth 0 — shared by default-value
+ *  and destructuring-pattern parsing so multi-line object/array/arrow-function values
+ *  (`size: () => ({ a: 1 })`) aren't cut in half at their first nested comma. */
+function splitTopLevel(body: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let current = ''
+  for (const ch of body) {
+    if (ch === '{' || ch === '(' || ch === '[') depth++
+    else if (ch === '}' || ch === ')' || ch === ']') depth--
+    if (ch === ',' && depth === 0) {
+      parts.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.trim()) parts.push(current)
+  return parts
+}
+
 function extractPropsFromTsInterface(content: string, interfaceName?: string): ScannedProp[] {
   // Auto-detect interface name from defineProps<X>() or $props<X>()
   if (!interfaceName) {
@@ -1913,9 +2339,11 @@ function extractPropsFromTsInterface(content: string, interfaceName?: string): S
     interfaceName = genericMatch[1]
   }
 
-  // Find the interface body
+  // Find the interface body. `(?:<[^>]*>)?` tolerates a generic-parameter interface
+  // declaration (`interface FooProps<T> { ... }`) — previously unmatched, so any
+  // component using a generic Props interface fell through to 0 props.
   const interfaceRegex = new RegExp(
-    `(?:interface|type)\\s+${interfaceName}\\s*(?:=\\s*)?(?:extends\\s+[^{]*)?\\{([\\s\\S]*?)\\n\\s*\\}`
+    `(?:interface|type)\\s+${interfaceName}\\s*(?:<[^>]*>)?\\s*(?:=\\s*)?(?:extends\\s+[^{]*)?\\{([\\s\\S]*?)\\n\\s*\\}`
   )
   const interfaceMatch = content.match(interfaceRegex)
   if (!interfaceMatch) return []
@@ -1932,15 +2360,20 @@ function extractPropsFromTsInterface(content: string, interfaceName?: string): S
     props.push({ name: m[1], type: type || null, required: m[2] !== '?', description: null, default: null })
   }
 
-  // Extract defaults from withDefaults(defineProps<X>(), { ... })
-  const defaultsMatch = content.match(/withDefaults\s*\(\s*defineProps<\w+>\s*\(\)\s*,\s*\{([\s\S]*?)\}\s*\)/)
+  // Extract defaults from withDefaults(defineProps<X>(), { ... }). Split on top-level
+  // commas (splitTopLevel) rather than `^`-anchored lines — real-world usage is often
+  // single-line (`{size: 14, strokeWidth: 2}`), and the previous line-anchored regex
+  // matched the WHOLE single line as one prop's value, swallowing every subsequent
+  // default on that line (measured: this repo's own Icon.vue withDefaults call lost
+  // strokeWidth's default entirely this way).
+  const defaultsMatch = content.match(/withDefaults\s*\(\s*defineProps\s*<[^>]*>\s*\(\)\s*,\s*\{([\s\S]*?)\}\s*\)/)
   if (defaultsMatch && props.length > 0) {
-    const defaultLineRegex = /^\s*(\w+):\s*(.+?)(?:,\s*$|$)/gm
-    let dm: RegExpExecArray | null
-    while ((dm = defaultLineRegex.exec(defaultsMatch[1])) !== null) {
-      const prop = props.find(p => p.name === dm![1])
+    for (const entry of splitTopLevel(defaultsMatch[1])) {
+      const dm = /^\s*(\w+)\s*:\s*([\s\S]+?)\s*$/.exec(entry)
+      if (!dm) continue
+      const prop = props.find(p => p.name === dm[1])
       if (prop) {
-        const val = dm[2].trim().replace(/,\s*$/, '')
+        const val = dm[2].trim()
         if (!val.startsWith('(') && val !== 'undefined') prop.default = val
       }
     }
@@ -1949,24 +2382,41 @@ function extractPropsFromTsInterface(content: string, interfaceName?: string): S
   return props
 }
 
-/** Parse Options-API-style props: { name: { type: X, required: Y, default: Z } } or shorthand { name: Type } */
+/** Parse Options-API-style props: { name: { type: X, required: Y, default: Z } } or shorthand
+ *  { name: Type }. The full form walks brace depth explicitly rather than matching `{[^}]+}` —
+ *  prop values routinely contain their OWN nested braces (`default: () => ({...})`, `type:
+ *  Object as PropType<{...}>`), and a brace-blind regex stops at the first nested `}`,
+ *  truncating the value; worse, the truncated leftover text can re-sync mid-object so a
+ *  key nested inside that value (most commonly a literal `type:` inside a factory default)
+ *  gets mistaken for a new top-level prop, fabricating a bogus entry. */
 function parseObjectProps(body: string): ScannedProp[] {
   const props: ScannedProp[] = []
 
   // Full form: propName: { type: String, required: true, default: 'x' }
-  const fullPropRe = /(\w+):\s*\{([^}]+)\}/g
+  const topLevelPropRe = /(\w+)\s*:\s*\{/g
   let m: RegExpExecArray | null
-  while ((m = fullPropRe.exec(body)) !== null) {
-    const propDef = m[2]
+  while ((m = topLevelPropRe.exec(body)) !== null) {
+    const name = m[1]
+    const braceStart = m.index + m[0].length - 1 // position of the opening `{`
+    let depth = 1
+    let i = braceStart + 1
+    while (i < body.length && depth > 0) {
+      if (body[i] === '{') depth++
+      else if (body[i] === '}') depth--
+      i++
+    }
+    const propDef = body.slice(braceStart + 1, i - 1)
+    topLevelPropRe.lastIndex = i // resume scanning after this prop's full, balanced object
+
     const typeMatch = propDef.match(/type:\s*(\w+)/)
     const requiredMatch = propDef.match(/required:\s*(true|false)/)
-    const defaultMatch = propDef.match(/default:\s*(.+?)(?:,|\s*$)/)
+    const defaultMatch = propDef.match(/default:\s*([\s\S]+?)(?:,\s*(?:required|type|validator)\s*:|\s*$)/)
     props.push({
-      name: m[1],
+      name,
       type: typeMatch ? typeMatch[1] : null,
       required: requiredMatch ? requiredMatch[1] === 'true' : false,
       description: null,
-      default: defaultMatch ? defaultMatch[1].trim() : null,
+      default: defaultMatch ? defaultMatch[1].trim().replace(/,\s*$/, '') : null,
     })
   }
 

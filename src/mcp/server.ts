@@ -1,6 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isLocalOrigin } from '../server/origin.js'
-import { getSystemPrompt } from '../skills/index.js'
 import { callTool, MCP_TOOLS, type McpDeps } from './tools.js'
 
 export type { McpDeps } from './tools.js'
@@ -25,18 +24,39 @@ const PROTOCOL_VERSION = '2025-03-26'
 declare const __ANNOTASK_VERSION__: string | undefined
 const SERVER_INFO = { name: 'annotask', version: typeof __ANNOTASK_VERSION__ === 'string' ? __ANNOTASK_VERSION__ : '0.0.0' }
 
-/** Cached `initialize.instructions` payload. The MCP server returns the
- *  `annotask-apply` skill as instructions so external agents (Claude Code,
- *  editors) get the same system prompt the embedded runner uses. */
-let cachedInstructions: string | null = null
+/** `initialize.instructions` payload — a compact pointer to the core apply
+ *  loop, NOT the full annotask-apply skill body. That used to be embedded
+ *  verbatim (~23KB) on every stateless MCP session (findings: "MCP
+ *  initialize embeds the full 22,982-byte SKILL.md"). Task-type companion
+ *  playbooks (a11y_fix, theme_update, error_fix, perf_fix, wireframe_apply)
+ *  stay available on demand via annotask_get_playbook — this string
+ *  deliberately does not inline them. */
+const MCP_INSTRUCTIONS = `Annotask tracks visual design tasks for this project (annotations, style/theme edits, a11y/perf/error fixes, wireframes) from the annotask-apply skill.
+
+Core apply loop:
+1. annotask_get_tasks(status: "pending") — also check "denied" (read \`feedback\`) and "in_progress" tasks whose agent_feedback now has answers to earlier questions. Skip needs_info/blocked.
+2. annotask_update_task(task_id, status: "in_progress") to lock a task before editing.
+3. Ground the change before editing: annotask_get_code_context / annotask_get_source_excerpt for current file/line, annotask_get_component_examples / annotask_get_data_context as needed.
+4. Apply the edit to source.
+5. annotask_update_task(task_id, status: "review", resolution: "...").
+6. If stuck: pass \`questions\` (auto-sets needs_info) or \`blocked_reason\` (auto-sets blocked).
+
+Before applying any a11y_fix / theme_update / error_fix / perf_fix / wireframe_apply task, call annotask_get_playbook(task_type) once per batch — it carries that type's detailed apply rules and is deliberately NOT inlined here to keep this prompt small.`
+
 function getMcpInstructions(): string {
-  if (cachedInstructions !== null) return cachedInstructions
-  try {
-    cachedInstructions = getSystemPrompt()
-  } catch {
-    cachedInstructions = ''
-  }
-  return cachedInstructions
+  return MCP_INSTRUCTIONS
+}
+
+/** Derive the dev-server origin from this request's Host header so MCP
+ *  API-schema scans probe the same origin the shell's HTTP scan does
+ *  (findings: "MCP schema scans pass no ScanOptions..."). Mirrors the
+ *  private `deriveDevServerUrl` in server/api.ts, duplicated locally since
+ *  that one isn't exported. */
+function deriveDevServerUrl(req: IncomingMessage): string | undefined {
+  const host = typeof req.headers.host === 'string' ? req.headers.host : ''
+  if (!host) return undefined
+  const proto = (req.headers['x-forwarded-proto'] as string | undefined) || 'http'
+  return `${proto}://${host}`
 }
 
 // ── JSON-RPC dispatcher ──────────────────────────────
@@ -129,6 +149,11 @@ export function createMcpMiddleware(deps: McpDeps) {
 
     res.setHeader('Cache-Control', 'no-store')
 
+    // Per-request deps: derive devServerUrl from THIS request's Host header
+    // (a static `deps.devServerUrl`, if the host ever sets one, wins) so
+    // API-schema tool calls get parity with the HTTP surface's ScanOptions.
+    const requestDeps: McpDeps = deps.devServerUrl ? deps : { ...deps, devServerUrl: deriveDevServerUrl(req) }
+
     let raw: string
     try { raw = await readBody(req) } catch {
       res.statusCode = 413
@@ -150,7 +175,7 @@ export function createMcpMiddleware(deps: McpDeps) {
       for (const item of parsed) {
         let result: JsonRpcResponse | null = null
         try {
-          result = await handleJsonRpc(item as JsonRpcRequest, deps)
+          result = await handleJsonRpc(item as JsonRpcRequest, requestDeps)
         } catch (err: any) {
           const id = (item && typeof item === 'object' && 'id' in item) ? (item as any).id ?? null : null
           result = { jsonrpc: '2.0', error: { code: -32603, message: `Internal error: ${err?.message ?? String(err)}` }, id }
@@ -169,13 +194,13 @@ export function createMcpMiddleware(deps: McpDeps) {
 
     const request = parsed as JsonRpcRequest
     if (request.id === undefined) {
-      await handleJsonRpc(request, deps)
+      await handleJsonRpc(request, requestDeps)
       res.statusCode = 202
       res.end()
       return
     }
 
-    const response = await handleJsonRpc(request, deps)
+    const response = await handleJsonRpc(request, requestDeps)
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify(response))
   }

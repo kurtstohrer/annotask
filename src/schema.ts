@@ -569,11 +569,13 @@ export interface DataSourceDetails {
 
 /**
  * Emitted when multiple data-source definitions share the requested name.
- * Agents disambiguate by re-calling with `file` and/or `kind`.
+ * Agents (and the binding picker) disambiguate by re-calling with `file`,
+ * `kind`, `method`, and/or `line` — `method` is carried per candidate so a
+ * GET query and a same-named mutation are tellable apart without a second scan.
  */
 export interface DataSourceDetailsAmbiguous {
   error: 'ambiguous'
-  candidates: Array<{ name: string; kind: DataSource['kind']; file: string; line: number }>
+  candidates: Array<{ name: string; kind: DataSource['kind']; file: string; line: number; method?: string }>
 }
 
 /** Emitted when no definition matches the requested name. */
@@ -608,6 +610,11 @@ export interface DataShapeNode {
    *  honestly. For an array, an example array of items when the schema provides
    *  one. Never synthesized. */
   example?: unknown
+  /** Set when this node is ONE variant of a `oneOf`/`anyOf` the walker had to
+   *  collapse to a single shape — the total variant count. The picker renders
+   *  "1 of N variants" so the user knows the tree under-represents the union;
+   *  never present when the schema was unambiguous. */
+  variant_of?: number
 }
 
 /**
@@ -635,6 +642,17 @@ export interface DataSourceShape {
   /** Short schema-type name (e.g. "Planet[]") for agent follow-up. */
   schema_ref?: string
   schema_kind?: ApiSchema['kind']
+  /** Where the matched schema lives (file path or URL) — 'api-schema' rung.
+   *  Threaded into the persisted binding so the agent re-grounds against the
+   *  SAME contract the user saw, not a re-guessed one. */
+  schema_location?: string
+  /** The matched operation's own identity (the declared pattern, e.g.
+   *  `GET /api/solar/{body}`) — 'api-schema' rung. Distinct from `endpoint`
+   *  (the entry's concrete URL) and `method` (the request method). */
+  op?: { method: string; path: string }
+  /** The concrete URL that resolved to the operation (entry's
+   *  `resolved_endpoint ?? endpoint`) — 'api-schema' rung. */
+  resolved_endpoint?: string
   /** resolveEndpoint score 0..1 ('api-schema' rung). */
   match_confidence?: number
   /** Regex-resolution confidence ('source-details' rung). */

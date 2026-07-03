@@ -108,6 +108,30 @@ describe('isWireframeDataBinding', () => {
     expect(isWireframeDataBinding(binding({ fields: ['name', 7] as never }))).toBe(false)
     expect(isWireframeDataBinding(binding({ fields: [''] }))).toBe(false)
   })
+
+  it('accepts the verifiable-evidence fields when well-formed', () => {
+    expect(isWireframeDataBinding(binding({
+      path_source: 'schema-picked',
+      match_confidence: 0.9,
+      schema_location: 'openapi.json',
+      schema_kind: 'openapi',
+      op: { method: 'GET', path: '/api/planets' },
+      method: 'GET',
+      resolved_endpoint: '/api/planets',
+      details_confidence: 'high',
+    }))).toBe(true)
+  })
+
+  it('rejects malformed evidence fields', () => {
+    expect(isWireframeDataBinding(binding({ path_source: 'invented' as never }))).toBe(false)
+    expect(isWireframeDataBinding(binding({ details_confidence: 'certain' as never }))).toBe(false)
+    expect(isWireframeDataBinding(binding({ match_confidence: 1.5 }))).toBe(false)   // >1
+    expect(isWireframeDataBinding(binding({ match_confidence: -0.1 }))).toBe(false)  // <0
+    expect(isWireframeDataBinding(binding({ match_confidence: 'high' as never }))).toBe(false)
+    expect(isWireframeDataBinding(binding({ schema_location: '' }))).toBe(false)
+    expect(isWireframeDataBinding(binding({ op: { method: 'GET' } as never }))).toBe(false) // missing path
+    expect(isWireframeDataBinding(binding({ op: 'GET /x' as never }))).toBe(false)
+  })
 })
 
 describe('WireframeBlock.data + .md validation', () => {

@@ -20,6 +20,13 @@ export interface ResolveMatch {
   confidence: number
   /** Short type name agents can pass to annotask_get_api_operation for detail. */
   response_schema_ref?: string
+  /**
+   * True when at least one other operation scored identically to this one —
+   * the pick is a coin-flip among ≥2 real candidates, not a confident match.
+   * Callers should surface this as "ambiguous" rather than silently trusting
+   * the first-found operation.
+   */
+  ambiguous?: boolean
 }
 
 /**
@@ -45,8 +52,11 @@ export function derivedSchemaRef(op: ApiOperation): string | undefined {
 
 /**
  * Find the best matching operation across all schemas. `method` is optional —
- * when given, matching operations score higher. Returns `null` when no
- * candidates cross a minimum-confidence threshold.
+ * when given, matching operations score higher (and a disagreeing method
+ * excludes the candidate entirely — see `scoreOperationMatch`). Returns
+ * `null` when no candidates cross a minimum-confidence threshold. When two
+ * or more operations tie for the top score, the winner carries
+ * `ambiguous: true` instead of being presented as a confident first-wins pick.
  */
 export function resolveEndpoint(
   catalog: ApiSchemaCatalog,
@@ -57,11 +67,13 @@ export function resolveEndpoint(
   const normMethod = method ? method.toUpperCase() : undefined
   const pathOnly = stripQueryAndOrigin(url)
   if (!pathOnly) return null
+  const reqOrigin = extractRequestOrigin(url)
 
   let best: ResolveMatch | null = null
+  let tied = false
   for (const schema of catalog.schemas) {
     for (const op of schema.operations) {
-      const score = scoreOperationMatch(op, schema, pathOnly, normMethod)
+      const score = scoreOperationMatch(op, schema, pathOnly, normMethod, reqOrigin)
       if (score == null) continue
       if (!best || score > best.confidence) {
         best = {
@@ -72,27 +84,56 @@ export function resolveEndpoint(
           confidence: score,
           response_schema_ref: derivedSchemaRef(op),
         }
+        tied = false
+      } else if (score === best.confidence && (schema.location !== best.schema_location || op !== best.operation)) {
+        tied = true
       }
     }
   }
-  return best && best.confidence >= 0.1 ? best : null
+  if (!best || best.confidence < 0.1) return null
+  return tied ? { ...best, ambiguous: true } : best
 }
 
-function scoreOperationMatch(op: ApiOperation, schema: ApiSchema, url: string, method: string | undefined): number | null {
-  // GraphQL / jsonschema / tRPC: there's no URL path to match. Fall back to
-  // matching only when the URL's last segment equals the operation path.
-  if (schema.kind !== 'openapi') {
+/** HEAD mirrors GET (same route, no body) — every other method pair must agree exactly. */
+function methodsAgree(opMethod: string, reqMethod: string): boolean {
+  if (opMethod === reqMethod) return true
+  return (opMethod === 'HEAD' && reqMethod === 'GET') || (opMethod === 'GET' && reqMethod === 'HEAD')
+}
+
+function scoreOperationMatch(
+  op: ApiOperation,
+  schema: ApiSchema,
+  url: string,
+  method: string | undefined,
+  reqOrigin: string | undefined,
+): number | null {
+  // Absolute-URL inputs carry their own origin. When both the request and the
+  // schema declare one and they disagree, this operation belongs to a
+  // different backend entirely — never match across backends, regardless of
+  // how well the path/method otherwise line up.
+  if (reqOrigin && schema.origin && schema.origin !== reqOrigin) return null
+  const originAgrees = !!(reqOrigin && schema.origin && schema.origin === reqOrigin)
+
+  // GraphQL / tRPC: there's no URL path to match, only a field/procedure
+  // name. Fall back to matching when the URL's last segment equals the
+  // operation path. Restricted to these two kinds — an OpenAPI/JSON-Schema
+  // entry whose last path segment happens to equal a URL's last segment
+  // (e.g. a Pinia `defineStore('user')`) is coincidence, not evidence.
+  if (schema.kind === 'graphql' || schema.kind === 'trpc') {
     const tail = url.split('/').filter(Boolean).pop()
-    if (tail && tail === op.path) return 0.6
+    if (tail && tail === op.path) return originAgrees ? 0.7 : 0.6
     return null
   }
+  if (schema.kind !== 'openapi') return null
 
-  // OpenAPI: check method first.
-  if (method && op.method !== method && op.method !== 'HEAD') {
-    // Still allow a method mismatch to match but deranked.
-    return scoreOpenApiPath(op.path, url) * 0.25
-  }
-  return scoreOpenApiPath(op.path, url)
+  // OpenAPI: method must agree when both sides declare one. A wrong-method
+  // exact-path match is not "this operation, less confidently" — it's a
+  // different operation on the same path (or no operation at all).
+  if (method && !methodsAgree(op.method, method)) return null
+
+  const pathScore = scoreOpenApiPath(op.path, url)
+  if (pathScore <= 0) return null
+  return originAgrees ? Math.min(1, pathScore * 1.1) : pathScore
 }
 
 function scoreOpenApiPath(pattern: string, url: string): number {
@@ -123,4 +164,11 @@ function stripQueryAndOrigin(url: string): string {
   if (h >= 0) u = u.slice(0, h)
   if (!u.startsWith('/')) u = '/' + u
   return u.replace(/\/+$/, '') || '/'
+}
+
+/** Origin of an absolute-URL input (e.g. `http://localhost:4330`), or `undefined` for a bare path. */
+function extractRequestOrigin(url: string): string | undefined {
+  const u = url.trim()
+  if (!/^https?:\/\//i.test(u)) return undefined
+  try { return new URL(u).origin } catch { return undefined }
 }

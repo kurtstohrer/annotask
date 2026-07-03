@@ -12,7 +12,7 @@
  * component-insert codegen shape.
  */
 
-import type { DataSource } from '../schema'
+import type { ApiSchema, DataSource } from '../schema'
 
 /** How faithfully a dropped component renders on the canvas. */
 export type WireframeFidelity = 'live' | 'isolated-preview' | 'placeholder'
@@ -39,11 +39,32 @@ export interface WireframeDataBinding {
   fields?: string[]
   /** Where the shape came from — the honesty tag the agent sees.
    *  'api-schema' (real contract) | 'source-details' (regex inference) |
-   *  'none' (user typed the path blind). NOTE: a numeric confidence is NOT
-   *  currently carried on the binding — the tag is the only signal. Reworking
-   *  this ladder (a real confidence floor, threaded to the agent) is why data
-   *  binding is gated off for this release (see shell/wireframeFeatures.ts). */
+   *  'none' (user typed the path blind). The evidence fields below carry the
+   *  MEASURABLE backing for this tag so the agent re-grounds against the same
+   *  contract the user saw, not a re-guessed one — see wireframeFeatures.ts. */
   shape_source: 'api-schema' | 'source-details' | 'none'
+  // ── Verifiable evidence (mirrors DataSourceShape; threaded picker→binding) ──
+  /** How the `path` was obtained — the honesty tag the apply agent checks
+   *  before trusting it. 'schema-picked' = drilled from a real API-schema tree
+   *  (verified against the contract). 'user-typed' = the user typed it into the
+   *  free-text field (an UNVERIFIED assertion — the agent must re-ground via
+   *  annotask_get_data_source_details / api-operation). 'none' = no path. */
+  path_source?: 'schema-picked' | 'user-typed' | 'none'
+  /** 'api-schema' rung: resolveEndpoint score 0..1 for the endpoint match. */
+  match_confidence?: number
+  /** 'api-schema' rung: where the matched schema lives (file path or URL). */
+  schema_location?: string
+  /** 'api-schema' rung: kind of the matched schema. */
+  schema_kind?: ApiSchema['kind']
+  /** 'api-schema' rung: the matched operation's declared identity
+   *  (e.g. `{ method: 'GET', path: '/api/solar/{body}' }`). */
+  op?: { method: string; path: string }
+  /** 'api-schema' rung: request method the entry issues (GET/POST/…). */
+  method?: string
+  /** 'api-schema' rung: the concrete URL that resolved to the operation. */
+  resolved_endpoint?: string
+  /** 'source-details' rung: the regex-resolution confidence behind the hints. */
+  details_confidence?: 'high' | 'medium' | 'low'
   /** Maps a component PROP name → a data FIELD within the bound item
    *  (e.g. { label: 'name', value: 'type' }). Drives the preview's bound
    *  values; the agent wires the real binding from it at apply. Components
@@ -65,6 +86,8 @@ export const DATA_SOURCE_KINDS: readonly DataSource['kind'][] =
   ['composable', 'signal', 'store', 'fetch', 'graphql', 'loader', 'rpc']
 
 const SHAPE_SOURCES: readonly string[] = ['api-schema', 'source-details', 'none']
+const PATH_SOURCES: readonly string[] = ['schema-picked', 'user-typed', 'none']
+const DETAILS_CONFIDENCES: readonly string[] = ['high', 'medium', 'low']
 
 export function isWireframeDataBinding(value: unknown): value is WireframeDataBinding {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -74,6 +97,21 @@ export function isWireframeDataBinding(value: unknown): value is WireframeDataBi
   if (!SHAPE_SOURCES.includes(b.shape_source as string)) return false
   for (const k of ['module', 'endpoint', 'path'] as const) {
     if (b[k] !== undefined && (typeof b[k] !== 'string' || !b[k])) return false
+  }
+  // ── Verifiable-evidence fields (all optional; well-formed when present) ──
+  for (const k of ['schema_location', 'resolved_endpoint', 'method'] as const) {
+    if (b[k] !== undefined && (typeof b[k] !== 'string' || !b[k])) return false
+  }
+  if (b.path_source !== undefined && !PATH_SOURCES.includes(b.path_source as string)) return false
+  if (b.details_confidence !== undefined && !DETAILS_CONFIDENCES.includes(b.details_confidence as string)) return false
+  if (b.schema_kind !== undefined && (typeof b.schema_kind !== 'string' || !b.schema_kind)) return false
+  if (b.match_confidence !== undefined
+    && (typeof b.match_confidence !== 'number' || !Number.isFinite(b.match_confidence)
+      || b.match_confidence < 0 || b.match_confidence > 1)) return false
+  if (b.op !== undefined) {
+    if (!b.op || typeof b.op !== 'object' || Array.isArray(b.op)) return false
+    const op = b.op as Record<string, unknown>
+    if (typeof op.method !== 'string' || !op.method || typeof op.path !== 'string' || !op.path) return false
   }
   if (b.fields !== undefined) {
     if (!Array.isArray(b.fields)) return false

@@ -68,11 +68,12 @@ A direction whose description says the anchor was **grep-resolved from a DOM fin
 `added.data` means "wire THIS source" — it is REAL scanner-catalog identity, never invented:
 
 - `kind`/`name`/`module`/`endpoint`: the source as the project defines it (`module` is its defining file). `path` drills into the response shape (`planets[]` = the list; `data.user` = an object); `fields` are the keys the element should display.
-- `shape_source` is the honesty tag for where the drill-down shape came from:
-  - `api-schema` — a real API contract matched the source's endpoint; the path/fields were picked off the actual response schema. Trust the shape; `annotask_get_api_operation` returns the full operation when you need more.
-  - `source-details` — regex-inferred return-type hints only (no confidence score is carried — the tag is the only signal). Re-verify against the real definition before relying on field names.
-  - `none` — the user typed the path/fields blind. Ground them yourself before wiring.
-- **Re-grounding protocol (always):** call `annotask_get_data_source_details` for the definition and `annotask_get_data_source_examples` for the proven import + call pattern — wire the source the way the project already wires it (same import specifier, same destructuring, loops/`v-for` over the `path` collection, render the `fields`).
+- `shape_source` is the honesty tag for where the drill-down shape came from, backed by the verifiable-evidence fields on the binding:
+  - `api-schema` — a real API contract matched the source's endpoint; the path/fields were picked off the actual response schema. The binding carries `match_confidence` (≥0.5), `schema_location`, `schema_kind`, `op` (`{method,path}` of the matched operation), `method`, and `resolved_endpoint` — re-ground against the SAME operation via `annotask_get_data_source_shape` (or `annotask_get_api_operation` for the full contract).
+  - `source-details` — regex-inferred return-type hints only, with `details_confidence` (high|medium|low). No response tree — re-verify against the real definition before relying on field names.
+  - `none` — nothing was resolved; treat any path as blind.
+- `path_source` says whether to trust `path` directly: `schema-picked` = drilled from a real schema tree (verified against the contract — trust it); `user-typed` = the user typed it into free text (an UNVERIFIED assertion — re-ground before wiring); `none` = no path.
+- **Re-grounding protocol (always):** call `annotask_get_data_source_shape` to re-resolve the shape honesty tier (and disambiguate a name collision with `method`/`line`), `annotask_get_data_source_details` for the definition, and `annotask_get_data_source_examples` for the proven import + call pattern — wire the source the way the project already wires it (same import specifier, same destructuring, loops/`v-for` over the `path` collection, render the `fields`). A `user-typed` path MUST be re-grounded against the definition before you trust it.
 - The binding contradicts current source (source renamed, field gone, shape changed)? → `needs_info` with what you found. **Never invent fields**; runtime endpoints carry no response shapes — don't pretend otherwise.
 
 ### Verification & status

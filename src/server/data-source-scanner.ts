@@ -19,6 +19,27 @@ import nodePath from 'node:path'
 import type { DataSource, DataSourceCatalog, DataSourceLibrary, ProjectDataEntry } from '../schema.js'
 import { resolveWorkspace } from './workspace.js'
 
+/**
+ * Scanner-only provenance metadata not yet promoted to the shared schema
+ * (`../schema.ts`). Structurally a superset of `ProjectDataEntry`, so arrays
+ * of `ScannedEntry` are still assignable to `ProjectDataEntry[]` wherever the
+ * catalog is returned — consumers that don't know about these fields simply
+ * don't see them.
+ */
+type ScannedEntry = ProjectDataEntry & {
+  /** How `endpoint` (or `query_key`) was derived. Never silently assumed —
+   *  'guess' marks the low-confidence "first quoted string" fallbacks so
+   *  downstream consumers can discount them. */
+  endpoint_source?: 'url' | 'literal-path' | 'query-key' | 'guess'
+  /** A TanStack/SWR-style queryKey, when that's all we found. Kept separate
+   *  from `endpoint` so a queryKey (an identifier, not a URL) is never
+   *  mistaken for a fetchable endpoint. */
+  query_key?: string
+  /** Whether `method` reflects a real signal (explicit verb / axios.verb /
+   *  htmx attribute) as opposed to the HTTP-default ('GET') fallback. */
+  method_known?: boolean
+}
+
 const CACHE_TTL_MS = 60_000
 const MAX_FILES_SCANNED = 5000
 const SCAN_EXTS = new Set(['.vue', '.tsx', '.jsx', '.ts', '.js', '.svelte', '.astro', '.html', '.mjs'])
@@ -81,6 +102,8 @@ export const DATA_LIB_PATTERNS: Record<string, string[]> = {
   '@trpc/next':               ['trpc'],
   // htmx — attribute-driven, detected by HTML attribute scan (see htmx pattern below)
   'htmx.org':                 ['htmx'],
+  // Astro Content Collections — the framework's own data-loading API.
+  'astro':                    ['getCollection', 'getEntry', 'getEntryBySlug', 'getStaticPaths'],
 }
 
 /**
@@ -97,6 +120,7 @@ export const LIB_NAME_TO_KIND: Array<[RegExp, DataSource['kind']]> = [
   [/^(solid-js)$/, 'signal'],
   [/^(@trpc\/)/, 'rpc'],
   [/^htmx\.org$/, 'fetch'],
+  [/^astro$/, 'loader'],
 ]
 
 export function libKind(libName: string, patternName: string): DataSource['kind'] {
@@ -149,84 +173,150 @@ async function scanDataSourcesUncached(projectRoot: string): Promise<DataSourceC
     if (patterns) libraryCandidates.push({ name: depName, version: deps[depName], patterns })
   }
 
-  // 2. Walk the running package's src/ once, reading every candidate file into
-  //    memory. Paths are relativized against the workspace root (`ws.root`) so
-  //    they stay workspace-relative for the shell's currentDir translation.
+  // 2. Walk the running package's src/ once to enumerate files. Paths are
+  //    relativized against the workspace root (`ws.root`) so they stay
+  //    workspace-relative for the shell's currentDir translation. Content is
+  //    read and released per-file below (see step 3) — never all held in
+  //    memory simultaneously, since MAX_FILES_SCANNED (5000) full files would
+  //    otherwise sit cached at once.
   const relRoot = ws.root
   const files: string[] = []
   const absRoot = nodePath.resolve(projectRoot)
   const srcDir = nodePath.join(absRoot, 'src')
   const scanRoot = fs.existsSync(srcDir) ? srcDir : absRoot
   await walk(scanRoot, files)
-
-  const fileContents = new Map<string, string>()
-  for (const fp of files) {
-    try { fileContents.set(fp, await fsp.readFile(fp, 'utf-8')) } catch { /* skip */ }
+  // htmx's canonical Vite location is a root-level index.html. When src/
+  // exists, walk() above only sees src/ (scanRoot === srcDir), so the root
+  // index.html — and any `<script src="…htmx…">` / hx-* markup in it — was
+  // silently excluded from every project that also has a src/ dir. Add it
+  // back explicitly.
+  if (scanRoot !== absRoot) {
+    const rootIndexHtml = nodePath.join(absRoot, 'index.html')
+    if (fs.existsSync(rootIndexHtml) && !files.includes(rootIndexHtml)) files.push(rootIndexHtml)
   }
 
-  // 3. Confirm each library candidate is actually used in src/
-  const confirmedLibraries: DataSourceLibrary[] = []
-  for (const cand of libraryCandidates) {
-    const usedPatterns: string[] = []
-    for (const pat of cand.patterns) {
-      const re = pat.includes('.')
-        ? new RegExp(`\\b${escapeRegex(pat.replace(/\./g, '\\.'))}\\s*\\(`)
-        : new RegExp(`\\b${escapeRegex(pat)}\\b`)
-      for (const content of fileContents.values()) {
-        if (re.test(content)) { usedPatterns.push(pat); break }
+  // 3. Confirm each library candidate is actually used in src/, and detect
+  //    project-specific entries — a single streaming pass per file so at
+  //    most one file's content is resident at a time.
+  const usedPatternsByCandidate = new Map<string, Set<string>>()
+  for (const cand of libraryCandidates) usedPatternsByCandidate.set(cand.name, new Set())
+  const htmxCandidate = libraryCandidates.find(c => c.name === 'htmx.org')
+  let htmxAttrUsageSeen = false
+  let htmxCdnScriptSeen = false
+  const entries: ScannedEntry[] = []
+
+  for (const fp of files) {
+    let content: string
+    try { content = await fsp.readFile(fp, 'utf-8') } catch { continue }
+
+    // 3a. Library-identifier confirmation. Comments/strings are stripped
+    //     first so a mention of `useQuery` in a comment, or `create` inside
+    //     an unrelated string, doesn't false-confirm a library.
+    if (libraryCandidates.length > 0) {
+      const codeOnly = stripCommentsAndStrings(content)
+      for (const cand of libraryCandidates) {
+        const used = usedPatternsByCandidate.get(cand.name)!
+        for (const pat of cand.patterns) {
+          if (used.has(pat)) continue
+          if (confirmationRegexFor(pat).test(codeOnly)) used.add(pat)
+        }
       }
     }
-    // Htmx is attribute-only — look for `hx-get=` / `hx-post=` in any HTML-ish file.
-    if (cand.name === 'htmx.org' && usedPatterns.length === 0) {
-      const htmxRe = /\shx-(?:get|post|put|patch|delete|swap|target|trigger|vals|include)\s*=/
-      for (const content of fileContents.values()) {
-        if (htmxRe.test(content)) { usedPatterns.push('hx-*'); break }
-      }
+
+    // 3b. htmx is attribute-driven (no JS identifier to match) and its
+    //     canonical install is often a CDN <script> tag rather than an npm
+    //     dependency — track both signals regardless of whether htmx.org
+    //     showed up in package.json.
+    if (!htmxAttrUsageSeen && HTMX_ATTR_RE.test(content)) htmxAttrUsageSeen = true
+    if (!htmxCdnScriptSeen && HTMX_CDN_SCRIPT_RE.test(content)) htmxCdnScriptSeen = true
+
+    // 3c. Project-specific entries.
+    const rel = nodePath.relative(relRoot, fp).replace(/\\/g, '/')
+    detectEntries(rel, content, entries)
+  }
+
+  const confirmedLibraries: DataSourceLibrary[] = []
+  for (const cand of libraryCandidates) {
+    const usedPatterns = [...usedPatternsByCandidate.get(cand.name)!]
+    if (cand.name === 'htmx.org' && usedPatterns.length === 0 && htmxAttrUsageSeen) {
+      usedPatterns.push('hx-*')
     }
     if (usedPatterns.length > 0) {
       confirmedLibraries.push({ name: cand.name, version: cand.version, detected_patterns: usedPatterns })
     }
   }
-
-  // 4. Detect project-specific entries
-  const entries: ProjectDataEntry[] = []
-  for (const [fp, content] of fileContents) {
-    const rel = nodePath.relative(relRoot, fp).replace(/\\/g, '/')
-    detectEntries(rel, content, entries)
+  // htmx via CDN <script> tag — no package.json entry to gate on at all, so
+  // synthesize the library entry directly once both signals (the script tag
+  // itself, and real hx-* attribute usage) are present.
+  if (!htmxCandidate && htmxCdnScriptSeen && htmxAttrUsageSeen && !confirmedLibraries.some(l => l.name === 'htmx.org')) {
+    confirmedLibraries.push({ name: 'htmx.org', detected_patterns: ['hx-*'] })
   }
 
-  // 4b. Resolve path-only endpoints (`/api/health`) against the nearest Vite
-  //     config's server.proxy so downstream highlight matching can compare
-  //     origins. Without this, every MFE's `/api/*` fetch matches every
-  //     schema that exposes `/api/*`.
+  // 4. Resolve path-only endpoints (`/api/health`) against the nearest Vite
+  //    config's server.proxy so downstream highlight matching can compare
+  //    origins. Without this, every MFE's `/api/*` fetch matches every
+  //    schema that exposes `/api/*`.
   await resolveEntryEndpoints(entries, relRoot)
 
-  // 5. used_count — ONE pass per file with a combined alternation regex over
-  //    all entry names. Skips the defining line for each entry.
+  // 5. used_count — a second streaming pass per file (still no full-corpus
+  //    retention):
+  //      - name-keyed entries (composables/stores/…): scoped to same-file-
+  //        only when the name is shared by more than one entry, since a
+  //        shared name can't be safely attributed project-wide (that's the
+  //        "colliding" counts bug — two unrelated `useData` composables were
+  //        inflating each other's count).
+  //      - fetch-kind entries: `name` is a synthetic, never-appears-in-source
+  //        identifier (`apiUsers`), so used_count was permanently 0 for every
+  //        one of them. `hint_symbols` are the real local identifiers that
+  //        actually hold the fetched data — search for those instead, scoped
+  //        to the entry's own file.
   if (entries.length > 0) {
-    const nameIndex = new Map<string, ProjectDataEntry[]>()
+    const nameIndex = new Map<string, ScannedEntry[]>()
     for (const entry of entries) {
       const list = nameIndex.get(entry.name) ?? []
       list.push(entry)
       nameIndex.set(entry.name, list)
     }
+    const collidingNames = new Set(
+      [...nameIndex.entries()].filter(([, list]) => list.length > 1).map(([n]) => n)
+    )
     const names = [...nameIndex.keys()]
-    const combined = new RegExp(`\\b(${names.map(escapeRegex).join('|')})\\b`, 'g')
-    for (const [fp, content] of fileContents) {
+    const combined = names.length > 0 ? new RegExp(`\\b(${names.map(escapeRegex).join('|')})\\b`, 'g') : null
+    const hintEntries = entries.filter(e => e.hint_symbols && e.hint_symbols.length > 0)
+
+    for (const fp of files) {
+      let content: string
+      try { content = await fsp.readFile(fp, 'utf-8') } catch { continue }
       const relFp = nodePath.relative(relRoot, fp).replace(/\\/g, '/')
-      combined.lastIndex = 0
-      let m: RegExpExecArray | null
-      while ((m = combined.exec(content)) !== null) {
-        const name = m[1]
-        const list = nameIndex.get(name)
-        if (!list) continue
-        // Compute line of the match once
-        let matchLine: number | undefined
-        for (const entry of list) {
-          if (entry.file === relFp) {
-            if (matchLine === undefined) matchLine = content.slice(0, m.index).split('\n').length
-            if (matchLine === entry.line) continue  // skip the definition line
+
+      if (combined) {
+        combined.lastIndex = 0
+        let m: RegExpExecArray | null
+        while ((m = combined.exec(content)) !== null) {
+          const name = m[1]
+          const list = nameIndex.get(name)
+          if (!list) continue
+          const isColliding = collidingNames.has(name)
+          // Compute line of the match once
+          let matchLine: number | undefined
+          for (const entry of list) {
+            if (isColliding && entry.file !== relFp) continue  // can't safely attribute a shared name cross-file
+            if (entry.file === relFp) {
+              if (matchLine === undefined) matchLine = content.slice(0, m.index).split('\n').length
+              if (matchLine === entry.line) continue  // skip the definition line
+            }
+            entry.used_count++
           }
+        }
+      }
+
+      for (const entry of hintEntries) {
+        if (entry.file !== relFp) continue
+        const hintRe = new RegExp(`\\b(${entry.hint_symbols!.map(escapeRegex).join('|')})\\b`, 'g')
+        let hm: RegExpExecArray | null
+        while ((hm = hintRe.exec(content)) !== null) {
+          const line = content.slice(0, hm.index).split('\n').length
+          if (line === entry.line) continue  // skip the fetch call's own line
           entry.used_count++
         }
       }
@@ -270,6 +360,91 @@ async function walk(dir: string, acc: string[]): Promise<void> {
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// htmx is attribute-driven — no JS identifier to confirm against. Detected
+// two ways: real `hx-*` attribute usage, and the canonical CDN <script> tag
+// (htmx's documented install path; frequently not an npm dependency at all).
+const HTMX_ATTR_RE = /\shx-(?:get|post|put|patch|delete|swap|target|trigger|vals|include)\s*=/
+const HTMX_CDN_SCRIPT_RE = /<script\b[^>]*\bsrc\s*=\s*["'][^"']*htmx[^"']*["'][^>]*>/i
+
+// Common-English-word library identifiers that constantly false-confirm
+// against comments and unrelated code (`create`, `computed`, `derived` all
+// read as ordinary prose/variable names). Require call-shape for these.
+const AMBIGUOUS_SINGLE_WORD_PATTERNS = new Set(['create', 'computed', 'derived'])
+const confirmationRegexCache = new Map<string, RegExp>()
+
+/**
+ * Build (and cache) the identifier-confirmation regex for one library
+ * pattern. Fixes three bugs in the previous version:
+ *   - Dotted patterns (`axios.get`) were double-escaped: `escapeRegex`
+ *     already escapes `.`, so re-escaping the caller's own
+ *     `pat.replace(/\./g, '\\.')` turned `\.` into a literal backslash
+ *     followed by "any character" — `axios.get(` could never match.
+ *   - A leading `\b` before a pattern that starts with a non-word character
+ *     (`$fetch`) can never match: `\b` needs a word/non-word transition, and
+ *     typical call sites (` $fetch(`, `= $fetch(`, `($fetch`) have a
+ *     non-word character on both sides of that position.
+ *   - Common-English-word identifiers (see `AMBIGUOUS_SINGLE_WORD_PATTERNS`)
+ *     require call-shape (`create(`) instead of a bare word match.
+ */
+function confirmationRegexFor(pat: string): RegExp {
+  const cached = confirmationRegexCache.get(pat)
+  if (cached) return cached
+  const escaped = escapeRegex(pat)
+  const lead = /^\w/.test(pat) ? '\\b' : ''
+  const requiresCall = pat.includes('.') || AMBIGUOUS_SINGLE_WORD_PATTERNS.has(pat)
+  const re = requiresCall ? new RegExp(`${lead}${escaped}\\s*\\(`) : new RegExp(`${lead}${escaped}\\b`)
+  confirmationRegexCache.set(pat, re)
+  return re
+}
+
+/**
+ * Best-effort blank-out of line comments, block comments, and
+ * string/template literal contents — length- and line-preserving so
+ * downstream line-number math stays correct. Used before testing
+ * library-confirmation regexes so a mention of `useQuery` in a comment, or
+ * `create` inside an unrelated string, doesn't false-confirm a library.
+ * Not a real tokenizer (doesn't know HTML/JSX comments) — cheap single-pass
+ * best effort, not exhaustive.
+ */
+function stripCommentsAndStrings(content: string): string {
+  let out = ''
+  const n = content.length
+  let i = 0
+  while (i < n) {
+    const c = content[i]
+    const c2 = content[i + 1]
+    if (c === '/' && c2 === '/') {
+      while (i < n && content[i] !== '\n') { out += ' '; i++ }
+      continue
+    }
+    if (c === '/' && c2 === '*') {
+      out += '  '
+      i += 2
+      while (i < n && !(content[i] === '*' && content[i + 1] === '/')) {
+        out += content[i] === '\n' ? '\n' : ' '
+        i++
+      }
+      if (i < n) { out += '  '; i += 2 }
+      continue
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c
+      out += ' '
+      i++
+      while (i < n) {
+        if (content[i] === '\\') { out += '  '; i += 2; continue }
+        if (content[i] === quote) { out += ' '; i++; break }
+        out += content[i] === '\n' ? '\n' : ' '
+        i++
+      }
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
 }
 
 // ── Vite proxy resolution ─────────────────────────────
@@ -449,38 +624,69 @@ const ENTRY_PATTERNS: Array<{ re: RegExp; kind: DataSource['kind'] }> = [
 ]
 
 // Generic fetch wrappers — broader directory gate so projects that don't use
-// the Vite/React `src/api/` convention still get coverage.
-const FETCH_WRAPPER_RE = /\bexport\s+(?:async\s+)?function\s+([a-z][A-Za-z0-9_$]*)\s*\(/g
+// the Vite/React `src/api/` convention still get coverage. Two shapes:
+// `export function getX(...)` / `export async function getX(...)`, and the
+// arrow-const form that dominates modern codebases —
+// `export const getX = async (id) => fetch(...)`.
+const FETCH_WRAPPER_FN_RE = /\bexport\s+(?:async\s+)?function\s+([a-z][A-Za-z0-9_$]*)\s*\(/g
+const FETCH_WRAPPER_ARROW_RE = /\bexport\s+const\s+([a-z][A-Za-z0-9_$]*)\s*(?::\s*[^=\n]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::\s*[^=\n]+)?=>/g
 const API_DIR_RE = /(^|\/)(api|queries|services|requests|endpoints|fetchers|repositories|resources)(\/|$)|(^|\/)(lib|shared|utils)\/(api|fetch|http|rpc)\b|(^|\/)(app|pages)\/api\//
 
-function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): void {
+// What counts as "this code does real HTTP" for the fetch-wrapper gate.
+// Covers direct calls (fetch/ofetch/$fetch/GraphQLClient) and "helper
+// indirection" — a pre-configured client object (`apiClient.get(…)`,
+// `httpClient.post(…)`) rather than a bare global identifier.
+const HTTP_CALL_RE = /\b(?:fetch|ofetch|\$fetch|GraphQLClient)\s*\(|\b[A-Za-z_$]*(?:[Cc]lient|[Aa]pi|[Hh]ttp)[\w$]*\.(?:get|post|put|patch|delete)\s*\(/
+
+function detectEntries(file: string, content: string, acc: ScannedEntry[]): void {
   for (const { re, kind } of ENTRY_PATTERNS) {
     re.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = re.exec(content)) !== null) {
       const name = m[1]
       const line = content.slice(0, m.index).split('\n').length
-      const endpoint = extractEndpointNear(content, m.index + m[0].length)
-      acc.push({ kind, name, file, line, endpoint, used_count: 0 })
+      const extracted = extractEndpointNear(content, m.index + m[0].length)
+      acc.push({
+        kind, name, file, line,
+        endpoint: extracted.endpoint,
+        ...(extracted.endpoint_source ? { endpoint_source: extracted.endpoint_source } : {}),
+        ...(extracted.query_key ? { query_key: extracted.query_key } : {}),
+        used_count: 0,
+      })
     }
   }
 
+  // Endpoints already claimed by a named fetch-wrapper detected below — the
+  // inline-call pass skips these so the same real HTTP call isn't cataloged
+  // twice (once under the wrapper's name, once again anonymously when the
+  // inline scan finds the very same `fetch(...)` inside the wrapper's body).
+  const claimedEndpoints = new Set<string>()
+
   // Fetch wrappers only in API-ish files or files whose body does real HTTP.
   const apiLike = API_DIR_RE.test(file)
-  const bodyDoesHttp = apiLike || /\b(fetch|axios\.(get|post|put|patch|delete)|ofetch|\$fetch)\s*\(/.test(content)
+  const bodyDoesHttp = apiLike || HTTP_CALL_RE.test(content)
   if (apiLike || bodyDoesHttp) {
-    FETCH_WRAPPER_RE.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = FETCH_WRAPPER_RE.exec(content)) !== null) {
-      const name = m[1]
-      if (/^use[A-Z]/.test(name)) continue                 // caught by composable patterns
-      // Only count this as a fetch wrapper if the function body contains a
-      // real HTTP call nearby. Avoids cataloging every exported utility.
-      const body = content.slice(m.index, m.index + 600)
-      if (!/\b(fetch|axios\.(get|post|put|patch|delete)|ofetch|\$fetch|GraphQLClient)\s*\(/.test(body)) continue
-      const line = content.slice(0, m.index).split('\n').length
-      const endpoint = extractEndpointNear(content, m.index + m[0].length)
-      acc.push({ kind: 'fetch', name, file, line, endpoint, used_count: 0 })
+    for (const wrapperRe of [FETCH_WRAPPER_FN_RE, FETCH_WRAPPER_ARROW_RE]) {
+      wrapperRe.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = wrapperRe.exec(content)) !== null) {
+        const name = m[1]
+        if (/^use[A-Z]/.test(name)) continue                 // caught by composable patterns
+        // Only count this as a fetch wrapper if the function body contains a
+        // real HTTP call nearby. Avoids cataloging every exported utility.
+        const body = content.slice(m.index, m.index + 600)
+        if (!HTTP_CALL_RE.test(body)) continue
+        const line = content.slice(0, m.index).split('\n').length
+        const extracted = extractEndpointNear(content, m.index + m[0].length)
+        if (extracted.endpoint) claimedEndpoints.add(extracted.endpoint)
+        acc.push({
+          kind: 'fetch', name, file, line,
+          endpoint: extracted.endpoint,
+          ...(extracted.endpoint_source ? { endpoint_source: extracted.endpoint_source } : {}),
+          ...(extracted.query_key ? { query_key: extracted.query_key } : {}),
+          used_count: 0,
+        })
+      }
     }
   }
 
@@ -488,7 +694,7 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
   // ad-hoc HTTP usage (e.g. `fetch('/api/health')` inside App.vue) so the
   // data catalog isn't empty for demo apps without explicit data wrappers.
   // One entry per unique endpoint per file — deduped by endpoint.
-  const isComponentish = /\.(vue|tsx|jsx|svelte|astro|ts|js|mjs)$/.test(file)
+  const isComponentish = /\.(vue|tsx|jsx|svelte|astro|ts|js|mjs|html)$/.test(file)
   if (isComponentish) {
     // First collect any file-local base-URL constants (`const API_BASE =
     // 'http://localhost:4320'`). Stress-lab MFEs use this exact pattern so
@@ -517,10 +723,12 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
     // survive. A plain `endpoint` key silently drops the mutation when a
     // read call to the same URL appears earlier in the same file.
     const seenEndpoints = new Set<string>()
-    const pushEndpoint = (args: string, index: number, method?: string) => {
-      const endpoint = extractEndpointFromArgs(args, baseUrls, urlConstants)
-      if (!endpoint) return
-      const key = `${method ?? ''} ${endpoint}`
+    const pushEndpoint = (args: string, index: number, method?: string, methodKnown?: boolean) => {
+      const extracted = extractEndpointFromArgs(args, baseUrls, urlConstants)
+      if (!extracted) return
+      const { endpoint, source } = extracted
+      if (claimedEndpoints.has(endpoint)) return  // already cataloged via a named wrapper above
+      const key = `${method ?? ''} ${endpoint}`
       if (seenEndpoints.has(key)) return
       seenEndpoints.add(key)
       const line = content.slice(0, index).split('\n').length
@@ -532,7 +740,8 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
         file,
         line,
         endpoint,
-        ...(method ? { method } : {}),
+        endpoint_source: source,
+        ...(method ? { method, method_known: methodKnown ?? false } : {}),
         used_count: 0,
         ...(hint_symbols.length > 0 ? { hint_symbols } : {}),
       })
@@ -551,7 +760,8 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
       const argsStart = m.index + m[0].length
       const args = extractCallArgs(content, argsStart)
       if (args === null) continue
-      pushEndpoint(args, m.index, extractHttpMethod(call, args))
+      const { method, method_known } = extractHttpMethod(call, args)
+      pushEndpoint(args, m.index, method, method_known)
     }
 
     // Two-step builds: `const url = new URL(`${API_BASE}/x`); fetch(url)`.
@@ -576,7 +786,8 @@ function detectEntries(file: string, content: string, acc: ProjectDataEntry[]): 
         const raw = m[2]
         // Skip bindings like hx-get="{{ dynamic }}" that aren't concrete.
         if (raw.includes('{') || raw.includes('$')) continue
-        pushEndpoint(`"${raw}"`, m.index, verb)
+        // The htmx attribute name IS the HTTP verb — always a known signal.
+        pushEndpoint(`"${raw}"`, m.index, verb, true)
       }
     }
   }
@@ -664,14 +875,17 @@ function skipTemplate(source: string, i: number, end: number): number {
  *
  * When the options argument is a variable we can't inspect, default to GET —
  * that matches the browser's behavior when `method` is omitted. Returning
- * `undefined` would collapse the entry back into the pre-fix dedup bucket.
+ * `undefined` for `method` would collapse the entry back into the pre-fix
+ * dedup bucket, so the GET default is instead flagged via `method_known:
+ * false` — a real signal (axios verb / explicit `method:`) always reports
+ * `method_known: true`.
  */
-function extractHttpMethod(call: string, args: string): string {
+function extractHttpMethod(call: string, args: string): { method: string; method_known: boolean } {
   const axiosVerb = call.match(/^axios\.(get|post|put|patch|delete)$/)
-  if (axiosVerb) return axiosVerb[1].toUpperCase()
+  if (axiosVerb) return { method: axiosVerb[1].toUpperCase(), method_known: true }
   const inline = args.match(/\bmethod\s*:\s*['"`]([A-Za-z]+)['"`]/)
-  if (inline) return inline[1].toUpperCase()
-  return 'GET'
+  if (inline) return { method: inline[1].toUpperCase(), method_known: true }
+  return { method: 'GET', method_known: false }
 }
 
 /**
@@ -760,7 +974,61 @@ function collectHintSymbols(content: string, afterIndex: number): string[] {
   const valueOfObjectRe = /\b([a-zA-Z_$][\w$]*)\.value\s*=\s*[\{\(]/g
   while ((m = valueOfObjectRe.exec(window)) !== null) add(m[1])
 
+  // Anchor 6: promise-chain idiom — `fetch(url).then(r => r.json()).then(data
+  // => setUsers(data))` (the docs' own canonical `.then(r => r.json())`
+  // example). Neither `await` nor `return` appears here, so anchors 1-5 miss
+  // it entirely. Whatever consumes the parsed body in the following `.then`
+  // — its arrow param name, or the target of a `setX(...)` it forwards
+  // into — is our trace seed.
+  const thenJsonRe = /\.then\s*\(\s*[A-Za-z_$][\w$]*\s*=>\s*[A-Za-z_$][\w$]*\.json\s*\(\s*\)\s*\)/g
+  while ((m = thenJsonRe.exec(window)) !== null) {
+    const after = window.slice(m.index + m[0].length, m.index + m[0].length + 150)
+    let am: RegExpMatchArray | null
+    if ((am = after.match(/^\s*\.then\s*\(\s*set([A-Z][A-Za-z0-9_$]*)\s*\)/))) {
+      add(am[1][0].toLowerCase() + am[1].slice(1))
+    } else if ((am = after.match(/^\s*\.then\s*\(\s*[A-Za-z_$][\w$]*\s*=>\s*set([A-Z][A-Za-z0-9_$]*)\s*\(/))) {
+      add(am[1][0].toLowerCase() + am[1].slice(1))
+    } else if ((am = after.match(/^\s*\.then\s*\(\s*([A-Za-z_$][\w$]*)\s*=>/))) {
+      add(am[1])
+    }
+  }
+
   return [...hints]
+}
+
+/** How the endpoint literal returned by `extractEndpointFromArgs` /
+ *  `extractEndpointNear` was actually derived — never silently assume a
+ *  low-confidence fallback (or a queryKey) is a real fetchable URL. */
+type EndpointSource = 'url' | 'literal-path' | 'query-key' | 'guess'
+
+/**
+ * Replace each `${expr}` interpolation in a template-literal's raw inner text
+ * with a stable `:param` placeholder, instead of truncating the string at
+ * the `$`. Without this, `` `/api/planets/${id}` `` collapsed to just
+ * `/api/planets/` — the param was silently dropped rather than preserved as
+ * a recognizable route shape (`/api/planets/:param`), matching this file's
+ * existing `:id`-style path-param convention (see `endpointToName`).
+ */
+function extractTemplatePath(raw: string): string {
+  let out = ''
+  let i = 0
+  while (i < raw.length) {
+    if (raw[i] === '$' && raw[i + 1] === '{') {
+      let depth = 1
+      let j = i + 2
+      while (j < raw.length && depth > 0) {
+        if (raw[j] === '{') depth++
+        else if (raw[j] === '}') depth--
+        j++
+      }
+      out += ':param'
+      i = j
+      continue
+    }
+    out += raw[i]
+    i++
+  }
+  return out
 }
 
 /**
@@ -769,6 +1037,8 @@ function collectHintSymbols(content: string, afterIndex: number): string[] {
  *   • full URLs:           fetch('http://host/api/health')
  *   • template literals:   fetch(`${API_BASE}/api/health`)  ← resolves
  *                          when API_BASE is a known file-local const
+ *   • templated params:    fetch(`/api/planets/${id}`)      ← `${id}` becomes
+ *                          `:param` rather than truncating the path
  *   • bare identifiers:    fetch(LIST_URL, …)               ← resolves
  *                          when LIST_URL is a known file-local const
  *
@@ -776,21 +1046,31 @@ function collectHintSymbols(content: string, afterIndex: number): string[] {
  * possible, otherwise path). Absolute URLs preserve the host/port so the
  * shell can disambiguate two backends that expose the same path.
  */
-function extractEndpointFromArgs(args: string, baseUrls: Map<string, string>, urlConstants?: Map<string, string>): string | null {
+function extractEndpointFromArgs(
+  args: string, baseUrls: Map<string, string>, urlConstants?: Map<string, string>
+): { endpoint: string; source: EndpointSource } | null {
   // 1. Plain string literal containing a full URL.
   const fullUrlMatch = args.match(/['"](https?:\/\/[^\s'"]+)['"]/)
-  if (fullUrlMatch) return fullUrlMatch[1]
+  if (fullUrlMatch) return { endpoint: fullUrlMatch[1], source: 'url' }
 
-  // 2. Template literal that starts with `${VAR}/api/...` where VAR is a
-  //    known base-URL constant. Stress-lab MFEs use this pattern to point
-  //    the same component at different ports.
-  const tplMatch = args.match(/`\$\{([A-Za-z_$][\w$]*)\}(\/[^`]+)`/)
-  if (tplMatch) {
-    const base = baseUrls.get(tplMatch[1])
-    const suffix = tplMatch[2]
-    if (base) return base + suffix
-    // Fallback: at least keep the path portion.
-    if (/^\/(?:api|graphql|rpc|v\d)\//.test(suffix)) return suffix
+  // 2. Template literal. A leading `${BASE_VAR}` is resolved against a known
+  //    file-local base-URL constant (stress-lab MFEs use this pattern to
+  //    point the same component at different ports); any interpolation —
+  //    leading or not — is normalized via `extractTemplatePath` rather than
+  //    truncating the path at the first `$`.
+  const tplRaw = args.match(/`([^`]*)`/)
+  if (tplRaw) {
+    const inner = tplRaw[1]
+    const leadingVarMatch = inner.match(/^\$\{([A-Za-z_$][\w$]*)\}([\s\S]*)$/)
+    if (leadingVarMatch) {
+      const base = baseUrls.get(leadingVarMatch[1])
+      const rest = extractTemplatePath(leadingVarMatch[2])
+      if (base) return { endpoint: base + rest, source: 'url' }
+      if (/^\/(?:api|graphql|rpc|v\d)\//.test(rest)) return { endpoint: rest, source: 'literal-path' }
+    }
+    const templated = extractTemplatePath(inner)
+    if (/^https?:\/\//.test(templated)) return { endpoint: templated, source: 'url' }
+    if (templated.startsWith('/')) return { endpoint: templated, source: 'literal-path' }
   }
 
   // 3. Bare identifier as the first positional arg: `fetch(LIST_URL, …)`.
@@ -801,13 +1081,22 @@ function extractEndpointFromArgs(args: string, baseUrls: Map<string, string>, ur
     const idMatch = args.match(/^\s*([A-Za-z_$][\w$]*)\s*(?:[,)]|$)/)
     if (idMatch) {
       const resolved = urlConstants.get(idMatch[1])
-      if (resolved) return resolved
+      if (resolved) return { endpoint: resolved, source: /^https?:\/\//.test(resolved) ? 'url' : 'literal-path' }
     }
   }
 
-  // 4. Legacy fallback — any string literal with an /api-ish path inside.
+  // 4. Any absolute-path string literal in the leading-argument position —
+  //    not limited to /api, /graphql, /rpc, /v\d. htmx attributes and plain
+  //    REST routes alike use arbitrary path prefixes (`/probe/from-vue`),
+  //    and the old /api-ish-only fallback below dropped those entirely.
+  const leadingPath = args.match(/^\s*['"`](\/[\w\-/.{}:?=&]*)['"`]/)
+  if (leadingPath) return { endpoint: leadingPath[1], source: 'literal-path' }
+
+  // 5. Legacy fallback — any string literal with an /api-ish path fragment
+  //    anywhere in the args, for calls where the URL isn't the leading
+  //    argument. Lower confidence than the branches above — tagged 'guess'.
   const pathMatch = args.match(/['"`][^'"`]*?(\/(?:api|graphql|rpc|v\d)\/[\w\-/.{}:?=&]*)/)
-  if (pathMatch) return pathMatch[1]
+  if (pathMatch) return { endpoint: pathMatch[1], source: 'guess' }
   return null
 }
 
@@ -857,25 +1146,59 @@ function endpointToName(endpoint: string): string {
   return port ? `${base}_${port}` : base
 }
 
+/** Result of `extractEndpointNear`. When the match is a queryKey (not a
+ *  path/URL literal), `query_key` is always populated alongside `endpoint`
+ *  (kept for backward-compatible display) and `endpoint_source` is tagged
+ *  `'query-key'` — callers that care can tell it apart from a real,
+ *  fetchable URL instead of silently treating it as one. */
+interface NearbyEndpoint {
+  endpoint?: string
+  endpoint_source?: EndpointSource
+  query_key?: string
+}
+
 /**
  * Scan ~800 chars after a definition opener for the first string literal that
  * looks like an endpoint or query key. Best-effort: extracts things like
  * `fetch('/api/users')`, `defineStore('user', ...)`, `useQuery(['users'], ...)`,
- * `useQuery({ queryKey: ['users'] })`. Returns undefined when nothing looks right.
+ * `useQuery({ queryKey: ['users'] })`. Returns `{}` when nothing looks right.
+ *
+ * Path-shaped literals are preferred over a queryKey (previously the
+ * queryKey object-form check ran *before* the path check and returned
+ * immediately, so a real path literal later in the slice was never reached).
+ * A queryKey that IS found is also mirrored into `query_key` and tagged
+ * `endpoint_source: 'query-key'` — a queryKey like `['users']` is an
+ * identifier, not a URL, so callers must not treat it as one.
  */
-function extractEndpointNear(content: string, fromIndex: number): string | undefined {
+function extractEndpointNear(content: string, fromIndex: number): NearbyEndpoint {
   const slice = content.slice(fromIndex, fromIndex + 800)
-  // Object form: `{ queryKey: ['user', ...] }` or `{ queryKey: 'user' }`
-  const objKey = slice.match(/queryKey\s*:\s*(?:\[\s*['"`]([^'"`]+)['"`]|['"`]([^'"`]+)['"`])/)
-  if (objKey) return objKey[1] ?? objKey[2]
-  // Leading path string
+
+  // 1. A genuine path/URL literal wins over a queryKey whenever both exist.
   const pathMatch = slice.match(/['"`](\/[\w\-/.:{}?=&]+|https?:\/\/[^'"`]+)['"`]/)
-  if (pathMatch) return pathMatch[1]
-  // First quoted string inside an array literal (positional useQuery(['users']))
+  if (pathMatch) {
+    const value = pathMatch[1]
+    return { endpoint: value, endpoint_source: /^https?:\/\//.test(value) ? 'url' : 'literal-path' }
+  }
+
+  // 2. Object form: `{ queryKey: ['user', ...] }` or `{ queryKey: 'user' }`.
+  //    Recorded in BOTH `endpoint` (backward-compatible display — consumers
+  //    that only look at `endpoint` still see something) and the dedicated
+  //    `query_key` field, tagged `endpoint_source: 'query-key'` so callers
+  //    that care can tell it apart from a real fetchable URL.
+  const objKey = slice.match(/queryKey\s*:\s*(?:\[\s*['"`]([^'"`]+)['"`]|['"`]([^'"`]+)['"`])/)
+  if (objKey) {
+    const key = objKey[1] ?? objKey[2]
+    return { endpoint: key, endpoint_source: 'query-key', query_key: key }
+  }
+
+  // 3. First quoted string inside an array literal (positional
+  //    useQuery(['users'])) — also a queryKey, not a URL.
   const arr = slice.match(/^\s*\[\s*['"`]([^'"`]+)['"`]/)
-  if (arr) return arr[1]
-  // First quoted string anywhere in the slice
+  if (arr) return { endpoint: arr[1], endpoint_source: 'query-key', query_key: arr[1] }
+
+  // 4. First quoted string anywhere in the slice — a best-effort guess, not
+  //    a confirmed endpoint (e.g. `defineStore('user', ...)`'s store id).
   const keyMatch = slice.match(/['"`]([A-Za-z][\w\-/:]*)['"`]/)
-  if (keyMatch) return keyMatch[1]
-  return undefined
+  if (keyMatch) return { endpoint: keyMatch[1], endpoint_source: 'guess' }
+  return {}
 }

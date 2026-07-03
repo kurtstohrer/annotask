@@ -144,16 +144,33 @@ export function buildBinding(
     path?: string
     fields?: string[]
     shape_source: WireframeDataBinding['shape_source']
+    /** How `path` was obtained — 'schema-picked' (drilled from a real tree),
+     *  'user-typed' (unverified free text), or 'none' (no path). */
+    path_source?: WireframeDataBinding['path_source']
     /** REAL contract example rows (api-schema tier) for the preview. */
     sample?: Record<string, unknown>[]
     /** Sketch instance count for a list binding. */
     repeat?: number
     /** prop→field map (usually set later in the popover, preserved here). */
     propMap?: Record<string, string>
+    /** Verifiable evidence carried straight from the resolved DataSourceShape
+     *  so the persisted binding re-grounds against the same contract. */
+    match_confidence?: number
+    schema_location?: string
+    schema_kind?: WireframeDataBinding['schema_kind']
+    op?: { method: string; path: string }
+    method?: string
+    resolved_endpoint?: string
+    details_confidence?: WireframeDataBinding['details_confidence']
   },
 ): WireframeDataBinding {
   const fields = (sel.fields ?? []).map(f => f.trim()).filter(Boolean)
   const path = sel.path?.trim()
+  // Path provenance is a first-class honesty signal: if a path was picked from
+  // a real schema tree it's 'schema-picked'; typed by hand it's 'user-typed';
+  // absent it's 'none'. Default from the shape tier when the caller didn't say.
+  const path_source: WireframeDataBinding['path_source'] = sel.path_source
+    ?? (!path ? 'none' : sel.shape_source === 'api-schema' ? 'schema-picked' : 'user-typed')
   const binding: WireframeDataBinding = {
     kind: entry.kind,
     name: entry.name,
@@ -164,6 +181,14 @@ export function buildBinding(
     ...(path ? { path } : {}),
     ...(fields.length > 0 ? { fields } : {}),
     shape_source: sel.shape_source,
+    path_source,
+    ...(sel.match_confidence != null ? { match_confidence: sel.match_confidence } : {}),
+    ...(sel.schema_location ? { schema_location: sel.schema_location } : {}),
+    ...(sel.schema_kind ? { schema_kind: sel.schema_kind } : {}),
+    ...(sel.op ? { op: sel.op } : {}),
+    ...(sel.method ? { method: sel.method } : {}),
+    ...(sel.resolved_endpoint ? { resolved_endpoint: sel.resolved_endpoint } : {}),
+    ...(sel.details_confidence ? { details_confidence: sel.details_confidence } : {}),
     ...(sel.sample && sel.sample.length > 0 ? { sample: sel.sample } : {}),
     ...(sel.repeat && sel.repeat > 1 ? { repeat: sel.repeat } : {}),
     ...(sel.propMap && Object.keys(sel.propMap).length > 0 ? { propMap: sel.propMap } : {}),

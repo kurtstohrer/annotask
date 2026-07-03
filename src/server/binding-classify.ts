@@ -191,6 +191,13 @@ function classifyVueElement(match: VueMatch): Pick<BindingClassification, 'props
       } else if (p.name === 'model') {
         const name = p.arg?.content ? String(p.arg.content) : 'modelValue'
         props.push({ name, kind: 'bound', source: p.exp?.content ? String(p.exp.content) : '', reason: 'v-model binding' })
+      } else {
+        // A directive we don't model (v-html, v-text, v-show, v-once, v-memo,
+        // a custom directive, …). Absence here previously read as "no such
+        // prop / verified safe" — surface it explicitly instead so a caller
+        // can't mistake an unhandled construct for a clean literal/bound read.
+        const name = p.arg?.content ? String(p.arg.content) : `v-${p.name}`
+        props.push({ name, kind: 'unknown', source: p.exp?.content ? String(p.exp.content) : '', reason: 'unhandled directive' })
       }
     }
   }
@@ -306,6 +313,7 @@ function classifyJsxElement(content: string, match: JsxMatch): Pick<BindingClass
   const props: BindingFieldInfo[] = []
   let spread = false
   let loop: BindingClassification['loop']
+  let pendingForEach: string | undefined
 
   for (const anc of ancestors) {
     if (anc.type === 'CallExpression' && anc.callee?.type === 'MemberExpression'
@@ -317,6 +325,24 @@ function classifyJsxElement(content: string, match: JsxMatch): Pick<BindingClass
       const cb = anc.arguments?.[0]
       const alias = cb?.params?.[0]?.type === 'Identifier' ? cb.params[0].name : undefined
       loop = { iterable, alias }
+    }
+    // Solid `<For each={items}>{(item) => <Child … />}</For>`. Previously
+    // unhandled entirely — an element inside a Solid `<For>` reported no loop
+    // at all, which reads as "verified: renders once." Extract what we can;
+    // fall back to an explicit 'unknown' iterable rather than staying silent.
+    if (anc.type === 'JSXElement' && jsxTagName(anc.openingElement) === 'For') {
+      const eachAttr = (anc.openingElement?.attributes ?? []).find(
+        (a: any) => a.type === 'JSXAttribute' && a.name?.name === 'each',
+      )
+      const eachExpr = eachAttr?.value?.type === 'JSXExpressionContainer' ? eachAttr.value.expression : undefined
+      pendingForEach = typeof eachExpr?.start === 'number' && typeof eachExpr?.end === 'number'
+        ? content.slice(eachExpr.start, eachExpr.end)
+        : 'unknown'
+    } else if (pendingForEach !== undefined && anc.type === 'ArrowFunctionExpression') {
+      const param = anc.params?.[0]
+      const alias = param?.type === 'Identifier' ? param.name : undefined
+      loop = { iterable: pendingForEach, alias }
+      pendingForEach = undefined
     }
   }
 

@@ -11,7 +11,7 @@ Annotask scans a project's data-fetching libraries and local code to build a cat
 - the `annotask data-sources`, `data-source-examples`, `data-source-details` CLI commands
 - per-task `data_context` enrichment (the primary source a task is bound to)
 
-The scanner is workspace-aware, so in monorepos it aggregates data libraries and definitions across sibling packages and MFEs rather than only the current package.
+The scanner is scoped to the **running package only** — it reads that package's own `package.json` and walks that package's own `src/`, not sibling workspace packages. This was a deliberate fix: aggregating every workspace package surfaced sibling apps' data libraries and endpoints (a Vue app would show another app's hooks and endpoints), polluting the catalog and the on-page data highlights. See "Workspace Behavior" below for what workspace-awareness now means in practice.
 
 ## Two Layers
 
@@ -37,7 +37,7 @@ interface DataSourceLibrary {
 interface ProjectDataEntry {
   kind: 'composable' | 'signal' | 'store' | 'fetch' | 'graphql' | 'loader' | 'rpc'
   name: string
-  display_name?: string        // e.g. "localhost:4320 /api/health" for inline fetches
+  display_name?: string        // e.g. "localhost:4320 GET /api/health" for inline fetches
   file: string                 // workspace-relative
   line?: number                // 1-based definition line
   endpoint?: string            // literal endpoint or query key when extractable
@@ -46,6 +46,12 @@ interface ProjectDataEntry {
   hint_symbols?: string[]      // local vars holding the fetch result (for the binding analyzer)
 }
 ```
+
+The scanner itself (`src/server/data-source-scanner.ts`) tracks three more provenance fields that aren't promoted to the shared `schema.ts` type yet, so they ride the wire on any entry that has them (structurally a superset — assignable to `ProjectDataEntry[]` for consumers that don't know about them) but aren't part of the canonical contract:
+
+- `endpoint_source?: 'url' | 'literal-path' | 'query-key' | 'guess'` — how `endpoint` was actually derived. `'guess'` marks the low-confidence "first quoted string in the vicinity" fallback (e.g. a `defineStore('user', ...)` store id) — never silently treated as a real fetchable URL.
+- `query_key?: string` — populated when the only thing found was a TanStack/SWR-style `queryKey` (an identifier, not a URL). Kept separate from `endpoint` so a queryKey is never mistaken for something fetchable, even though it's still mirrored into `endpoint` for backward-compatible display.
+- `method_known?: boolean` — whether `method` reflects a real signal (an explicit verb, an axios method call, or an htmx attribute) as opposed to the HTTP-default `'GET'` fallback used when the options argument couldn't be inspected.
 
 ### Catalog shape
 
@@ -81,7 +87,7 @@ Detail pane shows signature, return type, body excerpt, leading imports, co-loca
 
 ## Workspace Behavior
 
-`scanDataSources()` uses `resolveWorkspace()` to read dependencies and walk `src/` across every workspace package. File paths are relativized against the workspace root so cross-MFE references stay unambiguous, and `useWorkspace()` in the shell maps those paths back to MFE ids for filtering.
+`scanDataSources()` reads dependencies and walks `src/` for the **running package only** — the same host-package scoping as the component scanner, and for the same reason (aggregating every workspace package leaked sibling apps' hooks/endpoints into a project that can never call them). `resolveWorkspace()` is still used, but only to compute the base that file paths are relativized against (the workspace root, not `projectRoot`), so a monorepo member's paths come out looking like `packages/foo/src/…` and stay consistent with `component-usage`'s paths and the shell's `useWorkspace()` MFE-id mapping — it does not widen what gets scanned. There is no `mfe` parameter on any data-source endpoint (HTTP, MCP, or CLI) analogous to the component catalog's project-components lookup; the data catalog is always exactly the running package's own libraries and `src/` entries.
 
 Path-only endpoints like `/api/health` are resolved through the nearest `vite.config`'s `server.proxy` — so a Vue MFE proxying `/api` to a FastAPI service at :4320 doesn't get its highlights attributed to a Go service at :4330 that happens to expose the same path.
 
@@ -91,11 +97,13 @@ The scanner runs in order (see `scanDataSourcesUncached` in `src/server/data-sou
 
 ### 1. Library detection
 
-Reads `dependencies` + `devDependencies` from every workspace `package.json` and cross-checks against `DATA_LIB_PATTERNS` — the hand-curated map of package name → identifiers we know how to recognize. A library only survives if at least one of its identifiers actually appears in source.
+Reads `dependencies` + `devDependencies` from the running package's `package.json` and cross-checks against `DATA_LIB_PATTERNS` — the hand-curated map of package name → identifiers we know how to recognize. A library only survives if at least one of its identifiers actually appears in source.
+
+Confirmation is dependency-gated and call-shape aware: comments and string/template-literal contents are stripped from each file before matching, so a mention of `useQuery` in a comment doesn't false-confirm a library. Single-word identifiers that read as ordinary prose or unrelated code (`create`, `computed`, `derived` — zustand/mobx/svelte respectively) require call-shape (`create(`) rather than a bare word match, so e.g. Svelte's `derived` no longer false-confirms against an unrelated `$derived` rune usage. Dotted patterns (`axios.get`) and non-word-leading patterns (`$fetch`) are matched correctly — both were previously broken by escaping/`\b`-boundary bugs that made axios and `$fetch` unrecognizable regardless of actual usage.
 
 ### 2. Project entry detection
 
-Walks each package's `src/` (capped at 5000 files) and matches `ENTRY_PATTERNS` — specificity-ordered regexes for:
+Walks the running package's `src/` (capped at 5000 files) and matches `ENTRY_PATTERNS` — regexes for distinct declaration shapes, listed roughly from most to least specific:
 
 - named composables / hooks (`export function useX(...)`, `export const useX = (...)`)
 - Pinia stores (`defineStore`)
@@ -105,18 +113,18 @@ Walks each package's `src/` (capped at 5000 files) and matches `ENTRY_PATTERNS` 
 - Solid primitives (`createSignal`, `createResource`, `createStore`)
 - GraphQL operations (tagged `` gql`...` ``)
 - tRPC routers (`createTRPCRouter`)
-- Fetch wrappers in API-ish directories
-- Inline fetches in component files (`fetch()`, `axios.*()`, `ofetch()`, `$fetch()`, `new URL()`, htmx `hx-*` attributes)
+- Fetch wrappers in API-ish directories, or anywhere the function body does real HTTP — covers both `export function getX(...)` and the arrow-const form that dominates modern codebases (`export const getX = async (id) => fetch(...)`), plus "helper indirection" through a pre-configured client object (`apiClient.get(...)`, `httpClient.post(...)`) rather than a bare global identifier
+- Inline fetches in component files (`fetch()`, `axios.*()`, `ofetch()`, `$fetch()`, two-step `new URL(...)` + `fetch(url)` builds, htmx `hx-*` attributes)
 
-First match wins, so more specific patterns take precedence over generic ones.
+Every pattern in `ENTRY_PATTERNS` is applied exhaustively across the whole file — there is no "first pattern wins and suppresses the rest" mechanism. The patterns are written to match structurally distinct declaration shapes (a Pinia store's `defineStore(` vs a plain composable's `= (` / `= async (` / `= function`), so in practice they rarely overlap on the same text; when a real HTTP call already gets claimed by a named fetch-wrapper match, the separate inline-call pass explicitly skips that same endpoint so it isn't cataloged a second time anonymously. "Specificity order" describes the list above, not an arbitration rule between patterns.
 
 ### 3. Endpoint resolution
 
-Literal endpoints extracted from the definition body are run through `parseViteProxy()` against the nearest `vite.config` so `/api/health` becomes `http://localhost:4320/api/health`.
+Literal endpoints extracted from the definition body are run through `parseViteProxy()` against the nearest `vite.config` so `/api/health` becomes `http://localhost:4320/api/health`. Endpoint literals are tagged with `endpoint_source` (see "Project entries" above) so a low-confidence guess is never confused with a confirmed URL/path, and `${id}`-style template interpolations are preserved as a `:param` placeholder (`` `/api/planets/${id}` `` → `/api/planets/:param`) rather than truncating the path at the `$`.
 
 ### 4. Usage counting
 
-One combined alternation regex per file counts non-definition references to each entry's name. Definition lines are excluded by line number. `used_count` drives the sort order and the `used_only` filter.
+For name-keyed entries (composables, stores, signals, …), a combined alternation regex counts non-definition references to each entry's name across every file, excluding the definition line. When two entries share the same name, counting is scoped to same-file references only — a shared name can't be safely attributed project-wide (two unrelated `useData` composables would otherwise inflate each other's count). For `fetch`-kind entries, the synthetic endpoint-derived name (e.g. `apiHealth`) never appears verbatim in source, so those are instead counted by searching for the entry's `hint_symbols` — the real local variables that hold the fetch result — scoped to the entry's own file. `used_count` drives the sort order and the `used_only` filter either way.
 
 ### 5. Hint symbols for inline fetches
 
@@ -133,10 +141,12 @@ Inline fetches like `const health = await fetch('/api/health').then(r => r.json(
 | `solid-js` (`createSignal`, `createMemo`, `createEffect`) | `signal` |
 | `solid-js` (`createResource`) | `composable` |
 | `solid-js` (`createStore`) | `store` |
-| `vue-router`, `react-router{,-dom}`, `@remix-run/react`, `next`, `@solidjs/router` | `loader` |
+| `vue-router`, `react-router{,-dom}`, `@remix-run/react`, `next`, `@solidjs/router`, `astro` (`getCollection`/`getEntry`/`getEntryBySlug`/`getStaticPaths`) | `loader` |
 | `@trpc/client`, `@trpc/react-query`, `@trpc/next` | `rpc` |
 
 Full map in `DATA_LIB_PATTERNS` (`src/server/data-source-scanner.ts`).
+
+htmx is a special case: it's attribute-driven, so there's no JS identifier to confirm against, and its canonical install is often a CDN `<script>` tag rather than an npm dependency. It's recognized two ways, independent of whether `htmx.org` is even in `package.json`: real `hx-get`/`hx-post`/`hx-put`/`hx-patch`/`hx-delete`/… attribute usage anywhere in scanned files (including plain `.html`), and the canonical `<script src="…htmx…">` CDN tag. Either signal alone surfaces the library; both together are required to synthesize a library entry when there's no `package.json` dependency to gate on at all.
 
 ## Binding Graph
 
@@ -167,7 +177,7 @@ The catalog is project-wide. The per-task `data_context` is a narrower slice —
 
 ## Caching
 
-Catalog scans are cached in memory with a 60-second TTL. Concurrent scans are coalesced behind a single in-flight promise. `clearDataSourceCache()` also clears the vite-proxy lookup cache used by endpoint resolution.
+Catalog scans are cached in memory with a 60-second TTL. Concurrent scans are coalesced behind a single in-flight promise. `clearDataSourceCache()` also clears the vite-proxy lookup cache used by endpoint resolution. `GET /api/data-sources` accepts `?refresh=1` (or `?refresh=true`) to clear the cache and force a rescan before responding — without it, a data source deleted or renamed on disk keeps being served from the 60s cache with no escape hatch. The returned `scannedAt` is stamped at scan time.
 
 The binding graph has its own 60s TTL keyed per source + hint + scope.
 
@@ -180,6 +190,7 @@ The data-context probe cache is keyed by realpath + mtime and evicts FIFO at 500
 ```bash
 curl http://localhost:5173/__annotask/api/data-sources
 curl http://localhost:5173/__annotask/api/data-sources?kind=composable&used_only=1
+curl "http://localhost:5173/__annotask/api/data-sources?refresh=1"
 curl http://localhost:5173/__annotask/api/data-source-examples/useUserQuery?limit=5
 curl http://localhost:5173/__annotask/api/data-source-details/useUserQuery
 curl http://localhost:5173/__annotask/api/data-source-bindings/useUserQuery
@@ -187,7 +198,7 @@ curl http://localhost:5173/__annotask/api/data-source-bindings/useUserQuery
 
 ### MCP
 
-- `annotask_get_data_sources` — supports `kind`, `library`, `search`, `used_only`
+- `annotask_get_data_sources` — supports `kind`, `library`, `search`, `used_only`, `merge_runtime` (default true — promotes orphan runtime-observed endpoints into `project_entries` with `discovered_by: "runtime"` and `file: ""`; pass `false` for a pure static-scan view)
 - `annotask_get_data_source_examples` — supports `name`, `kind`, `limit`
 - `annotask_get_data_source_details` — supports `name`, `kind`, `file`, `context_lines`
 
@@ -207,7 +218,7 @@ annotask data-source-details useUserQuery --file=src/composables/useUserQuery.ts
 Reach for the data-source catalog when a task asks to:
 
 - modify a fetch contract, query, mutation, or store — there is no dedicated task type for this; these arrive as `annotation` tasks carrying `data_context` plus runtime-endpoint evidence, and the catalog is how you ground them
-- add a new UI that needs to bind to existing data — start from `used_only=true` to see what's already fetched on this page
+- add a new UI that needs to bind to existing data — start from `used_only=true` to narrow the whole-project catalog down to sources with a real reference somewhere in `src/` (this is project-wide ranking by `used_count`, not a "what's fetched on the current page" filter — for that, use the per-task/per-element `data_context` or the shell's separate "On page" toggle, which is driven by live highlight rects from the iframe)
 - rewire a component to a different hook or store that matches project conventions
 - understand what data an element on the current page depends on — use the per-task `data_context`, then call `annotask_get_data_source_details` on the primary source for its shape
 - trace a source end-to-end through prop chains — the bindings endpoint returns the full render-site graph

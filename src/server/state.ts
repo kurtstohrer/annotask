@@ -641,12 +641,33 @@ export function createProjectState(
 
   // ── Runtime endpoint catalog ──
   const runtimeEndpoints: RuntimeEndpointStore = createRuntimeEndpointStore(projectRoot)
+  // The iframe posts a network-call batch roughly every ~1s, and the shell's
+  // only listener (`useDataSources.ts`) ignores the broadcast payload and
+  // re-fetches via GET on receipt — so broadcasting the full catalog (up to
+  // MAX_ENDPOINTS rows) on every single ingest was pure waste over the WS.
+  // Throttle to a lightweight `{ updatedAt }` signal instead; listeners that
+  // want the data already re-fetch it themselves.
+  const RUNTIME_BROADCAST_THROTTLE_MS = 1000
+  let runtimeBroadcastTimer: NodeJS.Timeout | null = null
+
+  function sendRuntimeBroadcast(): void {
+    broadcast('runtime-endpoints:updated', { updatedAt: runtimeEndpoints.getCatalog().updatedAt })
+  }
+
+  function scheduleRuntimeBroadcast(): void {
+    if (runtimeBroadcastTimer) return
+    runtimeBroadcastTimer = setTimeout(() => {
+      runtimeBroadcastTimer = null
+      sendRuntimeBroadcast()
+    }, RUNTIME_BROADCAST_THROTTLE_MS)
+    runtimeBroadcastTimer.unref?.()
+  }
 
   function ingestNetworkCalls(calls: NetworkCall[]): void {
     runtimeEndpoints.ingest(calls)
     // Notify any live WebSocket listeners so the Data view can update without
     // polling. Event name mirrors the existing 'tasks:updated' broadcast.
-    broadcast('runtime-endpoints:updated', runtimeEndpoints.getCatalog())
+    scheduleRuntimeBroadcast()
   }
 
   function getRuntimeEndpointCatalog(): RuntimeEndpointCatalog {
@@ -655,15 +676,28 @@ export function createProjectState(
 
   function clearRuntimeEndpoints(): void {
     runtimeEndpoints.clear()
-    broadcast('runtime-endpoints:updated', runtimeEndpoints.getCatalog())
+    // A deliberate, infrequent action — send immediately rather than riding
+    // the throttle, and drop any pending throttled broadcast so it can't
+    // fire right after with stale-looking (but harmless, since the payload
+    // is just a timestamp) timing.
+    if (runtimeBroadcastTimer) { clearTimeout(runtimeBroadcastTimer); runtimeBroadcastTimer = null }
+    sendRuntimeBroadcast()
   }
 
   async function flush() {
+    // Covers the Vite-plugin dev-server path too, PROVIDED something calls
+    // state.flush()/dispose() on shutdown — today that wiring exists for the
+    // standalone/proxy server entries (see standalone.ts, proxy-serve.ts)
+    // but the Vite plugin's configureServer() never calls flush()/dispose()
+    // on server close, so a burst of runtime-endpoint writes right before an
+    // in-process dev-server restart can still be lost there. That gap lives
+    // in src/plugin/index.ts, outside this file.
     await Promise.allSettled([taskLock, taskFlushChain, perfLock, runtimeEndpoints.flush()])
   }
 
   function dispose() {
     if (specWatcher) { specWatcher.close(); specWatcher = null }
+    if (runtimeBroadcastTimer) { clearTimeout(runtimeBroadcastTimer); runtimeBroadcastTimer = null }
   }
 
   return {

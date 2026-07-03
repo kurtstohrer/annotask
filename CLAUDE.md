@@ -25,6 +25,7 @@ Annotask includes an MCP server that starts automatically with the dev server at
 | `annotask_get_data_sources` | List detected data libraries and project data sources |
 | `annotask_get_data_source_examples` | Get real in-repo usage examples for a data source |
 | `annotask_get_data_source_details` | Get definition-level detail for a data source |
+| `annotask_get_data_source_shape` | Resolve a data source's response shape down the honesty ladder (api-schema tree / regex hints / none); `method`/`line` disambiguate a name collision |
 | `annotask_get_runtime_endpoints` | List endpoints the iframe has actually hit at runtime — aggregated per (origin, method, pattern). `orphans_only: true` surfaces gaps the static scanner missed |
 | `annotask_get_api_schemas` | List discovered OpenAPI, GraphQL, tRPC, and JSON Schema sources |
 | `annotask_get_api_operation` | Fetch one API operation by path |
@@ -90,6 +91,7 @@ annotask data-sources        # List data libraries + project data sources
 annotask runtime-endpoints   # List endpoints the iframe hit at runtime (--orphans-only for gaps)
 annotask data-source-examples useUserQuery # Real in-repo data-source usages
 annotask data-source-details useUserQuery  # Definition-level data-source detail
+annotask data-source-shape useUserQuery    # Response-shape honesty ladder (api-schema tree / regex hints / none)
 annotask api-schemas         # Discovered API schemas
 annotask api-operation /users --method=GET # One resolved API operation
 annotask resolve-endpoint /api/users/42    # Match a concrete URL to a known schema
@@ -134,7 +136,7 @@ Options: `--port=N`, `--host=H`, `--server=URL` (override server.json),
 - `GET|POST|DELETE /__annotask/api/runtime-endpoints` — Runtime-observed endpoint catalog. Iframe fetch/XHR/beacon calls land here automatically. `GET ?merge_static=true` enriches rows with matching static sources + OpenAPI operations; `GET ?route=PATH` filters to one iframe route
 - `GET /__annotask/api/data-source-examples/:name` — In-repo data-source usage examples
 - `GET /__annotask/api/data-source-details/:name` — Definition-level data-source detail
-- `GET /__annotask/api/data-source-shape` — Shape resolution for the wireframe binding picker (`?name&kind&file`): walks the source's endpoint into a real API-schema tree (`shape_source: 'api-schema'`), falls back to regex return-type hints (`'source-details'`), or honestly nothing (`'none'`). Shell-only — agents re-ground via data-source-details / api-operation
+- `GET /__annotask/api/data-source-shape` — Shape resolution for the wireframe binding picker (`?name&kind&file`, plus `&method&line` to disambiguate a name collision): walks the source's endpoint into a real API-schema tree (`shape_source: 'api-schema'`, `match_confidence`≥0.5 with `schema_location`/`op`/`resolved_endpoint`), falls back to regex return-type hints (`'source-details'` with `details_confidence`), or honestly nothing (`'none'`). Also exposed to agents as `annotask_get_data_source_shape` / `annotask data-source-shape` so they re-ground a binding against the same resolution the picker used
 - `GET /__annotask/api/data-source-bindings/:name` — Binding graph for highlights
 - `GET /__annotask/api/api-schemas` — API schema catalog
 - `GET /__annotask/api/api-operation` — One API operation by path

@@ -5,7 +5,6 @@ import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 import { AddressInfo } from 'node:net'
 import { createMcpMiddleware, type McpDeps } from '../server'
-import { getSystemPrompt } from '../../skills/index.js'
 
 function makeDeps(overrides: Partial<McpDeps> = {}): McpDeps {
   return {
@@ -80,11 +79,13 @@ describe('MCP server — initialize.instructions', () => {
       expect(response).toBeTruthy()
       expect(response.result.protocolVersion).toBe('2025-03-26')
       expect(response.result.serverInfo.name).toBe('annotask')
-      // Instructions must come from the shared loader so the MCP surface and
-      // the embedded runner can never drift.
-      const expected = getSystemPrompt()
-      expect(response.result.instructions).toBe(expected)
+      // Instructions are now a compact pointer to the core apply loop, NOT the
+      // full ~23KB annotask-apply skill body (findings: "MCP initialize embeds
+      // the full 22,982-byte SKILL.md"). Assert it still names the skill and
+      // the apply loop, and that it stays small.
       expect(response.result.instructions).toMatch(/annotask-apply/i)
+      expect(response.result.instructions).toMatch(/annotask_get_playbook/)
+      expect(response.result.instructions.length).toBeLessThan(4000)
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }

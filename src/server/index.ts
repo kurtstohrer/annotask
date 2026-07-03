@@ -314,6 +314,12 @@ export function createAnnotaskServer(options: AnnotaskServerOptions): AnnotaskSe
     readInteractionHistory: (id) => state.readInteractionHistory(id),
     readRenderedHtml: (id) => state.readRenderedHtml(id),
     getRuntimeEndpointCatalog: () => state.getRuntimeEndpointCatalog(),
+    // Thread the configured API-schema sources so MCP schema scans probe the
+    // same catalog the shell's HTTP scan does (findings: "MCP schema scans pass
+    // no ScanOptions..."). devServerUrl is derived per-request from the Host
+    // header inside the MCP middleware.
+    apiSchemaUrls: options.apiSchemaUrls,
+    apiSchemaFiles: options.apiSchemaFiles,
     taskThread,
   })
 

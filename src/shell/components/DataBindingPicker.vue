@@ -39,6 +39,12 @@ const filter = ref('')
 const selected = ref<ProjectDataEntry | null>(null)
 const shape = ref<DataSourceShape | null>(null)
 const shapeLoading = ref(false)
+// Set when the resolver returns ≥2 real candidates for the picked source (a
+// GET query + a same-named mutation, say). Rendered as a chooser — NOT
+// collapsed to the blind 'none' view, which would hide that the ambiguity is
+// resolvable by method/line.
+type ShapeCandidate = { name: string; kind: string; file: string; line: number; method?: string }
+const ambiguous = ref<ShapeCandidate[] | null>(null)
 
 // Drill-down state. pickedPath is null until the user explicitly picks a row
 // — an object ROOT's path is the empty string, so '' can't mean "nothing
@@ -79,9 +85,21 @@ const filtered = computed(() => {
 let pickSeq = 0
 
 async function pickEntry(entry: ProjectDataEntry): Promise<void> {
+  await fetchShape(entry)
+}
+
+/** Re-resolve the current source narrowed to one candidate (method/line) —
+ *  the honest exit from the ambiguity chooser. */
+async function resolveAmbiguous(c: ShapeCandidate): Promise<void> {
+  if (!selected.value) return
+  await fetchShape(selected.value, { method: c.method, line: c.line })
+}
+
+async function fetchShape(entry: ProjectDataEntry, extra?: { method?: string; line?: number }): Promise<void> {
   const seq = ++pickSeq
   selected.value = entry
   shape.value = null
+  ambiguous.value = null
   shapeLoading.value = true
   expanded.value = new Set()
   pickedPath.value = null
@@ -92,14 +110,23 @@ async function pickEntry(entry: ProjectDataEntry): Promise<void> {
   try {
     const params = new URLSearchParams({ name: entry.name, kind: entry.kind })
     if (entry.file) params.set('file', entry.file)
+    if (extra?.method) params.set('method', extra.method)
+    if (extra?.line != null) params.set('line', String(extra.line))
     const res = await fetch(`/__annotask/api/data-source-shape?${params}`)
-    const body = await res.json() as DataSourceShape | { error: string }
+    const body = await res.json() as DataSourceShape | { error: string; candidates?: ShapeCandidate[] }
     if (seq !== pickSeq) return // a newer pick raced ahead — drop this response
-    // Ambiguous/not-found degrade to the blind view — kind+file disambiguate
-    // in practice, and honesty beats a guessed tree.
-    shape.value = 'error' in body
-      ? { name: entry.name, kind: entry.kind, file: entry.file, shape_source: 'none' }
-      : body
+    if ('error' in body) {
+      // Ambiguity is resolvable — surface the candidates so the user disambiguates
+      // by method/line instead of silently coercing to the blind 'none' view.
+      if (body.error === 'ambiguous' && body.candidates?.length) {
+        ambiguous.value = body.candidates
+      } else {
+        // not_found — honestly nothing to bind against.
+        shape.value = { name: entry.name, kind: entry.kind, file: entry.file, shape_source: 'none' }
+      }
+    } else {
+      shape.value = body
+    }
   } catch {
     if (seq !== pickSeq) return
     shape.value = { name: entry.name, kind: entry.kind, file: entry.file, shape_source: 'none' }
@@ -148,17 +175,30 @@ const shapeSourceLabel = computed(() => {
   return { cls: 'none', text: 'no shape available — entered blind' }
 })
 
-const canBind = computed(() => !!selected.value && !!shape.value && !shapeLoading.value)
+// The real-contract tier (api-schema) may only bind once the user has drilled
+// to a concrete path — binding the whole response blind defeats the tree's
+// purpose and would persist a path-less 'schema-picked' claim. Lower tiers
+// carry an honest path_source, so a path is optional there.
+const canBind = computed(() => {
+  if (!selected.value || !shape.value || shapeLoading.value) return false
+  if (shape.value.shape_source === 'api-schema') return pickedPath.value !== null
+  return true
+})
 
 function confirm(): void {
   const entry = selected.value
   const s = shape.value
   if (!entry || !s) return
   const usingTree = s.shape_source === 'api-schema'
-  const path = usingTree ? (pickedPath.value ?? '') : freePath.value
+  const path = usingTree ? (pickedPath.value ?? '') : freePath.value.trim()
   const fields = usingTree
     ? [...pickedFields.value]
     : freeFields.value.split(',').map(f => f.trim()).filter(Boolean)
+  // Path provenance: a tree-drilled path is verified against the real contract;
+  // a typed one is the user's unverified assertion; no path is 'none'.
+  const path_source: WireframeDataBinding['path_source'] = usingTree
+    ? 'schema-picked'
+    : (path ? 'user-typed' : 'none')
   // Pull REAL contract example rows for the preview (api-schema only); default a
   // sketch repeat for a list path. propMap is mapped later in the popover.
   const sample = usingTree && pickedNode.value ? sampleRows(pickedNode.value, fields, 5) : []
@@ -167,6 +207,16 @@ function confirm(): void {
     path,
     fields,
     shape_source: s.shape_source,
+    path_source,
+    // Verifiable evidence straight from the resolved shape — so the persisted
+    // binding (and the apply agent) re-ground against the same contract.
+    ...(s.match_confidence != null ? { match_confidence: s.match_confidence } : {}),
+    ...(s.schema_location ? { schema_location: s.schema_location } : {}),
+    ...(s.schema_kind ? { schema_kind: s.schema_kind } : {}),
+    ...(s.op ? { op: s.op } : {}),
+    ...(s.method ? { method: s.method } : {}),
+    ...(s.resolved_endpoint ? { resolved_endpoint: s.resolved_endpoint } : {}),
+    ...(s.details_confidence ? { details_confidence: s.details_confidence } : {}),
     ...(sample.length > 0 ? { sample } : {}),
     ...(isList ? { repeat: 3 } : {}),
   }))
@@ -212,6 +262,21 @@ function confirm(): void {
       <div class="bp-detail">
         <div v-if="!selected" class="bp-empty">Pick a source on the left</div>
         <div v-else-if="shapeLoading" class="bp-empty">Resolving shape…</div>
+        <!-- Resolvable ambiguity: ≥2 real definitions share this name — pick one. -->
+        <div v-else-if="ambiguous" class="bp-ambiguous" data-testid="binding-ambiguous">
+          <p class="bp-ambiguous-head">Ambiguous — {{ ambiguous.length }} definitions share this name. Pick one:</p>
+          <button
+            v-for="(c, i) in ambiguous"
+            :key="`${c.file}:${c.line}:${c.method ?? ''}`"
+            class="bp-row bp-ambiguous-row"
+            :data-testid="`binding-ambiguous-${i}`"
+            @click="resolveAmbiguous(c)"
+          >
+            <span class="bp-kind" :data-kind="c.kind">{{ c.kind }}</span>
+            <span v-if="c.method" class="bp-method">{{ c.method }}</span>
+            <code class="bp-module">{{ c.file }}:{{ c.line }}</code>
+          </button>
+        </div>
         <template v-else-if="shape">
           <div class="bp-meta">
             <span class="bp-kind" :data-kind="shape.kind">{{ shape.kind }}</span>
@@ -243,6 +308,10 @@ function confirm(): void {
                     : row.node.kind === 'ref' ? `→ ${row.node.ref}`
                     : row.node.kind }}
                 </span>
+                <!-- oneOf/anyOf collapse: the tree shows only the first variant. -->
+                <span v-if="row.node.variant_of" class="bp-variant" title="This node is a union the tree collapsed to one shape">
+                  1 of {{ row.node.variant_of }} variants
+                </span>
               </div>
             </div>
             <div v-if="pickedNode" class="bp-picked">
@@ -270,6 +339,10 @@ function confirm(): void {
               <div v-if="shape.referenced_types?.length" class="bp-hint"><span>types</span><code>{{ shape.referenced_types.join(', ') }}</code></div>
             </div>
             <div class="bp-free">
+              <p class="bp-free-warn">
+                No verified shape — a path you type here is an <strong>unverified assertion</strong>.
+                The agent will re-ground it against the source before wiring.
+              </p>
               <label class="bp-free-row">
                 <span>Path <em>(e.g. planets[] or data.user)</em></span>
                 <input v-model="freePath" type="text" data-testid="binding-path-input" placeholder="optional">
@@ -424,6 +497,37 @@ function confirm(): void {
 .bp-twisty-pad { width: 14px; }
 .bp-key { color: var(--syntax-property); }
 .bp-type { color: var(--text-muted); margin-left: 6px; }
+.bp-variant {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning);
+}
+.bp-ambiguous { display: flex; flex-direction: column; gap: 4px; }
+.bp-ambiguous-head { color: var(--text-muted); font-size: 11px; margin: 4px 2px; }
+.bp-ambiguous-row { border: 1px solid var(--border); border-radius: 4px; margin: 0 2px; }
+.bp-method {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+.bp-free-warn {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+}
+.bp-free-warn strong { color: var(--warning); }
 .bp-picked { display: flex; flex-direction: column; gap: 6px; }
 .bp-picked-path code { color: var(--accent); }
 .bp-fields { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

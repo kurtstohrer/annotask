@@ -123,22 +123,26 @@ describe('AnnotaskWebpackPlugin devServer proxy injection', () => {
     expect(warning).toContain('http://127.0.0.1:24678')
   })
 
-  it('warns about the locked proxy when the server falls back to another port', async () => {
+  it('re-points the proxy in place when the server falls back to another port', async () => {
     vi.mocked(startStandaloneServer).mockResolvedValue({ port: 51234, close: async () => {} })
     const compiler = fakeCompiler()
     new AnnotaskWebpackPlugin().apply(compiler)
 
-    // Proxy was locked to the expected port at apply() time…
+    // Proxy target is the expected port at apply() time (server hasn't bound yet)…
     expect(compiler.options.devServer.proxy).toEqual([ANNOTASK_RULE])
 
-    // …then the server lands elsewhere (EADDRINUSE fallback) — too late to
-    // fix the snapshot, so the user gets the exact rule to add by hand.
+    // …then the server lands elsewhere (EADDRINUSE fallback). The rule object
+    // reference survives devServer's apply()-time shallow snapshot, so we
+    // mutate its `target` in place to the actual bound port (findings P0-6:
+    // the webpack proxy target was frozen at apply()-time).
     expect(compiler.beforeCompileTaps).toHaveLength(1)
     await compiler.beforeCompileTaps[0]()
 
+    expect(compiler.options.devServer.proxy[0].target).toBe('http://127.0.0.1:51234')
+
     const warning = vi.mocked(console.warn).mock.calls.map(args => args.join(' ')).join('\n')
-    expect(warning).toContain('locked to 24678')
-    expect(warning).toContain('http://127.0.0.1:51234')
+    expect(warning).toContain('24678')
+    expect(warning).toContain('51234')
   })
 
   it('does not warn when the server starts on the expected port', async () => {

@@ -59,8 +59,9 @@ export const svelteAnalyzer: FrameworkBindingAnalyzer = {
 
     const sites: BindingSite[] = []
     const edges: PropEdge[] = []
+    const offsetToLine = buildOffsetToLine(args.content)
 
-    walkFragment(ast.html ?? ast, tainted, { file: args.file, sites, edges })
+    walkFragment(ast.html ?? ast, tainted, { file: args.file, sites, edges, offsetToLine })
 
     if (sites.length === 0 && edges.length === 0) return null
     return { sites, prop_edges: edges, tainted_symbols: [...tainted] }
@@ -105,7 +106,26 @@ function collectAliases(script: string, tainted: Set<string>): void {
   }
 }
 
-interface SvelteCtx { file: string; sites: BindingSite[]; edges: PropEdge[] }
+interface SvelteCtx { file: string; sites: BindingSite[]; edges: PropEdge[]; offsetToLine: (offset: number) => number }
+
+/** Byte offset → 1-based line, for Svelte 3/4 ASTs whose nodes only carry
+ *  `start`/`end` offsets (no `loc`). Mirrors binding-classify.ts's helper. */
+function buildOffsetToLine(content: string): (offset: number) => number {
+  const starts: number[] = [0]
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\n') starts.push(i + 1)
+  }
+  return (offset: number) => {
+    let lo = 0
+    let hi = starts.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (starts[mid] <= offset) lo = mid
+      else hi = mid - 1
+    }
+    return lo + 1
+  }
+}
 
 function walkFragment(node: any, scope: Set<string>, ctx: SvelteCtx): void {
   if (!node) return
@@ -120,7 +140,7 @@ function visit(node: any, scope: Set<string>, ctx: SvelteCtx): void {
     const ids = collectIds(expr)
     const hit = ids.filter(id => scope.has(id))
     if (hit.length > 0) {
-      ctx.sites.push({ file: ctx.file, line: lineOf(node), tainted_symbols: hit })
+      ctx.sites.push({ file: ctx.file, line: lineOf(node, ctx.offsetToLine), tainted_symbols: hit })
     }
     return
   }
@@ -130,7 +150,7 @@ function visit(node: any, scope: Set<string>, ctx: SvelteCtx): void {
     const childScope = new Set(scope)
     if (iterHit.length > 0) {
       // Mark the each block itself as a site and add the alias to scope.
-      ctx.sites.push({ file: ctx.file, line: lineOf(node), tainted_symbols: iterHit })
+      ctx.sites.push({ file: ctx.file, line: lineOf(node, ctx.offsetToLine), tainted_symbols: iterHit })
       const alias = patternIdentifiers(node.context)
       for (const n of alias) childScope.add(n)
     }
@@ -159,7 +179,7 @@ function visit(node: any, scope: Set<string>, ctx: SvelteCtx): void {
               if (isComponent && attr.name) {
                 ctx.edges.push({
                   from_file: ctx.file,
-                  from_line: lineOf(node),
+                  from_line: lineOf(node, ctx.offsetToLine),
                   to_hint: tag || '',
                   prop_name: attr.name,
                   source_expr: astText(expr),
@@ -168,11 +188,31 @@ function visit(node: any, scope: Set<string>, ctx: SvelteCtx): void {
             }
           }
         }
+      } else if (attr.type === 'Class') {
+        // `class:active` / `class:active={isActive}` — previously dropped
+        // entirely from classification, so an element tainted only through a
+        // class directive read as untainted.
+        const expr = attr.expression
+        const ids = collectIds(expr)
+        const hit = ids.filter(id => scope.has(id))
+        if (hit.length > 0) {
+          elementIsSite = true
+          hit.forEach(id => elSymbols.add(id))
+          if (isComponent && attr.name) {
+            ctx.edges.push({
+              from_file: ctx.file,
+              from_line: lineOf(node, ctx.offsetToLine),
+              to_hint: tag || '',
+              prop_name: `class:${attr.name}`,
+              source_expr: astText(expr),
+            })
+          }
+        }
       }
     }
 
     if (elementIsSite) {
-      ctx.sites.push({ file: ctx.file, line: lineOf(node), tainted_symbols: [...elSymbols] })
+      ctx.sites.push({ file: ctx.file, line: lineOf(node, ctx.offsetToLine), tainted_symbols: [...elSymbols] })
     }
     for (const child of (node.children ?? [])) visit(child, scope, ctx)
     return
@@ -238,9 +278,14 @@ function referencesTainted(expr: string, tainted: Set<string>): boolean {
   return false
 }
 
-function lineOf(node: any): number {
+function lineOf(node: any, offsetToLine: (offset: number) => number): number {
   if (node.loc?.start?.line) return node.loc.start.line
-  // Svelte 3/4 uses start/end as offsets into the source; loc is sometimes absent.
+  // Svelte 3/4 nodes carry `start`/`end` byte offsets rather than `loc` — this
+  // is the common case, so resolve a real line from the offset instead of
+  // defaulting straight to the sentinel.
+  if (typeof node.start === 'number') return offsetToLine(node.start)
+  // Neither `loc` nor `start` present — genuinely unresolvable; 0 is the
+  // documented "unknown" sentinel (BindingSite.line has no separate flag).
   return 0
 }
 

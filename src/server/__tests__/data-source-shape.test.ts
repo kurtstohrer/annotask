@@ -93,10 +93,31 @@ describe('schemaToShape — pure walker', () => {
   })
 
   it('takes the first object-ish oneOf/anyOf variant', () => {
+    // Two variants (string | object) collapse to the object shape — but the
+    // marker records that a second variant was hidden.
     expect(schemaToShape({
       oneOf: [{ type: 'string' }, { type: 'object', properties: { ok: { type: 'boolean' } } }],
-    })).toEqual({ kind: 'object', children: { ok: { kind: 'scalar', scalar: 'boolean' } } })
+    })).toEqual({ kind: 'object', children: { ok: { kind: 'scalar', scalar: 'boolean' } }, variant_of: 2 })
+    // A single scalar variant is unwalkable — no object-ish member, no marker.
     expect(schemaToShape({ anyOf: [{ type: 'number' }] })).toEqual({ kind: 'unknown' })
+  })
+
+  it('marks a collapsed oneOf/anyOf with variant_of (1 of N)', () => {
+    // Two object variants — the walker returns the first but must flag that it
+    // hid the union, so the picker can render "1 of N variants".
+    const walked = schemaToShape({
+      oneOf: [
+        { type: 'object', properties: { a: { type: 'string' } } },
+        { type: 'object', properties: { b: { type: 'number' } } },
+      ],
+    })
+    expect(walked.kind).toBe('object')
+    expect(walked.children).toEqual({ a: { kind: 'scalar', scalar: 'string' } })
+    expect(walked.variant_of).toBe(2)
+    // A non-collapsed union (only one structural variant after the string is
+    // skipped) carries no marker.
+    const single = schemaToShape({ oneOf: [{ type: 'object', properties: { ok: { type: 'boolean' } } }] })
+    expect(single.variant_of).toBeUndefined()
   })
 
   it('caps recursion depth instead of walking forever', () => {
@@ -116,8 +137,12 @@ describe('schemaToShape — pure walker', () => {
   })
 })
 
-describe('resolveEndpoint — method-mismatch deranking (sanity)', () => {
-  it('a method mismatch still matches the path but with reduced confidence', () => {
+describe('resolveEndpoint — method-mismatch exclusion', () => {
+  it('a known-method mismatch is excluded (not presented at a floor confidence)', () => {
+    // A GET-declared op requested with POST previously scored path×0.25 = 0.25,
+    // clearing the 0.1 floor and getting presented as a spurious match
+    // (findings: method-scoring bug at resolver:91). When both methods are
+    // known and disagree, the candidate must be excluded entirely.
     const catalog: ApiSchemaCatalog = {
       schemas: [{
         kind: 'openapi', source: 'file', location: 'openapi.json', in_repo: true,
@@ -129,8 +154,7 @@ describe('resolveEndpoint — method-mismatch deranking (sanity)', () => {
     const exact = resolveEndpoint(catalog, '/api/cats', 'GET')
     const mismatched = resolveEndpoint(catalog, '/api/cats', 'POST')
     expect(exact?.confidence).toBe(1)
-    expect(mismatched).not.toBeNull()
-    expect(mismatched!.confidence).toBeLessThan(1)
+    expect(mismatched).toBeNull()
   })
 })
 
@@ -211,6 +235,11 @@ describe('resolveDataSourceShape — honesty ladder', () => {
       expect(shape.schema_ref).toBe('Cat[]')
       expect(shape.match_confidence).toBe(1)
       expect(shape.schema_kind).toBe('openapi')
+      // Verifiable evidence the binding carries so the agent re-grounds against
+      // the SAME operation (item 2 of the gate plan).
+      expect(shape.schema_location).toContain('openapi')
+      expect(shape.op).toEqual({ method: 'GET', path: '/api/cats' })
+      expect(shape.resolved_endpoint).toBe('/api/cats')
       expect(shape.shape).toEqual({
         kind: 'array',
         item: {
@@ -301,6 +330,79 @@ describe('resolveDataSourceShape — honesty ladder', () => {
       })
       expect('error' in resolved).toBe(false)
       expect((resolved as DataSourceShape).shape_source).toBe('api-schema')
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("rung-1 admission floor: a sub-0.5 endpoint match does NOT promote to 'api-schema'", async () => {
+    // Op path `/{a}/{b}/things` vs the source's `/api/z/things`: both
+    // placeholders accept anything, only the trailing literal agrees →
+    // confidence 1/3 = 0.33, below the RUNG1_MIN_CONFIDENCE floor. Presenting
+    // it as a real contract would over-claim, so it must fall through to the
+    // regex tier (here 'none' — the source has no return annotation).
+    const weakSchema = {
+      openapi: '3.0.0',
+      info: { title: 'X', version: '1.0.0' },
+      paths: {
+        '/{a}/{b}/things': {
+          get: { responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { x: { type: 'string' } } } } } } } },
+        },
+      },
+    }
+    const tmp = await scaffold({
+      'openapi.json': JSON.stringify(weakSchema),
+      'src/composables/useThings.ts': `
+        export function useThings() {
+          return fetch('/api/z/things').then(r => r.json())
+        }
+      `,
+    })
+    try {
+      const result = await resolveDataSourceShape({
+        projectRoot: tmp, name: 'useThings',
+        schemaScan: { apiSchemaFiles: ['openapi.json'] },
+      })
+      expect('error' in result).toBe(false)
+      const shape = result as DataSourceShape
+      // Sanity: the resolver DOES find the weak match (0.33) — it's the shape
+      // ladder's floor, not the resolver, that rejects the promotion.
+      expect(shape.shape_source).not.toBe('api-schema')
+      expect(shape.shape_source).toBe('none')
+      expect(shape.shape).toBeUndefined()
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('method disambiguates two same-name entries; ambiguous candidates carry method', async () => {
+    // The scanner mints a method-tagged `fetch` entry (`apiOrders`) for each
+    // call site — same name+kind+endpoint, differing only by request verb.
+    const tmp = await scaffold({
+      'src/a/orders.ts': `
+        export const g = fetch('/api/orders').then(r => r.json())
+      `,
+      'src/b/orders.ts': `
+        export const p = fetch('/api/orders', { method: 'POST' }).then(r => r.json())
+      `,
+    })
+    try {
+      const ambiguous = await resolveDataSourceShape({
+        projectRoot: tmp, name: 'apiOrders', kind: 'fetch',
+        schemaScan: { apiSchemaFiles: ['missing.json'] },
+      })
+      expect(ambiguous).toMatchObject({ error: 'ambiguous' })
+      const candidates = (ambiguous as { candidates: Array<{ method?: string }> }).candidates
+      expect(candidates.length).toBe(2)
+      // The GET/POST split is exactly what makes them distinguishable.
+      expect(candidates.map(c => c.method).sort()).toEqual(['GET', 'POST'])
+
+      const resolved = await resolveDataSourceShape({
+        projectRoot: tmp, name: 'apiOrders', kind: 'fetch', method: 'POST',
+        schemaScan: { apiSchemaFiles: ['missing.json'] },
+      })
+      // Narrowed to one — no longer ambiguous.
+      expect('error' in resolved).toBe(false)
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })
     }

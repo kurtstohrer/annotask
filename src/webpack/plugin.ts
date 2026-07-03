@@ -42,6 +42,13 @@ function manualProxyHint(port: number): string {
 export class AnnotaskWebpackPlugin {
   private options: AnnotaskWebpackOptions
   private serverUrl: string = ''
+  // Reference to the injected proxy rule object, kept so its `target` can be
+  // corrected once the real server port is known (see apply()'s
+  // beforeCompile hook). @webpack-cli/serve snapshots devServer.proxy via a
+  // shallow Object.assign, so the array/rule *object references* survive the
+  // snapshot even though the containing devServer object doesn't — mutating
+  // `.target` in place still lands.
+  private proxyRule: { context?: string[]; target: string; ws: boolean } | null = null
 
   constructor(options: AnnotaskWebpackOptions = {}) {
     this.options = options
@@ -54,9 +61,16 @@ export class AnnotaskWebpackPlugin {
    * @webpack-cli/serve snapshots compiler.options.devServer (Object.assign)
    * before server.start() — so mutating devServer from a compile hook can
    * never land. apply() runs inside createCompiler, which is early enough.
+   *
+   * The target port passed in here is only a placeholder: the real server
+   * hasn't bound yet, and if the preferred port is busy it'll fall back to a
+   * random one (see startStandaloneServer). The rule object is stashed on
+   * `this.proxyRule` so its `target` can be corrected in place once the
+   * actual bound port is known.
    */
   private injectDevServerProxy(compiler: any, port: number) {
     const rule = buildProxyRule(port)
+    this.proxyRule = rule
     try {
       const devServer = compiler.options.devServer = compiler.options.devServer || {}
       const existing = devServer.proxy
@@ -71,9 +85,15 @@ export class AnnotaskWebpackPlugin {
       } else if (typeof existing === 'object') {
         // v4 legacy object form ({ '/api': {...} }). Converting the user's
         // entries to the array form could change how dev-server v4 normalizes
-        // them, so add ours as another keyed entry instead.
+        // them, so add ours as another keyed entry instead. In the keyed form
+        // the KEY is the context path, so the value must not carry a redundant
+        // `context` field. We stash this keyed value as `this.proxyRule` (not
+        // the array-shaped `rule`) so the later target-in-place fix-up mutates
+        // the object that actually lives in the config.
         if (!existing['/__annotask']) {
-          existing['/__annotask'] = { target: rule.target, ws: true }
+          const keyed = { target: rule.target, ws: rule.ws }
+          existing['/__annotask'] = keyed
+          this.proxyRule = keyed
         }
       }
     } catch {
@@ -142,16 +162,24 @@ export class AnnotaskWebpackPlugin {
           this.serverUrl = `http://localhost:${port}`
           console.log(`[Annotask] Server running at ${this.serverUrl}/__annotask/`)
 
-          // The proxy rule was locked in during apply(). If the preferred port
-          // was busy, the server fell back to a random port (EADDRINUSE path in
-          // startStandaloneServer) and the proxy now points at a dead port —
-          // too late to fix the snapshot, so tell the user exactly what to do.
+          // The proxy rule object was created during apply(), before the server
+          // bound. If the preferred port was busy, the server fell back to a
+          // random port (EADDRINUSE path in startStandaloneServer) — re-point
+          // the rule's target in place now that the real port is known. The
+          // rule object reference survives devServer's apply()-time snapshot
+          // (shallow Object.assign), so this still lands even though it's too
+          // late to touch compiler.options.devServer itself.
           if (port !== expectedPort) {
             console.warn(
-              `[Annotask] Port ${expectedPort} was busy — server started on ${port} instead, `
-              + `but the devServer proxy was already locked to ${expectedPort} at startup. `
-              + `Free port ${expectedPort} (or pass an open port via the plugin's 'port' option) and restart, `
-              + `or configure the proxy yourself.\n` + manualProxyHint(port))
+              `[Annotask] Port ${expectedPort} was busy — server started on ${port} instead. `
+              + `Re-pointing the devServer proxy to the actual port.`)
+            if (this.proxyRule) {
+              this.proxyRule.target = `http://127.0.0.1:${port}`
+            } else {
+              console.warn(
+                `[Annotask] Could not re-point the devServer proxy (no rule was injected). `
+                + manualProxyHint(port))
+            }
           }
         } catch (err) {
           console.error('[Annotask] Failed to start server:', err)

@@ -145,12 +145,14 @@ describe('scanDataSources — proxy-aware resolved_endpoint', () => {
       )
       clearDataSourceCache()
       const cat = await scanDataSources(tmp)
+      // Template-literal params now collapse to a `:param` placeholder instead
+      // of truncating at `$` (findings: `/api/planets/${id}` → `/api/planets/`).
       const tenantEntries = cat.project_entries.filter(
-        e => e.file.endsWith('TenantEditPage.jsx') && e.endpoint === '/api/tenants/',
+        e => e.file.endsWith('TenantEditPage.jsx') && e.endpoint === '/api/tenants/:param',
       )
       const methods = tenantEntries.map(e => e.method).sort()
       expect(methods).toEqual(['GET', 'PATCH'])
-      expect(tenantEntries.find(e => e.method === 'PATCH')?.display_name).toBe('PATCH /api/tenants/')
+      expect(tenantEntries.find(e => e.method === 'PATCH')?.display_name).toBe('PATCH /api/tenants/:param')
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })
     }

@@ -29,6 +29,10 @@ export interface ResolveArgs {
   name: string
   kind?: DataSource['kind']
   file?: string
+  /** Disambiguators for a name+kind+file collision — `method` by request verb,
+   *  `line` by definition line. Narrows an otherwise-ambiguous set to one. */
+  method?: string
+  line?: number
   contextLines?: number
   workspaceRoot?: string
 }
@@ -38,13 +42,24 @@ export interface ResolveArgs {
  * not-found marker. Callers should test `'error' in result` to disambiguate.
  */
 export async function resolveDataSourceDetails(args: ResolveArgs): Promise<DataSourceDetailsResult> {
-  const { projectRoot, name, kind, file, workspaceRoot } = args
+  const { projectRoot, name, kind, file, method, line, workspaceRoot } = args
   const contextLines = clampContext(args.contextLines)
 
   const catalog = await scanDataSources(projectRoot)
   let candidates = catalog.project_entries.filter(e => e.name === name)
   if (kind) candidates = candidates.filter(e => e.kind === kind)
   if (file) candidates = candidates.filter(e => e.file === file)
+  // Narrow a still-colliding set by request method / definition line before
+  // declaring ambiguity — mirrors resolveDataSourceShape's disambiguation.
+  if (candidates.length > 1 && method) {
+    const m = method.toUpperCase()
+    const byMethod = candidates.filter(e => (e.method ?? 'GET').toUpperCase() === m)
+    if (byMethod.length > 0) candidates = byMethod
+  }
+  if (candidates.length > 1 && line != null) {
+    const byLine = candidates.filter(e => (e.line ?? 1) === line)
+    if (byLine.length > 0) candidates = byLine
+  }
 
   if (candidates.length === 0) {
     return { error: 'not_found', name }
@@ -58,6 +73,7 @@ export async function resolveDataSourceDetails(args: ResolveArgs): Promise<DataS
         kind: c.kind,
         file: c.file,
         line: c.line ?? 1,
+        ...(c.method ? { method: c.method } : {}),
       })),
     }
   }
@@ -159,11 +175,18 @@ function extractSignature(lines: string[], targetIdx: number): {
 } {
   const pieces: string[] = []
   let closed = false
+  let parenDepth = 0
   for (let i = targetIdx; i < Math.min(lines.length, targetIdx + MAX_SIGNATURE_LINES); i++) {
     pieces.push(lines[i])
-    const joined = pieces.join('\n')
-    // Stop at the first line that contains a body opener outside nested brackets.
-    if (/[{;]\s*$/.test(lines[i]) || /=>\s*$/.test(lines[i]) || /=>\s*[^=]/.test(lines[i])) {
+    for (const ch of lines[i]) {
+      if (ch === '(') parenDepth++
+      else if (ch === ')') parenDepth--
+    }
+    // Stop at the first line that contains a body opener, but only once the
+    // parameter list's parens have balanced back out — otherwise a `{` that
+    // opens an inline object-type parameter (`opts: {` spanning lines while
+    // still inside the outer `(`) is mistaken for the signature's closer.
+    if (parenDepth <= 0 && (/[{;]\s*$/.test(lines[i]) || /=>\s*$/.test(lines[i]) || /=>\s*[^=]/.test(lines[i]))) {
       closed = true
       break
     }
@@ -181,7 +204,11 @@ function extractSignature(lines: string[], targetIdx: number): {
     .trim()
 
   const return_type = parseReturnType(raw)
-  const referenced_types = collectReferencedTypes(raw)
+  // Only the return-position type text is eligible to become `referenced_types`
+  // — running the collector over the whole signature would also pick up
+  // capitalized PARAMETER types (`opts: Ref<Foo>`), which are not the shape
+  // the source yields and would mislead the wireframe binding picker.
+  const referenced_types = return_type ? collectReferencedTypes(return_type) : []
 
   let confidence: DataSourceDetails['confidence']
   if (signature && closed && return_type) confidence = 'high'
@@ -221,13 +248,18 @@ function parseReturnType(signature: string): string | undefined {
 }
 
 /**
- * Scan the signature for capitalized type identifiers. Biased toward common
- * positions (after `:`, inside `<>`, after `extends`) to avoid picking up
- * local variable names that happen to start with a capital.
+ * Scan a (return-position only — see call site) type string for capitalized
+ * type identifiers. Biased toward common positions (after `:`, inside `<>`,
+ * after `extends`) to avoid picking up local variable names that happen to
+ * start with a capital.
  */
 function collectReferencedTypes(signature: string): string[] {
   const seen = new Set<string>()
   const regions: string[] = []
+  // The whole input is already return-position-only text (see call site), so a
+  // bare type identifier like `UseCatsQueryResult` — with no leading colon,
+  // generics, or `extends` — is itself a referenced type. Scan it directly.
+  regions.push(signature)
   // After a colon: `: Foo`, `: Foo<Bar>`, `: Foo | Bar`
   const colonMatches = signature.matchAll(/:\s*([A-Z][\w$]*(?:\s*[<|&,]\s*[A-Z][\w$]*)*)/g)
   for (const m of colonMatches) regions.push(m[1])
@@ -252,6 +284,9 @@ function collectReferencedTypes(signature: string): string[] {
 const PRIMITIVE_TYPES = new Set([
   'Array', 'ReadonlyArray', 'Readonly', 'Partial', 'Record', 'Pick', 'Omit',
   'Promise', 'T', 'U', 'K', 'V', 'R',
+  // Reactivity wrapper types — the interesting shape is the type PARAMETER
+  // these wrap, not the wrapper itself.
+  'Ref', 'ComputedRef', 'Readable', 'Writable', 'Accessor', 'Signal',
 ])
 
 /**

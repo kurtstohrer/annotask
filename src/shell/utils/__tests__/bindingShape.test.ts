@@ -146,7 +146,35 @@ describe('buildBinding', () => {
       path: 'planets[]',
       fields: ['name', 'type'],
       shape_source: 'api-schema',
+      // A path with an api-schema tier defaults to schema-picked provenance.
+      path_source: 'schema-picked',
     })
+  })
+
+  it('derives path_source from the tier and threads verifiable evidence', () => {
+    // A drilled api-schema path is schema-picked and carries the match evidence.
+    const picked = buildBinding(entry, {
+      path: 'planets[]', shape_source: 'api-schema',
+      match_confidence: 0.9, schema_location: 'openapi.json', schema_kind: 'openapi',
+      op: { method: 'GET', path: '/api/solar/planets' }, method: 'GET', resolved_endpoint: '/api/solar/planets',
+    })
+    expect(picked.path_source).toBe('schema-picked')
+    expect(picked.match_confidence).toBe(0.9)
+    expect(picked.schema_location).toBe('openapi.json')
+    expect(picked.schema_kind).toBe('openapi')
+    expect(picked.op).toEqual({ method: 'GET', path: '/api/solar/planets' })
+    expect(picked.resolved_endpoint).toBe('/api/solar/planets')
+
+    // A typed path on a lower tier is the user's unverified assertion.
+    const typed = buildBinding(entry, { path: 'data.user', shape_source: 'none', details_confidence: 'low' })
+    expect(typed.path_source).toBe('user-typed')
+    expect(typed.details_confidence).toBe('low')
+
+    // No path → 'none', regardless of tier.
+    expect(buildBinding(entry, { shape_source: 'source-details' }).path_source).toBe('none')
+
+    // An explicit path_source overrides the derivation.
+    expect(buildBinding(entry, { path: 'x', shape_source: 'api-schema', path_source: 'user-typed' }).path_source).toBe('user-typed')
   })
 
   it('trims and drops empty path/fields', () => {
@@ -157,7 +185,7 @@ describe('buildBinding', () => {
 
   it('omits module/endpoint when the entry lacks them', () => {
     const b = buildBinding({ kind: 'fetch', name: 'apiHealth', file: '', endpoint: undefined }, { shape_source: 'none' })
-    expect(b).toEqual({ kind: 'fetch', name: 'apiHealth', shape_source: 'none' })
+    expect(b).toEqual({ kind: 'fetch', name: 'apiHealth', shape_source: 'none', path_source: 'none' })
   })
 
   it('throws on an unbuildable binding instead of persisting garbage', () => {

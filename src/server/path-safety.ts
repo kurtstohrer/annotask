@@ -22,6 +22,7 @@
  * pattern (see src/server/api.ts); this centralizes that logic.
  */
 import nodePath from 'node:path'
+import { existsSync } from 'node:fs'
 
 export interface ResolvedProjectFile {
   absolutePath: string
@@ -61,18 +62,33 @@ export function resolveProjectFile(
 
   const projectAbs = nodePath.resolve(projectRoot)
   const stripped = relFile.replace(/^\/+/, '')
-  const abs = nodePath.resolve(projectAbs, stripped)
+  let abs = nodePath.resolve(projectAbs, stripped)
 
   // Pick the containment root. Workspace root must be an ancestor of (or
   // equal to) projectRoot for this to make sense; fall back to projectRoot
   // if the caller passed something narrower by mistake.
   let containment = projectAbs
+  let wsAbs: string | undefined
   if (workspaceRoot) {
-    const wsAbs = nodePath.resolve(workspaceRoot)
+    wsAbs = nodePath.resolve(workspaceRoot)
     const projectWithSep = projectAbs.endsWith(nodePath.sep) ? projectAbs : projectAbs + nodePath.sep
     if (wsAbs === projectAbs || projectWithSep.startsWith(wsAbs.endsWith(nodePath.sep) ? wsAbs : wsAbs + nodePath.sep)) {
       containment = wsAbs
     }
+  }
+
+  // Frame-tolerant resolution. Project scanners (data-source-scanner et al.)
+  // emit paths relative to the WORKSPACE root for monorepo members, not
+  // `projectRoot` — resolving strictly against `projectRoot` then doubles the
+  // member's own directory segment (e.g. `.../vue-vite/playgrounds/simple/
+  // vue-vite/src/...`) and 404s. If the projectRoot-relative resolution
+  // doesn't exist on disk and a `workspaceRoot` was supplied, retry resolving
+  // the same `stripped` value against the workspace root instead. The
+  // containment guard below still applies unchanged — this only widens which
+  // base the path is resolved against, never what's allowed to be read.
+  if (wsAbs && !existsSync(abs)) {
+    const wsAttempt = nodePath.resolve(wsAbs, stripped)
+    if (existsSync(wsAttempt)) abs = wsAttempt
   }
 
   // startsWith(root + sep) is the canonical containment check. We also disallow

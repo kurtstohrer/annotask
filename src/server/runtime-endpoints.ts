@@ -19,7 +19,8 @@
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import type { NetworkCall, ProjectDataEntry, RuntimeEndpoint, RuntimeEndpointCatalog } from '../schema.js'
+import type { ApiSchemaCatalog, NetworkCall, ProjectDataEntry, RuntimeEndpoint, RuntimeEndpointCatalog } from '../schema.js'
+import { resolveEndpoint } from './api-schema-resolver.js'
 
 const CATALOG_FILENAME = 'runtime-endpoints.json'
 const WRITE_DEBOUNCE_MS = 500
@@ -31,6 +32,43 @@ const MAX_ROUTES_PER_ENDPOINT = 30
  * otherwise balloon this file indefinitely. FIFO eviction by `lastSeenAt`.
  */
 const MAX_ENDPOINTS = 2000
+/**
+ * A runtime endpoint whose `lastSeenAt` is older than this is flagged
+ * `stale` when merged into the data-sources catalog. Dev-server sessions are
+ * short-lived; a persisted endpoint from days/weeks ago is real history, not
+ * something the app is currently doing — presenting it unflagged reads as a
+ * fresh, healthy hit.
+ */
+const RUNTIME_STALE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * `lastContentType`/`htmlFallback` (captured at ingest, see `ingest()`) and
+ * `last_seen_at`/`stale` (added when promoting orphans, see
+ * `mergeRuntimeOrphansIntoEntries`) are new fields this module needs on
+ * types whose canonical declarations live in `../schema.ts` — out of scope
+ * for this fix. Declaration merging extends those interfaces in place;
+ * TypeScript treats this identically to editing the original declaration.
+ */
+declare module '../schema.js' {
+  interface RuntimeEndpoint {
+    /** Content-type of the most recently observed response, when known. */
+    lastContentType?: string
+    /**
+     * True when the most recently observed response was `text/html` — a
+     * strong signal this is an SPA-fallback hit (dev server serving
+     * `index.html` for an unmatched route) rather than a real API endpoint.
+     * Flagged endpoints are excluded from `mergeRuntimeOrphansIntoEntries`
+     * so a client-side route miss can't masquerade as a healthy API hit.
+     */
+    htmlFallback?: boolean
+  }
+  interface ProjectDataEntry {
+    /** Epoch ms of the most recent runtime observation (`discovered_by: 'runtime'` rows only). */
+    last_seen_at?: number
+    /** True when `last_seen_at` is older than `RUNTIME_STALE_MS`. */
+    stale?: boolean
+  }
+}
 
 /** Key used for aggregation — stable across calls with differing ids/queries. */
 function endpointKey(origin: string, method: string, pattern: string): string {
@@ -43,11 +81,18 @@ function endpointKey(origin: string, method: string, pattern: string): string {
  *   - pure-digit segments → `{id}`
  *   - UUIDs (8-4-4-4-12 hex) → `{uuid}`
  *   - 24+ hex (Mongo ObjectId, ULID-ish) → `{hex}`
+ *   - ISO date segments (`2026-07-03`) → `{date}`
+ *   - prefixed ids (`user_abc123`, `order-4521` — a short entity prefix
+ *     joined to a digit-bearing id) → `{id}`
  *   - segments that look like a base64/ULID (≥16 chars, mixed case+digits)
  *     where ≥25% of the characters are digits → `{id}`
+ *   - slugs (≥3 hyphen/underscore-separated words, no digits, ≥12 chars) → `{slug}`
  *
  * Intentionally conservative: we'd rather under-collapse (two rows) than
- * over-collapse and hide endpoints with meaningfully-different paths.
+ * over-collapse and hide endpoints with meaningfully-different paths. The
+ * prefixed-id and slug rules in particular are scoped tightly (digit
+ * requirement, word-count + length floors) so real static segments like
+ * `v2`, `page-1`, or `user-settings` don't get swallowed.
  */
 export function normalizePathPattern(pathNoQuery: string): string {
   if (!pathNoQuery) return pathNoQuery
@@ -61,9 +106,25 @@ export function normalizePathPattern(pathNoQuery: string): string {
       continue
     }
     if (/^[0-9a-fA-F]{24,}$/.test(seg)) { parts[i] = '{hex}'; continue }
+    // ISO-style date segments (`/api/events/2026-07-03`) — otherwise every
+    // calendar day mints a fresh catalog row for the same logical endpoint.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(seg)) { parts[i] = '{date}'; continue }
+    // Prefixed ids (`user_abc123`, `order-4521`): exactly one separator, a
+    // short letters-only prefix, and an id-part that actually contains a
+    // digit (excludes version/pagination segments like `v2`, `page-1`,
+    // which have no digit in a ≥4-char id-part).
+    const prefixedId = seg.match(/^([A-Za-z]{2,12})[_-]([A-Za-z0-9]{4,})$/)
+    if (prefixedId && /\d/.test(prefixedId[2])) { parts[i] = '{id}'; continue }
     if (seg.length >= 16 && /[A-Za-z]/.test(seg) && /\d/.test(seg)) {
       const digits = (seg.match(/\d/g) || []).length
       if (digits / seg.length >= 0.25) { parts[i] = '{id}'; continue }
+    }
+    // Slugs (`my-blog-post-title`): ≥3 words with no digits to key off of.
+    // The word-count and length floors keep real 2-word static segments
+    // (`user-settings`) from being misread as generated slugs.
+    if (seg.length >= 12 && !/\d/.test(seg) && /^[a-z0-9]+(?:[-_][a-z0-9]+){2,}$/i.test(seg)) {
+      parts[i] = '{slug}'
+      continue
     }
   }
   return parts.join('/')
@@ -133,6 +194,15 @@ export function createRuntimeEndpointStore(projectRoot: string): RuntimeEndpoint
         ep.lastStatus = call.status
         if (!ep.statuses) ep.statuses = []
         if (!ep.statuses.includes(call.status)) ep.statuses.push(call.status)
+      }
+      // Capture content-type so downstream consumers can tell a real API
+      // response from an SPA-fallback `index.html` served with a 200 for an
+      // unmatched client route (e.g. Vite serving `index.html` for
+      // `/stat/planets`). Without this, the fallback reads as a healthy API
+      // hit and gets promoted into the data-sources catalog as a real orphan.
+      if (typeof call.contentType === 'string' && call.contentType) {
+        ep.lastContentType = call.contentType
+        ep.htmlFallback = /^\s*text\/html\b/i.test(call.contentType)
       }
       // Streaming mean of latency — only fold in calls that actually
       // reported a duration (in-flight requests have no `durationMs` yet).
@@ -340,24 +410,48 @@ export function findMatchingStaticEntries<T extends { name: string; method?: str
   return out
 }
 
+/** Sanitize an origin (`http://localhost:4310`) into a name-safe suffix (`localhost_4310`). */
+function originNameSuffix(origin: string): string {
+  return origin.replace(/^[a-zA-Z]+:\/\//, '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+}
+
 /**
- * Append orphan runtime endpoints (those with no matching static entry) to a
- * ProjectDataEntry list as synthetic rows. Exists so the Hooks list, MCP
- * `annotask_get_data_sources`, and the CLI all surface APIs the regex
- * scanner missed — runtime capture fills the gap the static pass can't.
+ * Append orphan runtime endpoints (those with no matching static entry AND
+ * no matching discovered API schema operation) to a ProjectDataEntry list as
+ * synthetic rows. Exists so the Hooks list, MCP `annotask_get_data_sources`,
+ * and the CLI all surface APIs the regex scanner missed — runtime capture
+ * fills the gap the static pass can't.
  *
  * Matching is structural: a runtime endpoint is considered "covered" by a
- * static entry when the method agrees and either (a) the pattern matches
- * the entry's endpoint pattern exactly, or (b) the entry has no method set
- * (legacy scanner output) and the paths align.
+ * static entry when the method agrees (a method-less legacy-scanner entry
+ * covers every method — matching `findMatchingStaticEntries`'s enrichment
+ * rule, so an endpoint can't simultaneously get `matchedSources` populated
+ * for enrichment purposes and still be reported as an orphan here) and
+ * either (a) the pattern matches the entry's endpoint pattern exactly, or
+ * (b) the paths align literally. It's additionally considered covered when
+ * `apiSchemaCatalog` is supplied and `resolveEndpoint` finds a matching
+ * OpenAPI/GraphQL/tRPC operation — reconciliation was previously
+ * runtime↔static-scan only, so a schema-documented endpoint with no in-repo
+ * call-site match was wrongly reported as an orphan.
  *
- * Runtime-only entries carry `discovered_by: 'runtime'`, `file: ''`, and a
- * `used_count` equal to their live call count. Consumers that need a code
- * location (binding analysis, examples, details) must filter them out.
+ * Endpoints flagged `htmlFallback` (see `ingest()`) are skipped entirely —
+ * an SPA-fallback `index.html` response is not a real API hit.
+ *
+ * Runtime-only entries carry `discovered_by: 'runtime'`, `file: ''`, a
+ * `used_count` equal to their live call count, `last_seen_at`, and `stale`
+ * when `last_seen_at` is older than `RUNTIME_STALE_MS` — so a persisted
+ * endpoint from a prior session isn't presented as freshly observed. `name`
+ * is disambiguated by origin (mirroring the static scanner's `apiHealth_4310`
+ * convention) since it's the lookup key other tools use — without this,
+ * multiple MFEs hitting the same pattern on different ports collide onto one
+ * `name` and only one of them is reachable by name-based lookups. Consumers
+ * that need a code location (binding analysis, examples, details) must
+ * filter runtime-only entries out.
  */
 export function mergeRuntimeOrphansIntoEntries(
   staticEntries: ProjectDataEntry[],
   runtimeEndpoints: RuntimeEndpoint[],
+  apiSchemaCatalog?: ApiSchemaCatalog,
 ): ProjectDataEntry[] {
   if (runtimeEndpoints.length === 0) return staticEntries
   const out = staticEntries.slice()
@@ -367,11 +461,13 @@ export function mergeRuntimeOrphansIntoEntries(
   // absolute entry only covers its own origin. Without origin in the key, a
   // single static `apiHealth_4310` would mark every MFE's `:43XX/api/health`
   // call as "covered" and they'd never surface as orphans even though no
-  // static row points at them.
+  // static row points at them. A method-less entry uses the `*` wildcard so
+  // it covers every method here too — matching `findMatchingStaticEntries`,
+  // which already treats a missing `entry.method` as "any method".
   const covered = new Set<string>()
   for (const entry of staticEntries) {
     if (!entry.endpoint) continue
-    const method = (entry.method || 'GET').toUpperCase()
+    const methodKey = entry.method ? entry.method.toUpperCase() : '*'
     // Original endpoint, not proxy-resolved (see findMatchingStaticEntries):
     // a relative entry's origin is '' so it covers same-origin '' runtime calls
     // via `relKey` — which is how the iframe reports Vite-proxied fetches. Using
@@ -379,7 +475,7 @@ export function mergeRuntimeOrphansIntoEntries(
     // synthetic rows alongside the real static entry).
     const decomp = decomposeEndpoint(entry.endpoint)
     if (!decomp.path) continue
-    covered.add(`${method}|${decomp.origin}|${decomp.pattern}`)
+    covered.add(`${methodKey}|${decomp.origin}|${decomp.pattern}`)
   }
 
   // Dedup synthetic entries by (method, origin, pattern). Two MFEs hitting
@@ -387,23 +483,37 @@ export function mergeRuntimeOrphansIntoEntries(
   // emits one entry per origin (suffixed with the port), so the runtime side
   // matches that contract and avoids dropping a real call site.
   const emitted = new Set<string>()
+  const now = Date.now()
   for (const ep of runtimeEndpoints) {
+    // SPA-fallback HTML response — not a real API endpoint, don't promote it.
+    if (ep.htmlFallback) continue
     const epOrigin = (ep.origin || '').toLowerCase()
     const exactKey = `${ep.method}|${epOrigin}|${ep.pattern}`
+    const wildKey = `*|${epOrigin}|${ep.pattern}`
     const relKey = `${ep.method}||${ep.pattern}`
-    if (covered.has(exactKey) || covered.has(relKey) || emitted.has(exactKey)) continue
+    const relWildKey = `*||${ep.pattern}`
+    if (covered.has(exactKey) || covered.has(wildKey) || covered.has(relKey) || covered.has(relWildKey) || emitted.has(exactKey)) continue
+    // Consult discovered API schemas too — a schema-documented operation is
+    // a known, real API even when the regex scanner found no call site.
+    if (apiSchemaCatalog) {
+      const sampleUrl = ep.sampleUrls[0] || ep.path
+      if (resolveEndpoint(apiSchemaCatalog, sampleUrl, ep.method)) continue
+    }
     emitted.add(exactKey)
-    const name = deriveRuntimeEntryName(ep.method, ep.pattern)
+    const baseName = deriveRuntimeEntryName(ep.method, ep.pattern)
+    const name = ep.origin ? `${baseName}_${originNameSuffix(ep.origin)}` : baseName
     out.push({
       kind: 'fetch',
       name,
-      display_name: `${ep.method} ${ep.pattern}`,
+      display_name: ep.origin ? `${ep.method} ${ep.origin.replace(/^https?:\/\//i, '')} ${ep.pattern}` : `${ep.method} ${ep.pattern}`,
       file: '',
       endpoint: ep.pattern,
       method: ep.method,
       resolved_endpoint: ep.origin ? `${ep.origin}${ep.pattern}` : undefined,
       used_count: ep.count,
       discovered_by: 'runtime',
+      last_seen_at: ep.lastSeenAt,
+      stale: now - ep.lastSeenAt > RUNTIME_STALE_MS,
     })
   }
   return out

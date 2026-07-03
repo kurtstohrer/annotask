@@ -160,7 +160,7 @@ function sendError(res: ServerResponse, status: number, message: string, code: A
 }
 
 import { isAllowedHost, isLocalOrigin, originMatchesPort } from './origin.js'
-import { scanComponentLibraries, scanProjectComponents } from './component-scanner.js'
+import { scanComponentLibraries, scanProjectComponents, clearComponentCache, revalidate as revalidateComponentCatalog } from './component-scanner.js'
 import { filterTasksByMfe } from '../shared/task-summary.js'
 import { getCodeContext } from './code-context.js'
 import { classifyBindings } from './binding-classify.js'
@@ -168,7 +168,7 @@ import { getComponentExamples } from './component-examples.js'
 import { resolveFingerprint, hasUsableEvidence } from './resolve-fingerprint.js'
 import { scanComponentUsage } from './component-usage.js'
 import { probeDataContext, resolveDataContext, resolveElementDataContext } from './data-context.js'
-import { scanDataSources } from './data-source-scanner.js'
+import { scanDataSources, clearDataSourceCache } from './data-source-scanner.js'
 import { getDataSourceExamples } from './data-source-examples.js'
 import { resolveDataSourceDetails } from './data-source-details.js'
 import { resolveDataSourceShape } from './data-source-shape.js'
@@ -243,6 +243,16 @@ function deriveServerPort(req: IncomingMessage): number | undefined {
  * shells re-load without polling.
  */
 export function createAPIMiddleware(options: APIOptions) {
+  // `scanProjectComponents` (component-scanner.ts) caches its result for 60s
+  // and returns the SAME object reference while warm, a NEW object on every
+  // real rescan. We track that identity here (rather than minting
+  // `Date.now()` on every request) so `GET project-components` advertises
+  // the actual scan time instead of always looking "just scanned" — a
+  // response used to claim freshness even when serving a component that had
+  // been deleted from disk a minute earlier.
+  let lastProjectLibraryRef: Awaited<ReturnType<typeof scanProjectComponents>> | null = null
+  let lastProjectLibraryScannedAt = 0
+
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     // DNS-rebinding gate — runs FIRST, for ALL methods. The Origin checks
     // below only cover mutating requests; without a Host check a rebound page
@@ -1153,8 +1163,28 @@ export function createAPIMiddleware(options: APIOptions) {
     }
 
     if (path === 'components' && req.method === 'GET') {
-      const catalog = await scanComponentLibraries(options.projectRoot)
-      res.end(JSON.stringify(catalog, null, 2))
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      // `?refresh=1` bypasses the in-memory/disk cache and forces a real
+      // rescan before responding. Without this, a component deleted from
+      // disk kept being served as "live" for the full cache window with no
+      // escape hatch — clearComponentCache existed but had zero production
+      // callers. `revalidate` (not scanComponentLibraries) is used on the
+      // refresh path because scanComponentLibraries can still hand back a
+      // stale on-disk envelope while it revalidates in the background.
+      const refresh = urlObj.searchParams.get('refresh') === '1' || urlObj.searchParams.get('refresh') === 'true'
+      if (refresh) clearComponentCache()
+      const catalog = refresh
+        ? await revalidateComponentCatalog(options.projectRoot)
+        : await scanComponentLibraries(options.projectRoot)
+      const body = JSON.stringify(catalog)
+      const etag = `"${crypto.createHash('sha1').update(body).digest('hex')}"`
+      res.setHeader('ETag', etag)
+      if (!refresh && req.headers['if-none-match'] === etag) {
+        res.statusCode = 304
+        res.end()
+        return
+      }
+      res.end(body)
       return
     }
 
@@ -1162,8 +1192,15 @@ export function createAPIMiddleware(options: APIOptions) {
     // pinned "Project" group, and the prop-metadata source for local
     // components in the properties panel.
     if (path === 'project-components' && req.method === 'GET') {
+      const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
+      const refresh = urlObj.searchParams.get('refresh') === '1' || urlObj.searchParams.get('refresh') === 'true'
+      if (refresh) clearComponentCache()
       const library = await scanProjectComponents(options.projectRoot)
-      res.end(JSON.stringify({ library, scannedAt: Date.now() }, null, 2))
+      if (library !== lastProjectLibraryRef) {
+        lastProjectLibraryRef = library
+        lastProjectLibraryScannedAt = Date.now()
+      }
+      res.end(JSON.stringify({ library, scannedAt: lastProjectLibraryScannedAt }, null, 2))
       return
     }
 
@@ -1399,12 +1436,21 @@ export function createAPIMiddleware(options: APIOptions) {
       const urlObj = new URL(req.url!, `http://${req.headers.host || 'localhost'}`)
       const mergeStatic = urlObj.searchParams.get('merge_static') === 'true' || urlObj.searchParams.get('merge_static') === '1'
       const route = urlObj.searchParams.get('route') || undefined
+      // Previously parsed nowhere on this route — HTTP silently ignored it
+      // while MCP/CLI at least attempted to honor it. `orphans_only` needs
+      // enrichment to know whether an endpoint matched anything, so it forces
+      // enrichment on even when `merge_static` wasn't requested.
+      const orphansOnly = urlObj.searchParams.get('orphans_only') === 'true' || urlObj.searchParams.get('orphans_only') === '1'
+      // `?refresh=1` forces a fresh static/data-source scan before enriching —
+      // clearDataSourceCache previously had zero production callers.
+      const refresh = urlObj.searchParams.get('refresh') === '1' || urlObj.searchParams.get('refresh') === 'true'
+      if (refresh) clearDataSourceCache()
       const catalog = options.getRuntimeEndpointCatalog()
       let endpoints = catalog.endpoints
       if (route) {
         endpoints = endpoints.filter(ep => ep.routes.some(r => r.route === route))
       }
-      if (mergeStatic) {
+      if (mergeStatic || orphansOnly) {
         const staticCat = await scanDataSources(options.projectRoot)
         const schemaCat = await scanApiSchemas(options.projectRoot, {
           devServerUrl: deriveDevServerUrl(req),
@@ -1412,6 +1458,11 @@ export function createAPIMiddleware(options: APIOptions) {
           apiSchemaFiles: options.apiSchemaFiles,
         })
         endpoints = endpoints.map(ep => enrichEndpoint(ep, staticCat.project_entries, schemaCat))
+      }
+      // Surface only endpoints with no matching static entry AND no matching
+      // API schema — the highest-value gaps for an agent to fill in.
+      if (orphansOnly) {
+        endpoints = endpoints.filter(ep => (!ep.matchedSources || ep.matchedSources.length === 0) && !ep.matchedSchemaLocation)
       }
       res.end(JSON.stringify({ ...catalog, endpoints }, null, 2))
       return
@@ -1456,6 +1507,11 @@ export function createAPIMiddleware(options: APIOptions) {
       // the whole point of capturing them was to fill gaps the regex scanner
       // misses. Callers that want static-only can pass ?merge_runtime=false.
       const mergeRuntime = urlObj.searchParams.get('merge_runtime') !== 'false' && urlObj.searchParams.get('merge_runtime') !== '0'
+      // `?refresh=1` forces a fresh scan — clearDataSourceCache previously
+      // had zero production callers, so a deleted/renamed data source kept
+      // being served from the 60s in-memory cache with no escape hatch.
+      const refresh = urlObj.searchParams.get('refresh') === '1' || urlObj.searchParams.get('refresh') === 'true'
+      if (refresh) clearDataSourceCache()
       const catalog = await scanDataSources(options.projectRoot)
       const libraries = library ? catalog.libraries.filter(l => l.name === library) : catalog.libraries
       let entries = catalog.project_entries
@@ -1569,6 +1625,13 @@ export function createAPIMiddleware(options: APIOptions) {
       const file = urlObj.searchParams.get('file') || undefined
       const contextLinesArg = Number(urlObj.searchParams.get('context_lines') || '15')
       const contextLines = Number.isFinite(contextLinesArg) ? contextLinesArg : 15
+      // `method`/`line` disambiguators — the same `name`/`kind`/`file` can
+      // still collide (e.g. one endpoint called with GET and POST, or
+      // re-declared at multiple lines in the same file). resolveDataSourceDetails
+      // narrows its ambiguous-candidate set with them.
+      const method = urlObj.searchParams.get('method') || undefined
+      const lineArg = urlObj.searchParams.get('line')
+      const line = lineArg != null && Number.isFinite(Number(lineArg)) ? Number(lineArg) : undefined
       const workspaceRoot = await getWorkspaceRoot(options.projectRoot)
       const result = await resolveDataSourceDetails({
         projectRoot: options.projectRoot,
@@ -1577,6 +1640,8 @@ export function createAPIMiddleware(options: APIOptions) {
         file,
         contextLines,
         workspaceRoot,
+        method,
+        line,
       })
       res.end(JSON.stringify(result, null, 2))
       return
@@ -1590,6 +1655,12 @@ export function createAPIMiddleware(options: APIOptions) {
       if (!name) return sendError(res, 400, 'Missing name parameter', 'missing_field')
       const kind = (urlObj.searchParams.get('kind') || undefined) as DataSource['kind'] | undefined
       const file = urlObj.searchParams.get('file') || undefined
+      // `method`/`line` disambiguators — same purpose as data-source-details
+      // above: resolveDataSourceShape narrows an ambiguous name+kind+file set
+      // by request verb / definition line.
+      const method = urlObj.searchParams.get('method') || undefined
+      const lineArg = urlObj.searchParams.get('line')
+      const line = lineArg != null && Number.isFinite(Number(lineArg)) ? Number(lineArg) : undefined
       const workspaceRoot = await getWorkspaceRoot(options.projectRoot)
       const result = await resolveDataSourceShape({
         projectRoot: options.projectRoot,
@@ -1597,6 +1668,8 @@ export function createAPIMiddleware(options: APIOptions) {
         kind,
         file,
         workspaceRoot,
+        method,
+        line,
         schemaScan: {
           devServerUrl: deriveDevServerUrl(req),
           apiSchemaUrls: options.apiSchemaUrls,
@@ -1657,6 +1730,20 @@ export function createAPIMiddleware(options: APIOptions) {
 }
 
 /**
+ * `RuntimeEndpoint` plus the schema-match diagnostics `resolveEndpoint`
+ * computes but the base type doesn't carry — kept local to this enrichment
+ * boundary. Previously the resolved match's confidence (and which
+ * method/path actually matched) was computed and then thrown away, leaving
+ * callers unable to tell a confident exact match from a low-confidence
+ * method-mismatched guess.
+ */
+type EnrichedRuntimeEndpoint = RuntimeEndpoint & {
+  matchConfidence?: number
+  matchedOperationMethod?: string
+  matchedOperationPath?: string
+}
+
+/**
  * Annotate a runtime endpoint with the matching static sources and OpenAPI
  * operation when one exists. Keeps the enrichment cheap (simple path/method
  * equality + `resolveEndpoint`), since this runs on every GET.
@@ -1665,8 +1752,8 @@ function enrichEndpoint(
   ep: RuntimeEndpoint,
   staticEntries: Array<{ name: string; method?: string; endpoint?: string; resolved_endpoint?: string }>,
   schemaCatalog: Awaited<ReturnType<typeof scanApiSchemas>>,
-): RuntimeEndpoint {
-  const out: RuntimeEndpoint = { ...ep }
+): EnrichedRuntimeEndpoint {
+  const out: EnrichedRuntimeEndpoint = { ...ep }
   // Match static `ProjectDataEntry` rows whose declared endpoint lines up
   // with this runtime call. Origin-aware (see `findMatchingStaticEntries`):
   // a runtime call to `:4320/api/health` won't pick up `apiHealth_4310` from
@@ -1686,6 +1773,9 @@ function enrichEndpoint(
   if (match) {
     out.matchedSchemaLocation = match.schema_location
     if (match.operation.id) out.matchedOperationId = match.operation.id
+    out.matchConfidence = match.confidence
+    out.matchedOperationMethod = match.operation.method
+    out.matchedOperationPath = match.operation.path
   }
   return out
 }

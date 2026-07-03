@@ -194,6 +194,16 @@ export function annotask(options: AnnotaskOptions = {}): Plugin[] {
         }
       })
 
+      // Flush pending writes (tasks/perf/runtime-endpoints) and tear down on
+      // dev-server shutdown. The Vite plugin path previously never called
+      // flush()/dispose(), so a batched runtime-endpoint store could lose its
+      // last writes on exit (findings: "runtime-endpoint store is never flushed
+      // on shutdown in the Vite plugin"). Vite calls `close` on its httpServer
+      // when the dev server stops (Ctrl-C / restart / programmatic close).
+      server.httpServer?.once('close', () => {
+        void uiServer.flush().finally(() => uiServer.dispose())
+      })
+
       // Write server.json so skills/CLI know where to connect
       server.httpServer?.once('listening', () => {
         const addr = server.httpServer?.address()

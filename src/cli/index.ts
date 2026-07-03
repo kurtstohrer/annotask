@@ -251,6 +251,8 @@ async function dispatch(): Promise<void> {
     await fetchDataSourceExamples()
   } else if (command === 'data-source-details') {
     await fetchDataSourceDetails()
+  } else if (command === 'data-source-shape') {
+    await fetchDataSourceShape()
   } else if (command === 'api-schemas') {
     await fetchApiSchemas()
   } else if (command === 'api-operation') {
@@ -1402,6 +1404,33 @@ async function fetchDataSourceDetails() {
   }
 }
 
+// ── Data source shape: honesty-tagged shape ladder ─────
+
+async function fetchDataSourceShape() {
+  const name = args[1]
+  if (!name) {
+    fail('usage', 'Usage: annotask data-source-shape <name> [--kind=K] [--file=PATH] [--method=M] [--line=N]')
+  }
+  const kind = args.find(a => a.startsWith('--kind='))?.split('=')[1]
+  const file = args.find(a => a.startsWith('--file='))?.split('=')[1]
+  const method = args.find(a => a.startsWith('--method='))?.split('=')[1]
+  const line = args.find(a => a.startsWith('--line='))?.split('=')[1]
+  const params = new URLSearchParams()
+  params.set('name', name)
+  if (kind) params.set('kind', kind)
+  if (file) params.set('file', file)
+  if (method) params.set('method', method)
+  if (line) params.set('line', line)
+  try {
+    const res = await fetch(`${apiUrl}/data-source-shape?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    console.log(fmt(data))
+  } catch (err: any) {
+    fail(errCode(err), `Failed to fetch data source shape: ${err.message}`)
+  }
+}
+
 // ── API schemas ────────────────────────────────────────
 
 async function fetchApiSchemas() {
@@ -1636,6 +1665,8 @@ function printHelp() {
   data-sources    List detected data libraries + project-specific hooks/stores/fetch wrappers
   data-source-examples  Find in-repo usages of a data source by name (symmetric with component-examples)
   data-source-details  Fetch the definition of a data source by name (signature, excerpt, siblings)
+  data-source-shape  Resolve a data source's response shape down the honesty ladder
+                    (api-schema tree / regex hints / none); --method / --line disambiguate
   api-schemas     List discovered OpenAPI / GraphQL / tRPC schemas (add --detail for full operations)
   api-operation   Fetch one operation by path (+ optional --method / --schema-location)
   resolve-endpoint  Match a concrete URL against discovered schemas; returns best-match operation

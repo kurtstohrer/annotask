@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import nodePath from 'node:path'
 import { resolveWorkspace } from './workspace.js'
+import { scanComponentUsage } from './component-usage.js'
 
 export interface FingerprintEvidence {
   /** Class names off the element (whole-token matched). */
@@ -37,6 +38,9 @@ export interface ResolveFingerprintResult {
   candidates: FingerprintCandidate[]
   /** Files actually read and scanned — honest even when caps kick in. */
   searched_files: number
+  /** True when the file-list scan hit MAX_FILES_SCANNED and stopped early —
+   *  candidates may be missing matches that live in unscanned files. */
+  capped: boolean
 }
 
 const SCAN_EXTS = new Set(['.vue', '.jsx', '.tsx', '.svelte', '.astro', '.html', '.erb', '.php', '.heex', '.ts', '.js'])
@@ -57,6 +61,10 @@ const SCORE_CLASS_AND_TEXT = 1.0
 const SCORE_ALL_CLASSES = 0.8
 const SCORE_TEXT_ONLY = 0.6
 const SCORE_SINGLE_CLASS = 0.4
+// A hit in a file the running package's own component-usage scan already
+// knows about (imported or tag-used somewhere in that package) outranks a
+// same-score coincidence in an unrelated workspace sibling.
+const RUNNING_PACKAGE_BONUS = 0.03
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -110,15 +118,24 @@ async function walk(dir: string, acc: string[]): Promise<void> {
 /** Roots to walk: each workspace package's conventional source dirs when a
  *  monorepo config exists, else the project's own. A package with none of the
  *  conventional dirs falls back to its root (plain-HTML projects keep
- *  markup at the top level). */
+ *  markup at the top level). The running package's own dirs are always
+ *  ordered first — `ws.packages` is alphabetically sorted (see
+ *  workspace.ts), so without this a sibling earlier in the alphabet could
+ *  exhaust MAX_FILES_SCANNED before the actual running package's own files
+ *  are even walked. */
 async function collectScanRoots(projectRoot: string): Promise<string[]> {
   let packageDirs = [projectRoot]
   try {
     const ws = await resolveWorkspace(projectRoot)
     if (ws.isWorkspace) packageDirs = ws.packages
   } catch { /* fall through to single-root scan */ }
+  const ownDir = nodePath.resolve(projectRoot)
+  const ordered = [
+    ...packageDirs.filter(p => nodePath.resolve(p) === ownDir),
+    ...packageDirs.filter(p => nodePath.resolve(p) !== ownDir),
+  ]
   const roots: string[] = []
-  for (const pkg of packageDirs) {
+  for (const pkg of ordered) {
     const dirs = SOURCE_DIRS.map(d => nodePath.join(pkg, d)).filter(d => fs.existsSync(d))
     if (dirs.length) roots.push(...dirs)
     else roots.push(pkg)
@@ -132,6 +149,10 @@ interface LineMatch {
   excerpt: string
   base: number
   tagHit: boolean
+  /** True when the file is already known to the running package's own
+   *  component-usage graph — a stronger signal than a workspace-sibling
+   *  coincidence with the same evidence. */
+  runningPkg: boolean
   /** Exact evidence this line matched — ambiguity divides per key, so a
    *  unique class isn't punished for sharing a tier with boilerplate. */
   evidenceKey: string
@@ -156,7 +177,7 @@ export async function resolveFingerprint(
   const limit = Number.isFinite(limitArg) ? Math.max(1, Math.min(20, Math.floor(limitArg))) : 5
 
   if (!hasUsableEvidence(classes, usableText)) {
-    return { candidates: [], searched_files: 0 }
+    return { candidates: [], searched_files: 0, capped: false }
   }
 
   const classRes = classes.map(c => classTokenRegex(c))
@@ -166,6 +187,20 @@ export async function resolveFingerprint(
     if (files.length >= MAX_FILES_SCANNED) break
     await walk(root, files)
   }
+  const capped = files.length >= MAX_FILES_SCANNED
+
+  // Files the running package's own component-usage scan already knows
+  // about (imported or tag-used there) — used to weight matches toward the
+  // package that's actually running over same-named workspace-sibling noise.
+  // Best-effort: a failure here just means no bonus, never a hard error.
+  const runningPackageFiles = new Set<string>()
+  try {
+    const [usageIdx, ws] = await Promise.all([scanComponentUsage(projectRoot), resolveWorkspace(projectRoot)])
+    for (const relFile of Object.keys(usageIdx.imports)) runningPackageFiles.add(nodePath.resolve(ws.root, relFile))
+    for (const relFiles of Object.values(usageIdx.usage)) {
+      for (const relFile of relFiles) runningPackageFiles.add(nodePath.resolve(ws.root, relFile))
+    }
+  } catch { /* no bonus, no error */ }
 
   let searchedFiles = 0
   const matches: LineMatch[] = []
@@ -198,6 +233,7 @@ export async function resolveFingerprint(
         excerpt: line.trim().slice(0, MAX_EXCERPT_CHARS),
         base,
         tagHit: tag !== '' && lineMentionsTag(line, tag),
+        runningPkg: runningPackageFiles.has(filePath),
         evidenceKey: `${base}|${[...matchedClasses].sort().join(',')}|${textHit}`,
       })
     }
@@ -211,11 +247,12 @@ export async function resolveFingerprint(
 
   const candidates = matches
     .map((m): FingerprintCandidate => {
-      const raw = Math.min(1, m.base + (m.tagHit ? TAG_BONUS : 0)) / Math.sqrt(evidenceCounts.get(m.evidenceKey)!)
+      const bonus = (m.tagHit ? TAG_BONUS : 0) + (m.runningPkg ? RUNNING_PACKAGE_BONUS : 0)
+      const raw = Math.min(1, m.base + bonus) / Math.sqrt(evidenceCounts.get(m.evidenceKey)!)
       return { file: m.file, line: m.line, score: Math.round(raw * 100) / 100, excerpt: m.excerpt }
     })
     .sort((a, b) => b.score - a.score || a.file.localeCompare(b.file) || a.line - b.line)
     .slice(0, limit)
 
-  return { candidates, searched_files: searchedFiles }
+  return { candidates, searched_files: searchedFiles, capped }
 }

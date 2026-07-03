@@ -259,6 +259,14 @@ export const McpGetDataSourceDetailsArgs = z.object({
   context_lines: z.number().int().min(0).max(40).optional(),
 })
 
+export const McpGetDataSourceShapeArgs = z.object({
+  name: z.string().min(1, 'Missing required parameter: name'),
+  kind: DataSourceKindEnum.optional(),
+  file: SafeSourceFile.optional(),
+  method: z.string().optional(),
+  line: z.number().int().min(1).optional(),
+})
+
 export const McpGetApiSchemasArgs = z.object({
   kind: z.enum(['openapi', 'graphql', 'trpc', 'jsonschema']).optional(),
   detail: z.boolean().optional(),
