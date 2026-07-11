@@ -83,6 +83,36 @@ export const AgentFeedbackSchema = z.array(FeedbackEntry)
  * shell tools sometimes resolved missing `data-annotask-file` markers to `''`,
  * which would otherwise trip `SafeSourceFile.min(1)` and 400 the request.
  */
+/**
+ * Per-task-type `context` hardening. A `wireframe_apply` task's `context` is
+ * consumed VERBATIM by the embedded apply agent (the route + placements to
+ * insert, and the design-session directions). The generic create boundary
+ * otherwise accepts an untyped `context` blob, so a same-origin caller could
+ * mint a wireframe_apply task whose malformed context the apply pipeline then
+ * walks. This is a STRUCTURAL guard: it rejects a context that isn't shaped
+ * like a wireframe_apply context (wrong top-level type, non-array
+ * `instances`/`entries`). It validates without sanitizing — extra keys pass
+ * through untouched (the agent only reads the known fields) — and
+ * server-minted tasks bypass this boundary entirely (applyDesignSession calls
+ * addTask directly, never the HTTP/MCP create path).
+ */
+const looseRecord = z.record(z.string(), z.unknown())
+const WireframeApplyContext = z.object({
+  wireframe: z.object({
+    route: z.string(),
+    instances: z.array(looseRecord),
+  }).optional(),
+  session: z.object({
+    session_id: z.string(),
+    entries: z.array(looseRecord),
+  }).optional(),
+})
+function wireframeApplyContextValid(data: { type: string; context?: unknown }): boolean {
+  return data.type !== 'wireframe_apply' || data.context == null || WireframeApplyContext.safeParse(data.context).success
+}
+const WIREFRAME_APPLY_CONTEXT_ERROR =
+  'Malformed wireframe_apply context (expected { wireframe?: { route, instances[] }, session?: { session_id, entries[] } })'
+
 export const CreateTaskBody = z.object({
   type: z.enum(typeValues, { message: typeError }),
   description: z.string().min(0, 'Missing required field: description (string)'),
@@ -103,7 +133,7 @@ export const CreateTaskBody = z.object({
   screenshot_meta: z.unknown().optional(),
   visual: z.unknown().optional(),
   permissionMode: z.enum(permissionModeValues, { message: permissionModeError }).optional(),
-})
+}).refine(wireframeApplyContextValid, { message: WIREFRAME_APPLY_CONTEXT_ERROR, path: ['context'] })
 
 // ── HTTP: PATCH /tasks/:id ───────────────────────────────
 
@@ -179,7 +209,7 @@ export const McpCreateTaskArgs = z.object({
   component: z.string().optional(),
   mfe: z.string().optional(),
   context: z.record(z.string(), z.unknown()).optional(),
-})
+}).refine(wireframeApplyContextValid, { message: WIREFRAME_APPLY_CONTEXT_ERROR, path: ['context'] })
 
 export const McpDeleteTaskArgs = z.object({
   task_id: z.string().min(1, 'Missing required parameter: task_id'),
