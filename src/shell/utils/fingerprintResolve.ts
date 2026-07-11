@@ -80,12 +80,23 @@ export function evidenceFromFingerprint(fp: WireframeBlockFingerprint): Fingerpr
  *  or a contested list's leader at >= 0.5 with a 1.5x lead over the
  *  runner-up. Candidates are already score-descending (the server sorts);
  *  anything less confident returns null so the block stays honestly
- *  anchorless. */
-export function pickConfidentCandidate<T extends { score: number }>(candidates: T[]): T | null {
+ *  anchorless.
+ *
+ *  `capped` = the server hit its file-scan cap, so "sole candidate" no longer
+ *  means "unique in the tree" — the real match may live in an unscanned file.
+ *  The uniqueness discount is exactly what justifies the 0.3 sole floor, so a
+ *  capped scan holds sole candidates to the full 0.5 bar instead. */
+export function pickConfidentCandidate<T extends { score: number }>(
+  candidates: T[],
+  opts: { capped?: boolean } = {},
+): T | null {
   const top = candidates[0]
   if (!top) return null
   const second = candidates[1]
-  if (!second) return top.score >= MIN_SOLE_CANDIDATE_SCORE ? top : null
+  if (!second) {
+    const floor = opts.capped ? MIN_CONFIDENT_SCORE : MIN_SOLE_CANDIDATE_SCORE
+    return top.score >= floor ? top : null
+  }
   if (top.score < MIN_CONFIDENT_SCORE) return null
   if (top.score < AMBIGUITY_RATIO * second.score) return null
   return top
@@ -112,8 +123,8 @@ export async function resolveFingerprintAnchor(
   try {
     const res = await fetchImpl(`/__annotask/api/resolve-fingerprint?${params.toString()}`)
     if (!res.ok) return null
-    const body = (await res.json()) as { candidates?: FingerprintCandidate[] }
-    const hit = pickConfidentCandidate(body.candidates ?? [])
+    const body = (await res.json()) as { candidates?: FingerprintCandidate[]; capped?: boolean }
+    const hit = pickConfidentCandidate(body.candidates ?? [], { capped: body.capped === true })
     return hit ? { file: hit.file, line: hit.line } : null
   } catch {
     return null

@@ -196,6 +196,7 @@ export function useComponentGenerator(deps: ComponentGeneratorDeps) {
       )
       if (tokens.get(id) !== token) return // superseded by a newer edit
       if (!deps.wireframe.findBlock(id)) return // block deleted mid-flight
+      if (deps.wireframe.building.value) return // sketch locked mid-flight
       const snapshot: PaletteSnapshot = {
         dataUrl: res.dataUrl,
         width: res.width,
@@ -287,10 +288,19 @@ export function useComponentGenerator(deps: ComponentGeneratorDeps) {
   }
 
   /** Cancel every pending live regen — called before "Implement this wireframe"
-   *  locks the sketch so an in-flight render can't mutate it mid-implement. */
+   *  locks the sketch so an in-flight render can't mutate it mid-implement.
+   *  Bumps every block's token too: clearing timers only stops renders that
+   *  haven't started, while a preview already awaiting the bridge would still
+   *  land afterwards and swap a block on the locked canvas. */
   function cancel(): void {
     for (const t of timers.values()) clearTimeout(t)
     timers.clear()
+    // A superseded run's finally skips its own setGenerating(false), so clear
+    // the shimmer here for every block that ever had a regen.
+    for (const [id, token] of tokens) {
+      tokens.set(id, token + 1)
+      deps.wireframe.setGenerating(id, false)
+    }
   }
 
   /** The datasource step is OFFERED (not required) when the component looks

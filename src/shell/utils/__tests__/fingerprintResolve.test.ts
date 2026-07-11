@@ -98,6 +98,16 @@ describe('pickConfidentCandidate', () => {
   it('empty list → null', () => {
     expect(pickConfidentCandidate([])).toBeNull()
   })
+
+  it('a CAPPED scan holds a lone candidate to the full 0.5 bar', () => {
+    // "Sole candidate" only means "unique in the tree" when the whole tree was
+    // scanned — under a truncated scan the 0.3 uniqueness floor is void.
+    expect(pickConfidentCandidate([c(0.4)], { capped: true })).toBeNull()
+    expect(pickConfidentCandidate([c(0.3)], { capped: true })).toBeNull()
+    expect(pickConfidentCandidate([c(0.5)], { capped: true })).toEqual(c(0.5))
+    // Contested-list rules are unchanged by the cap.
+    expect(pickConfidentCandidate([c(0.9), c(0.6)], { capped: true })).toEqual(c(0.9))
+  })
 })
 
 describe('resolveFingerprintAnchor', () => {
@@ -115,6 +125,15 @@ describe('resolveFingerprintAnchor', () => {
     expect(params.get('text')).toBe('Remote widget')
     expect(params.get('tag')).toBe('div')
     expect(params.get('limit')).toBe('5')
+  })
+
+  it('rejects a low-scoring lone candidate when the server scan was capped', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({
+      candidates: [{ file: 'src/Widget.vue', line: 12, score: 0.4 }],
+      searched_files: 2000,
+      capped: true,
+    }))
+    expect(await resolveFingerprintAnchor(fetchImpl as unknown as typeof fetch, FP)).toBeNull()
   })
 
   it('returns null on an ambiguous result (leaves the block honestly anchorless)', async () => {

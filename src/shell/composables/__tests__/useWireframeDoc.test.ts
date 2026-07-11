@@ -191,6 +191,18 @@ describe('useWireframeDoc', () => {
     })
   })
 
+  describe('load (reload resilience)', () => {
+    it('a failed RE-load keeps the last-good doc instead of blanking it', async () => {
+      // WS `wireframe:updated` triggers reloads; a transient blip must not
+      // wipe every consumer's canvas (and risk a later persist making it real).
+      wf.doc.value = docWith([instance('wfi-keep')])
+      fetchMock.mockRejectedValue(new Error('network blip'))
+      await wf.load()
+      expect(wf.instancesForRoute('/r').map((i) => i.id)).toEqual(['wfi-keep'])
+      expect(wf.loadError.value).toContain('network blip')
+    })
+  })
+
   describe('markInstancesBuilding / deleteInstance', () => {
     beforeEach(() => {
       // Echo PUTs back with a bumped rev so doc.value stays coherent.

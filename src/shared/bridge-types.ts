@@ -382,6 +382,10 @@ export interface WireframeCaptureBlock {
   error?: string
   /** Block was taller than the 4000px cap — only the top is in the image. */
   clipped?: boolean
+  /** Block overlaps a cross-origin <img>: under the allowTaint:false capture
+   *  policy an image whose server sends no CORS headers rasterizes blank, so
+   *  parts of this block's snapshot MAY be missing (CORS-enabled ones are fine). */
+  extImages?: boolean
   /** Custom element whose interior is unreachable (closed shadow root): the
    *  pixels are real but nothing inside is separable. Open shadow roots are
    *  walked normally and never stamped. */

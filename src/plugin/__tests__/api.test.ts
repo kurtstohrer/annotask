@@ -958,14 +958,23 @@ describe('API endpoints', () => {
     it('rejects non-PNG payloads and oversized bodies', async () => {
       const badType = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-3', data: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' })
       expect(badType.status).toBe(400)
-      // The global 4MB body cap fires while the client is still streaming —
-      // readBody destroys the socket (ECONNRESET) or answers 413 by timing.
-      const big = `data:image/png;base64,${Buffer.alloc(4 * 1024 * 1024 + 16).toString('base64')}`
+      // Over the 4MB decoded cap → clean 413 from the buffer check (the raised
+      // image-body read cap lets the body arrive so the real boundary answers).
+      const pngSig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      const big = `data:image/png;base64,${Buffer.concat([pngSig, Buffer.alloc(4 * 1024 * 1024 + 16)]).toString('base64')}`
       const result = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-4', data: big })
-        .then((r) => r.status as number | string)
-        .catch(() => 'connection-destroyed')
-      expect([413, 'connection-destroyed']).toContain(result)
+      expect(result.status).toBe(413)
       expect(fs.existsSync(path.join(options.projectRoot, '.annotask', 'wireframe-snapshots', 'wfb-test-4.png'))).toBe(false)
+    })
+
+    it('accepts a legal PNG between 3MB and 4MB (base64 inflation must not shrink the cap)', async () => {
+      // ~3.5MB decoded → ~4.7MB JSON body: over the old global body cap, under
+      // the promised 4MB image cap. Retina block captures live in this band.
+      const pngSig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      const legal = `data:image/png;base64,${Buffer.concat([pngSig, Buffer.alloc(3_500_000)]).toString('base64')}`
+      const up = await request(server, 'POST', '/__annotask/api/wireframe-snapshots', { id: 'wfb-test-5', data: legal })
+      expect(up.status).toBe(200)
+      expect(up.data.filename).toBe('wfb-test-5.png')
     })
 
     it('serve and delete refuse filenames outside the minted-id shape', async () => {

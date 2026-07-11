@@ -49,6 +49,11 @@ function setMembership(list: typeof staleIds, id: string, present: boolean): voi
   else if (!present && has) list.value = list.value.filter((x) => x !== id)
 }
 
+// Whether any load has ever succeeded — a failed RE-load (WS-triggered or
+// post-409) keeps the last-good doc instead of blanking every consumer's
+// canvas over a transient fetch error; only the first load may fall to empty.
+let hasLoaded = false
+
 async function load(): Promise<void> {
   isLoading.value = true
   loadError.value = null
@@ -56,9 +61,10 @@ async function load(): Promise<void> {
     const res = await fetch('/__annotask/api/wireframe')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     doc.value = (await res.json()) as WireframeDocument
+    hasLoaded = true
   } catch (err) {
     loadError.value = (err as Error).message ?? 'Failed to load wireframe'
-    doc.value = emptyWireframeDocument()
+    if (!hasLoaded) doc.value = emptyWireframeDocument()
   } finally {
     isLoading.value = false
   }

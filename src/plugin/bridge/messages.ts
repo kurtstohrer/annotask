@@ -1020,7 +1020,10 @@ export function bridgeMessages(): string {
           respond(id, { error: 'html2canvas not loaded' });
           return;
         }
-        var opts = { useCORS: true, logging: false, allowTaint: true };
+        // allowTaint FALSE (unified capture policy): with taint allowed, one
+        // non-CORS image makes toDataURL THROW and the whole screenshot fails;
+        // without it that image renders blank and the screenshot survives.
+        var opts = { useCORS: true, logging: false, allowTaint: false };
         if (clip) {
           // clip coords are viewport-relative; html2canvas crops relative
           // to the full document body, so add scroll offsets.
@@ -1082,9 +1085,26 @@ export function bridgeMessages(): string {
       // wireframe-walker bridge fragment (see wireframe-walker.ts) and is
       // invoked below as discoverBlocks(). Extracted so the MFE descent is a
       // single, jsdom-tested unit rather than inline in this untyped template.
+      // One idempotent cleanup for EVERY exit — success, error, synchronous
+      // throw, or the watchdog below. The capture mutates live-page state
+      // (scroll position, the wf-scroller tag, explode's wf-hide attributes);
+      // any path that skips restoration leaves the user's app scrolled to
+      // origin or with children stuck visibility:hidden.
+      var wfCleaned = false;
+      var wfWatchdog = null;
+      function wfCleanup() {
+        if (wfCleaned) return;
+        wfCleaned = true;
+        if (wfWatchdog) { clearTimeout(wfWatchdog); wfWatchdog = null; }
+        try {
+          var wfHid = document.querySelectorAll('[data-annotask-wf-hide]');
+          for (var whi = 0; whi < wfHid.length; whi++) wfHid[whi].removeAttribute('data-annotask-wf-hide');
+        } catch (e) { /* cleanup must never throw */ }
+        try { wfScrollerRestore(); } catch (e) { /* ditto */ }
+        try { window.scrollTo(wfSavedX, wfSavedY); } catch (e) { /* ditto */ }
+      }
       function wfFinishError(message) {
-        wfScrollerRestore();
-        window.scrollTo(wfSavedX, wfSavedY);
+        wfCleanup();
         respond(id, { error: message });
       }
 
@@ -1250,6 +1270,36 @@ export function bridgeMessages(): string {
         var wfMetas = wfDisc.blocks.map(function(b) { return b.meta; });
         var wfTruncated = wfDisc.truncated;
 
+        // Cross-origin <img>s without CORS headers rasterize BLANK under the
+        // unified allowTaint:false policy — stamp the risk on every block
+        // whose rect overlaps one, so missing pixels get a labeled cause
+        // instead of a silent white hole. (Images that DO send CORS headers
+        // capture fine; this flag means "may be blank", not "is blank".)
+        // Skipped for the hover probe: it renders nothing.
+        if (!wfMetaOnly) {
+          try {
+            var wfImgs = document.images || [];
+            for (var xi = 0; xi < wfImgs.length; xi++) {
+              var xImg = wfImgs[xi];
+              var xSrc = xImg.currentSrc || xImg.src || '';
+              if (!xSrc || xSrc.indexOf('data:') === 0 || xSrc.indexOf('blob:') === 0) continue;
+              var xOrigin = null;
+              try { xOrigin = new URL(xSrc, location.href).origin; } catch (e) { continue; }
+              if (xOrigin === location.origin) continue;
+              var xr = xImg.getBoundingClientRect();
+              if (!xr.width || !xr.height) continue;
+              var xx = xr.x + (window.scrollX || 0);
+              var xy = xr.y + (window.scrollY || 0);
+              for (var xb = 0; xb < wfMetas.length; xb++) {
+                var xm = wfMetas[xb].rect;
+                if (xx < xm.x + xm.width && xx + xr.width > xm.x && xy < xm.y + xm.height && xy + xr.height > xm.y) {
+                  wfMetas[xb].extImages = true;
+                }
+              }
+            }
+          } catch (e) { /* risk stamping must never break the capture */ }
+        }
+
         if (wfMetaOnly) {
           // Hover child-rect probe: the per-block metas (rects/eids/file/mfe/tag,
           // dataUrl null) only — the shell overlays them for the hover highlights.
@@ -1273,12 +1323,31 @@ export function bridgeMessages(): string {
 
         function wfRun(h2c) {
           var wfIdx = 0;
+          // Wall-clock budget for the per-block legacy loop. Without it, a
+          // master failure on a heavy page replayed up to 25 full document
+          // renders (seconds each) — grinding for minutes on exactly the
+          // pages that were already too slow, long past the shell's 60s
+          // timeout. Once spent, remaining blocks are marked honestly
+          // uncaptured (they render hatched) and the capture still completes.
+          var wfLegacyDeadline = Date.now() + 40000;
           function wfCaptureNext() {
             if (wfIdx >= wfMetas.length) { wfCaptureFull(); return; }
+            if (Date.now() > wfLegacyDeadline) {
+              for (var bi = wfIdx; bi < wfMetas.length; bi++) {
+                if (!wfMetas[bi].dataUrl) {
+                  wfMetas[bi].dataUrl = null;
+                  wfMetas[bi].error = 'not captured — the page renders too slowly (captured ' + wfIdx + ' of ' + wfMetas.length + ' blocks)';
+                }
+              }
+              wfCaptureFull(); return;
+            }
             var meta = wfMetas[wfIdx];
             sendToShell('wireframe:capture-progress', { index: wfIdx, total: wfMetas.length + 1, label: meta.component || meta.source_tag || meta.tag });
             var capH = Math.min(meta.rect.height, 4000);
-            var wfBlockOpts = { useCORS: true, allowTaint: true, logging: false, scale: wfScale, x: meta.rect.x, y: meta.rect.y, width: meta.rect.width, height: capH };
+            // allowTaint FALSE — same policy as the master path: a non-CORS
+            // image renders blank instead of tainting the canvas and throwing
+            // the whole block away at toDataURL.
+            var wfBlockOpts = { useCORS: true, allowTaint: false, logging: false, scale: wfScale, x: meta.rect.x, y: meta.rect.y, width: meta.rect.width, height: capH };
             // In-scroller blocks crop from the expanded clone (their live rects
             // already ignore the clip); outside-blocks keep live geometry.
             if (wfScroller && wfScroller.contains(wfAll[wfIdx])) wfBlockOpts.onclone = wfExpandScrollerInClone;
@@ -1311,7 +1380,7 @@ export function bridgeMessages(): string {
               };
               var shellRect = shellRoot.getBoundingClientRect();
               wfH2c(h2c, document.body, {
-                useCORS: true, allowTaint: true, logging: false, scale: wfScale,
+                useCORS: true, allowTaint: false, logging: false, scale: wfScale,
                 x: shellRect.x + (window.scrollX || 0), y: shellRect.y + (window.scrollY || 0),
                 width: shellRect.width, height: Math.min(shellRect.height, 4000),
                 onclone: function(docClone) {
@@ -1328,16 +1397,15 @@ export function bridgeMessages(): string {
             // a retina full-document PNG would blow the 4MB upload cap. The
             // expanded clone paints the scroller's whole extent (content after
             // it shifts down, but a complete before beats a clipped one).
-            wfH2c(h2c, document.body, { useCORS: true, allowTaint: true, logging: false, scale: 1, onclone: wfExpandScrollerInClone }, 20000)
+            wfH2c(h2c, document.body, { useCORS: true, allowTaint: false, logging: false, scale: 1, onclone: wfExpandScrollerInClone }, 20000)
               .then(function(canvas) { wfFinish(canvas.toDataURL('image/png'), null); })
               .catch(function() { wfFinish(null, null); });
           }
           function wfFinish(fullDataUrl, shellDataUrl) {
-            // docHeight BEFORE the scroller restore — it reads the scroller's
-            // hidden extent, which the restore folds back behind the clip.
+            // docHeight BEFORE the cleanup — it reads the scroller's hidden
+            // extent, which the scroller restore folds back behind the clip.
             var wfFinalDocHeight = wfDocHeight();
-            wfScrollerRestore();
-            window.scrollTo(wfSavedX, wfSavedY);
+            wfCleanup();
             var result = {
               viewport: {
                 width: window.innerWidth, height: window.innerHeight,
@@ -1358,25 +1426,34 @@ export function bridgeMessages(): string {
           // One full-document render (two when an inner scroller exists), then
           // every block is a cheap canvas crop — versus the legacy loop's one
           // full clone+render PER BLOCK plus a final full-page pass (up to 25
-          // document renders, seconds each on heavy pages). allowTaint is
-          // FALSE here on purpose: a tainted master would fail EVERY crop's
-          // toDataURL, so non-CORS images render blank instead of poisoning
-          // the whole capture — which still beats the legacy path, where such
-          // a block fails entirely.
-          function wfRunMaster() {
+          // document renders, seconds each on heavy pages). allowTaint FALSE
+          // everywhere (unified policy): non-CORS images render blank instead
+          // of tainting the canvas and failing every toDataURL.
+          function wfRunMaster() { wfMasterAttempt(wfScale); }
+          // One master attempt at a given scale. Failure ladder: retina master
+          // → scale-1 master (half the pixels, same completeness) → the
+          // BUDGETED legacy loop above. The old behavior — master failure
+          // silently replaying up to 25 full renders at full scale — doubled
+          // down on exactly the pages that had just proven too slow.
+          function wfMasterAttempt(mScale) {
+            function wfMasterFallback() {
+              if (mScale > 1) { wfMasterAttempt(1); return; }
+              wfIdx = 0;
+              wfCaptureNext();
+            }
             // Canvas side limit (Safari-conservative 16384px): a master past
-            // it would silently rasterize blank, so take the legacy path.
+            // it would silently rasterize blank — drop the scale or fall back.
             var wfDocWidth = document.documentElement.scrollWidth;
-            if (wfDocWidth * wfScale > 16384 || wfDocHeight() * wfScale > 16384) { wfCaptureNext(); return; }
+            if (wfDocWidth * mScale > 16384 || wfDocHeight() * mScale > 16384) { wfMasterFallback(); return; }
             sendToShell('wireframe:capture-progress', { index: 0, total: wfMetas.length + 1, label: 'rendering page' });
-            wfH2c(h2c, document.body, { useCORS: true, allowTaint: false, logging: false, scale: wfScale }, 20000)
+            wfH2c(h2c, document.body, { useCORS: true, allowTaint: false, logging: false, scale: mScale }, 20000)
               .then(function(plainMaster) {
                 // Two masters when an inner scroller exists: in-scroller
                 // blocks crop from the EXPANDED clone render, everything else
                 // from the plain one — same containment rule as the per-block
                 // path (expansion shifts content after the scroller in flow).
                 if (!wfScroller) return { plain: plainMaster, expanded: plainMaster };
-                return wfH2c(h2c, document.body, { useCORS: true, allowTaint: false, logging: false, scale: wfScale, onclone: wfExpandScrollerInClone }, 20000)
+                return wfH2c(h2c, document.body, { useCORS: true, allowTaint: false, logging: false, scale: mScale, onclone: wfExpandScrollerInClone }, 20000)
                   .then(function(expandedMaster) { return { plain: plainMaster, expanded: expandedMaster }; });
               })
               .then(function(masters) {
@@ -1386,33 +1463,29 @@ export function bridgeMessages(): string {
                   var cH = Math.min(cMeta.rect.height, 4000);
                   var cSrc = (wfScroller && wfScroller.contains(wfAll[ci])) ? masters.expanded : masters.plain;
                   var cCrop = document.createElement('canvas');
-                  cCrop.width = Math.max(1, Math.round(cMeta.rect.width * wfScale));
-                  cCrop.height = Math.max(1, Math.round(cH * wfScale));
-                  cCrop.getContext('2d').drawImage(cSrc, cMeta.rect.x * wfScale, cMeta.rect.y * wfScale, cMeta.rect.width * wfScale, cH * wfScale, 0, 0, cCrop.width, cCrop.height);
+                  cCrop.width = Math.max(1, Math.round(cMeta.rect.width * mScale));
+                  cCrop.height = Math.max(1, Math.round(cH * mScale));
+                  cCrop.getContext('2d').drawImage(cSrc, cMeta.rect.x * mScale, cMeta.rect.y * mScale, cMeta.rect.width * mScale, cH * mScale, 0, 0, cCrop.width, cCrop.height);
                   cMeta.dataUrl = cCrop.toDataURL('image/png');
                   if (cH < cMeta.rect.height) cMeta.clipped = true;
                 }
+                // The result's viewport.scale must report the scale the pixels
+                // were actually rendered at (a degraded retry lands at 1).
+                wfScale = mScale;
                 sendToShell('wireframe:capture-progress', { index: wfMetas.length, total: wfMetas.length + 1, label: 'full page' });
                 // The "before" is the (expanded, when present) master
                 // downscaled to scale 1 — same composite-budget rule as the
                 // legacy full-page pass, minus its extra document render.
-                if (wfScale === 1) return masters.expanded.toDataURL('image/png');
+                if (mScale === 1) return masters.expanded.toDataURL('image/png');
                 var wfFull = document.createElement('canvas');
-                wfFull.width = Math.max(1, Math.round(masters.expanded.width / wfScale));
-                wfFull.height = Math.max(1, Math.round(masters.expanded.height / wfScale));
+                wfFull.width = Math.max(1, Math.round(masters.expanded.width / mScale));
+                wfFull.height = Math.max(1, Math.round(masters.expanded.height / mScale));
                 wfFull.getContext('2d').drawImage(masters.expanded, 0, 0, wfFull.width, wfFull.height);
                 return wfFull.toDataURL('image/png');
               })
               .then(
                 function(fullDataUrl) { wfFinish(fullDataUrl, null); },
-                function() {
-                  // Silent fallback: master render failed/timed out, or a
-                  // crop's toDataURL threw (belt-and-suspenders). Rerun the
-                  // whole legacy sequence from block 0 — idempotent, any
-                  // partial dataUrls just get overwritten.
-                  wfIdx = 0;
-                  wfCaptureNext();
-                }
+                wfMasterFallback
               );
           }
           // Refine keeps the legacy loop: its shell pass needs its own
@@ -1451,6 +1524,15 @@ export function bridgeMessages(): string {
         }
       } // end wfProceed
 
+      // A synchronous throw anywhere in discovery/dispatch must still restore
+      // the page AND answer the shell — otherwise the request only dies at the
+      // shell's 60s timeout with the page left scrolled/tagged.
+      function wfSafeProceed() {
+        try { wfProceed(); } catch (err) {
+          wfFinishError((err && err.message) || 'capture failed');
+        }
+      }
+
       // Full captures sweep the page first so lazy content reveals, then
       // normalize the window AND the primary inner scroller to origin. The
       // metaOnly hover probe never scrolls; explode re-captures content that
@@ -1458,17 +1540,24 @@ export function bridgeMessages(): string {
       // explode still normalizes, its geometry must match the original
       // capture's coordinate space.
       if (wfMetaOnly) {
-        wfProceed();
-      } else if (wfIsRefine || (payload && payload.skipWarmup)) {
-        window.scrollTo(0, 0);
-        wfScrollerReset();
-        wfProceed();
+        wfSafeProceed();
       } else {
-        wfWarmUp(function() {
+        // Watchdog: if no exit path ran by the time the shell has long given
+        // up (its bridge timeout is 60s), restore the page anyway. The
+        // per-render deadlines make this unreachable in practice — this is
+        // the backstop for the path nobody predicted.
+        wfWatchdog = setTimeout(wfCleanup, 65000);
+        if (wfIsRefine || (payload && payload.skipWarmup)) {
           window.scrollTo(0, 0);
           wfScrollerReset();
-          wfProceed();
-        });
+          wfSafeProceed();
+        } else {
+          wfWarmUp(function() {
+            window.scrollTo(0, 0);
+            wfScrollerReset();
+            wfSafeProceed();
+          });
+        }
       }
       return;
     }
@@ -1535,7 +1624,10 @@ export function bridgeMessages(): string {
         // capture. The PNG is hi-res but the block keeps its CSS size, so report
         // the unscaled (CSS) dimensions — else the block would land 2x too big.
         var pvScale = Math.min(window.devicePixelRatio || 1, 2);
-        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: true, scale: pvScale, backgroundColor: pvSurface.background, width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
+        // allowTaint FALSE (unified capture policy): a taint-allowed canvas
+        // throws at toDataURL on any non-CORS image, failing the whole
+        // preview; blank imagery + honest fidelity beats no preview.
+        h2c(pvContainer, { useCORS: true, logging: false, allowTaint: false, scale: pvScale, backgroundColor: pvSurface.background, width: pvContainer.offsetWidth, height: pvContainer.offsetHeight }).then(function(canvas) {
           var dataUrl = canvas.toDataURL('image/png');
           pvCleanup();
           respond(id, { mounted: true, fidelity: pvRes.fidelity, dataUrl: dataUrl, width: Math.round(canvas.width / pvScale), height: Math.round(canvas.height / pvScale) });

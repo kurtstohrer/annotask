@@ -268,6 +268,48 @@ describe('useComponentGenerator (place-first)', () => {
     expect(d.previewComponent).not.toHaveBeenCalled()
   })
 
+  it('cancel() supersedes an in-flight render so a late snapshot never lands', async () => {
+    const d = makeDeps()
+    const def = deferred<typeof SNAPSHOT>()
+    d.previewComponent.mockImplementation(() => def.promise)
+    const gen = useComponentGenerator(d.deps)
+    const id = gen.placeComponent(item(), { x: 0, y: 0 })! // render in flight
+    await flush()
+    gen.cancel() // implement is about to lock the sketch
+    d.setGenerating.mockClear()
+    def.resolve({ ...SNAPSHOT })
+    await flush()
+    const snapshotWrites = d.updatePaletteBlock.mock.calls.filter((c) => c[1].snapshot)
+    expect(snapshotWrites.length).toBe(0)
+    expect(d.blocks.get(id)?.image).toBeUndefined()
+  })
+
+  it('cancel() clears the generating shimmer for superseded blocks', async () => {
+    const d = makeDeps()
+    const def = deferred<typeof SNAPSHOT>()
+    d.previewComponent.mockImplementation(() => def.promise)
+    const gen = useComponentGenerator(d.deps)
+    const id = gen.placeComponent(item(), { x: 0, y: 0 })!
+    await flush()
+    d.setGenerating.mockClear()
+    gen.cancel()
+    expect(d.setGenerating).toHaveBeenCalledWith(id, false)
+  })
+
+  it('drops a render that resolves after the sketch locks (building)', async () => {
+    const d = makeDeps()
+    const def = deferred<typeof SNAPSHOT>()
+    d.previewComponent.mockImplementation(() => def.promise)
+    const gen = useComponentGenerator(d.deps)
+    gen.placeComponent(item(), { x: 0, y: 0 })
+    await flush()
+    d.buildingFlag.value = true // implement stamped the canvas mid-flight
+    def.resolve({ ...SNAPSHOT })
+    await flush()
+    const snapshotWrites = d.updatePaletteBlock.mock.calls.filter((c) => c[1].snapshot)
+    expect(snapshotWrites.length).toBe(0)
+  })
+
   it('setProp is inert while the sketch is locked', async () => {
     const d = makeDeps()
     const gen = useComponentGenerator(d.deps)

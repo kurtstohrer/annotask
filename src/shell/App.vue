@@ -885,6 +885,7 @@ const navigateIframe = (route: string) => navigateIframeUtil(iframeRef, currentR
           :capturing="wireframeMode.capturing.value"
           :progress="wireframeMode.progress.value"
           :error="wireframeMode.error.value"
+          :viewport-mismatch="wireframeMode.viewportMismatch.value"
           :image-src="wireframeMode.imageSrc"
           :resolve-children="wireframeMode.resolveBlockChildren"
           :deleted-blocks="wireframeMode.deletedBlocks.value"

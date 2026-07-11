@@ -38,6 +38,7 @@ function makeIframe(result: WireframeCaptureResult = CAPTURE_OK): WireframeModeI
   return {
     currentRoute: ref('/planets'),
     bridgeReady: ref(true),
+    getIframeViewport: vi.fn(() => ({ w: 1280, h: 800 })),
     captureWireframe: vi.fn(async () => result),
     previewComponent: vi.fn(async () => ({ mounted: true, fidelity: 'isolated-preview', dataUrl: 'data:image/png;base64,P', width: 320, height: 140 })),
     findTemplateGroup: vi.fn(async () => ({ eids: ['live-1'] })),
@@ -114,6 +115,25 @@ describe('useWireframeMode', () => {
     expect(wf.canvasForRoute('/planets')?.blocks).toHaveLength(3)
   })
 
+  it('surfaces snapshot upload failures instead of silently hatching after reload', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('wireframe-snapshots') && init?.method === 'POST') {
+        return { ok: false, status: 500, json: async () => ({}) } as unknown as Response
+      }
+      if (init?.method === 'PUT') {
+        return { ok: true, status: 200, json: async () => ({ ...JSON.parse(init.body as string), rev: 2 }) } as unknown as Response
+      }
+      return { ok: true, status: 200, json: async () => ({ version: '1.0', updatedAt: 0, rev: 1, routes: [] }) } as unknown as Response
+    })
+    const { mode } = makeMode()
+    await mode.enter()
+    // The session still works (liveImages render the blocks)…
+    expect(mode.active.value).toBe(true)
+    expect(mode.imageSrc(mode.canvas.value!.blocks[0])).toBe('data:image/png;base64,A')
+    // …but the failure is SAID, not discovered at the next F5.
+    expect(mode.error.value).toContain('failed to save')
+  })
+
   it('enter() reuses a persisted canvas without capturing; images come from the sidecar route', async () => {
     const persisted = {
       capturedAt: 5,
@@ -131,6 +151,65 @@ describe('useWireframeMode', () => {
     expect(mode.active.value).toBe(true)
     expect(iframe.captureWireframe).not.toHaveBeenCalled()
     expect(mode.imageSrc(mode.canvas.value!.blocks[0])).toBe('/__annotask/wireframe-snapshots/wfb-old.png')
+    // Same capture viewport as the live iframe — no mismatch hint.
+    expect(mode.viewportMismatch.value).toBeNull()
+  })
+
+  describe('viewport mismatch on persisted-canvas reuse', () => {
+    function docWithCanvasAt(width: number, height: number) {
+      return {
+        version: '1.0' as const, updatedAt: 0, rev: 1,
+        routes: [{
+          route: '/planets', instances: [],
+          canvas: {
+            capturedAt: 5,
+            viewport: { width, height, docWidth: width, docHeight: height, scale: 1 },
+            blocks: [{
+              id: 'wfb-old', kind: 'captured' as const,
+              rect: { x: 0, y: 0, width: 100, height: 50 }, z: 1, createdAt: 1,
+              anchor: { file: 'a.vue', line: 1 }, originalRect: { x: 0, y: 0, width: 100, height: 50 },
+              image: 'wfb-old.png',
+            }],
+          },
+        }],
+      }
+    }
+
+    it('flags a sketch captured at a much wider viewport (the stale-ultrawide case)', async () => {
+      wf.doc.value = docWithCanvasAt(2952, 1428)
+      const { mode } = makeMode()
+      await mode.enter()
+      expect(mode.viewportMismatch.value).toEqual({
+        captured: { width: 2952, height: 1428 },
+        live: { width: 1280, height: 800 },
+      })
+    })
+
+    it('stays quiet within the resize tolerance (width-only, 10% with a 64px floor)', async () => {
+      wf.doc.value = docWithCanvasAt(1344, 700) // 64px wider, big height delta — both benign
+      const { mode } = makeMode()
+      await mode.enter()
+      expect(mode.viewportMismatch.value).toBeNull()
+    })
+
+    it('clears on exit', async () => {
+      wf.doc.value = docWithCanvasAt(2952, 1428)
+      const { mode } = makeMode()
+      await mode.enter()
+      expect(mode.viewportMismatch.value).not.toBeNull()
+      mode.exit()
+      expect(mode.viewportMismatch.value).toBeNull()
+    })
+
+    it('clears on recapture — a fresh capture matches the live viewport by construction', async () => {
+      wf.doc.value = docWithCanvasAt(2952, 1428)
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      expect(mode.viewportMismatch.value).not.toBeNull()
+      await mode.recapture()
+      expect(iframe.captureWireframe).toHaveBeenCalled()
+      expect(mode.viewportMismatch.value).toBeNull()
+    })
   })
 
   it('a failed capture surfaces the error and stays in live view', async () => {
@@ -279,6 +358,24 @@ describe('useWireframeMode', () => {
       mode.history.undo()
       expect(mode.findBlock(id)).toBeNull() // one undo removes the whole block (place + fill)
       expect(mode.history.canUndo.value).toBe(false)
+    })
+
+    it('updatePaletteBlock refuses to mutate a locked (building) sketch', async () => {
+      const { mode } = makeMode()
+      await mode.enter()
+      const id = mode.placeComponentBlock({ tag: 'planetcard', componentName: 'PlanetCard' }, { x: 10, y: 20 })!
+      mode.canvas.value!.status = 'building' // implement locked the sketch
+      await mode.updatePaletteBlock(
+        id,
+        { snapshot: { dataUrl: 'data:image/png;base64,L', width: 320, height: 140, fidelity: 'isolated-preview', mounted: true } },
+        { recordHistory: false },
+      )
+      const block = mode.findBlock(id)!
+      expect(block.fidelity).toBe('placeholder') // the late render was dropped
+      expect(block.image).toBeUndefined()
+      // Unlock before the test ends — the doc is a module singleton and a
+      // leaked 'building' status wedges every later-created mode instance.
+      mode.canvas.value!.status = 'sketch'
     })
 
     it('a place-first block is honest before its snapshot fills (client-only shimmer)', async () => {
@@ -466,6 +563,65 @@ describe('useWireframeMode', () => {
       expect(await mode.explodeBlock(parent.id)).toBe(false)
       expect(mode.error.value).toContain("isn't mapped to source")
       expect(mode.canvas.value!.blocks.find((b) => b.id === parent.id)).toBeDefined()
+    })
+
+    it('one block back with a RE-MINTED eid still reads as no-children (geometry identity)', async () => {
+      const { mode, iframe } = makeMode(makeIframe(ANCHORLESS_CAPTURE))
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      // Eids are volatile WeakRef handles: the element was GC'd/re-minted
+      // between resolve and capture, so the echoed rootEid no longer matches
+      // the lone block's eid — but its rect IS the parent's captured rect.
+      vi.mocked(iframe.captureWireframe).mockResolvedValueOnce({
+        viewport: CAPTURE_OK.viewport,
+        rootEid: 'live-root',
+        blocks: [{ eid: 'reminted-9', file: '', line: '', component: '', source_tag: '', tag: 'div', cls: 'remote-root', role: 'content', rect: { x: 0, y: 0, width: 1280, height: 600 }, dataUrl: 'data:image/png;base64,M1' }],
+      })
+      expect(await mode.explodeBlock(parent.id)).toBe(false)
+      expect(mode.error.value).toContain('no separable children')
+      // Never a duplicate of itself.
+      expect(mode.canvas.value!.blocks.filter((b) => !b.deleted)).toHaveLength(1)
+    })
+
+    it('refuses to explode while the canvas is building (an apply is in flight)', async () => {
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      expect(parent.anchor?.file).toBe('src/pages/PlanetsPage.vue')
+      // The apply loop locks the canvas at 'building' — explode must not mutate
+      // the sketch the agent was handed.
+      mode.canvas.value!.status = 'building'
+      await nextTick()
+      const before = mode.canvas.value!.blocks.length
+      expect(await mode.explodeBlock(parent.id)).toBe(false)
+      // Bailed at the entry guard, before touching the live re-resolution.
+      expect(iframe.findTemplateGroup).not.toHaveBeenCalled()
+      expect(mode.canvas.value!.blocks).toHaveLength(before)
+      // Unlock before the test ends — the doc is a module singleton and a
+      // leaked 'building' status wedges every later-created mode instance.
+      mode.canvas.value!.status = 'sketch'
+    })
+
+    it('holds the capture lock across the first await so a concurrent explode is refused', async () => {
+      const { mode, iframe } = makeMode()
+      await mode.enter()
+      const parent = mode.canvas.value!.blocks[0]
+      // Gate the live re-resolution so the first explode stays suspended (lock
+      // held) while the second is attempted. The lock is claimed synchronously
+      // BEFORE the first await, so the second call sees it immediately.
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      vi.mocked(iframe.findTemplateGroup).mockImplementationOnce(async () => { await gate; return { eids: ['live-1'] } })
+
+      const first = mode.explodeBlock(parent.id)
+      const second = await mode.explodeBlock(parent.id)
+      expect(second).toBe(false)
+
+      release()
+      await first
+      // Only the first explode reached the live re-resolution; the concurrent
+      // one was refused by the capture lock before any await.
+      expect(iframe.findTemplateGroup).toHaveBeenCalledTimes(1)
     })
 
     it('an anchorless block the bridge cannot locate surfaces an error and keeps the block', async () => {

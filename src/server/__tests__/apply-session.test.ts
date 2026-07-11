@@ -152,6 +152,35 @@ describe('apply-session', () => {
     expect(tasks).toHaveLength(0)
   })
 
+  it('apply: the batch is journaled BEFORE the task is minted, then adopted by it', async () => {
+    await seedSession([textEntry('se-1')])
+    // addTask broadcasts to every observer — by the time it runs, the
+    // pre-apply bytes must already be on disk (the crash/race safety net).
+    let batchesAtMint: Array<{ id: string; status: string }> = []
+    const innerAdd = options.addTask
+    options.addTask = (task) => {
+      const raw = fs.readFileSync(path.join(root, '.annotask', 'file-snapshots.json'), 'utf-8')
+      batchesAtMint = (JSON.parse(raw) as { batches: Array<{ id: string; status: string }> }).batches
+      return innerAdd(task)
+    }
+    const result = await applyDesignSession(options, '/planets')
+    if ('error' in result) throw new Error('apply failed')
+    expect(batchesAtMint.map((b) => b.id)).toEqual([result.batchId])
+    // The ownerless batch was adopted by the minted task.
+    const snap = await options.snapshots.state()
+    expect(snap.batches[0].taskId).toBe(result.taskId)
+  })
+
+  it('apply: task creation failure seals the ownerless batch as failed', async () => {
+    await seedSession([textEntry('se-1')])
+    options.addTask = () => null as never
+    const result = await applyDesignSession(options, '/planets')
+    expect(result).toEqual({ error: 'task creation failed' })
+    const snap = await options.snapshots.state()
+    expect(snap.batches).toHaveLength(1)
+    expect(snap.batches[0].status).toBe('failed') // can't wedge a later undo/discard
+  })
+
   it('verify: a landed edit flips written (exact-anchor proof); a missing one flips failed; the batch seals', async () => {
     await seedSession([textEntry('se-1'), propEntry('se-2')])
     const result = await applyDesignSession(options, '/planets')

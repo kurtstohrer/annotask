@@ -317,6 +317,13 @@ export async function applyDesignSession(
   const undoCoverage: UndoCoverage = (await options.snapshots.gitCoverageAvailable?.()) ? 'full'
     : files.length > 0 ? 'anchors-only' : 'none'
 
+  // Snapshot BEFORE the task exists: addTask broadcasts tasks:updated, so
+  // "snapshot before the agent can run" must not depend on every observer of
+  // that broadcast waiting for this function to return. The batch is minted
+  // ownerless and adopted right after the task id is known.
+  const batchId = `ab-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+  await options.snapshots.snapshotFiles(files, { id: batchId, taskId: '' })
+
   const task = await options.addTask({
     type: 'wireframe_apply',
     description,
@@ -329,12 +336,14 @@ export async function applyDesignSession(
       session: { session_id: session.sessionId, undo_coverage: undoCoverage, entries: entries.map(entryForTask) },
     },
   }) as { id?: string } | null
-  if (!task?.id) return { error: 'task creation failed' }
+  if (!task?.id) {
+    // No task will ever own the batch — seal it failed so the running-batch
+    // guard can't wedge a later undo/discard on it.
+    await options.snapshots.sealBatch(batchId, { failed: true })
+    return { error: 'task creation failed' }
+  }
   const taskId = task.id
-
-  // Snapshot BEFORE the agent can run — the journal is the crash-safety net.
-  const batchId = `ab-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-  await options.snapshots.snapshotFiles(files, { id: batchId, taskId })
+  await options.snapshots.setBatchTask?.(batchId, taskId)
 
   // Stamp instances 'building' (the existing Build semantics: a second apply
   // won't collect them, and reapply won't re-mount them during review). A

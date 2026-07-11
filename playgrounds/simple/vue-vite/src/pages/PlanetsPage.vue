@@ -82,16 +82,6 @@ watch(
 
 <template>
   <section class="planets-page">
-    <header class="page-header">
-      <div>
-        <h1 class="title">Planets</h1>
-        <p class="lede">Click a planet card to view more info.</p>
-      </div>
-
-    </header>
-
-    <p v-if="error" class="error-banner">{{ error }}</p>
-
     <div class="planets-content">
       <aside class="controls">
         <div class="toolbar">

@@ -302,6 +302,10 @@ export interface WireframeBlock {
   deleted?: boolean
   captureError?: string
   clipped?: boolean
+  /** Overlaps a cross-origin <img> — its pixels may be blank in the snapshot
+   *  (non-CORS images rasterize blank under allowTaint:false). Mirrors the
+   *  walker meta's extImages stamp. */
+  extImages?: boolean
   /** Exploded container: this block is now the SHELL backdrop (its image has
    *  the children hidden); its children exist as separate blocks. Not
    *  explodable again. */

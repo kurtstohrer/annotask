@@ -11,7 +11,7 @@ import type { useComponentGenerator } from '../composables/useComponentGenerator
 import type { CanvasSelection } from '../composables/useCanvasSelection'
 import type { CanvasHistory } from '../composables/useCanvasHistory'
 import type { WireframeBlock, WireframeCanvasState, WireframeDataBinding } from '../../shared/wireframe-types'
-import type { WireframeChildRect } from '../composables/useWireframeMode'
+import type { WireframeChildRect, WireframeViewportMismatch } from '../composables/useWireframeMode'
 import type { WireframeCaptureProgress } from '../../shared/bridge-types'
 
 // Release-scope flags (deferred this release — see wireframeFeatures.ts).
@@ -41,6 +41,9 @@ const props = defineProps<{
   generator?: ReturnType<typeof useComponentGenerator> | null
   /** Block ids whose snapshot is rendering right now (drives the shimmer). */
   generatingIds?: Set<string>
+  /** The reused persisted sketch was captured at a materially different
+   *  viewport than the live iframe — drives the recapture-hint banner. */
+  viewportMismatch?: WireframeViewportMismatch | null
 }>()
 
 /** Is this block's snapshot currently rendering? */
@@ -78,8 +81,47 @@ const emit = defineEmits<{
 
 const rootRef = ref<HTMLElement | null>(null)
 const stageRef = ref<HTMLElement | null>(null)
+const scrollRef = ref<HTMLElement | null>(null)
 const confirmRecapture = ref(false)
 const showDeleted = ref(false)
+/** Session-local dismiss for the viewport-mismatch banner; the component
+ *  unmounts on exit, so re-entering shows the hint again. */
+const mismatchDismissed = ref(false)
+
+/** A sketch wider than the pane used to sit pinned to its top-left corner —
+ *  scroll it horizontally on entry/recapture so the CONTENT column is what the
+ *  user sees first. Full-bleed bands (header/footer/hero spanning ~the whole
+ *  document) are uniform and carry no horizontal information, so the anchor is
+ *  the bounding box of the narrower blocks — a content column that sits left
+ *  of the document middle (sidebar layouts, off-center containers) still lands
+ *  in view. Vertical stays at the page top. Called via nextTick, so the
+ *  visibleBlocks computed below is initialized by the time it runs. */
+function centerStage(): void {
+  const sc = scrollRef.value
+  if (!sc) return
+  const docW = props.canvas?.viewport.docWidth ?? 0
+  const content = visibleBlocks.value.filter((b) => b.rect.width < docW * 0.9)
+  const pool = content.length ? content : visibleBlocks.value
+  let target = (sc.scrollWidth - sc.clientWidth) / 2
+  if (pool.length) {
+    let min = Infinity
+    let max = -Infinity
+    for (const b of pool) {
+      min = Math.min(min, b.rect.x)
+      max = Math.max(max, b.rect.x + b.rect.width)
+    }
+    target = (min + max) / 2 - sc.clientWidth / 2
+  }
+  sc.scrollLeft = Math.max(0, Math.min(target, sc.scrollWidth - sc.clientWidth))
+  sc.scrollTop = 0
+}
+// Keyed on capturedAt, not canvas identity: lifecycle flips (implement lock,
+// undo-implementation, ws sync) swap the working object for the SAME capture,
+// and re-centering those would yank the user's scroll position mid-session.
+watch(() => props.canvas?.capturedAt, (at) => {
+  mismatchDismissed.value = false
+  if (at !== undefined) void nextTick(centerStage)
+}, { immediate: true })
 
 const visibleBlocks = computed(() =>
   (props.canvas?.blocks ?? [])
@@ -682,6 +724,26 @@ function onRecaptureConfirmed(): void {
       </button>
     </div>
 
+    <!-- A reused sketch from a materially different viewport renders at the
+         OLD document size — without this hint it reads as a broken capture. -->
+    <div v-if="canvas && viewportMismatch && !mismatchDismissed && !capturing && !building"
+      class="wf-mismatch" data-testid="wf-viewport-mismatch">
+      <Icon name="triangle-alert" :size="13" />
+      <span>
+        This sketch was captured at {{ viewportMismatch.captured.width }}×{{ viewportMismatch.captured.height }};
+        the viewport is now {{ viewportMismatch.live.width }}×{{ viewportMismatch.live.height }} —
+        it shows the older layout at its original size.
+      </span>
+      <button class="wf-btn" data-testid="wf-mismatch-recapture" @click="confirmRecapture = true"
+        title="Discard this sketch and re-capture at the current viewport">
+        <Icon name="refresh-cw" :size="12" /> Recapture
+      </button>
+      <button class="wf-btn wf-mismatch-dismiss" data-testid="wf-mismatch-dismiss" @click="mismatchDismissed = true"
+        title="Keep working with the sketch as captured">
+        <Icon name="x" :size="12" /> Keep sketch
+      </button>
+    </div>
+
     <!-- Capture: the live iframe stays visible underneath (the root goes
          transparent) with a scan sweep over it, instead of a blank screen. -->
     <div v-if="capturing && !canvas" class="wf-scanning" data-testid="wf-scanning">
@@ -692,7 +754,7 @@ function onRecaptureConfirmed(): void {
       </div>
     </div>
 
-    <div v-else-if="canvas" class="wf-scroll"
+    <div v-else-if="canvas" ref="scrollRef" class="wf-scroll"
       @dragenter.prevent
       @dragover.prevent
       @drop="onCanvasDrop">
@@ -739,6 +801,7 @@ function onRecaptureConfirmed(): void {
             <div class="wf-embedded-badge" title="This block is an embedded app (iframe) — move/resize the mount; its interior isn't captured">embedded app</div>
           </template>
           <div v-if="b.clipped" class="wf-clipped-note" title="Block was taller than the capture cap — only the top is shown">clipped</div>
+          <div v-if="b.extImages" class="wf-extimg-note" :data-testid="`wf-extimg-note-${b.id}`" title="This block overlaps cross-origin images — servers that don't send CORS headers render them blank in the snapshot (the live page is unaffected)">external images</div>
           <div v-if="b.note && primaryBlock?.id !== b.id" class="wf-note-chip" :title="b.note">
             <Icon name="pencil" :size="9" /> note
           </div>
@@ -843,9 +906,9 @@ function onRecaptureConfirmed(): void {
             @keydown.enter.prevent="commitPlaceholder" @keydown.escape="cancelPlaceholder" @blur="commitPlaceholder" />
         </div>
 
-        <!-- Hover-to-preview: outline the hovered block's children, emphasize the
-             one under the cursor, and show the dwell-to-explode progress ring.
-             All pointer-transparent so the block's own hover/double-click work. -->
+        <!-- Hover-to-preview: outline the hovered block's children, emphasizing
+             the one under the cursor. All pointer-transparent so the block's
+             own hover/double-click work. -->
         <template v-if="hoverBlock && hoverChildren.length">
           <div v-for="(c, i) in hoverChildren" :key="`hc${i}`"
             class="wf-child-outline" :class="{ active: i === hoverChildIdx }"
@@ -1010,8 +1073,24 @@ function onRecaptureConfirmed(): void {
 }
 
 .wf-scroll { flex: 1; overflow: auto; }
+.wf-mismatch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+}
+.wf-mismatch > svg { color: var(--warning); flex: none; }
+.wf-mismatch span { min-width: 0; }
+.wf-mismatch .wf-btn { flex: none; }
 .wf-stage {
   position: relative;
+  /* Centered when narrower than the pane (mobile-preset captures); a wider
+     sketch resolves the auto margins to 0 and scrolls normally. */
+  margin: 0 auto;
   /* The sketch keeps the capture's document coordinate space. */
   background:
     repeating-linear-gradient(0deg, transparent 0 23px, color-mix(in srgb, var(--border) 35%, transparent) 23px 24px),
@@ -1031,8 +1110,8 @@ function onRecaptureConfirmed(): void {
 .wf-block:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
 .wf-block.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); overflow: visible; }
 
-/* Hover-to-preview: per-child outlines + the dwell-to-explode ring. All
-   pointer-transparent so they never steal the block's hover/double-click. */
+/* Hover-to-preview: per-child outlines, pointer-transparent so they never
+   steal the block's hover/double-click. */
 .wf-child-outline {
   position: absolute;
   pointer-events: none;
@@ -1141,6 +1220,20 @@ function onRecaptureConfirmed(): void {
   position: absolute;
   bottom: 2px;
   right: 4px;
+  font-size: 9px;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+/* Blank-risk pill: the block overlaps cross-origin imagery that may have
+   rasterized blank (see extImages on WireframeBlock). Left side so it can
+   coexist with a clipped note on the same block. */
+.wf-extimg-note {
+  position: absolute;
+  bottom: 2px;
+  left: 4px;
   font-size: 9px;
   color: var(--warning);
   background: color-mix(in srgb, var(--bg) 80%, transparent);

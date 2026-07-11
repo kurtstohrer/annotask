@@ -19,6 +19,9 @@ const STORAGE_KEY = 'annotask:wireframe'
 export interface WireframeModeIframe {
   currentRoute: Ref<string>
   bridgeReady: Ref<boolean>
+  /** Live iframe pane size (CSS px) — compared against a persisted canvas's
+   *  capture viewport so a stale-viewport sketch is flagged, not silent. */
+  getIframeViewport: () => { w: number; h: number } | null
   captureWireframe: (opts?: WireframeCapturePayload) => Promise<WireframeCaptureResult>
   /** Offscreen component mount → honest snapshot (palette drops). `opts.repeat`
    *  mounts N stacked instances; `opts.instanceProps` overlays per-instance prop
@@ -62,6 +65,14 @@ export interface PaletteSnapshot {
   height?: number
   fidelity?: WireframeFidelity
   mounted?: boolean
+}
+
+/** A persisted sketch was captured at a materially different viewport than the
+ *  live iframe shows now — the sketch is honest about the OLD layout, but reads
+ *  as broken next to the current one. Drives the canvas's recapture hint. */
+export interface WireframeViewportMismatch {
+  captured: { width: number; height: number }
+  live: { width: number; height: number }
 }
 
 /** A direct child of a captured block, probed live for the hover highlights.
@@ -179,6 +190,21 @@ export function useWireframeMode(deps: WireframeModeDeps) {
    *  has already moved on, and keying off the live route would persist the old
    *  canvas under the new route. */
   const canvasRoute = ref<string | null>(null)
+  /** Set when a REUSED persisted canvas was captured at a viewport materially
+   *  narrower/wider than the live iframe — the sketch then renders at the old
+   *  document size and looks mis-sized/cut-off unless the user knows why.
+   *  Fresh captures always match by construction, so they clear it. */
+  const viewportMismatch = ref<WireframeViewportMismatch | null>(null)
+  /** Width-only comparison: height differs benignly all the time (devtools,
+   *  window chrome) and barely reflows layout, but a width gap reflows
+   *  everything. 10% with a 64px floor so ordinary resizes don't nag. */
+  function computeViewportMismatch(captured: { width: number; height: number }): WireframeViewportMismatch | null {
+    const live = iframe.getIframeViewport()
+    if (!live?.w || !captured.width) return null
+    const diff = Math.abs(captured.width - live.w)
+    if (diff <= Math.max(64, 0.1 * Math.max(captured.width, live.w))) return null
+    return { captured: { width: captured.width, height: captured.height }, live: { width: live.w, height: live.h } }
+  }
   /** This-session dataUrls (blockId → PNG) — instant render before/while the
    *  uploads land; after a reload images come from the snapshot routes. */
   const liveImages = ref<Record<string, string>>({})
@@ -228,6 +254,18 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     return null
   }
 
+  // Snapshot uploads are best-effort (the current session renders from
+  // liveImages regardless), but a silent failure means the block turns
+  // hatched only after the NEXT reload — long after the user could connect
+  // cause to effect. Count failures and say so in the toolbar.
+  const uploadFailures = ref(0)
+  function noteUploadFailure(): null {
+    uploadFailures.value++
+    const n = uploadFailures.value
+    error.value = `${n} snapshot image${n === 1 ? '' : 's'} failed to save — affected blocks will show hatched after a reload. Recapture to retry.`
+    return null
+  }
+
   async function uploadSnapshot(id: string, dataUrl: string): Promise<string | null> {
     try {
       const res = await fetch('/__annotask/api/wireframe-snapshots', {
@@ -235,10 +273,10 @@ export function useWireframeMode(deps: WireframeModeDeps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, data: dataUrl }),
       })
-      if (!res.ok) return null
+      if (!res.ok) return noteUploadFailure()
       return ((await res.json()) as { filename: string }).filename
     } catch {
-      return null
+      return noteUploadFailure()
     }
   }
 
@@ -261,6 +299,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     capturing.value = true
     progress.value = null
     error.value = null
+    uploadFailures.value = 0
     try {
       // Anchor translation (toAnchorFile) needs the workspace catalog — await
       // it so a capture can't race the init prefetch and persist package-local
@@ -291,6 +330,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
           ...(b.embedded ? { embedded: b.embedded } : {}),
           ...(b.error ? { captureError: b.error } : {}),
           ...(b.clipped ? { clipped: true } : {}),
+          ...(b.extImages ? { extImages: true } : {}),
         }
         if (b.dataUrl) {
           nextImages[id] = b.dataUrl
@@ -308,6 +348,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
       liveImages.value = nextImages
       canvas.value = next
       canvasRoute.value = route
+      viewportMismatch.value = null
       history.clear()
       // Fire-and-forget: grep-resolve anchorless blocks while the canvas shows.
       autoResolveAnchorless(blocks)
@@ -343,6 +384,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     if (existing) {
       canvas.value = existing
       canvasRoute.value = route
+      viewportMismatch.value = computeViewportMismatch(existing.viewport)
       history.clear()
     } else {
       const ok = await captureIntoCanvas(route)
@@ -360,6 +402,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     active.value = false
     canvas.value = null
     canvasRoute.value = null
+    viewportMismatch.value = null
     history.clear()
     setFlag(false)
     // Clear any capture/explode error so the App-level banner (shown when the
@@ -689,6 +732,9 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   }, opts: { recordHistory?: boolean } = {}): Promise<void> {
     const b = findBlock(id)
     if (!b || b.kind !== 'palette' || !b.component) return
+    // Locked sketch: an implement run computed its directions from the canvas
+    // as-is — a late in-flight preview must not swap pixels/dims under it.
+    if (building.value) return
     // The drop and prop/binding edits already snapshot the pre-mutation state;
     // the async snapshot fill that follows is a derived image swap that must
     // FOLD into that one entry (recordHistory:false) so a place + render — or a
@@ -839,7 +885,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
   async function explodeBlock(id: string): Promise<boolean> {
     const c = canvas.value
     const parent = findBlock(id)
-    if (!c || !parent || parent.kind !== 'captured' || parent.deleted || capturing.value) return false
+    if (!c || !parent || parent.kind !== 'captured' || parent.deleted || capturing.value || building.value) return false
     if (parent.shell) {
       error.value = 'Already exploded — its children are separate blocks.'
       return false
@@ -856,51 +902,62 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     }
     error.value = null
 
-    // Explode both reads (toLocalFile) and mints (buildAnchor) MFE anchors —
-    // same workspace-catalog dependency as capture, same await.
-    await workspace.load()
-
-    // Resolve the live element to re-capture a level deeper. ANCHORED blocks
-    // re-resolve from their durable source anchor (eids are volatile) — the DOM
-    // carries the MFE's package-local path, so translate the resolvable anchor
-    // back to local form and scope the query to the owning MFE. ANCHORLESS
-    // blocks (DOM rendered by an un-instrumented shared/library/dist component,
-    // or a pending MFE region) carry no anchor to look up — re-resolve their
-    // live subtree by captured GEOMETRY instead, so they still decompose into
-    // (anchorless) geometric children for layout wireframing.
-    let payload: WireframeCapturePayload
-    let rootEid: string | null = null
-    // Grep-resolved anchors re-resolve by GEOMETRY like the anchorless blocks
-    // they were: the file came from a repo grep, not from a DOM stamp, so a
-    // findTemplateGroup lookup on it would always miss (see resolveBlockChildren).
-    if (parent.anchor?.file && parent.anchor.resolvedBy !== 'grep') {
-      const group = await iframe.findTemplateGroup(
-        toLocalFile(parent.anchor.mfe, parent.anchor.file),
-        String(parent.anchor.line),
-        parent.anchor.tag ?? '',
-        parent.anchor.mfe,
-      )
-      rootEid = group.eids[0] ?? null
-      if (!rootEid) {
-        error.value = 'Could not find this block in the live page — the source may have changed. Recapture instead.'
-        return false
-      }
-      payload = { rootEid }
-    } else {
-      payload = { rootRect: { ...parent.originalRect } }
-    }
-
+    // Claim the capture lock BEFORE the first await — workspace.load() and
+    // findTemplateGroup suspend long enough for a second explode (or a
+    // recapture) to interleave when the guard is only set later.
     capturing.value = true
     try {
+      // Explode both reads (toLocalFile) and mints (buildAnchor) MFE anchors —
+      // same workspace-catalog dependency as capture, same await.
+      await workspace.load()
+
+      // Resolve the live element to re-capture a level deeper. ANCHORED blocks
+      // re-resolve from their durable source anchor (eids are volatile) — the DOM
+      // carries the MFE's package-local path, so translate the resolvable anchor
+      // back to local form and scope the query to the owning MFE. ANCHORLESS
+      // blocks (DOM rendered by an un-instrumented shared/library/dist component,
+      // or a pending MFE region) carry no anchor to look up — re-resolve their
+      // live subtree by captured GEOMETRY instead, so they still decompose into
+      // (anchorless) geometric children for layout wireframing.
+      let payload: WireframeCapturePayload
+      let rootEid: string | null = null
+      // Grep-resolved anchors re-resolve by GEOMETRY like the anchorless blocks
+      // they were: the file came from a repo grep, not from a DOM stamp, so a
+      // findTemplateGroup lookup on it would always miss (see resolveBlockChildren).
+      if (parent.anchor?.file && parent.anchor.resolvedBy !== 'grep') {
+        const group = await iframe.findTemplateGroup(
+          toLocalFile(parent.anchor.mfe, parent.anchor.file),
+          String(parent.anchor.line),
+          parent.anchor.tag ?? '',
+          parent.anchor.mfe,
+        )
+        rootEid = group.eids[0] ?? null
+        if (!rootEid) {
+          error.value = 'Could not find this block in the live page — the source may have changed. Recapture instead.'
+          return false
+        }
+        payload = { rootEid }
+      } else {
+        payload = { rootRect: { ...parent.originalRect } }
+      }
+
       const res = await iframe.captureWireframe(payload)
       if (res.error || !res.blocks?.length) {
         error.value = res.error ?? 'nothing to explode'
         return false
       }
       // One block back = no finer granularity available. The geometric path
-      // learns the resolved root's eid from the bridge response.
+      // learns the resolved root's eid from the bridge response. Eids are
+      // volatile WeakRef handles that can re-mint between the resolve and the
+      // capture — geometry identity (the lone block IS the parent's captured
+      // rect) is the fallback so a childless block never silently explodes
+      // into a duplicate of itself.
       const resolvedRoot = rootEid ?? res.rootEid ?? null
-      if (res.blocks.length === 1 && resolvedRoot && res.blocks[0].eid === resolvedRoot) {
+      const r0 = res.blocks[0].rect
+      const pr = parent.originalRect
+      const sameRect = Math.abs(r0.x - pr.x) <= 2 && Math.abs(r0.y - pr.y) <= 2
+        && Math.abs(r0.width - pr.width) <= 2 && Math.abs(r0.height - pr.height) <= 2
+      if (res.blocks.length === 1 && ((resolvedRoot && res.blocks[0].eid === resolvedRoot) || sameRect)) {
         error.value = parent.anchor?.file
           ? 'This block has no separable children.'
           : "This block isn't mapped to source (it's rendered by an un-instrumented component) and has no separable children — it can still be moved or resized as one block."
@@ -936,6 +993,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
           ...(b.embedded ? { embedded: b.embedded } : {}),
           ...(b.error ? { captureError: b.error } : {}),
           ...(b.clipped ? { clipped: true } : {}),
+          ...(b.extImages ? { extImages: true } : {}),
         }
       })
 
@@ -1140,6 +1198,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
         booted = true
         canvas.value = existing
         canvasRoute.value = route
+        viewportMismatch.value = computeViewportMismatch(existing.viewport)
         history.clear()
         interactionMode.value = 'select'
         active.value = true
@@ -1170,6 +1229,7 @@ export function useWireframeMode(deps: WireframeModeDeps) {
     progress,
     error,
     canvas,
+    viewportMismatch,
     imageSrc,
     enter,
     exit,

@@ -95,14 +95,19 @@ export interface APIOptions {
 }
 
 const MAX_BODY_SIZE = 4_194_304
+/** PNG uploads promise a 4MB *decoded* cap, but base64 inflates bytes ~4/3 —
+ *  a legal ~4MB PNG arrives as a ~5.5MB JSON body. The upload routes read
+ *  with this raised cap so the decoded-buffer check is the real boundary
+ *  (without it, MAX_BODY_SIZE silently lowers the PNG cap to ~2.9MB). */
+const MAX_IMAGE_BODY_SIZE = 6_291_456
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxSize = MAX_BODY_SIZE): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = ''
     let size = 0
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
-      if (size > MAX_BODY_SIZE) { req.destroy(); reject(new Error('Request body too large')); return }
+      if (size > maxSize) { req.destroy(); reject(new Error('Request body too large')); return }
       body += chunk.toString()
     })
     req.on('end', () => resolve(body))
@@ -810,7 +815,7 @@ export function createAPIMiddleware(options: APIOptions) {
 
     if (path === 'screenshots' && req.method === 'POST') {
       let raw: string
-      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      try { raw = await readBody(req, MAX_IMAGE_BODY_SIZE) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
       if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
       const bodyResult = parseWith(UploadScreenshotBody, parsed.data)
@@ -831,7 +836,7 @@ export function createAPIMiddleware(options: APIOptions) {
     // best-effort cleanup when a palette/placeholder block is removed.
     if (path === 'wireframe-snapshots' && req.method === 'POST') {
       let raw: string
-      try { raw = await readBody(req) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
+      try { raw = await readBody(req, MAX_IMAGE_BODY_SIZE) } catch { return sendError(res, 413, 'Request body too large', 'body_too_large') }
       const parsed = parseJSON(raw)
       if (!parsed.ok) return sendError(res, 400, 'Invalid JSON body', 'invalid_json')
       const bodyResult = parseWith(UploadWireframeSnapshotBody, parsed.data)

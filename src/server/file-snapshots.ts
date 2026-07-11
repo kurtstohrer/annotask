@@ -101,6 +101,11 @@ export interface SnapshotStore {
   snapshotFiles(files: string[], batch: { id: string; taskId: string }): Promise<void>
   /** Record post-apply hashes + finish the batch (the restore hash-guard baseline). */
   sealBatch(batchId: string, opts?: { failed?: boolean }): Promise<void>
+  /** Attach the owning task to a batch snapshotted BEFORE the task existed —
+   *  applyDesignSession journals the pre-apply bytes first so no observer of
+   *  the task broadcast can ever race the safety net. Optional so API-boundary
+   *  test doubles stay minimal (same as gitCoverageAvailable). */
+  setBatchTask?(batchId: string, taskId: string): Promise<void>
   /** Seal the most-recent batch for a task — used by the review hook (which
    *  knows the taskId, not the batchId) so re-apply-after-deny and
    *  pure-instances applies still establish a hash baseline. No-op if no batch
@@ -120,9 +125,8 @@ export interface SnapshotStore {
   /** Whether a batch snapshotted right now would capture a git pre-apply
    *  baseline (the byte-exact auto-extend) — the 'full' undo-coverage tier.
    *  Runs the SAME probe the snapshot path uses, so the apply can stamp
-   *  coverage into the task context BEFORE the batch exists (the task is
-   *  minted first). Optional so API-boundary test doubles stay minimal;
-   *  absent reads as no baseline. */
+   *  coverage into the task context it composes BEFORE snapshotting. Optional
+   *  so API-boundary test doubles stay minimal; absent reads as no baseline. */
   gitCoverageAvailable?(): Promise<boolean>
   flush(): Promise<void>
 }
@@ -474,6 +478,16 @@ export function createSnapshotStore(projectRoot: string): SnapshotStore {
         const batch = journal.batches.find((b) => b.id === batchId)
         if (!batch) return
         await sealBatchInternal(batch, opts)
+        await persist()
+      })
+    },
+
+    setBatchTask(batchId, taskId) {
+      return enqueue(async () => {
+        await ready
+        const batch = journal.batches.find((b) => b.id === batchId)
+        if (!batch || batch.taskId === taskId) return
+        batch.taskId = taskId
         await persist()
       })
     },

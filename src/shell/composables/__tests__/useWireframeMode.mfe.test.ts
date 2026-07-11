@@ -51,6 +51,7 @@ function makeIframe(result: WireframeCaptureResult = MFE_CAPTURE): WireframeMode
   return {
     currentRoute: ref('/planets'),
     bridgeReady: ref(true),
+    getIframeViewport: vi.fn(() => ({ w: 1280, h: 800 })),
     captureWireframe: vi.fn(async () => result),
     previewComponent: vi.fn(async () => ({ mounted: true })),
     findTemplateGroup: vi.fn(async () => ({ eids: ['live-1'] })),
