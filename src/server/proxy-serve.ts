@@ -57,7 +57,7 @@ const HOP_BY_HOP = new Set([
 /** Decompress a buffered body per its content-encoding. Returns null for an
  *  encoding we can't undo — the caller then passes the response through
  *  untouched rather than corrupting it with a plaintext injection. */
-function decode(body: Buffer, encoding: string): Buffer | null {
+export function decode(body: Buffer, encoding: string): Buffer | null {
   try {
     if (encoding === 'gzip') return zlib.gunzipSync(body)
     if (encoding === 'deflate') return zlib.inflateSync(body)
@@ -72,10 +72,33 @@ function decode(body: Buffer, encoding: string): Buffer | null {
  *  is a FUNCTION on purpose: a string replacement would expand `$'`/`$&`
  *  sequences inside the bridge source (e.g. the React fiber key prefix
  *  '__reactFiber$') into replace() patterns and corrupt the script. */
-function injectBridge(html: string): string {
+export function injectBridge(html: string): string {
   if (html.includes('__ANNOTASK_BRIDGE__')) return html
   const script = `<script>${bridgeClientScript()}</script>\n`
   return html.includes('</body>') ? html.replace('</body>', () => script + '</body>') : html + script
+}
+
+/** Build the response headers sent back to the browser: drop hop-by-hop
+ *  headers, strip the target's CSP / X-Frame-Options (the inline bridge and the
+ *  shell iframe are the product and localhost-only), and rewrite an absolute
+ *  same-origin redirect Location back onto the proxy so the browser can't
+ *  escape it. Pure so the header contract is unit-testable. */
+export function rewriteResponseHeaders(
+  inHeaders: http.IncomingHttpHeaders,
+  targetOrigin: string,
+): http.OutgoingHttpHeaders {
+  const out: http.OutgoingHttpHeaders = {}
+  for (const [k, v] of Object.entries(inHeaders)) {
+    if (v !== undefined && !HOP_BY_HOP.has(k)) out[k] = v
+  }
+  delete out['content-security-policy']
+  delete out['content-security-policy-report-only']
+  delete out['x-frame-options']
+  const loc = out['location']
+  if (typeof loc === 'string' && loc.startsWith(targetOrigin)) {
+    out['location'] = loc.slice(targetOrigin.length) || '/'
+  }
+  return out
 }
 
 export async function startProxyServer(options: ProxyServerOptions): Promise<{
@@ -114,20 +137,8 @@ export async function startProxyServer(options: ProxyServerOptions): Promise<{
       headers,
     }, (pres) => {
       const status = pres.statusCode ?? 502
-      const outHeaders: http.OutgoingHttpHeaders = {}
-      for (const [k, v] of Object.entries(pres.headers)) {
-        if (v !== undefined && !HOP_BY_HOP.has(k)) outHeaders[k] = v
-      }
-      // The inline bridge and the shell iframe are the product — the
-      // target's CSP/XFO would break both. Localhost-only exposure.
-      delete outHeaders['content-security-policy']
-      delete outHeaders['content-security-policy-report-only']
-      delete outHeaders['x-frame-options']
-      // Keep redirects on the proxy origin.
-      const loc = outHeaders['location']
-      if (typeof loc === 'string' && loc.startsWith(target.origin)) {
-        outHeaders['location'] = loc.slice(target.origin.length) || '/'
-      }
+      // Strip hop-by-hop + CSP/XFO and keep redirects on the proxy origin.
+      const outHeaders = rewriteResponseHeaders(pres.headers, target.origin)
 
       const contentType = String(pres.headers['content-type'] ?? '')
       // HEAD responses have no body to inject into — buffering one would
